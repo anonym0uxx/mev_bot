@@ -154,6 +154,15 @@ impl BundlePolicy {
         !self.is_emitted(family)
     }
 
+    /// Drop a family from the policy — **narrowing only, never a widening path.**
+    ///
+    /// Narrowing cannot make an untrained family emittable, so it needs no corpus argument.
+    /// It exists so the §17 guard in the live formatter is a path with a test on it: a
+    /// refusal branch that nothing can construct is indistinguishable from no guard at all.
+    pub fn withhold(&mut self, family: FieldFamily) {
+        self.emitted.remove(&family);
+    }
+
     /// The families this policy emits, in bundle order.
     #[must_use]
     pub fn emitted(&self) -> Vec<FieldFamily> {

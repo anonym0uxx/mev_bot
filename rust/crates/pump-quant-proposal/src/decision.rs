@@ -8,6 +8,7 @@
 
 #![forbid(unsafe_code)]
 
+use crate::bundle_gate::{BundlePolicy, FieldFamily, GateError};
 use crate::cost::{size_options, Regime};
 use crate::fmt::{py_fixed, py_g};
 use crate::pynum::PyNum;
@@ -276,7 +277,49 @@ fn opt_bp(v: Option<PyNum>) -> String {
     }
 }
 
+/// The §17 gate's view of a bundle.
+impl DecisionBundle {
+    /// The §17 field families this bundle actually carries.
+    ///
+    /// Read off the bundle's own content, never from a caller-supplied list: a caller that
+    /// forgot to declare a family it had just filled would be exactly the hole the gate
+    /// exists to close. The enum is closed, so a new family added to `FieldFamily` forces
+    /// this match to be revisited at compile time rather than silently unguarded.
+    #[must_use]
+    pub fn carried_families(&self) -> Vec<FieldFamily> {
+        let mut families = Vec::new();
+        // The bundle always renders a LIVE FLOW STATE line: either the thirteen aggregates
+        // or the `no_prior_flow` marker. Both are the trained c11 family.
+        families.push(FieldFamily::LiveFlowState);
+        families
+    }
+}
+
+/// **The live entry point.** Render the entry prompt only after the §17 gate has agreed that
+/// every family this bundle carries is one the model was trained on.
+///
+/// [`render_decision`] stays as the raw renderer so the golden/parity outputs are untouched;
+/// live callers must come through here. Emitting a captured-but-untrained family is an
+/// out-of-distribution input, and it fails the same way a wrong action vocabulary does —
+/// silently, with plausible-looking output — which is why the check is a refusal and not a
+/// warning.
+pub fn render_decision_checked(
+    b: &DecisionBundle,
+    policy: &BundlePolicy,
+) -> Result<String, GateError> {
+    for family in b.carried_families() {
+        if !policy.is_emitted(family) {
+            return Err(GateError::UntrainedFamilyEmitted(family));
+        }
+    }
+    Ok(render_decision(b))
+}
+
 /// Render the full `decision` user prompt exactly as the corpus stores it.
+///
+/// The raw renderer: golden and parity outputs go through here. Live callers must come
+/// through [`render_decision_checked`], which refuses to render a family the model was
+/// not trained on (§17).
 pub fn render_decision(b: &DecisionBundle) -> String {
     let mut out = String::with_capacity(4096);
     out.push_str("DECISION CLOCK — assess this opportunity.\n");
@@ -384,9 +427,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn missing_optional_numbers_print_as_na_not_zero() {
-        let mut b = DecisionBundle {
+    /// A bundle with every optional field absent — the smallest honest bundle the
+    /// formatter can be pointed at.
+    fn minimal_bundle() -> DecisionBundle {
+        DecisionBundle {
             t_dec_ms: 1,
             age_s: PyNum::Float(1.0),
             last_trade_age_s: PyNum::Float(1.0),
@@ -433,7 +477,12 @@ mod tests {
             },
             size_depth_sol: None,
             size_amm: false,
-        };
+        }
+    }
+
+    #[test]
+    fn missing_optional_numbers_print_as_na_not_zero() {
+        let mut b = minimal_bundle();
         let s = render_decision(&b);
         assert!(s.contains("ret_5s_bp=n/a"), "{s}");
         assert!(s.contains("buyer_seller_ratio=n/a"), "{s}");
@@ -474,6 +523,33 @@ mod tests {
             render_price_units(PyNum::Float(1.0499954004771828)),
             "PRICE UNITS: price_lamports_per_raw_token=1.0499954 price_sol_per_raw_token=1.0499954e-09 \
              price_sol_per_whole_token=0.0010499954"
+        );
+    }
+
+    #[test]
+    fn the_gate_aware_render_is_byte_identical_under_the_live_policy() {
+        let b = minimal_bundle();
+        let policy = BundlePolicy::trained_only();
+        assert_eq!(
+            render_decision_checked(&b, &policy).expect("the live policy emits the flow family"),
+            render_decision(&b),
+            "the guard must not perturb a single byte of the prompt"
+        );
+    }
+
+    #[test]
+    fn a_withheld_family_is_a_refusal_not_a_warning() {
+        let b = minimal_bundle();
+        // The bundle carries the flow family: prove the formatter actually consults the policy
+        // rather than carrying a guard whose refusal branch nothing can reach.
+        assert!(b.carried_families().contains(&FieldFamily::LiveFlowState));
+        let mut policy = BundlePolicy::trained_only();
+        policy.withhold(FieldFamily::LiveFlowState);
+        assert_eq!(
+            render_decision_checked(&b, &policy),
+            Err(GateError::UntrainedFamilyEmitted(
+                FieldFamily::LiveFlowState
+            ))
         );
     }
 }
