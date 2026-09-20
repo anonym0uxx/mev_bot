@@ -118,12 +118,53 @@ pub fn decompose(clip_sol: f64, depth_sol: Option<f64>, regime: Regime) -> CostB
 /// The size tiers the entry family offers, as (label, fraction of the canonical notional).
 pub const SIZE_TIERS: [(&str, f64); 3] = [("SMALL", 0.25), ("MID", 0.50), ("FULL", 1.00)];
 
+/// The RULED size menu — `{SMALL, FULL}`, MID dropped (Alon, 2026-09-20: "if no label ever
+/// chooses MID then we should not use it and go with what the labels are in fact teaching").
+///
+/// This is what the corpus's *labels* have said since `candidate_sft_c12`: 5,406 FULL / 7,970
+/// SMALL / 53,925 NONE, and **zero** MID. The trained c12 *prompt* still offers MID (132,326
+/// rows carry the three-tier block), so c12 contradicts itself: a menu item no label ever
+/// chooses. Serving the ruled menu therefore requires the corpus's prompt to be rebuilt with
+/// it — [`SizeMenu::Trained`] is what the corpus on disk says, [`SizeMenu::Ruled`] is what the
+/// labels teach, and the switch between them must flip **with the corpus**, never before it:
+/// changing one side alone is out-of-distribution input in whichever direction it lags.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SizeMenu {
+    /// The three-tier block the trained corpus carries (SMALL / MID / FULL).
+    Trained,
+    /// The ruled two-tier block: SMALL / FULL, MID dropped.
+    Ruled,
+}
+
+/// The tiers each menu renders, and their clips in SOL.
+#[must_use]
+pub fn size_tiers(menu: SizeMenu) -> &'static [(&'static str, f64)] {
+    match menu {
+        SizeMenu::Trained => &SIZE_TIERS,
+        SizeMenu::Ruled => &[("SMALL", 0.25), ("FULL", 1.00)],
+    }
+}
+
 /// The SIZE OPTIONS block, generated from the same authority as the cost line so the
 /// numbers in a row can never disagree with its own system prompt.
 pub fn size_options(regime: Regime, depth_sol: Option<f64>, uniform_venue_fee: bool) -> String {
+    // The block the corpus on disk renders. Do NOT switch this to `SizeMenu::Ruled` on its own:
+    // the menu and the corpus must move together (see [`SizeMenu`]).
+    size_options_with(SizeMenu::Trained, regime, depth_sol, uniform_venue_fee)
+}
+
+/// The SIZE OPTIONS block for an explicit menu — the one-line switch the corpus rebuild flips.
+pub fn size_options_with(
+    menu: SizeMenu,
+    regime: Regime,
+    depth_sol: Option<f64>,
+    uniform_venue_fee: bool,
+) -> String {
     let mut out = String::with_capacity(512);
     out.push_str("SIZE OPTIONS (choose one on BUY; round-trip cost from the cost authority):");
-    for (name, clip) in SIZE_TIERS {
+    for (name, clip) in size_tiers(menu) {
+        let clip = *clip;
+        let name = *name;
         let d = if uniform_venue_fee {
             decompose(clip, depth_sol, Regime::BondingCurve)
         } else {
@@ -219,6 +260,19 @@ mod tests {
     fn size_options_reproduce_a_known_corpus_block() {
         let block = size_options(Regime::Amm, Some(4277.289364175), false);
         assert!(block.starts_with("SIZE OPTIONS (choose one on BUY;"));
+        // The RULED menu drops MID — the item no corpus label ever chooses — while the trained
+        // block keeps it, because the corpus on disk still renders it. The two must move
+        // together; this test is what makes the switch visible.
+        let ruled = size_options_with(SizeMenu::Ruled, Regime::BondingCurve, Some(30.0), false);
+        assert!(ruled.contains("SMALL = 0.25 SOL"), "{ruled}");
+        assert!(ruled.contains("FULL = 1.00 SOL"), "{ruled}");
+        assert!(!ruled.contains("MID"), "the ruled menu has no MID: {ruled}");
+        assert_eq!(size_tiers(SizeMenu::Ruled).len(), 2);
+        assert!(
+            block.contains("MID = 0.50 SOL"),
+            "the trained menu still does"
+        );
+        assert_eq!(size_tiers(SizeMenu::Trained).len(), 3);
         assert!(block.contains("SMALL = 0.25 SOL - 63 bp round trip (pool depth 4277.3 SOL)"));
         assert!(block.contains("MID = 0.50 SOL - 62 bp round trip (pool depth 4277.3 SOL)"));
         assert!(block.contains("FULL = 1.00 SOL - 64 bp round trip (pool depth 4277.3 SOL)"));
