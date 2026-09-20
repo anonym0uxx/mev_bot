@@ -80,6 +80,13 @@ pub struct EntryRequest<'a> {
     pub live_mints: &'a std::collections::BTreeSet<[u8; 32]>,
     /// The portfolio-layer cap in force for this decision.
     pub portfolio: PortfolioCap,
+    /// The deepest reserve this leg would be priced against, lamports: `vsol` on the bonding
+    /// curve, the pool's pricing reserve on the AMM. `None` is an ABSENT observation, not a
+    /// zero one, and fails the own-impact veto closed — see [`crate::impact_cap`].
+    pub depth_lamports: Option<u64>,
+    /// The own-impact limit in force, bp. Exceeding it VETOES the trade with a named cause; it
+    /// never quietly resizes it, because the size is the brain's call and not the bound's.
+    pub max_own_impact_bps: u64,
 }
 
 /// What the authority concluded. `Buy` is the only variant that may move capital.
@@ -87,9 +94,10 @@ pub struct EntryRequest<'a> {
 pub enum EntryAuthority {
     /// The model chose to buy; the clip is what the account can actually pay.
     Buy {
-        /// The SERVED size tier — the ruled venue size (AMM FULL / curve SMALL), which is
-        /// what the corpus was labelled under. The model's own emitted token is graded
-        /// against it in the drift ledger, never used to size.
+        /// The SERVED size tier — the tier **the model emitted**, which is what sizes the
+        /// trade. The venue rule (`KELLY_AUDIT_C12`: AMM FULL / curve SMALL) is the default a
+        /// caller with no verdict sizes with; a divergence is journalled as drift, not
+        /// corrected.
         tier: SizeTier,
         /// Lamports to deploy, after payability capping.
         clip_lamports: u64,
@@ -119,6 +127,10 @@ pub enum NoTradeReason {
     /// The portfolio layer refused: the mint already has a live position, or the concurrency
     /// cap is reached (`KELLY_AUDIT_C12`'s exposure control).
     Portfolio(AdmissionRefusal),
+    /// Our own leg would move the price further than the limit allows, or the book could not
+    /// be priced at all ([`crate::impact_cap::ImpactVeto`]). This is what replaces a
+    /// deterministic size clamp: the brain keeps its size and is told the trade is unsafe.
+    OwnImpact(crate::impact_cap::ImpactVeto),
 }
 
 /// Ask the model, then resolve and veto. The single entry point of R3.
@@ -204,6 +216,17 @@ pub fn decide_entry<S: ModelSource + ?Sized>(
                     {
                         return EntryAuthority::NoTrade(NoTradeReason::BreachesBankrollFloor);
                     }
+                    // What OUR OWN leg does to the price. This is the bound that replaces
+                    // the `x_max` payout clamp: a veto with a reading cause, never a silently
+                    // smaller size — the brain keeps its decision and learns the trade was
+                    // unsafe, rather than being quietly resized by the engine.
+                    if let Err(veto) = crate::impact_cap::own_impact_veto(
+                        req.depth_lamports,
+                        clip_lamports,
+                        req.max_own_impact_bps,
+                    ) {
+                        return EntryAuthority::NoTrade(NoTradeReason::OwnImpact(veto));
+                    }
                     ledger.record_accepted();
                     EntryAuthority::Buy {
                         tier,
@@ -265,6 +288,10 @@ mod tests {
             bankroll_floor_lamports: floor,
             venue,
             mint: MINT,
+            // A deep book by default, so these tests exercise the SIZING law rather than the
+            // impact veto; the veto has its own module below.
+            depth_lamports: Some(200_000_000_000),
+            max_own_impact_bps: 1_000,
             live_mints: no_live(),
             portfolio: PortfolioCap::enforced(3),
         }
@@ -784,5 +811,117 @@ mod management_tests {
             decide_management(&Stub(BUY_FULL), &mreq(), &mut l),
             ManagementAuthority::NoAction(ManagementNoAction::EntryVerbOnManagementPrompt)
         );
+    }
+}
+
+#[cfg(test)]
+mod impact_veto_tests {
+    //! The own-impact veto, WIRED into the authority: the bound that replaces a size clamp.
+
+    use super::*;
+    use crate::impact_cap::ImpactVeto;
+    use pump_quant_inference::InferenceError;
+    use std::collections::BTreeSet;
+
+    const MINT: [u8; 32] = [7u8; 32];
+    // The trained contract's own shape (see the `tests` module's constants): a completion that
+    // is not this shape is off-contract for a different reason, and would have hidden the
+    // veto behind a parse error.
+    const BUY_FULL: &str = "DECISION: BUY\nSIZE: FULL\nPRICE LIMIT: 0.02445740498411998\nINVALIDATION: exit if net_flow_lamports turns negative\nEVIDENCE: round-trip cost floor 92 bp must be cleared";
+    const BUY_SMALL: &str = "DECISION: BUY\nSIZE: SMALL\nPRICE LIMIT: 0.02\nINVALIDATION: none\nEVIDENCE: flow sustained";
+
+    struct Stub(&'static str);
+
+    impl ModelSource for Stub {
+        fn complete(&self, _system: &str, _user: &str) -> Result<String, InferenceError> {
+            Ok(self.0.to_string())
+        }
+    }
+
+    fn req(free: u64, floor: u64, venue: EntryVenue) -> EntryRequest<'static> {
+        let live: &'static BTreeSet<[u8; 32]> = Box::leak(Box::new(BTreeSet::new()));
+        EntryRequest {
+            system_prompt: "SYSTEM",
+            user_prompt: "USER",
+            free_cash_lamports: free,
+            portfolio_deployable_lamports: free.saturating_sub(floor),
+            bankroll_floor_lamports: floor,
+            venue,
+            mint: MINT,
+            live_mints: live,
+            portfolio: PortfolioCap::enforced(3),
+            depth_lamports: Some(200_000_000_000),
+            max_own_impact_bps: 1_000,
+        }
+    }
+
+    /// The impact veto is the bound Rust keeps INSTEAD of a size clamp: the brain's size is
+    /// left standing and the trade is refused with a number a human can read.
+    #[test]
+    fn a_leg_that_moves_the_price_too_far_is_vetoed_never_resized() {
+        let mut l = DriftLedger::new();
+        let mut thin = req(2_000_000_000, 0, EntryVenue::Amm);
+        // FULL on AMM deploys 666,666,666 lamports; against a 1 SOL book that is 6,666 bp of
+        // our own impact, far past a 100 bp limit.
+        thin.depth_lamports = Some(1_000_000_000);
+        thin.max_own_impact_bps = 100;
+        assert_eq!(
+            decide_entry(&Stub(BUY_FULL), &thin, &mut l),
+            EntryAuthority::NoTrade(NoTradeReason::OwnImpact(ImpactVeto::TooLarge {
+                impact_bps: 6_666,
+                max_bps: 100,
+            }))
+        );
+        // NOT resized: the identical request against a deep book still deploys FULL, and SMALL
+        // still deploys SMALL — the veto never turned into a sizing rule.
+        let mut l2 = DriftLedger::new();
+        assert_eq!(
+            decide_entry(
+                &Stub(BUY_FULL),
+                &req(2_000_000_000, 0, EntryVenue::Amm),
+                &mut l2
+            ),
+            EntryAuthority::Buy {
+                tier: SizeTier::Full,
+                clip_lamports: 666_666_666
+            }
+        );
+        let mut l3 = DriftLedger::new();
+        assert_eq!(
+            decide_entry(
+                &Stub(BUY_SMALL),
+                &req(2_000_000_000, 0, EntryVenue::Amm),
+                &mut l3
+            ),
+            EntryAuthority::Buy {
+                tier: SizeTier::Small,
+                clip_lamports: 166_666_666
+            }
+        );
+    }
+
+    /// An absent depth is an absent observation. The trade is refused rather than assumed
+    /// safe, with a cause distinguishable from an excessive impact — the two call for
+    /// different repairs.
+    #[test]
+    fn an_unpriced_book_refuses_rather_than_claiming_safety() {
+        let mut l = DriftLedger::new();
+        let mut unpriced = req(2_000_000_000, 0, EntryVenue::Amm);
+        unpriced.depth_lamports = None;
+        assert_eq!(
+            decide_entry(&Stub(BUY_FULL), &unpriced, &mut l),
+            EntryAuthority::NoTrade(NoTradeReason::OwnImpact(ImpactVeto::DepthUnknown))
+        );
+        // The same trade against the same book, only priced, is allowed — so the refusal is
+        // about the missing observation and nothing else.
+        let mut l2 = DriftLedger::new();
+        assert!(matches!(
+            decide_entry(
+                &Stub(BUY_FULL),
+                &req(2_000_000_000, 0, EntryVenue::Amm),
+                &mut l2
+            ),
+            EntryAuthority::Buy { .. }
+        ));
     }
 }

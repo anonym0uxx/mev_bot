@@ -63,6 +63,7 @@ pub mod gate;
 pub mod hazard_scaffold;
 pub mod holder_concentration;
 pub mod holder_flow;
+pub mod impact_cap;
 pub mod journal_log;
 pub mod lane;
 pub mod live_status;
