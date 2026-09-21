@@ -62,3 +62,92 @@ fn saturates_instead_of_overflowing() {
     assert_eq!(got, u64::MAX);
     assert_eq!(got, reference(u64::MAX, 50_000, 4));
 }
+
+// ── E5: the market-anchored bid ─────────────────────────────────────────────────
+
+#[test]
+fn a_missing_market_bids_exactly_what_the_old_law_did() {
+    for (floor, cong, urg) in [
+        (5_000u64, 0u32, 0u8),
+        (5_000, 10_000, 0),
+        (5_000, 0, 2),
+        (200_000, 5_000, 1),
+    ] {
+        assert_eq!(
+            bid_per_send(floor, None, 7_500, cong, urg),
+            compute_tip(floor, cong, urg),
+            "no market signal must not change what we pay"
+        );
+    }
+}
+
+#[test]
+fn the_anchor_interpolates_between_the_reported_percentiles() {
+    let m = TipMarket {
+        p50: 10_000,
+        p75: 20_000,
+        p90: 60_000,
+    };
+    assert_eq!(observed_anchor(&m, 0), 10_000);
+    assert_eq!(observed_anchor(&m, 5_000), 10_000);
+    assert_eq!(observed_anchor(&m, 7_500), 20_000);
+    assert_eq!(observed_anchor(&m, 10_000), 60_000);
+    assert_eq!(observed_anchor(&m, 6_250), 15_000, "halfway p50 -> p75");
+    assert_eq!(observed_anchor(&m, 20_000), 60_000, "clamped at p90");
+}
+
+#[test]
+fn a_hot_market_raises_the_bid_and_a_cold_one_cannot_push_it_below_the_floor() {
+    let hot = TipMarket {
+        p50: 50_000,
+        p75: 80_000,
+        p90: 90_000,
+    };
+    assert_eq!(
+        bid_per_send(5_000, Some(&hot), 7_500, 0, 0),
+        80_000,
+        "p75 of the landed market"
+    );
+
+    let cold = TipMarket {
+        p50: 1,
+        p75: 2,
+        p90: 3,
+    };
+    assert_eq!(
+        bid_per_send(5_000, Some(&cold), 7_500, 0, 0),
+        5_000,
+        "under the venue floor nothing lands, however cheap the market looks"
+    );
+}
+
+#[test]
+fn a_stale_or_absurd_market_read_cannot_blow_the_bid_up() {
+    // A corrupt p75/p90 next to a sane median: the read is self-consistency checked
+    // against its own p50, so the absurd percentiles cannot become an absurd tip.
+    let wild = TipMarket {
+        p50: 5_000,
+        p75: u64::MAX,
+        p90: u64::MAX,
+    };
+    assert_eq!(
+        bid_per_send(5_000, Some(&wild), 10_000, 0, 0),
+        5_000 * MAX_ANCHOR_MULTIPLE,
+        "capped at 8x the observed median"
+    );
+    // ...and a hot-but-coherent market IS allowed above that: the cap is not 8x the floor.
+    let hot = TipMarket {
+        p50: 200_000,
+        p75: 400_000,
+        p90: 800_000,
+    };
+    // 9,000 bps is 60% of the way from p75 to p90: 400_000 + 0.6 * 400_000 = 640_000.
+    assert_eq!(bid_per_send(5_000, Some(&hot), 9_000, 0, 0), 640_000);
+    // A degenerate read (zero median) leaves the floor in force.
+    let empty = TipMarket {
+        p50: 0,
+        p75: 0,
+        p90: 0,
+    };
+    assert_eq!(bid_per_send(5_000, Some(&empty), 7_500, 0, 0), 5_000);
+}

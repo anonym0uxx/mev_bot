@@ -47,7 +47,7 @@
 use crate::ex_route_policy::{
     route_ev_lamports_with_sends, route_health_is_measured, Route, RouteCtx,
 };
-use crate::ex_tip_compute::compute_tip;
+use crate::ex_tip_compute::{bid_per_send, compute_tip, TipMarket};
 
 /// One whole unit in basis points (`1.0 == 10_000 bps`).
 pub const BPS_ONE: u64 = 10_000;
@@ -271,6 +271,72 @@ pub fn decide(ctx: &SenderCtx) -> SenderDecision {
         total_tip_lamports: swqos_total,
         tip_budget_lamports: budget,
         economic: swqos_total <= budget,
+    }
+}
+
+/// Default share of the landed population a bid intends to outbid: p75.
+///
+/// Entries want to be *in* the block ahead of the crowd without paying the p90 tail; exits are
+/// priced at [`EXIT_TARGET_WIN_BPS`] because a stranded sell costs more than the tip that lands it.
+pub const DEFAULT_TARGET_WIN_BPS: u32 = 7_500;
+
+/// Win rate for an exit. Higher than an entry: adverse selection on the way out is unbounded
+/// (the position is already long), while the cost of the extra tip is bounded by the size.
+pub const EXIT_TARGET_WIN_BPS: u32 = 9_000;
+
+/// One tier's bid, with the observed market applied.
+///
+/// See [`bid_per_send`]: the tier minimum is a FLOOR, the market anchor raises it toward the
+/// requested win rate, and congestion/urgency shape the result. Market `None` is exactly the
+/// pre-existing behaviour.
+pub fn bid_for_tier(
+    tier: SenderTier,
+    ctx: &SenderCtx,
+    market: Option<&TipMarket>,
+    target_win_bps: u32,
+) -> (u64, u64) {
+    let floor = match tier {
+        SenderTier::SwqosOnly => ctx.swqos_min_tip_lamports,
+        SenderTier::Max => ctx.max_min_tip_lamports,
+    };
+    let per_send = bid_per_send(
+        floor,
+        market,
+        target_win_bps,
+        ctx.congestion_bps,
+        ctx.urgency,
+    );
+    let total = per_send.saturating_mul(u64::from(sends_or_one(ctx.expected_sends)));
+    (per_send, total)
+}
+
+/// Price the send for the LIVE STACK: Helius Sender, SWQoS path only.
+///
+/// This bot does not use Jito and submits no bundles, so there is no auction to win and the
+/// **tip is a protocol floor** (`swqos_min_tip_lamports`), while the **competitive variable is
+/// the priority fee** — measured live: landed pump.fun transactions pay a priority fee and carry
+/// no Jito tip payment instruction at all. What the market can still move is *how far above the
+/// floor* we bid when the market is hot, which is what `market` supplies.
+///
+/// [`SenderTier::Max`] is never selected here: it prices a Jito auction leg this stack does not
+/// use, and paying its 0.001 SOL floor for a route we do not take would be pure over-tipping.
+/// The economic gate is unchanged — if the market's price exceeds the edge budget, this returns
+/// `economic == false` and the caller must DECLINE rather than pay less and miss.
+pub fn decide_sender_only(
+    ctx: &SenderCtx,
+    market: Option<&TipMarket>,
+    target_win_bps: u32,
+) -> SenderDecision {
+    let budget = tip_budget_lamports(ctx);
+    let sends = sends_or_one(ctx.expected_sends);
+    let (per_send, total) = bid_for_tier(SenderTier::SwqosOnly, ctx, market, target_win_bps);
+    SenderDecision {
+        tier: SenderTier::SwqosOnly,
+        tip_lamports_per_send: per_send,
+        expected_sends: sends,
+        total_tip_lamports: total,
+        tip_budget_lamports: budget,
+        economic: total <= budget,
     }
 }
 

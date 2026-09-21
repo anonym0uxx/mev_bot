@@ -6,6 +6,7 @@
 
 use pump_quant_execution::ex_route_policy::{Route, RouteCtx};
 use pump_quant_execution::ex_sender_route::*;
+use pump_quant_execution::ex_tip_compute::TipMarket;
 
 /// 0.1 SOL — the position size implied by this bot's own ATA-rent finding
 /// (0.00203928 SOL of rent reading as 203 bps).
@@ -564,4 +565,69 @@ fn fix_1_plan_comparison_charges_both_sides_for_the_ladder() {
     // Jito: 3 x 1_000_000 tip. Sender Max: 3 x 200_000. Same landing profile.
     assert_eq!(out.sender_ev_lamports - out.legacy_ev_lamports, 2_400_000);
     assert!(matches!(out.plan, SubmitPlan::Sender { .. }));
+}
+
+// ── E5: the LIVE STACK is Helius Sender, SWQoS only — no Jito, no bundles ───────
+
+#[test]
+fn the_sender_only_path_never_prices_the_jito_auction_tier() {
+    let c = ctx(SIZE_1_SOL, 200, 1);
+    let d = decide_sender_only(&c, None, DEFAULT_TARGET_WIN_BPS);
+    assert_eq!(d.tier, SenderTier::SwqosOnly);
+    assert_eq!(
+        d.tip_lamports_per_send,
+        total_tip_for_tier(SenderTier::SwqosOnly, &c).0,
+        "and with no market it agrees with the SWQoS leg of the generic decision"
+    );
+}
+
+#[test]
+fn a_market_that_outruns_the_edge_declines_instead_of_underbidding() {
+    // 1 SOL at 200 bps = 20_000_000 lamports of edge; the 10% tip budget is 2_000_000.
+    let c = ctx(SIZE_1_SOL, 200, 1);
+    let hot = TipMarket {
+        p50: 9_000_000,
+        p75: 9_000_000,
+        p90: 60_000_000,
+    };
+    let d = decide_sender_only(&c, Some(&hot), DEFAULT_TARGET_WIN_BPS);
+    assert!(d.total_tip_lamports > d.tip_budget_lamports);
+    assert!(
+        !d.economic,
+        "the market price exceeds the edge budget: DECLINE"
+    );
+    assert!(
+        d.tip_lamports_per_send > c.swqos_min_tip_lamports,
+        "and it must not quietly pay the floor to look cheap"
+    );
+}
+
+#[test]
+fn a_warm_market_raises_the_bid_and_stays_economic() {
+    let c = ctx(SIZE_1_SOL, 200, 1);
+    let warm = TipMarket {
+        p50: 30_000,
+        p75: 60_000,
+        p90: 90_000,
+    };
+    let d = decide_sender_only(&c, Some(&warm), DEFAULT_TARGET_WIN_BPS);
+    assert!(d.economic, "60k against a 2M budget");
+    assert_eq!(d.tip_lamports_per_send, 60_000);
+    assert!(d.tip_lamports_per_send > c.swqos_min_tip_lamports);
+}
+
+#[test]
+fn exits_bid_higher_than_entries_on_the_same_market() {
+    let c = ctx(SIZE_1_SOL, 200, 1);
+    let m = TipMarket {
+        p50: 20_000,
+        p75: 40_000,
+        p90: 100_000,
+    };
+    let entry = decide_sender_only(&c, Some(&m), DEFAULT_TARGET_WIN_BPS);
+    let exit = decide_sender_only(&c, Some(&m), EXIT_TARGET_WIN_BPS);
+    assert!(exit.tip_lamports_per_send >= entry.tip_lamports_per_send);
+    // 9,000 bps is 60% of the way from p75 to p90: 40_000 + 0.6 * 60_000 = 76_000.
+    assert_eq!(exit.tip_lamports_per_send, 76_000);
+    assert_eq!(entry.tip_lamports_per_send, 40_000);
 }
