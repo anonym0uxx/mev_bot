@@ -11,10 +11,13 @@
 //!    `price_sol_per_raw` ALREADY holds the corpus's `price_lamports_per_raw_token` (the ratio of the
 //!    tape's two legs). The ledger field's NAME is the misnomer, not the value. Fix: drop the ×1e9,
 //!    and rename the ledger field.
-//! 2. **`age_s` BASIS — REAL.** corpus `660.0`, ours `664.291`. The corpus ages from the mint's
-//!    LAUNCH; the ledger ages from its first OBSERVED TRADE, so the tape's leading edge shows up as
-//!    age error. Fix: feed the ledger `note_creation` with the launch time (the tape dir carries
-//!    `launches.jsonl`) and age from that.
+//! 2. **`age_s` BASIS — REAL, and my first reading of it was WRONG.** corpus `660.0`, ours `664.291`.
+//!    I first said the corpus ages from the mint's LAUNCH. It does not: `build_states_v2` line 240 is
+//!    `age_s = (t_dec - tt[0]) / 1000.0`, the first trade in ITS OWN filtered run — the same basis the
+//!    ledger uses. So the 4-second gap is not a basis difference at all: our trade SET differs.
+//!    Candidate causes, in order: the corpus sorts `np.lexsort((slot, tms, code_inv))` (time, then
+//!    SLOT) while the fixture sorts on time alone; and the corpus's tape may be a different file from
+//!    `renormalized_v7` (check `build_states_v2`'s input path before believing either).
 //! 3. **BUY VOLUME — REAL.** `sell_volume_lamports` matches EXACTLY (`24415268927`) while
 //!    `buy_volume_lamports` is 137× too large (`8.14e12` vs `5.91e10`). Sells agree and buys do not,
 //!    so this is not a units question: it is per-side, which points at the leg a BUY contributes
