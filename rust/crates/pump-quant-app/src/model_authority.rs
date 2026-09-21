@@ -37,6 +37,9 @@ use pump_quant_inference::{
     resolve_clip_at_fraction_bps, EntryVenue, InferenceClient, InferenceError,
 };
 
+use crate::freshness::{
+    check_freshness, DecisionClock, StalenessVeto, CHAMPION_MAX_DECISION_AGE_MS,
+};
 use crate::portfolio::{Admission, AdmissionRefusal, PortfolioCap};
 
 /// Anything that can answer a completion request — the live llama-server client, or a
@@ -87,6 +90,12 @@ pub struct EntryRequest<'a> {
     /// The own-impact limit in force, bp. Exceeding it VETOES the trade with a named cause; it
     /// never quietly resizes it, because the size is the brain's call and not the bound's.
     pub max_own_impact_bps: u64,
+    /// When the prompt's snapshot was rendered, and when this verdict is being resolved. Both are
+    /// SUPPLIED, never sampled here, so paper and replay stay deterministic — see
+    /// [`crate::freshness`].
+    pub clock: DecisionClock,
+    /// The freshness limit in force, milliseconds.
+    pub max_decision_age_ms: u64,
 }
 
 /// What the authority concluded. `Buy` is the only variant that may move capital.
@@ -131,6 +140,10 @@ pub enum NoTradeReason {
     /// be priced at all ([`crate::impact_cap::ImpactVeto`]). This is what replaces a
     /// deterministic size clamp: the brain keeps its size and is told the trade is unsafe.
     OwnImpact(crate::impact_cap::ImpactVeto),
+    /// The verdict arrived too late to apply, or its clock was incoherent
+    /// ([`crate::freshness::StalenessVeto`]). A refusal, not a repair: the safe direction on the
+    /// entry path is no trade, so nothing is silently re-aged or applied anyway.
+    StaleDecision(StalenessVeto),
 }
 
 /// Ask the model, then resolve and veto. The single entry point of R3.
@@ -149,6 +162,13 @@ pub fn decide_entry<S: ModelSource + ?Sized>(
         // answer — so this is terminal for the decision, not a loop.
         Err(_) => return EntryAuthority::NoTrade(NoTradeReason::ModelUnreachable),
     };
+
+    // Freshness BEFORE the contract and before any capital question: a verdict that arrived too
+    // late is not a decision about the tape in front of us, whatever its contents say. Checked
+    // first so the cause a human reads is the lateness, not a downstream symptom of it.
+    if let Err(veto) = check_freshness(req.clock, req.max_decision_age_ms) {
+        return EntryAuthority::NoTrade(NoTradeReason::StaleDecision(veto));
+    }
 
     let decision: Decision = match parse_decision_payload(&completion) {
         Ok(d) => d,
@@ -292,13 +312,20 @@ mod tests {
             // impact veto; the veto has its own module below.
             depth_lamports: Some(200_000_000_000),
             max_own_impact_bps: 1_000,
+            // Fresh by construction: these tests exercise the sizing/impact law, and a stale
+            // clock would refuse before reaching it. The staleness veto has its own tests.
+            clock: DecisionClock {
+                decided_at_ms: 1_000,
+                resolved_at_ms: 1_000,
+            },
+            max_decision_age_ms: CHAMPION_MAX_DECISION_AGE_MS,
             live_mints: no_live(),
             portfolio: PortfolioCap::enforced(3),
         }
     }
 
     /// The common case in these tests: an AMM candidate (the ruled FULL venue).
-    fn amm(free: u64, floor: u64) -> EntryRequest<'static> {
+    pub(super) fn amm(free: u64, floor: u64) -> EntryRequest<'static> {
         req(free, floor, EntryVenue::Amm)
     }
 
@@ -627,6 +654,12 @@ pub struct ManagementRequest<'a> {
     pub system_prompt: &'a str,
     /// The rendered management prompt for this position, as-of-decision.
     pub user_prompt: &'a str,
+    /// When the prompt's snapshot was rendered, and when this verdict is being resolved. Supplied,
+    /// never sampled — see [`crate::freshness`]. A stale EXIT is the expensive one: it holds
+    /// inventory past the point the brain's own invalidation line called the premise dead.
+    pub clock: DecisionClock,
+    /// The freshness limit in force, milliseconds.
+    pub max_decision_age_ms: u64,
 }
 
 /// What the authority concluded about a held position.
@@ -669,6 +702,10 @@ pub enum ManagementNoAction {
     OffContract(OffContract),
     /// The management prompt was answered with an entry verb (`BUY`/`WATCH`/`SKIP`).
     EntryVerbOnManagementPrompt,
+    /// The verdict arrived too late to apply, or its clock was incoherent
+    /// ([`crate::freshness::StalenessVeto`]). The caller HOLDS — the same fail-safe direction as a
+    /// parse failure, because cutting on a late message would be Rust inventing a decision.
+    StaleDecision(StalenessVeto),
 }
 
 /// Ask the model what to do with a position we already hold.
@@ -693,6 +730,13 @@ pub fn decide_management<S: ModelSource + ?Sized>(
         Ok(c) => c,
         Err(_) => return ManagementAuthority::NoAction(ManagementNoAction::ModelUnreachable),
     };
+
+    // The same freshness law as the entry path, and it matters more here: a late EXIT holds
+    // inventory past the premise's death, and a late ADD adds to a position on evidence that has
+    // already expired. The refusal direction is HOLD — never a manufactured cut.
+    if let Err(veto) = check_freshness(req.clock, req.max_decision_age_ms) {
+        return ManagementAuthority::NoAction(ManagementNoAction::StaleDecision(veto));
+    }
 
     let decision: Decision = match parse_decision_payload(&completion) {
         Ok(d) => d,
@@ -753,10 +797,15 @@ mod management_tests {
     use super::tests::*;
     use super::*;
 
-    fn mreq() -> ManagementRequest<'static> {
+    pub(super) fn mreq() -> ManagementRequest<'static> {
         ManagementRequest {
             system_prompt: "SYSTEM",
             user_prompt: "USER",
+            clock: DecisionClock {
+                decided_at_ms: 1_000,
+                resolved_at_ms: 1_000,
+            },
+            max_decision_age_ms: CHAMPION_MAX_DECISION_AGE_MS,
         }
     }
 
@@ -852,6 +901,13 @@ mod impact_veto_tests {
             portfolio: PortfolioCap::enforced(3),
             depth_lamports: Some(200_000_000_000),
             max_own_impact_bps: 1_000,
+            // Fresh by construction: these tests exercise the sizing/impact law, and a stale
+            // clock would refuse before reaching it. The staleness veto has its own tests.
+            clock: DecisionClock {
+                decided_at_ms: 1_000,
+                resolved_at_ms: 1_000,
+            },
+            max_decision_age_ms: CHAMPION_MAX_DECISION_AGE_MS,
         }
     }
 
@@ -923,5 +979,102 @@ mod impact_veto_tests {
             ),
             EntryAuthority::Buy { .. }
         ));
+    }
+}
+
+#[cfg(test)]
+mod freshness_tests {
+    //! F3, WIRED: a verdict bound to the clock it was made against, on both paths.
+
+    use super::management_tests::mreq;
+    use super::tests::*;
+    use super::*;
+    use crate::freshness::CHAMPION_MAX_DECISION_AGE_MS;
+
+    fn stale_clock() -> DecisionClock {
+        DecisionClock {
+            decided_at_ms: 1_000,
+            // Past the champion limit, and past the corpus's own `last_trade_age_s > 3.0`
+            // invalidation horizon.
+            resolved_at_ms: 1_000 + CHAMPION_MAX_DECISION_AGE_MS as i64 + 1,
+        }
+    }
+
+    /// A late ENTRY is no trade — not a stale trade.
+    #[test]
+    fn a_late_entry_verdict_is_refused_rather_than_applied() {
+        let mut l = DriftLedger::new();
+        let mut r = amm(2_000_000_000, 0);
+        r.clock = stale_clock();
+        assert_eq!(
+            decide_entry(&Stub(BUY_FULL), &r, &mut l),
+            EntryAuthority::NoTrade(NoTradeReason::StaleDecision(StalenessVeto::Stale {
+                age_ms: CHAMPION_MAX_DECISION_AGE_MS + 1,
+                max_ms: CHAMPION_MAX_DECISION_AGE_MS,
+            }))
+        );
+        // The same verdict with a fresh clock still buys: the refusal is about lateness only.
+        let mut l2 = DriftLedger::new();
+        assert!(matches!(
+            decide_entry(&Stub(BUY_FULL), &amm(2_000_000_000, 0), &mut l2),
+            EntryAuthority::Buy { .. }
+        ));
+    }
+
+    /// A late MANAGEMENT verdict HOLDS. Cutting would be Rust inventing a decision the brain did
+    /// not make; holding keeps the position and leaves every safety trigger armed.
+    #[test]
+    fn a_late_management_verdict_holds_rather_than_cutting() {
+        let mut l = DriftLedger::new();
+        let mut r = mreq();
+        r.clock = stale_clock();
+        // The completion asks for an EXIT; the refusal must still be a NoAction(Hold).
+        assert_eq!(
+            decide_management(&Stub("DECISION: EXIT\n"), &r, &mut l),
+            ManagementAuthority::NoAction(ManagementNoAction::StaleDecision(
+                StalenessVeto::Stale {
+                    age_ms: CHAMPION_MAX_DECISION_AGE_MS + 1,
+                    max_ms: CHAMPION_MAX_DECISION_AGE_MS,
+                }
+            ))
+        );
+        // A fresh clock lets the same EXIT through.
+        let mut l2 = DriftLedger::new();
+        assert_eq!(
+            decide_management(&Stub("DECISION: EXIT\n"), &mreq(), &mut l2),
+            ManagementAuthority::CloseAll
+        );
+    }
+
+    /// An incoherent clock fails closed on both paths — a backwards clock must not read as the
+    /// freshest possible decision.
+    #[test]
+    fn a_backwards_clock_fails_closed_on_both_paths() {
+        let backwards = DecisionClock {
+            decided_at_ms: 2_000,
+            resolved_at_ms: 1_000,
+        };
+        let mut l = DriftLedger::new();
+        let mut r = amm(2_000_000_000, 0);
+        r.clock = backwards;
+        assert_eq!(
+            decide_entry(&Stub(BUY_FULL), &r, &mut l),
+            EntryAuthority::NoTrade(NoTradeReason::StaleDecision(StalenessVeto::Backwards {
+                decided_at_ms: 2_000,
+                resolved_at_ms: 1_000,
+            }))
+        );
+        let mut l2 = DriftLedger::new();
+        let mut m = mreq();
+        m.clock = backwards;
+        assert_eq!(
+            decide_management(&Stub("DECISION: EXIT\n"), &m, &mut l2),
+            ManagementAuthority::NoAction(ManagementNoAction::StaleDecision(
+                StalenessVeto::Backwards {
+                    decided_at_ms: 2_000,
+                    resolved_at_ms: 1_000,
+                }
+            ))
+        );
     }
 }
