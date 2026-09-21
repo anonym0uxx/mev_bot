@@ -64,17 +64,37 @@
 //!    already put through `%g` reproduces it byte for byte.
 //! 6. **CONCENTRATION WINDOW** — correct as built (`build_states_v2`: the last 2000 trades); the
 //!    apparent mismatch was 2's band changing which trades populate it.
+//! 7. **`round(x, nd)` — REAL, and the one that survived every earlier test.** The ledger's
+//!    ties-to-even rounding was `(x * 10^nd).round_ties_even() / 10^nd`, which rounds an
+//!    ALREADY-rounded product: `3.865 * 100` is exactly `386.5`, so it read as a tie and went to
+//!    even — `3.86` — while CPython's `round(3.865, 2)` is `3.87`, because the exact value of that
+//!    double is above the tie. One real prompt line (`last_trade_age_s`), fixed in
+//!    `fmt::round_half_even_nd` by carrying the multiplication's exact residual (`mul_add` + a
+//!    two-sum comparison); the duplicated implementation in `bundle_assemble::py_round` now
+//!    delegates to it.
 //!
 //! Test-side placeholders (NOT defects, and excluded from the verdict): the fixture supplies
-//! `CurveState::Absent` / `AmmState::Absent` / an empty `DevHistoryDecision`, so the CURVE / AMM /
-//! DEV blocks are not compared — they have no live producer yet (C3/C4). `curve_present` used to be
-//! collateral of that placeholder; since finding 3 it is not.
+//! `CurveState::Absent` / `AmmState::Absent` and a zeroed `FlowState`, so the CURVE STATE / AMM
+//! POOL STATE / PRICE UNITS / LIVE FLOW STATE lines are not compared — the curve/AMM annotation has
+//!    no live producer yet (C3), and although `FlowReducer` serves the flow features, nothing has
+//!    wired it into the assembler. `curve_present` used to be collateral of the curve placeholder;
+//!    since finding 3 it is not.
+//!
+//! THE DEV HISTORY LINE **IS** GRADED, from the C4 producer (`creator_history::CreatorHistory`),
+//! whose launch table the fixture carries: 12/12 rows, including one creator with 8 launches whose
+//! prior-launch count is 6. Two dialects of that line exist in the corpus and only one belongs to
+//! this family — `creator_known=1` (decision rows, `build_c9.py`) vs `creator_known=True …
+//! bundle_wallets=… wash_ratio=…` (utility/management rows, `inject_enrichment.py`). The fixture
+//! takes the DECISION family's row for each (mint, t_dec), because that is the family the live
+//! entry path renders; do not "unify" the renderer on the other dialect without checking which
+//! family is being served.
 //!
 //! MCAP IS AN INPUT, and that is stated rather than hidden: trades cannot see supply, so
 //! `mcap_sol_at_t`/`mcap_source` are taken from the row's own rendered line and fed in. Every other
 //! field on the ENRICHED line is DERIVED here from the tape.
 
 use pump_quant_app::bundle_assemble::{assemble, BundleInputs};
+use pump_quant_app::creator_history::CreatorHistory;
 use pump_quant_app::enrichment::{enrich, EnrichmentTrade};
 use pump_quant_app::state_ledger::{StateLedger, StateTrade, VenueLabel};
 use pump_quant_proposal::decision::{AmmState, CurveState, DevHistoryDecision};
@@ -144,7 +164,15 @@ enum Unserved {
 /// `band` is the corpus's whole-run band median when the reading is the corpus-side one: a trade
 /// whose price falls outside `[median/10, median*10]` is dropped BEFORE ingest, reproducing the
 /// corpus's own trade set. `None` is the causal reading — every trade the tape carries.
-fn render_reading(case: &Value, band: Option<f64>) -> Result<String, Unserved> {
+///
+/// `dev` is the C4 producer's verdict for this mint ([`CreatorHistory::dev_history`]) — the
+/// `DEV HISTORY:` inputs, which come from the launch table rather than from trades, so they are the
+/// same in both readings.
+fn render_reading(
+    case: &Value,
+    band: Option<f64>,
+    dev: DevHistoryDecision,
+) -> Result<String, Unserved> {
     let mint = mint_key(case["mint"].as_str().expect("mint"));
     let t_dec = case["t_dec_ms"].as_i64().expect("t_dec_ms");
     let trades = case["trades"].as_array().expect("trades");
@@ -252,10 +280,7 @@ fn render_reading(case: &Value, band: Option<f64>) -> Result<String, Unserved> {
         amm: AmmState::Absent {
             reason: "c5".to_string(),
         },
-        dev: DevHistoryDecision {
-            creator_past_launches: None,
-            creator_known: 0,
-        },
+        dev,
         size_depth_sol: None,
         size_amm: false,
     })
@@ -274,8 +299,51 @@ fn line_key(want: &str) -> &str {
     }
 }
 
+/// The six STATE lines of the decision prompt — the block whose producer (`build_states_v2`) bands
+/// its tape. Every other graded line (ENRICHED, DEV HISTORY) comes from a producer that does not.
+fn is_state_line(want: &str) -> bool {
+    [
+        "t_dec_ms=",
+        "venue=",
+        "n_prior_trades=",
+        "price_lamports_per_raw_token=",
+        "buy_volume_lamports=",
+        "top1_trader_share=",
+    ]
+    .iter()
+    .any(|p| want.starts_with(p))
+}
+
 fn find_key<'a>(rendered: &'a str, key: &str) -> Option<&'a str> {
     rendered.lines().find(|l| l.starts_with(key))
+}
+
+/// The creator launch registry, built from the fixture's own launch table (the corpus's
+/// `launches.jsonl` rows for the creators of these mints). `by_creator` is not shipped: the
+/// registry derives each creator's sorted launch times from the launches themselves, exactly as
+/// the corpus's `prior_launches` bisect does.
+fn creator_history(f: &Value) -> CreatorHistory {
+    let mut history = CreatorHistory::new();
+    for row in f["launches"].as_array().expect("launches") {
+        let mint = row[0].as_str().expect("mint");
+        let creator = row[1].as_str().expect("creator");
+        let launch_ms = row[2].as_i64().expect("launch_unix_ms");
+        assert!(
+            history.observe(mint_key(mint), creator_id(creator), launch_ms),
+            "the fixture's launch table is bounded by MAX_TRACKED_LAUNCHES"
+        );
+    }
+    history
+}
+
+/// A stable per-creator id: any injective map works, the creator address is only a key.
+fn creator_id(base58: &str) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in base58.bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
 }
 
 #[test]
@@ -299,14 +367,18 @@ fn derived_blocks_render_identically_to_the_corpus_over_the_corpus_tape() {
     let mut corpus_failures: Vec<String> = Vec::new();
     let mut causal_failures: Vec<String> = Vec::new();
 
+    let history = creator_history(&f);
     for (i, case) in cases.iter().enumerate() {
+        let mint = mint_key(case["mint"].as_str().expect("mint"));
+        // The C4 producer's verdict for this mint, from the launch table (not from trades).
+        let dev = history.dev_history(&mint);
         let band = case["band"]["median_lamports_per_raw_token"].as_f64();
         let band_applies = case["band"]["applies"].as_bool().unwrap_or(false);
         let banded_out = case["band"]["prefix_trades_banded_out"]
             .as_u64()
             .unwrap_or(0);
 
-        let causal = match render_reading(case, None) {
+        let causal = match render_reading(case, None, dev) {
             Ok(r) => r,
             Err(u) => {
                 skipped += 1;
@@ -322,7 +394,7 @@ fn derived_blocks_render_identically_to_the_corpus_over_the_corpus_tape() {
         // finite prices); below that the corpus's trade set IS the causal one.
         let corpus_side = if band_applies {
             band_cases += 1;
-            match render_reading(case, band) {
+            match render_reading(case, band, dev) {
                 Ok(r) => r,
                 Err(u) => {
                     corpus_failures.push(format!(
@@ -347,21 +419,26 @@ fn derived_blocks_render_identically_to_the_corpus_over_the_corpus_tape() {
                 .as_str()
                 .expect("enriched line"),
         );
+        expected.push(
+            case["expected_dev_line"]
+                .as_str()
+                .expect("expected_dev_line — the C4 producer's line"),
+        );
 
         let mut case_failures = 0usize;
         for want in expected {
             let key = line_key(want);
             // TWO PRODUCERS, TWO TRADE SETS. The corpus's STATE block comes from
-            // `build_states_v2` (which bands) while the ENRICHED block comes from
-            // `build_c9_enrichment_full` (which does NOT — it reads the tape prefix directly). The
-            // prompt is the join of the two, so each block is graded against the reading that
-            // reproduces its own producer.
+            // `build_states_v2` (which bands) while the ENRICHED and DEV HISTORY lines come from
+            // `build_c9_enrichment_full` (which does NOT — it reads the tape prefix directly, and the
+            // dev line reads the launch table). The prompt is the join, so each block is graded
+            // against the reading that reproduces its own producer.
             let causal_line = find_key(&causal, key);
             let corpus_line = find_key(&corpus_side, key);
-            let graded_line = if want.starts_with("ENRICHED CANDIDATE STATE") {
-                causal_line
-            } else {
+            let graded_line = if is_state_line(want) {
                 corpus_line
+            } else {
+                causal_line
             };
             if graded_line != Some(want) {
                 case_failures += 1;
@@ -375,7 +452,7 @@ fn derived_blocks_render_identically_to_the_corpus_over_the_corpus_tape() {
             // The causal reading may differ on a STATE line — but ONLY where the band itself moves
             // that line. If the banded and causal readings agree and the corpus does not, the
             // divergence has another cause and this test must fail on it.
-            if !want.starts_with("ENRICHED CANDIDATE STATE") && causal_line != Some(want) {
+            if is_state_line(want) && causal_line != Some(want) {
                 if causal_line == corpus_line {
                     case_failures += 1;
                     causal_failures.push(format!(
