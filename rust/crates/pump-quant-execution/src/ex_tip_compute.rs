@@ -28,6 +28,8 @@
 //! - §22: integer basis-point math only.
 //! - Overflow: intermediates are `u128`; the result is saturated back to `u64`.
 
+use std::collections::VecDeque;
+
 /// Basis-point premium added per urgency level. Urgency `u` multiplies the tip
 /// by `1 + u * 0.5` (each level adds 50%), mirroring the steep priority-fee
 /// growth of the legacy escalation ladder.
@@ -74,6 +76,108 @@ pub fn observed_anchor(market: &TipMarket, target_win_bps: u32) -> u64 {
     }
     let span = market.p90.saturating_sub(market.p75);
     market.p75 + (span * u64::from(t - 7_500) / 2_500)
+}
+
+/// Minimum samples before a read counts as a MARKET.
+///
+/// A one- or two-slot window is noise, and a bid anchored to noise is precisely the
+/// over/under-tipping this policy exists to avoid. A thin read returns `None`, and the caller
+/// keeps the venue floor — never a fabricated market.
+pub const MIN_MARKET_SAMPLES: usize = 8;
+
+impl TipMarket {
+    /// Build the observed market from fee samples.
+    ///
+    /// Zero-fee samples are **ignored**: `getRecentPrioritizationFees` returns one entry per slot,
+    /// and a slot with no fee is *no observation* (nothing needed to pay), not a price of zero.
+    /// Counting them makes every read inert — measured live on mainnet: the global query returned
+    /// 150 samples with **0** nonzero, and the pump.fun program **2 of 150** — and an inert anchor
+    /// is a bid that never leaves the venue floor.
+    ///
+    /// `None` (fewer than [`MIN_MARKET_SAMPLES`] PAID samples) means "no market signal", which is
+    /// the pre-existing behaviour: the venue floor governs.
+    #[must_use]
+    pub fn from_fee_samples(samples: &[u64]) -> Option<TipMarket> {
+        let mut xs: Vec<u64> = samples.iter().copied().filter(|f| *f > 0).collect();
+        if xs.len() < MIN_MARKET_SAMPLES {
+            return None;
+        }
+        xs.sort_unstable();
+        Some(TipMarket {
+            p50: percentile_bps(&xs, 5_000),
+            p75: percentile_bps(&xs, 7_500),
+            p90: percentile_bps(&xs, 9_000),
+        })
+    }
+}
+
+/// A rolling window of **landed** fee samples — the producer that matters for this venue.
+///
+/// The per-slot RPC read is thin (measured: 2 paid samples in 150 slots for pump.fun), so the
+/// market worth anchoring to is built from the transactions the stream actually delivers. This is
+/// the bounded accumulator for that feed. It is pure and window-bounded by construction, so the
+/// policy can be tested without a stream and the memory cost cannot grow with uptime.
+#[derive(Debug, Clone)]
+pub struct TipMarketWindow {
+    samples: VecDeque<u64>,
+    capacity: usize,
+}
+
+impl TipMarketWindow {
+    /// Samples kept before the oldest is evicted. 512 covers >3 minutes of a busy venue at one
+    /// sample per landed tx — long enough to be a market, short enough to be *current*.
+    pub const DEFAULT_CAPACITY: usize = 512;
+
+    /// New window. A zero capacity is promoted to 1 (a window that keeps nothing is not a window).
+    #[must_use]
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            samples: VecDeque::new(),
+            capacity: capacity.max(1),
+        }
+    }
+
+    /// Record one LANDED fee. Zero is dropped for the same reason [`TipMarket::from_fee_samples`]
+    /// drops it: it is not an observation of price.
+    pub fn record(&mut self, fee_lamports: u64) {
+        if fee_lamports == 0 {
+            return;
+        }
+        if self.samples.len() == self.capacity {
+            self.samples.pop_front();
+        }
+        self.samples.push_back(fee_lamports);
+    }
+
+    /// Paid samples currently held.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.samples.len()
+    }
+
+    /// Whether the window holds no paid samples at all.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.samples.is_empty()
+    }
+
+    /// The market implied by the window, or `None` while it is still too thin to be one.
+    #[must_use]
+    pub fn market(&self) -> Option<TipMarket> {
+        let samples: Vec<u64> = self.samples.iter().copied().collect();
+        TipMarket::from_fee_samples(&samples)
+    }
+}
+
+/// Nearest-rank percentile over a SORTED slice, expressed in basis points (`10_000` == p100).
+fn percentile_bps(sorted: &[u64], bps: u32) -> u64 {
+    debug_assert!(!sorted.is_empty());
+    let n = sorted.len() as u64;
+    // ceil(bps * n / 10_000) in the range 1..=n, computed with integers only (§22).
+    let rank = (u64::from(bps.min(BPS_ONE as u32)) * n)
+        .div_ceil(BPS_ONE)
+        .max(1);
+    sorted[(rank - 1) as usize]
 }
 
 /// The tip to bid for ONE send: the tier floor raised to the observed market, then shaped by

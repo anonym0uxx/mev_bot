@@ -38,6 +38,7 @@ use pump_quant_execution::ex_live_io_traits::{
     LiveBlockhash, LiveCurveState, LiveSigner, LiveStateFetcher, LiveSubmitter, SignError,
     StateFetchError, SubmitError,
 };
+use pump_quant_execution::ex_tip_compute::TipMarket;
 
 use pq_stream_capture::rpc::{Reply, Transport, UreqTransport};
 use pq_stream_capture::sender::{Accepted, SenderClient, SenderEndpoint, SenderError};
@@ -409,6 +410,26 @@ impl RpcLiveStateFetcher {
     /// Check if shutdown has been requested.
     pub fn is_shutdown(&self) -> bool {
         self.shutdown.load(Ordering::SeqCst)
+    }
+
+    /// E5: read the observed inclusion market for `accounts` (an empty slice asks for the global
+    /// market) via `getRecentPrioritizationFees`.
+    ///
+    /// This is the producer the tip leaf was missing: `decide_sender_only` anchors its bid to
+    /// these percentiles. `None` on any transport or shape failure, and on a read too thin to be
+    /// a market — the caller then keeps the venue floor rather than inventing a market.
+    pub fn fetch_tip_market(&self, accounts: &[&str]) -> Option<TipMarket> {
+        let quoted = accounts
+            .iter()
+            .map(|a| format!("\"{a}\""))
+            .collect::<Vec<_>>()
+            .join(",");
+        let body = format!(
+            r#"{{"id":1,"jsonrpc":"2.0","method":"getRecentPrioritizationFees","params":[[{quoted}]]}}"#
+        );
+        let url = self.rpc_url.clone();
+        let reply = self.transport.post_json(&url, &body).ok()?;
+        tip_market_from_response(&reply.body)
     }
 
     /// C1: publish reserves decoded from the live account stream into the curve
@@ -843,6 +864,35 @@ fn extract_slot_from_response(body: &str) -> Option<u64> {
         .find(|c: char| !c.is_ascii_digit())
         .unwrap_or(after.len());
     after[..end].parse::<u64>().ok()
+}
+
+/// E5: extract every `"prioritizationFee":<int>` from a `getRecentPrioritizationFees` response.
+///
+/// One entry per recent slot for the accounts queried — the priority fee that actually LANDED in
+/// that slot. Raw samples only; the percentiles are `TipMarket::from_fee_samples` (one law, one
+/// place, and the tests that pin the bid pin this feed too).
+pub fn extract_prioritization_fees(body: &str) -> Vec<u64> {
+    let key = "\"prioritizationFee\"";
+    let mut out = Vec::new();
+    let mut rest = body;
+    while let Some(start) = rest.find(key) {
+        rest = &rest[start + key.len()..];
+        let Some(colon) = rest.find(':') else { break };
+        let after = rest[colon + 1..].trim_start();
+        let end = after
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(after.len());
+        if let Ok(v) = after[..end].parse::<u64>() {
+            out.push(v);
+        }
+    }
+    out
+}
+
+/// E5: the observed inclusion market from a raw RPC body. `None` when the read is unusable or
+/// too thin to be a market — in both cases the caller keeps the venue floor.
+pub fn tip_market_from_response(body: &str) -> Option<TipMarket> {
+    TipMarket::from_fee_samples(&extract_prioritization_fees(body))
 }
 
 /// Encode a 32-byte pubkey into a base58 string (same alphabet as Solana).
@@ -1314,5 +1364,70 @@ mod c1_stream_fed_cache {
         assert_eq!(a.curve_ctx.mint, [4u8; 32]);
         assert_eq!(b.curve_ctx.mint, [5u8; 32]);
         assert_eq!(b.curve_ctx.user, [0u8; 32]);
+    }
+}
+
+/// E5: the market feed. The bid policy is only as honest as this read, so the parser is pinned on
+/// a real `getRecentPrioritizationFees` body shape, on a thin read, and on garbage.
+#[cfg(test)]
+mod e5_tip_market {
+    use super::*;
+    use pump_quant_execution::ex_tip_compute::bid_per_send;
+
+    /// A response in the shape the RPC actually returns.
+    fn body(fees: &[u64]) -> String {
+        let entries = fees
+            .iter()
+            .enumerate()
+            .map(|(i, f)| {
+                format!(
+                    "{{\"slot\":{},\"prioritizationFee\":{}}}",
+                    300_000_000u64 + i as u64,
+                    f
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        format!("{{\"jsonrpc\":\"2.0\",\"result\":[{entries}],\"id\":1}}")
+    }
+
+    #[test]
+    fn the_feed_reads_every_landed_fee_in_slot_order() {
+        let fees: Vec<u64> = (1..=10).map(|i| i * 1_000).collect();
+        assert_eq!(extract_prioritization_fees(&body(&fees)), fees);
+        let m = tip_market_from_response(&body(&fees)).expect("10 samples is a market");
+        assert_eq!((m.p50, m.p75, m.p90), (5_000, 8_000, 9_000));
+    }
+
+    #[test]
+    fn a_thin_read_is_not_a_market_and_garbage_is_not_either() {
+        assert_eq!(
+            tip_market_from_response(&body(&[1, 2, 3])),
+            None,
+            "three slots is noise, not a market"
+        );
+        assert_eq!(
+            tip_market_from_response("{\"error\":{\"code\":-32602}}"),
+            None
+        );
+        assert_eq!(tip_market_from_response(""), None);
+        assert!(extract_prioritization_fees("no fees here").is_empty());
+        // A malformed fee is skipped, not parsed as zero: honesty over convenience.
+        assert_eq!(
+            extract_prioritization_fees("{\"prioritizationFee\":abc}"),
+            Vec::<u64>::new()
+        );
+    }
+
+    #[test]
+    fn the_live_flat_market_reads_flat_and_still_governs_the_bid() {
+        // The observation this session: landed pump.fun txs paying a flat 40_000 lamports.
+        let flat = vec![40_000u64; 120];
+        let m = tip_market_from_response(&body(&flat)).expect("a market");
+        assert_eq!((m.p50, m.p75, m.p90), (40_000, 40_000, 40_000));
+        assert_eq!(bid_per_send(5_000, Some(&m), 7_500, 0, 0), 40_000);
+        // A read of nothing but zeros is no market at all, so the floor governs.
+        assert_eq!(tip_market_from_response(&body(&[0u64; 40])), None);
+        assert_eq!(bid_per_send(5_000, None, 7_500, 0, 0), 5_000);
     }
 }

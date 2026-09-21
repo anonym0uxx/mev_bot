@@ -121,6 +121,69 @@ fn a_hot_market_raises_the_bid_and_a_cold_one_cannot_push_it_below_the_floor() {
     );
 }
 
+// ── E5: the market feed that anchors the bid ────────────────────────────────────
+
+#[test]
+fn the_market_is_built_from_landed_fee_samples_or_not_at_all() {
+    // MIN_MARKET_SAMPLES is the line between a market and noise.
+    assert_eq!(TipMarket::from_fee_samples(&[40_000; 7]), None);
+    let m = TipMarket::from_fee_samples(&[40_000; 8]).expect("8 samples is a market");
+    assert_eq!((m.p50, m.p75, m.p90), (40_000, 40_000, 40_000));
+
+    // A zero-fee slot is NOT an observation of price, so it cannot build a market. Measured live
+    // on mainnet: the global `getRecentPrioritizationFees` query returned 150 samples with 0
+    // nonzero, and the pump.fun program 2 of 150 — counting them would make every read inert.
+    assert_eq!(TipMarket::from_fee_samples(&[0; 40]), None);
+    // ...but a window of genuinely PAID samples is a market, and it drives the bid.
+    let paid = TipMarket::from_fee_samples(&[40_000; 12]).expect("paid samples are a market");
+    assert_eq!((paid.p50, paid.p75, paid.p90), (40_000, 40_000, 40_000));
+    assert_eq!(bid_per_send(5_000, Some(&paid), 7_500, 0, 0), 40_000);
+
+    // An unsorted real read still percentiles correctly.
+    let mut xs: Vec<u64> = (1..=20).map(|i| i * 1_000).collect();
+    xs.reverse();
+    let m = TipMarket::from_fee_samples(&xs).expect("a market");
+    assert_eq!((m.p50, m.p75, m.p90), (10_000, 15_000, 18_000));
+}
+
+// ── E5: the rolling window that feeds the market from the stream ────────────────
+
+#[test]
+fn the_window_keeps_a_bounded_window_of_paid_landings() {
+    // Thinness: zeros are not observations, and a window under MIN_MARKET_SAMPLES is not a market.
+    let mut w = TipMarketWindow::new(TipMarketWindow::DEFAULT_CAPACITY);
+    assert!(w.is_empty());
+    assert_eq!(w.market(), None, "an empty window is not a market");
+    for f in [0, 40_000, 0, 40_000] {
+        w.record(f); // zeros are not observations of price
+    }
+    assert_eq!(w.len(), 2);
+    assert_eq!(w.market(), None, "two paid samples is still not a market");
+
+    // A full window of paid landings IS the market, and it drives the bid.
+    let mut full = TipMarketWindow::new(12);
+    for f in 1..=12 {
+        full.record(f * 10_000);
+    }
+    let m = full.market().expect("12 paid samples is a market");
+    assert_eq!((m.p50, m.p75, m.p90), (60_000, 90_000, 110_000));
+    assert_eq!(bid_per_send(5_000, Some(&m), 7_500, 0, 0), 90_000);
+
+    // Bounded: the oldest is evicted at capacity, so memory cannot grow with uptime.
+    assert_eq!(full.len(), 12);
+    full.record(1_000_000);
+    assert_eq!(full.len(), 12, "capacity holds");
+    assert_eq!(full.market().unwrap().p90, 120_000);
+
+    // A capacity of zero is promoted to one rather than becoming a black hole.
+    let mut one = TipMarketWindow::new(0);
+    one.record(7);
+    assert_eq!(one.len(), 1);
+    one.record(9);
+    assert_eq!(one.len(), 1);
+    assert_eq!(one.market(), None, "one sample is not a market");
+}
+
 #[test]
 fn a_stale_or_absurd_market_read_cannot_blow_the_bid_up() {
     // A corrupt p75/p90 next to a sane median: the read is self-consistency checked
