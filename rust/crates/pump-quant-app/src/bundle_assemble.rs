@@ -20,15 +20,15 @@
 //! - `token_leg_known == false` — a print carried no token leg, so it could not be cleared against
 //!   the dust floor and the volume/return fields are not the corpus's.
 //!
-//! UNIT CONVERSION, called out because it is where a 1e9 error hides. `StateSnapshot` carries the
-//! price as **SOL per raw token** (the ledger's native unit) while the bundle's field is
-//! `price_lamports_per_raw_token`. The corpus renders both, and they differ by exactly 1e9:
+//! PRICE UNITS — and a correction the C5 parity harness forced (2026-09-20). `StateSnapshot`'s field
+//! is NAMED `price_sol_per_raw`, which is a misnomer: the value it holds is the ratio of the tape's
+//! two legs, i.e. **lamports per raw token**, which is exactly the bundle's unit. Multiplying by 1e9
+//! (as this module first did, trusting the name) put every price 9 orders out.
 //!
-//! ```text
-//! PRICE UNITS: price_lamports_per_raw_token=0.02445740498  price_sol_per_raw_token=2.445740498e-11
-//! ```
-//!
-//! So the conversion is `× 1e9` and it is asserted in a test rather than trusted.
+//! The evidence is a real corpus row: the harness derived `0.9562185430525267` from the tape and the
+//! corpus's own prompt stores `price_lamports_per_raw_token=0.9562185430525267` — identical digits.
+//! So the mapping is IDENTITY, and the defect was the ledger field's name. Renaming it is tracked as a
+//! C5 finding; the conversion is removed here and pinned by a test.
 
 #![forbid(unsafe_code)]
 
@@ -40,8 +40,7 @@ use pump_quant_proposal::{render_decision, FlowState, PyNum};
 use crate::enrichment::EnrichedSnapshot;
 use crate::state_ledger::StateSnapshot;
 
-/// Lamports per SOL. Named rather than inlined: this constant is the whole of the conversion below.
-const LAMPORTS_PER_SOL: f64 = 1_000_000_000.0;
+// (No unit constant: the ledger's price is already lamports per raw token — see the module docs.)
 
 /// Why a bundle could not be assembled. Every variant is a missing or untrustworthy INPUT — never a
 /// decision, because this module resolves nothing.
@@ -132,8 +131,9 @@ pub fn assemble(inputs: &BundleInputs<'_>) -> Result<DecisionBundle, AssemblyRef
         buy_count: s.buy_count as i64,
         sell_count: s.sell_count as i64,
         unique_traders: s.unique_traders as i64,
-        // SOL per raw token -> lamports per raw token: the bundle's unit, not the ledger's.
-        price_lamports_per_raw_token: PyNum::Float(s.price_sol_per_raw * LAMPORTS_PER_SOL),
+        // IDENTITY, not a conversion: the ledger's value is already the corpus's
+        // `price_lamports_per_raw_token` (see the module docs — the field name lies).
+        price_lamports_per_raw_token: PyNum::Float(s.price_sol_per_raw),
         ret_5s_bp: s.ret_5s_bp.map(PyNum::Float),
         ret_30s_bp: s.ret_30s_bp.map(PyNum::Float),
         vol_30s_bp: s.price_volatility_30s_bp.map(PyNum::Float),
@@ -180,8 +180,8 @@ mod tests {
             buy_volume_lamports: 2_100_000_000,
             sell_volume_lamports: 900_000_000,
             net_flow_lamports: 1_200_000_000,
-            // The corpus row's own number: 2.445740498e-11 SOL per raw token.
-            price_sol_per_raw: 2.445740498e-11,
+            // The corpus row's own `price_lamports_per_raw_token`, i.e. lamports per raw token.
+            price_sol_per_raw: 0.02445740498411998,
             age_s: 12.0,
             last_trade_age_s: 1.0,
             top1_trader_share: Some(0.41),
@@ -272,8 +272,9 @@ mod tests {
         // The conversion, asserted rather than trusted: the ledger's SOL-per-raw price times 1e9 is
         // the bundle's lamports-per-raw price, and the rendered prompt must carry that value.
         let rendered = render_decision(&b);
-        // Both unit forms, so the conversion is pinned as a RELATIONSHIP (they differ by 1e9)
-        // rather than as one literal: `%.10g` is what the corpus renders with.
+        // The lamports-per-raw form is the corpus's own digits, and the SOL-per-raw form is that
+        // same price divided by 1e9 (`%.10g` is the corpus's rendering). Pinning BOTH is what makes
+        // a unit slip impossible to introduce silently: the name says SOL, the value is lamports.
         assert!(
             rendered.contains("price_lamports_per_raw_token=0.02445740498"),
             "lamports-per-raw form missing or wrong:\n{rendered}"
