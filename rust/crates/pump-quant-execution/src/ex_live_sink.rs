@@ -354,6 +354,46 @@ impl OutboundSink for LiveOutboundSink {
             let slippage_factor = 10_000u32.saturating_sub(self.config.max_slippage_bps as u32);
             let min_sol = (expected_sol * slippage_factor as u128 / 10_000u128) as u64;
 
+            // ── LOCAL SELL PREFLIGHT (E4) ─────────────────────────────────────
+            // The Sender endpoint cannot run a preflight check (it answers HTTP 500
+            // "running preflight check is not supported" for skip_preflight=false), so a
+            // sell whose own `min_sol_out` can never be met would burn a submit and only
+            // surface as an on-chain failure. Simulate the curve sell against the SAME
+            // fresh reserves the bound is priced from, using the ported constant-product
+            // simulation (no second copy of the fill math), and refuse locally with a
+            // named cause. The simulated amount is an UPPER bound — the curve's fee is
+            // not in the model — so this can only refuse a sell that is provably
+            // unsendable, never one that would have filled.
+            {
+                use crate::si_incident_gate::{simulate_sell, DecodedMarket, Position};
+                let simulated = simulate_sell(
+                    &Position {
+                        token_amount: sell_amount,
+                        mint: 0,
+                    },
+                    &DecodedMarket {
+                        base_reserve: vtokens,
+                        quote_reserve: vsol,
+                        constructible: true,
+                    },
+                );
+                match simulated {
+                    Ok(proof) if proof.out_amount >= min_sol => {}
+                    Ok(proof) => {
+                        return OutboundOutcome::Construction(format!(
+                            "local sell preflight refused: simulated out {} < min_sol_out {} \
+                             (own impact exceeds the {} bp slippage bound)",
+                            proof.out_amount, min_sol, self.config.max_slippage_bps
+                        ));
+                    }
+                    Err(e) => {
+                        return OutboundOutcome::Construction(format!(
+                            "local sell preflight refused: {e:?}"
+                        ));
+                    }
+                }
+            }
+
             let params = SellParams {
                 token_amount: sell_amount,
                 min_sol_out: min_sol,
@@ -665,6 +705,91 @@ mod tests {
         match outcome {
             OutboundOutcome::Accepted { signature, .. } => assert!(signature == [0u8; 64]),
             _ => panic!("noop sink must accept with zero signature"),
+        }
+    }
+
+    /// A live sink with the fixed test I/O: a 50 SOL / 1e12-token curve and a 500e9-token
+    /// ATA balance, over an EMPTY layout registry (so a build that is reached still refuses).
+    fn sell_test_sink() -> LiveOutboundSink {
+        let mut blockhash = [0u8; 32];
+        blockhash[0] = 0x42;
+        let fetcher = TestStateFetcher {
+            blockhash: LiveBlockhash {
+                blockhash,
+                slot: 440_000_000,
+                last_valid_block_height: 440_000_150,
+            },
+        };
+        let registry = Arc::new(LayoutRegistry::new());
+        let mut signer_pk = [0u8; 32];
+        signer_pk[0] = 0xFF;
+        LiveOutboundSink::new(
+            LiveSinkConfig {
+                compute: ComputePlan {
+                    unit_limit: 200_000,
+                    unit_price_micro_lamports: 100_000,
+                },
+                tip: None,
+                fee_tail: FeeTail::None,
+                max_slippage_bps: 500,
+                mcap_band_enable: false,
+                mcap_band_lo_lamports: 0,
+                mcap_band_hi_lamports: u64::MAX,
+            },
+            registry,
+            Arc::new(fetcher),
+            Arc::new(TestSigner { pk: signer_pk }),
+            Arc::new(TestSubmitter),
+        )
+    }
+
+    fn sell_record(size_lamports: u64) -> AdmitRecord {
+        AdmitRecord {
+            mint: {
+                let mut m = [0u8; 32];
+                m[0] = 1;
+                m
+            },
+            user: {
+                let mut u = [0u8; 32];
+                u[0] = 2;
+                u
+            },
+            is_buy: false,
+            size_lamports,
+            entry_price: 28_000,
+            max_slippage_bps: 500,
+            price_limit_lamports_per_raw_token: None,
+        }
+    }
+
+    /// E4: the local sell preflight is the ONLY guard between a sell whose own
+    /// `min_sol_out` cannot be met and a wasted submit — the Sender cannot preflight. It
+    /// must refuse that sell locally, and must NOT over-refuse one that can fill.
+    #[test]
+    fn local_sell_preflight_refuses_only_the_unmeetable_sell() {
+        let sink = sell_test_sink();
+
+        // 5e11 raw tokens against a 1e12-token / 50 SOL curve: the constant-product out is
+        // ~2/3 of the linear expectation, far below a 95% `min_sol_out`, so the tx would
+        // revert on chain. It must never reach the wire.
+        match sink.on_admit(&sell_record(1_000_000_000_000)) {
+            OutboundOutcome::Construction(msg) => assert!(
+                msg.contains("local sell preflight refused"),
+                "expected a local sell preflight refusal, got: {msg}"
+            ),
+            _ => panic!("an unmeetable sell must be refused locally, before build/submit"),
+        }
+
+        // ~0.1% of the curve: clears the same bound, so control must reach the §41 layout
+        // gate (which refuses on the empty registry) — proving the preflight is not blanket.
+        match sink.on_admit(&sell_record(1_000_000_000)) {
+            OutboundOutcome::Construction(msg) => assert!(
+                msg.contains("tx_build refused"),
+                "a meetable sell must reach the builder, got: {msg}"
+            ),
+            OutboundOutcome::Accepted { .. } => {}
+            _ => panic!("a meetable sell must not be refused by the preflight"),
         }
     }
 }

@@ -202,9 +202,13 @@ impl<'a> OutboundJunction<'a> {
 
         // ── 5. Encode + submit ──────────────────────────────────────────────
         let tx_b64 = encode_base64(&wire_tx);
-        // skipPreflight: true for buys (latency-critical), false for sells
-        // (catch sell failures pre-flight — item 3, Rev-20).
-        let skip_preflight = decision.side == TradeSide::Buy;
+        // BOTH SIDES SKIP PREFLIGHT. The Sender endpoint does not support a preflight
+        // request — it answers HTTP 500 "running preflight check is not supported" — and
+        // sending a sell with `skip_preflight=false` (as `skip_preflight = is_buy` did)
+        // was the root cause of every sell failure in Rev-22. Sell correctness is proven
+        // LOCALLY instead: `ex_live_sink` simulates the curve sell against the fresh
+        // reserves and refuses before the wire (E4).
+        let skip_preflight = true;
         self.sender
             .send_transaction(request_id, &tx_b64, skip_preflight)
             .map_err(OutboundError::Submit)
