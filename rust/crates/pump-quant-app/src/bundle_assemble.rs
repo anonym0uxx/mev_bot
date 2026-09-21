@@ -158,8 +158,11 @@ pub fn assemble(inputs: &BundleInputs<'_>) -> Result<DecisionBundle, AssemblyRef
     // refusing them would cut most of the tradeable population. That leaves exactly one
     // live-reachable, never-trained input: an unpriceable SIZE OPTIONS depth. The model has never
     // been asked to size a clip without a depth, so it is refused rather than rendered as `na`.
-    // (`evidence_status=partial` is deliberately NOT a refusal here: this module measured that rule
-    // firing on 11 of 12 real corpus rows — a shutdown, not a gate.)
+    // PARTIAL EVIDENCE IS ACCEPTED BY DESIGN (operator ruling, 2026-09-21): not every token will
+    // have full evidence, and the brain has to be able to infer on what exists. It is also never
+    // trained as a refusal — this module measured the "refuse on partial" rule firing on 11 of 12
+    // real corpus rows, which is a shutdown, not a gate. Rendered as `evidence_status=partial`,
+    // never refused, never rewritten to `complete`.
     if inputs.size_depth_sol.is_none() {
         return Err(AssemblyRefusal::DepthUnknown);
     }
@@ -333,6 +336,22 @@ mod tests {
             size_depth_sol: Some(62.5),
             size_amm: false,
         }
+    }
+
+    /// F1 RULING (operator, 2026-09-21): a partial evidence packet is **ACCEPTED** — not every
+    /// token will have full evidence and the brain has to be able to infer on what exists. So the
+    /// packet is rendered as `evidence_status=partial`: never refused, never rewritten to
+    /// `complete` (which would be the dishonest repair, and would also be OOD — the corpus's own
+    /// partial rows are the ones the model was asked to infer on).
+    #[test]
+    fn a_partial_evidence_packet_assembles_and_keeps_its_status() {
+        let (mut s, e, f) = (snapshot(), enriched(), flow());
+        s.evidence_status = "partial".to_string();
+        let b = assemble(&inputs(&s, &e, &f)).expect("partial evidence must still assemble");
+        assert_eq!(
+            b.evidence_status, "partial",
+            "the status travels as given — never rewritten to complete"
+        );
     }
 
     #[test]
