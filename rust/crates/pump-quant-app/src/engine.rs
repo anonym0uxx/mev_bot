@@ -3826,6 +3826,62 @@ impl Engine {
                     });
                     return None;
                 }
+                // ---- G4/G5: the payability buffer reserves the CLIP'S OWN ROUND TRIP, and the
+                // book carries an aggregate exposure cap.
+                //
+                // `wallet_floor_guard` above reserves the ENTRY leg (clip + entry fee + one
+                // fixed leg + ATA rent). It charges no exit-leg cost and no own price impact on
+                // either leg, so the clip that fits the floor exactly is the clip whose impact
+                // pushes it through — the impact term scales with `clip / vsol`, which is
+                // largest exactly when the book is thinnest. `cost_model::round_trip_lamports`
+                // is the single authority for that cost (fees on BOTH legs, own impact on BOTH
+                // legs, the exit tranches' fixed legs, and the ATA terms), so the reserve is
+                // built from it rather than from a second, locally-invented form.
+                //
+                // The aggregate cap is the risk budget the sizing chain already sizes against:
+                // the same number, now checked as a BOOK-level limit with the clip's cost
+                // counted, so a full book cannot admit a clip whose own round trip would take
+                // total exposure past it.
+                let rt_cost =
+                    crate::cost_model::round_trip_lamports(&crate::cost_model::CostInputs {
+                        notional_lamports: size,
+                        vsol_lamports: entry_vsol,
+                        fee_bps_per_leg: crate::cost_model::venue_fee_bps_per_leg(entry_vsol),
+                        fixed_lamports_per_leg: crate::cost_model::FIXED_LAMPORTS_PER_LEG,
+                        fail_rate_bps: self.cfg.gate_fail_rate_bps,
+                        exit_tranches: self.cfg.gate_exit_tranches,
+                        needs_ata,
+                        reclaims_ata: true,
+                    });
+                let payability = crate::portfolio::payability(&crate::portfolio::PayabilityInputs {
+                    free_cash_lamports: balance,
+                    committed_lamports: self.bankroll_committed,
+                    floor_lamports: floor,
+                    clip_lamports: size,
+                    round_trip_lamports: rt_cost,
+                    live_exposure_lamports: self.bankroll_committed,
+                    total_exposure_cap_lamports: risk_budget,
+                });
+                if let Err(why) = payability {
+                    let code = match why {
+                        crate::portfolio::PayabilityRefusal::Unpriceable => {
+                            REJECT_PAYABILITY_UNPRICED
+                        }
+                        crate::portfolio::PayabilityRefusal::FloorBreached => {
+                            REJECT_INSUFFICIENT_CASH
+                        }
+                        crate::portfolio::PayabilityRefusal::ExposureCapReached => {
+                            REJECT_EXPOSURE_CAP
+                        }
+                    };
+                    self.reject(code);
+                    self.journal.record(Decision::Rejected {
+                        mint: mint_bytes,
+                        reason: code,
+                    });
+                    self.record_reject_sample(code, mint_bytes);
+                    return None;
+                }
                 // §34.4/§21.7 phase-correct exit-cost law: if the executable exit side
                 // already consumes the priced move, the trade is a structural loss.
                 // §18.2/§6.4 UNKNOWN fails CLOSED: sizing without a priced exit is
@@ -7414,6 +7470,15 @@ const REJECT_INSUFFICIENT_EXIT_LIQUIDITY: u8 = 24;
 /// the death-by-a-thousand-cuts re-entry loop. Cannot fire in the golden tape
 /// (no position closes → cooldown set never populated → golden path byte-identical).
 const REJECT_REENTRY_COOLDOWN: u8 = 25;
+/// G4: the clip's own round trip could not be priced. UNKNOWN fails closed (§18.2) — an
+/// unpriced round trip is not a free one.
+const REJECT_PAYABILITY_UNPRICED: u8 = 26;
+/// G4: paying for the clip AND its own round trip would take free cash below the survival
+/// floor. The old guard reserved the clip and the entry leg only.
+const REJECT_INSUFFICIENT_CASH: u8 = 27;
+/// G5: the book's aggregate exposure would pass the risk budget once the clip's own round
+/// trip is counted.
+const REJECT_EXPOSURE_CAP: u8 = 28;
 
 /// §21.7 corroboration bar (bps) for [`REJECT_HOLDER_CONCENTRATION`].
 ///

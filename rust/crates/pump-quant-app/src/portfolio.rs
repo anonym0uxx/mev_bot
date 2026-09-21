@@ -163,6 +163,96 @@ impl PortfolioCap {
     }
 }
 
+/// Why a clip was refused by the portfolio layer's cash and exposure check.
+///
+/// Every variant is a SELECTION refusal — the trade is not taken, nothing is submitted, and the
+/// cause is journaled — never a silent shrink. Shrinking a clip to fit a cash constraint would
+/// silently re-size a trade the model or the venue rule already sized, which is the kind of
+/// second, invisible sizing authority this codebase spent the KELLY_AUDIT_C12 work removing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PayabilityRefusal {
+    /// The clip's round trip could not be priced. UNKNOWN fails closed (§18.2).
+    Unpriceable,
+    /// The book's total exposure would exceed the configured cap.
+    ExposureCapReached,
+    /// Paying for the clip and its round trip would take free cash below the survival floor.
+    FloorBreached,
+}
+
+impl PayabilityRefusal {
+    /// Stable journal token.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PayabilityRefusal::Unpriceable => "unpriceable",
+            PayabilityRefusal::ExposureCapReached => "exposure_cap_reached",
+            PayabilityRefusal::FloorBreached => "floor_breached",
+        }
+    }
+}
+
+/// Everything the cash/exposure check reads. Pure inputs, so the check is testable without an
+/// engine, a clock, or a tape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PayabilityInputs {
+    /// The bankroll's free cash (the balance the committed spend is drawn from).
+    pub free_cash_lamports: u64,
+    /// Σ entry spend of currently open positions (`bankroll_committed`).
+    pub committed_lamports: u128,
+    /// The survival floor: the SOL the account must not trade away.
+    pub floor_lamports: u64,
+    /// The clip being admitted, in lamports.
+    pub clip_lamports: u64,
+    /// The clip's own round-trip cost from `cost_model::round_trip_lamports` — fees, fixed legs,
+    /// **own price impact on both legs**, and the ATA terms. `None` is a refusal, never zero.
+    pub round_trip_lamports: Option<u64>,
+    /// Σ entry spend of the book at this moment, for the exposure cap.
+    pub live_exposure_lamports: u128,
+    /// The book's total-exposure cap in lamports.
+    pub total_exposure_cap_lamports: u128,
+}
+
+/// Reserve = the clip plus the cost of being in and out of it.
+///
+/// # Why the reserve is not the clip
+///
+/// The old payability check reserved the notional and nothing else — its own price impact was
+/// free in the arithmetic that decided whether the trade was payable. On a thin book that is the
+/// term that decides: `own_impact_bps` scales with `clip / vsol`, so the clip that "fits"
+/// exactly at the floor is precisely the clip whose impact pushes it through the floor.
+#[must_use]
+pub fn payability_reserve_lamports(clip_lamports: u64, round_trip_lamports: u64) -> u128 {
+    u128::from(clip_lamports) + u128::from(round_trip_lamports)
+}
+
+/// The portfolio layer's cash-and-exposure verdict for one clip.
+///
+/// Order of causes: an unpriceable round trip first (it is a data fault, not a budget state),
+/// then the book-level exposure cap, then the cash floor. The exposure cap is checked before the
+/// cash arithmetic because it is the structural limit — a book at its cap cannot take the trade
+/// no matter how much cash is free — and because that is the cause a human needs to read when
+/// both are true.
+pub fn payability(i: &PayabilityInputs) -> Result<(), PayabilityRefusal> {
+    let Some(rt) = i.round_trip_lamports else {
+        return Err(PayabilityRefusal::Unpriceable);
+    };
+    if i.live_exposure_lamports
+        .saturating_add(payability_reserve_lamports(i.clip_lamports, rt))
+        > i.total_exposure_cap_lamports
+    {
+        return Err(PayabilityRefusal::ExposureCapReached);
+    }
+    // free_cash - committed - clip - round_trip >= floor, all in u128 so a fat book cannot wrap.
+    let needed = payability_reserve_lamports(i.clip_lamports, rt)
+        .checked_add(u128::from(i.floor_lamports))
+        .and_then(|n| n.checked_add(i.committed_lamports));
+    match needed {
+        Some(n) if u128::from(i.free_cash_lamports) >= n => Ok(()),
+        // An overflowing required sum is not a pass: no finite bankroll satisfies it.
+        _ => Err(PayabilityRefusal::FloorBreached),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -170,6 +260,111 @@ mod tests {
 
     fn mints(n: usize) -> BTreeSet<[u8; 32]> {
         (0..n).map(|i| [i as u8; 32]).collect()
+    }
+
+    #[test]
+    fn the_payability_reserve_is_the_clip_PLUS_its_own_round_trip() {
+        // G4's whole point: the old check reserved the notional and treated its own impact as
+        // free. A clip that fits exactly WITHOUT the cost must refuse WITH it.
+        let base = PayabilityInputs {
+            free_cash_lamports: 1_000_000_000,
+            committed_lamports: 0,
+            floor_lamports: 0,
+            clip_lamports: 1_000_000_000,
+            round_trip_lamports: None,
+            live_exposure_lamports: 0,
+            total_exposure_cap_lamports: u128::MAX,
+        };
+        // Without the cost the clip would fit exactly.
+        let without = PayabilityInputs {
+            round_trip_lamports: Some(0),
+            ..base
+        };
+        assert_eq!(payability(&without), Ok(()));
+        // With the real cost (30 SOL fee/impact on a 1 SOL clip is absurd, but the arithmetic
+        // must refuse rather than wrap) it cannot.
+        let with = PayabilityInputs {
+            round_trip_lamports: Some(1),
+            ..base
+        };
+        assert_eq!(payability(&with), Err(PayabilityRefusal::FloorBreached));
+        assert_eq!(payability_reserve_lamports(1_000, 250), 1_250);
+    }
+
+    #[test]
+    fn an_unpriceable_round_trip_refuses_even_with_an_empty_book() {
+        // UNKNOWN fails closed (§18.2) - never a zero cost, never a pass.
+        let i = PayabilityInputs {
+            free_cash_lamports: u64::MAX,
+            committed_lamports: 0,
+            floor_lamports: 0,
+            clip_lamports: 1,
+            round_trip_lamports: None,
+            live_exposure_lamports: 0,
+            total_exposure_cap_lamports: u128::MAX,
+        };
+        assert_eq!(payability(&i), Err(PayabilityRefusal::Unpriceable));
+    }
+
+    #[test]
+    fn the_exposure_cap_is_the_structural_limit_and_reports_first() {
+        // Plenty of cash, a full book: the cap is the cause a human needs to read.
+        let i = PayabilityInputs {
+            free_cash_lamports: u64::MAX,
+            committed_lamports: 0,
+            floor_lamports: 0,
+            clip_lamports: 100,
+            round_trip_lamports: Some(10),
+            live_exposure_lamports: 990,
+            total_exposure_cap_lamports: 1_000,
+        };
+        assert_eq!(payability(&i), Err(PayabilityRefusal::ExposureCapReached));
+        // One lamport of headroom is enough: the cap counts the clip AND its cost.
+        let fits = PayabilityInputs {
+            live_exposure_lamports: 890,
+            ..i
+        };
+        assert_eq!(payability(&fits), Ok(()));
+    }
+
+    #[test]
+    fn committed_spend_is_charged_against_free_cash() {
+        let i = PayabilityInputs {
+            free_cash_lamports: 1_000,
+            committed_lamports: 600,
+            floor_lamports: 0,
+            clip_lamports: 300,
+            round_trip_lamports: Some(100),
+            live_exposure_lamports: 0,
+            total_exposure_cap_lamports: u128::MAX,
+        };
+        assert_eq!(payability(&i), Ok(()), "600+300+100 == 1000 exactly");
+        let over = PayabilityInputs {
+            clip_lamports: 301,
+            ..i
+        };
+        assert_eq!(payability(&over), Err(PayabilityRefusal::FloorBreached));
+    }
+
+    #[test]
+    fn an_overlapping_required_sum_refuses_rather_than_wrapping() {
+        let i = PayabilityInputs {
+            free_cash_lamports: u64::MAX,
+            committed_lamports: u128::MAX,
+            floor_lamports: u64::MAX,
+            clip_lamports: u64::MAX,
+            round_trip_lamports: Some(u64::MAX),
+            live_exposure_lamports: 0,
+            total_exposure_cap_lamports: u128::MAX,
+        };
+        assert_eq!(payability(&i), Err(PayabilityRefusal::FloorBreached));
+        // The refusal tokens are stable journal vocabulary.
+        assert_eq!(PayabilityRefusal::Unpriceable.as_str(), "unpriceable");
+        assert_eq!(
+            PayabilityRefusal::ExposureCapReached.as_str(),
+            "exposure_cap_reached"
+        );
+        assert_eq!(PayabilityRefusal::FloorBreached.as_str(), "floor_breached");
     }
 
     #[test]
