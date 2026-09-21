@@ -30,11 +30,12 @@
 //! Every refusal is typed, so telemetry can count causes instead of parsing log text.
 
 use pump_quant_inference::seam::{
-    management_base, management_fraction_bps, parse_decision_payload, route, Decision, DriftLedger,
-    ManagementBase, OffContract, Route, SizeError, SizeTier, FEE_BUFFER_LAMPORTS,
+    management_base, management_fraction_bps, parse_decision_payload, price_limit_is_grounded,
+    route, Decision, DriftLedger, ManagementBase, OffContract, Route, SizeError, SizeTier,
+    FEE_BUFFER_LAMPORTS,
 };
 use pump_quant_inference::{
-    resolve_clip_at_fraction_bps, EntryVenue, InferenceClient, InferenceError,
+    resolve_clip_at_fraction_bps, Completion, EntryVenue, InferenceClient, InferenceError,
 };
 
 use crate::freshness::{
@@ -47,11 +48,27 @@ use crate::portfolio::{Admission, AdmissionRefusal, PortfolioCap};
 pub trait ModelSource {
     /// Send the pair of prompts, return the raw completion text.
     fn complete(&self, system: &str, user: &str) -> Result<String, InferenceError>;
+
+    /// [`complete`](Self::complete) **plus the server's stop reason** (F5b).
+    ///
+    /// Default: no reason. An implementation that cannot know one reports none — never a
+    /// guess — so the telemetry this feeds stays honest for stubs and test doubles.
+    fn complete_meta(&self, system: &str, user: &str) -> Result<Completion, InferenceError> {
+        self.complete(system, user).map(|text| Completion {
+            text,
+            finish_reason: None,
+        })
+    }
 }
 
 impl ModelSource for InferenceClient {
     fn complete(&self, system: &str, user: &str) -> Result<String, InferenceError> {
         InferenceClient::complete(self, system, user)
+    }
+
+    /// The live client KNOWS the server's stop reason; it must never be dropped (F5b).
+    fn complete_meta(&self, system: &str, user: &str) -> Result<Completion, InferenceError> {
+        InferenceClient::complete_with_meta(self, system, user)
     }
 }
 
@@ -146,6 +163,20 @@ pub enum NoTradeReason {
     StaleDecision(StalenessVeto),
 }
 
+/// The price the prompt SUPPLIED, for the F5c grounding check.
+///
+/// It is the **state block's** `price_lamports_per_raw_token` (full precision), which precedes
+/// the `PRICE UNITS` line in every rendered prompt — and the model echoes *that* field: the
+/// corpus's `PRICE LIMIT` values match it digit for digit, not the 10-significant-digit form
+/// `PRICE UNITS` prints. The first match in the prompt is therefore the right one.
+#[must_use]
+fn supplied_price(user_prompt: &str) -> Option<f64> {
+    user_prompt.lines().find_map(|line| {
+        let (_, rest) = line.split_once("price_lamports_per_raw_token=")?;
+        rest.split_whitespace().next()?.parse::<f64>().ok()
+    })
+}
+
 /// Ask the model, then resolve and veto. The single entry point of R3.
 ///
 /// `ledger` counts off-contract completions by cause (the G4 drift hook): a `BUY` without a
@@ -156,12 +187,20 @@ pub fn decide_entry<S: ModelSource + ?Sized>(
     req: &EntryRequest<'_>,
     ledger: &mut DriftLedger,
 ) -> EntryAuthority {
-    let completion = match source.complete(req.system_prompt, req.user_prompt) {
+    let completion = match source.complete_meta(req.system_prompt, req.user_prompt) {
         Ok(c) => c,
         // Unreachable model: no trade. A retry cannot help — temperature 0 returns the same
         // answer — so this is terminal for the decision, not a loop.
         Err(_) => return EntryAuthority::NoTrade(NoTradeReason::ModelUnreachable),
     };
+
+    // F5b — TRUNCATION IS TELEMETRY, NOT A REFUSAL. A completion the server cut at
+    // `max_tokens` parses exactly like a finished one, so without this the single most
+    // misleading live failure mode (a decision read from half a completion) leaves no trace.
+    // Recorded on the drift ledger; the decision below is still parsed and still acts.
+    if completion.truncated() {
+        ledger.record_truncated();
+    }
 
     // Freshness BEFORE the contract and before any capital question: a verdict that arrived too
     // late is not a decision about the tape in front of us, whatever its contents say. Checked
@@ -170,7 +209,7 @@ pub fn decide_entry<S: ModelSource + ?Sized>(
         return EntryAuthority::NoTrade(NoTradeReason::StaleDecision(veto));
     }
 
-    let decision: Decision = match parse_decision_payload(&completion) {
+    let decision: Decision = match parse_decision_payload(&completion.text) {
         Ok(d) => d,
         Err(e) => {
             ledger.record_error(&e);
@@ -180,6 +219,19 @@ pub fn decide_entry<S: ModelSource + ?Sized>(
 
     match route(decision.action) {
         Route::Open => {
+            // F5c — THE GROUNDING CHECK THE CORPUS RUNS AND THE LIVE PATH DID NOT. The corpus's
+            // own audit found the emitted `PRICE LIMIT` equal to the price the prompt supplied on
+            // 7,961 of 7,961 trained BUYs; that check was never used live. CAPTURE ONLY:
+            // recorded, never a refusal and never a rewrite of the order bound — a limit that
+            // disagrees with the prompt is a fact about the completion (it was not read from the
+            // state block) that the record has to carry, not an error to repair.
+            if let (Some(supplied), Some(emitted)) =
+                (supplied_price(req.user_prompt), decision.price_limit)
+            {
+                if !price_limit_is_grounded(supplied, emitted) {
+                    ledger.record_ungrounded_price();
+                }
+            }
             // Portfolio layer first (`KELLY_AUDIT_C12`): whether there is ROOM is a question
             // about the book, not about the completion. Checked before the contract so a mint
             // we already hold is refused for the reason a human needs to read, whatever the
@@ -403,6 +455,80 @@ mod tests {
                 tier: SizeTier::Full,
                 clip_lamports: 100_000_000
             }
+        );
+    }
+
+    /// A source that reports the server's `finish_reason`, like the live client (F5b).
+    struct Meta {
+        text: &'static str,
+        reason: Option<&'static str>,
+    }
+
+    impl ModelSource for Meta {
+        fn complete(&self, _system: &str, _user: &str) -> Result<String, InferenceError> {
+            Ok(self.text.to_string())
+        }
+
+        fn complete_meta(&self, _s: &str, _u: &str) -> Result<Completion, InferenceError> {
+            Ok(Completion {
+                text: self.text.to_string(),
+                finish_reason: self.reason.map(str::to_string),
+            })
+        }
+    }
+
+    /// F5b + F5c END TO END. A completion the server CUT at `max_tokens`, whose emitted price
+    /// limit is not the price the prompt supplied, is RECORDED on the drift ledger and the trade
+    /// still goes through: both are telemetry, neither is a refusal. The second half pins the
+    /// converse — a completed stop echoing the supplied price moves neither counter — so the
+    /// check cannot pass by always firing.
+    #[test]
+    fn truncation_and_an_ungrounded_price_are_recorded_and_never_block_the_trade() {
+        const PROMPT: &str = "DECISION CLOCK — assess this opportunity.\n\
+t_dec_ms=1700000000000  age_s=12.0  last_trade_age_s=1.0\n\
+venue=pumpfun  curve_present=True  evidence_status=complete\n\
+n_prior_trades=41  buy_count=30  sell_count=11  unique_traders=22\n\
+price_lamports_per_raw_token=0.02445740498411998  ret_5s_bp=120  ret_30s_bp=0  vol_30s_bp=180\n";
+        let mut base = amm(2_000_000_000, 0);
+        base.user_prompt = PROMPT;
+
+        // (1) Cut at max_tokens; `BUY_SMALL`'s `PRICE LIMIT: 0.02` is not the supplied price.
+        let mut l = DriftLedger::new();
+        let a = decide_entry(
+            &Meta {
+                text: BUY_SMALL,
+                reason: Some("length"),
+            },
+            &base,
+            &mut l,
+        );
+        assert!(
+            matches!(a, EntryAuthority::Buy { .. }),
+            "a cut completion is telemetry, not a refusal"
+        );
+        assert_eq!(l.truncated(), 1, "the max_tokens cut must be visible");
+        assert_eq!(
+            l.ungrounded_price(),
+            1,
+            "0.02 is not the price the prompt supplied"
+        );
+
+        // (2) A completed stop, echoing the supplied price digit for digit.
+        let mut l2 = DriftLedger::new();
+        let a2 = decide_entry(
+            &Meta {
+                text: BUY_FULL,
+                reason: Some("stop"),
+            },
+            &base,
+            &mut l2,
+        );
+        assert!(matches!(a2, EntryAuthority::Buy { .. }));
+        assert_eq!(l2.truncated(), 0);
+        assert_eq!(
+            l2.ungrounded_price(),
+            0,
+            "the corpus's own price is grounded"
         );
     }
 

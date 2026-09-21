@@ -63,6 +63,15 @@ pub struct LiveStatus {
     pub live_outbound_successes: u64,
     /// Live buy txs that failed at the sink (construction/signer/sender).
     pub live_outbound_failures: u64,
+    /// F5a — WHY the sink refused, split by layer, across buys and sells. The aggregates above
+    /// say *how many* sends failed; these say *which layer* refused. `sink_failures_sender` is
+    /// the ROUTING/transport class (signed, then no landing route or an RPC timeout) — a
+    /// different operational fact from a §41 construction refusal, and the ledger could not tell
+    /// them apart before.
+    pub sink_failures_construction: u64,
+    pub sink_failures_state_fetch: u64,
+    pub sink_failures_signer: u64,
+    pub sink_failures_sender: u64,
     /// Live sell txs submitted to the sink (accepted).
     pub live_sell_successes: u64,
     /// Live sell txs that failed at the sink.
@@ -165,6 +174,10 @@ impl LiveStatus {
                 "\"live_outbound_failures\":{},",
                 "\"live_sell_successes\":{},",
                 "\"live_sell_failures\":{},",
+                "\"sink_failures_construction\":{},",
+                "\"sink_failures_state_fetch\":{},",
+                "\"sink_failures_signer\":{},",
+                "\"sink_failures_sender\":{},",
                 "\"buy_confirmed_count\":{},",
                 "\"buy_failed_count\":{},",
                 "\"sell_confirmed_count\":{},",
@@ -188,6 +201,10 @@ impl LiveStatus {
             self.live_outbound_failures,
             self.live_sell_successes,
             self.live_sell_failures,
+            self.sink_failures_construction,
+            self.sink_failures_state_fetch,
+            self.sink_failures_signer,
+            self.sink_failures_sender,
             self.buy_confirmed_count,
             self.buy_failed_count,
             self.sell_confirmed_count,

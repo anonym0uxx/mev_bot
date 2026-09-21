@@ -1147,6 +1147,13 @@ pub struct Engine {
     live_outbound_successes: u64,
     /// Count of live outbound sink failures (state-fetch, construction, signer, or sender errors).
     live_outbound_failures: u64,
+    /// F5a: the sink's refusal causes, split by layer. The aggregates above give the per-side
+    /// totals; these say WHICH layer refused, so a ROUTING failure (`Sender`: signed, never
+    /// landed) stops looking like a construction or signer refusal in the ledger.
+    sink_failures_construction: u64,
+    sink_failures_state_fetch: u64,
+    sink_failures_signer: u64,
+    sink_failures_sender: u64,
     /// Live sell submission successes (sell tx accepted by the sink).
     live_sell_successes: u64,
     /// Live sell submission failures (sell tx rejected/errored by the sink).
@@ -1450,6 +1457,10 @@ impl Engine {
             outbound_sink: None,
             live_outbound_successes: 0,
             live_outbound_failures: 0,
+            sink_failures_construction: 0,
+            sink_failures_state_fetch: 0,
+            sink_failures_signer: 0,
+            sink_failures_sender: 0,
             live_sell_successes: 0,
             live_sell_failures: 0,
             pending_buys: BTreeMap::new(),
@@ -1610,6 +1621,10 @@ impl Engine {
             journal_digest: self.journal.digest(),
             live_outbound_successes: self.live_outbound_successes,
             live_outbound_failures: self.live_outbound_failures,
+            sink_failures_construction: self.sink_failures_construction,
+            sink_failures_state_fetch: self.sink_failures_state_fetch,
+            sink_failures_signer: self.sink_failures_signer,
+            sink_failures_sender: self.sink_failures_sender,
             live_sell_successes: self.live_sell_successes,
             live_sell_failures: self.live_sell_failures,
             buy_confirmed_count: self.buy_confirmed_count,
@@ -1618,6 +1633,23 @@ impl Engine {
             sell_failed_count: self.sell_failed_count,
             pending_buy_count: self.pending_buys.len() as u64,
             pending_sell_count: self.pending_sells.len() as u64,
+        }
+    }
+
+    /// F5a: classify a sink refusal by the layer that raised it, so a ROUTING failure stops
+    /// being indistinguishable from a construction or signer refusal in the live ledger.
+    fn note_sink_failure(
+        &mut self,
+        outcome: &pump_quant_execution::ex_outbound_sink::OutboundOutcome,
+    ) {
+        use pump_quant_execution::ex_outbound_sink::OutboundOutcome as O;
+        match outcome {
+            O::Construction(_) => self.sink_failures_construction += 1,
+            O::StateFetch(_) => self.sink_failures_state_fetch += 1,
+            O::Signer(_) => self.sink_failures_signer += 1,
+            O::Sender(_) => self.sink_failures_sender += 1,
+            // NOT failures: counting either here would misreport an in-flight send as dead.
+            O::Accepted { .. } | O::Queued { .. } => {}
         }
     }
 
@@ -3853,15 +3885,16 @@ impl Engine {
                         needs_ata,
                         reclaims_ata: true,
                     });
-                let payability = crate::portfolio::payability(&crate::portfolio::PayabilityInputs {
-                    free_cash_lamports: balance,
-                    committed_lamports: self.bankroll_committed,
-                    floor_lamports: floor,
-                    clip_lamports: size,
-                    round_trip_lamports: rt_cost,
-                    live_exposure_lamports: self.bankroll_committed,
-                    total_exposure_cap_lamports: risk_budget,
-                });
+                let payability =
+                    crate::portfolio::payability(&crate::portfolio::PayabilityInputs {
+                        free_cash_lamports: balance,
+                        committed_lamports: self.bankroll_committed,
+                        floor_lamports: floor,
+                        clip_lamports: size,
+                        round_trip_lamports: rt_cost,
+                        live_exposure_lamports: self.bankroll_committed,
+                        total_exposure_cap_lamports: risk_budget,
+                    });
                 if let Err(why) = payability {
                     let code = match why {
                         crate::portfolio::PayabilityRefusal::Unpriceable => {
@@ -4850,6 +4883,7 @@ impl Engine {
                             e.mint[..4].iter().map(|b| format!("{b:02x}")).collect();
                         eprintln!("[engine] sink FAILED for buy mint={mint_hex}: {other:?}");
                         self.live_outbound_failures += 1;
+                        self.note_sink_failure(other);
                         // Reverse the paper position opened at line 4544. The same
                         // method serves the async worker's failure report (E3), so
                         // there is exactly one rollback implementation.
@@ -5081,6 +5115,7 @@ impl Engine {
                             e.mint[..4].iter().map(|b| format!("{b:02x}")).collect();
                         eprintln!("[engine] sell sink FAILED: {other:?} mint={mint_hex}");
                         self.live_sell_failures += 1;
+                        self.note_sink_failure(other);
                     }
                 }
             }
@@ -7936,5 +7971,45 @@ mod e3_async_outbound {
             eng.admitted, 1,
             "tokens stay in the wallet on a failed sell — the ladder retries"
         );
+    }
+}
+
+/// F5a: the sink's refusal CAUSES reach the ledger, so a routing failure stops being one
+/// anonymous number shared with construction and signer refusals.
+#[cfg(test)]
+mod f5a_sink_failures {
+    use super::*;
+    use pump_quant_execution::ex_outbound_sink::OutboundOutcome;
+
+    #[test]
+    fn sink_refusals_are_counted_by_the_layer_that_raised_them() {
+        let mut eng = Engine::new(Config::dev_portable(), RunMode::Replay);
+        assert_eq!(eng.live_status().sink_failures_sender, 0);
+
+        eng.note_sink_failure(&OutboundOutcome::Sender(
+            "route: no healthy endpoint".into(),
+        ));
+        eng.note_sink_failure(&OutboundOutcome::Sender("timeout".into()));
+        eng.note_sink_failure(&OutboundOutcome::Construction("no verified fixture".into()));
+        eng.note_sink_failure(&OutboundOutcome::StateFetch("curve complete".into()));
+        eng.note_sink_failure(&OutboundOutcome::Signer("key not loaded".into()));
+        // Accepted and Queued are NOT failures — classifying either would misreport an
+        // in-flight send as dead.
+        eng.note_sink_failure(&OutboundOutcome::Accepted {
+            signature: [0u8; 64],
+            submit_rpc_us: 3,
+        });
+        eng.note_sink_failure(&OutboundOutcome::Queued { ticket: 7 });
+
+        let s = eng.live_status();
+        assert_eq!(s.sink_failures_sender, 2, "the two ROUTING failures");
+        assert_eq!(s.sink_failures_construction, 1);
+        assert_eq!(s.sink_failures_state_fetch, 1);
+        assert_eq!(s.sink_failures_signer, 1);
+
+        // ...and they reach the exported JSON, not just the in-process struct.
+        let json = s.to_canonical_json();
+        assert!(json.contains("\"sink_failures_sender\":2"), "{json}");
+        assert!(json.contains("\"sink_failures_construction\":1"), "{json}");
     }
 }

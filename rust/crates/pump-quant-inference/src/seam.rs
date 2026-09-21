@@ -228,6 +228,17 @@ impl std::error::Error for PayloadError {}
 pub struct DriftLedger {
     counts: [u64; OffContract::ALL.len()],
     accepted: u64,
+    /// F5b: completions that ended on `finish_reason="length"` — the server cut the text at
+    /// `max_tokens`, so the decision was parsed from a REDUCED completion. Not an off-contract
+    /// cause (the reduced text may still be in-contract) and never a refusal: it is the one
+    /// signal that says the served prompt needed more room than the server gave it, which is
+    /// otherwise INVISIBLE (the reason used to be discarded at the SSE/JSON boundary).
+    truncated: u64,
+    /// F5c: BUYs whose emitted `PRICE LIMIT` did not equal the price the prompt supplied. The
+    /// corpus's own grounding check held on 7,961 of 7,961 rows, so a divergence says the
+    /// completion is not grounded on the prompt it was handed. Capture-only — recorded, never
+    /// acted on (a worse limit the model chose deliberately is still a legitimate order bound).
+    ungrounded_price: u64,
 }
 
 impl DriftLedger {
@@ -294,6 +305,47 @@ impl DriftLedger {
     pub fn buy_without_size_seen(&self) -> bool {
         self.count(OffContract::BuyWithoutSize) > 0
     }
+
+    /// Record one completion the server cut at `max_tokens` (F5b).
+    pub fn record_truncated(&mut self) {
+        self.truncated += 1;
+    }
+
+    /// Completions cut at `max_tokens` (F5b).
+    #[must_use]
+    pub fn truncated(&self) -> u64 {
+        self.truncated
+    }
+
+    /// Record one BUY whose price limit was not grounded on the supplied price (F5c).
+    pub fn record_ungrounded_price(&mut self) {
+        self.ungrounded_price += 1;
+    }
+
+    /// BUYs whose price limit was not grounded on the supplied price (F5c).
+    #[must_use]
+    pub fn ungrounded_price(&self) -> u64 {
+        self.ungrounded_price
+    }
+}
+
+/// The `finish_reason` that means the server stopped on the token budget (F5b).
+pub const FINISH_REASON_LENGTH: &str = "length";
+
+/// Whether an emitted `PRICE LIMIT` is grounded on the price the prompt supplied (F5c).
+///
+/// The corpus's own grounding check held on **7,961 of 7,961** BUY rows: the model echoes the
+/// price it was handed, rendered with the same digits. The tolerance therefore only absorbs
+/// float/text representation noise (1e-9 relative), not a materially different price — a limit
+/// that differs by more than that is a completion not grounded on its prompt, which is
+/// recorded and never acted on.
+#[must_use]
+pub fn price_limit_is_grounded(supplied: f64, emitted: f64) -> bool {
+    if !supplied.is_finite() || !emitted.is_finite() {
+        return false;
+    }
+    let tol = 1e-9 * supplied.abs().max(1.0);
+    (supplied - emitted).abs() <= tol
 }
 
 /// Parse a full model answer, fail-closed.
@@ -870,5 +922,44 @@ INVALIDATION: execution cost: round trip 66 bp\nEVIDENCE_STATUS: complete";
                 size: Some(SizeTier::Small)
             }
         );
+    }
+}
+
+/// F5b/F5c: the two telemetry counters and the grounding law they are fed by.
+#[cfg(test)]
+mod f5_tests {
+    use super::*;
+
+    #[test]
+    fn the_drift_ledger_counts_truncation_and_ungrounded_prices_separately() {
+        let mut l = DriftLedger::new();
+        assert_eq!((l.truncated(), l.ungrounded_price()), (0, 0));
+        l.record_truncated();
+        l.record_ungrounded_price();
+        l.record_ungrounded_price();
+        assert_eq!(l.truncated(), 1);
+        assert_eq!(l.ungrounded_price(), 2);
+        // They are telemetry, NOT off-contract causes: the drift totals stay where they were.
+        assert_eq!(l.total(), 0);
+    }
+
+    #[test]
+    fn the_grounding_check_accepts_the_corpus_price_and_rejects_a_different_one() {
+        // The corpus's own pair, digit for digit (7,961/7,961 trained BUYs).
+        assert!(price_limit_is_grounded(
+            0.02445740498411998,
+            0.02445740498411998
+        ));
+        // Text/float representation noise is tolerated...
+        assert!(price_limit_is_grounded(
+            0.02445740498411998,
+            0.02445740498411998 + 1e-18
+        ));
+        // ...but a materially different limit is not the supplied price.
+        assert!(!price_limit_is_grounded(0.02445740498411998, 0.02));
+        assert!(!price_limit_is_grounded(1.0, 2.0));
+        // Non-finite on either side is not grounded (fail-closed).
+        assert!(!price_limit_is_grounded(f64::NAN, 1.0));
+        assert!(!price_limit_is_grounded(1.0, f64::INFINITY));
     }
 }

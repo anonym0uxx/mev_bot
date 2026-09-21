@@ -198,6 +198,27 @@ pub fn streaming_request_body(system: &str, user: &str) -> serde_json::Value {
     body
 }
 
+/// A completion plus the server's own stop reason (F5b).
+///
+/// `finish_reason="length"` means the server hit `max_tokens`: the text is a TRUNCATED
+/// completion, and a truncated decision parses exactly like a complete one — just shorter. That
+/// is why the reason travels with the text instead of being dropped.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Completion {
+    /// The message content, as returned.
+    pub text: String,
+    /// `choices[0].finish_reason`, when the server sent one.
+    pub finish_reason: Option<String>,
+}
+
+impl Completion {
+    /// Whether the server cut this completion at the token budget.
+    #[must_use]
+    pub fn truncated(&self) -> bool {
+        self.finish_reason.as_deref() == Some(seam::FINISH_REASON_LENGTH)
+    }
+}
+
 impl InferenceClient {
     /// Build a client against a llama-server OpenAI-compatible base URL
     /// (e.g. `http://127.0.0.1:8080`), with a per-request timeout.
@@ -220,6 +241,20 @@ impl InferenceClient {
     /// text. Fail-closed: any transport error, non-200, or malformed body is an
     /// `Err`.
     pub fn complete(&self, system: &str, user: &str) -> Result<String, InferenceError> {
+        self.complete_with_meta(system, user).map(|c| c.text)
+    }
+
+    /// [`complete`](Self::complete) **plus the server's own `finish_reason`** (F5b).
+    ///
+    /// The reason used to be discarded here, which made the one failure the caller cannot see
+    /// from the text — the server cutting the completion at `max_tokens`
+    /// (`finish_reason="length"`) — invisible: a truncated decision parses as a complete one,
+    /// just shorter. Callers that care (the decision path) record it on the drift ledger.
+    pub fn complete_with_meta(
+        &self,
+        system: &str,
+        user: &str,
+    ) -> Result<Completion, InferenceError> {
         let body = request_body(system, user);
 
         let resp = self
@@ -244,10 +279,16 @@ impl InferenceClient {
         // so it is Unparseable, and a retry would not change it.
         let v: serde_json::Value =
             serde_json::from_str(&text).map_err(|_| InferenceError::Unparseable(text.clone()))?;
-        v["choices"][0]["message"]["content"]
+        let content = v["choices"][0]["message"]["content"]
             .as_str()
             .map(|s| s.to_string())
-            .ok_or_else(|| InferenceError::Unparseable(text))
+            .ok_or_else(|| InferenceError::Unparseable(text))?;
+        Ok(Completion {
+            text: content,
+            finish_reason: v["choices"][0]["finish_reason"]
+                .as_str()
+                .map(str::to_string),
+        })
     }
 
     /// [`complete`](Self::complete) with transport retry. Transient failures are
@@ -338,6 +379,7 @@ impl InferenceClient {
             headline: Err(OffContract::NoDecisionLine),
             reader: Some(BufReader::new(reader)),
             buf: String::new(),
+            finish_reason: None,
         };
 
         // Drive the SSE stream until the headline is complete (or definitely broken).
@@ -350,9 +392,12 @@ impl InferenceClient {
                         break;
                     }
                 }
-                SseEvent::Done => {
+                SseEvent::Done(reason) => {
                     // Ended before a usable headline: NoDecisionLine (or the more
-                    // specific kind already recorded) is the honest answer.
+                    // specific kind already recorded) is the honest answer. The
+                    // reason still travels, so a cut-at-max_tokens stream is not
+                    // mistaken for a model that simply wrote nothing.
+                    sd.finish_reason = reason;
                     sd.reader = None;
                     break;
                 }
@@ -392,8 +437,9 @@ impl InferenceClient {
 enum SseEvent {
     /// A content delta (may be empty — a final `""` delta often precedes the stop).
     Delta(String),
-    /// The stream ended (`[DONE]`, a `finish_reason`, or EOF).
-    Done,
+    /// The stream ended: `[DONE]`, EOF, or a `finish_reason` frame — carrying the server's
+    /// stop reason when it sent one (`Some("length")` = cut at `max_tokens`, F5b).
+    Done(Option<String>),
     /// A blank line, a comment, or a malformed frame — carry on.
     Ignore,
 }
@@ -405,15 +451,15 @@ fn sse_event(line: &str) -> SseEvent {
         None => return SseEvent::Ignore,
     };
     if payload == "[DONE]" {
-        return SseEvent::Done;
+        return SseEvent::Done(None);
     }
     match serde_json::from_str::<serde_json::Value>(payload) {
         Ok(v) => {
-            if v.pointer("/choices/0/finish_reason")
+            if let Some(reason) = v
+                .pointer("/choices/0/finish_reason")
                 .and_then(|f| f.as_str())
-                .is_some()
             {
-                return SseEvent::Done;
+                return SseEvent::Done(Some(reason.to_string()));
             }
             match v
                 .pointer("/choices/0/delta/content")
@@ -435,9 +481,27 @@ pub struct StreamedDecision {
     headline: Result<Headline, OffContract>,
     reader: Option<BufReader<Box<dyn Read + Send + Sync>>>,
     buf: String,
+    /// The server's stop reason, once a `finish_reason` frame has been seen (F5b).
+    finish_reason: Option<String>,
 }
 
 impl StreamedDecision {
+    /// The server's `finish_reason`, once the stream has reported one.
+    ///
+    /// `Some("length")` means the completion was cut at `max_tokens` — the headline may still
+    /// have arrived in time to act on, but the reasoning tail (and any field after the cut) is
+    /// missing, which is otherwise invisible.
+    #[must_use]
+    pub fn finish_reason(&self) -> Option<&str> {
+        self.finish_reason.as_deref()
+    }
+
+    /// Whether the server cut this completion at the token budget (F5b).
+    #[must_use]
+    pub fn truncated(&self) -> bool {
+        self.finish_reason.as_deref() == Some(seam::FINISH_REASON_LENGTH)
+    }
+
     /// The headline (action + size-on-`BUY`) parsed from the first-arrived tokens.
     ///
     /// `Err` means the stream ended or emitted a definitely-untrained token before the
@@ -455,7 +519,12 @@ impl StreamedDecision {
         while self.reader.is_some() {
             match self.next_event()? {
                 SseEvent::Delta(d) => self.buf.push_str(&d),
-                SseEvent::Done => self.reader = None,
+                SseEvent::Done(reason) => {
+                    if reason.is_some() {
+                        self.finish_reason = reason;
+                    }
+                    self.reader = None;
+                }
                 SseEvent::Ignore => {}
             }
         }
@@ -477,7 +546,7 @@ impl StreamedDecision {
                 .map_err(|e| InferenceError::Transport(e.to_string()))?;
             if n == 0 {
                 self.reader = None;
-                return Ok(SseEvent::Done);
+                return Ok(SseEvent::Done(None));
             }
             let line = line.trim_end_matches(['\r', '\n']);
             if line.is_empty() {
@@ -485,7 +554,7 @@ impl StreamedDecision {
             }
             match sse_event(line) {
                 SseEvent::Ignore => continue,
-                ev @ (SseEvent::Delta(_) | SseEvent::Done) => return Ok(ev),
+                ev @ (SseEvent::Delta(_) | SseEvent::Done(_)) => return Ok(ev),
             }
         }
     }
@@ -860,5 +929,47 @@ mod retry_tests {
             .unwrap();
         assert!(text.contains("DECISION: BUY"));
         handle.join().unwrap();
+    }
+}
+
+/// F5b: the truncation signal must survive the SSE/JSON boundary — the reason used to be
+/// dropped on the floor, which made a `max_tokens` cut indistinguishable from a finished stop.
+#[cfg(test)]
+mod f5b_tests {
+    use super::*;
+
+    #[test]
+    fn a_finish_reason_frame_carries_the_reason_and_a_done_marker_does_not() {
+        match sse_event("data: {\"choices\":[{\"delta\":{\"content\":\"DECISION: BUY\"}}]}") {
+            SseEvent::Delta(d) => assert_eq!(d, "DECISION: BUY"),
+            _ => panic!("a content delta must be a Delta"),
+        }
+        match sse_event("data: {\"choices\":[{\"finish_reason\":\"length\"}]}") {
+            SseEvent::Done(Some(r)) => assert_eq!(r, "length"),
+            _ => panic!("the stop reason must travel with the Done"),
+        }
+        match sse_event("data: [DONE]") {
+            SseEvent::Done(None) => {}
+            _ => panic!("[DONE] is a reasonless stop"),
+        }
+    }
+
+    #[test]
+    fn a_completion_knows_whether_it_was_cut_at_the_token_budget() {
+        let cut = Completion {
+            text: "DECISION: BUY".into(),
+            finish_reason: Some("length".into()),
+        };
+        assert!(cut.truncated());
+        assert!(!Completion {
+            text: "x".into(),
+            finish_reason: Some("stop".into())
+        }
+        .truncated());
+        assert!(!Completion {
+            text: "x".into(),
+            finish_reason: None
+        }
+        .truncated());
     }
 }
