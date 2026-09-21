@@ -51,6 +51,7 @@ pub mod bundle_assemble;
 pub mod config;
 pub mod cost_model;
 pub mod creator_history;
+pub mod curve_annotation;
 pub mod curve_authenticity;
 pub mod curve_depth;
 pub mod curve_fill;
