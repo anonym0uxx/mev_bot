@@ -56,6 +56,9 @@ pub enum AssemblyRefusal {
     TokenLegUnknown,
     /// The state line and the enrichment block disagree about whether this mint has any history.
     NoHistory,
+    /// The SIZE OPTIONS depth is unpriceable, so the prompt would say `pool depth na` — a form that
+    /// occurs 0 times in the 132,326 sized rows of the c12 corpus (F1).
+    DepthUnknown,
 }
 
 impl AssemblyRefusal {
@@ -67,6 +70,7 @@ impl AssemblyRefusal {
             AssemblyRefusal::IdentityUnknown => "bundle_identity_unknown",
             AssemblyRefusal::TokenLegUnknown => "bundle_token_leg_unknown",
             AssemblyRefusal::NoHistory => "bundle_no_history",
+            AssemblyRefusal::DepthUnknown => "bundle_depth_unknown",
         }
     }
 }
@@ -137,6 +141,27 @@ pub fn assemble(inputs: &BundleInputs<'_>) -> Result<DecisionBundle, AssemblyRef
     // from. Refused rather than rendered as a bundle whose blocks disagree.
     if s.n_prior_trades == 0 || inputs.enriched.n_buys_at_t + inputs.enriched.n_sells_at_t == 0 {
         return Err(AssemblyRefusal::NoHistory);
+    }
+    // F1 — THE VALUE-BRANCH GATE, FAIL CLOSED ON NEVER-TRAINED INPUTS.
+    //
+    // Measured on the c12 corpus (215,711 rows, train+validation+examination, 2026-09-21):
+    //   curve_present=false            0        <- unreachable here: `venue != "unknown"` below,
+    //   no_prior_flow=true             0           and `eligibility` refuses VenueUnknown
+    //   price_lamports_per_raw_token=absent  0  <- `serve` has no price without prior trades, so
+    //   evidence_status=partial        0           `eligibility` refuses FewPriorTrades first
+    //   pool depth na                  0 (of 132,326 rows carrying SIZE OPTIONS)
+    //   amm_reserves=absent    59,995  <- TRAINED: must NOT be refused
+    //   curve_reserves=absent      680 <- TRAINED: must NOT be refused
+    //
+    // Three of F1's five states cannot reach this point at all (they are refused upstream by
+    // `state_ledger::eligibility`), and the two reserve-absence forms are in-distribution, so
+    // refusing them would cut most of the tradeable population. That leaves exactly one
+    // live-reachable, never-trained input: an unpriceable SIZE OPTIONS depth. The model has never
+    // been asked to size a clip without a depth, so it is refused rather than rendered as `na`.
+    // (`evidence_status=partial` is deliberately NOT a refusal here: this module measured that rule
+    // firing on 11 of 12 real corpus rows — a shutdown, not a gate.)
+    if inputs.size_depth_sol.is_none() {
+        return Err(AssemblyRefusal::DepthUnknown);
     }
     // THE BAND, AND WHY THIS DOES NOT REFUSE. The corpus drops trades outside 10x its mint's
     // median price, computed over the WHOLE run — a lookahead. The ledger applies the same hygiene
@@ -407,5 +432,28 @@ mod tests {
         // The corpus renders an unsourced mcap as `na`, which is a different prompt from `0`.
         let rendered = render_decision(&b);
         assert!(rendered.contains("mcap_sol_at_t=na"), "{rendered}");
+    }
+
+    /// F1: an unpriceable depth is the ONE live-reachable, never-trained input that can reach this
+    /// module — the other four states F1 names are refused upstream, and the two reserve-absence
+    /// forms are in-distribution (see the guard's measurement). It must fail closed with its own
+    /// cause, and a priced depth must keep assembling.
+    #[test]
+    fn an_unpriceable_depth_refuses_rather_than_rendering_pool_depth_na() {
+        let (s, e, f) = (snapshot(), enriched(), flow());
+        let mut i = inputs(&s, &e, &f);
+        i.size_depth_sol = Some(62.5);
+        assert!(assemble(&i).is_ok(), "a priced depth still assembles");
+
+        i.size_depth_sol = None;
+        assert_eq!(
+            assemble(&i).unwrap_err(),
+            AssemblyRefusal::DepthUnknown,
+            "an unknown depth is out-of-distribution and must be refused, not rendered as `na`"
+        );
+        assert_eq!(
+            AssemblyRefusal::DepthUnknown.as_str(),
+            "bundle_depth_unknown"
+        );
     }
 }

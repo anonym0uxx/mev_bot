@@ -96,13 +96,13 @@
 use pump_quant_app::bundle_assemble::{assemble, BundleInputs};
 use pump_quant_app::creator_history::CreatorHistory;
 use pump_quant_app::curve_annotation::{
-    AmmAttribution, AmmObservation, AnnotationState, CurveObservation,
+    AmmAttribution, AmmObservation, AnnotationState, CurveObservation, ReserveView,
 };
 use pump_quant_app::enrichment::{enrich, EnrichmentTrade};
 use pump_quant_app::flow_feed::{flow_state_from_aggregates, zero_flow_state};
 use pump_quant_app::state_ledger::{StateLedger, StateTrade, VenueLabel};
 use pump_quant_market_state::flow_reducer::FlowAggregates;
-use pump_quant_proposal::decision::{AmmState, CurveState, DevHistoryDecision};
+use pump_quant_proposal::decision::DevHistoryDecision;
 use pump_quant_proposal::{render_decision, FlowState};
 use serde_json::Value;
 
@@ -207,12 +207,16 @@ fn flow_for_case(case: &Value) -> (FlowState, bool) {
 }
 
 /// The reserve plane driven through its producer: one observation per plane, through
-/// `AnnotationState::{observe_curve, set_attribution, observe_amm}` and then
-/// `{curve_state, amm_state}` — never a `CurveState`/`AmmState` lifted from the corpus's text.
+/// `AnnotationState::{observe_curve, set_attribution, observe_amm}` and then `reserve_view` —
+/// never a `CurveState`/`AmmState` lifted from the corpus's text.
+///
+/// `reserve_view` is the producer the SIZE OPTIONS depth comes from as well, so the bundle is
+/// built with the producer's own depth rather than a placeholder: `bundle_assemble` now refuses an
+/// unpriceable depth (F1), and a `None` here would refuse every case instead of grading one.
 ///
 /// The fixture carries the ATTRIBUTION facts for the absent-branch rows (`never_graduated`), so the
 /// refusal is produced by the same rule the corpus applied rather than hard-coded here.
-fn curve_and_amm_for_case(case: &Value, mint: &[u8; 32], t_dec: i64) -> (CurveState, AmmState) {
+fn reserve_view_for_case(case: &Value, mint: &[u8; 32], t_dec: i64) -> ReserveView {
     let mut st = AnnotationState::new();
     if let Some(obs) = case["curve_line"]["input"].as_object() {
         st.observe_curve(
@@ -258,7 +262,7 @@ fn curve_and_amm_for_case(case: &Value, mint: &[u8; 32], t_dec: i64) -> (CurveSt
             },
         );
     }
-    (st.curve_state(mint, t_dec), st.amm_state(mint, t_dec))
+    st.reserve_view(mint, t_dec)
 }
 
 /// Assemble and render one reading of a case.
@@ -357,7 +361,7 @@ fn render_reading(
     // this harness now grades; a case whose inputs are not recoverable carries `null` inputs and
     // the corresponding line is never compared (it is counted instead).
     let (flow, flow_no_prior) = flow_for_case(case);
-    let (curve, amm) = curve_and_amm_for_case(case, &mint, t_dec);
+    let view = reserve_view_for_case(case, &mint, t_dec);
     let bundle = assemble(&BundleInputs {
         snapshot: &snapshot,
         enriched: &snapped,
@@ -367,11 +371,11 @@ fn render_reading(
         mcap_source: &mcap_source,
         flow: &flow,
         flow_no_prior,
-        curve,
-        amm,
+        curve: view.curve,
+        amm: view.amm,
         dev,
-        size_depth_sol: None,
-        size_amm: false,
+        size_depth_sol: view.size_depth_sol,
+        size_amm: view.size_amm,
     })
     .map_err(|e| Unserved::Refused(e.as_str().to_string()))?;
 
