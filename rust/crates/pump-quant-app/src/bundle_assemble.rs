@@ -121,7 +121,7 @@ pub fn assemble(inputs: &BundleInputs<'_>) -> Result<DecisionBundle, AssemblyRef
     }
     // THE BAND, AND WHY THIS DOES NOT REFUSE. The corpus drops trades outside 10x its mint's
     // median price, computed over the WHOLE run — a lookahead. The ledger applies the same hygiene
-    // causally (see `banded_prints_flagged`), so `s` is the closest lookahead-free reading of the
+    // causally (see `banded_prints_dropped`), so `s` is the closest lookahead-free reading of the
     // block the model trained on. Refusing when the counter is non-zero was tried and rejected by
     // measurement: it fired on 11 of 12 real corpus rows, which is not a gate but a shutdown. The
     // residual gap (boundary trades the two rules classify differently) is reported as telemetry
@@ -209,7 +209,7 @@ mod tests {
             complete: true,
             identity_known: true,
             token_leg_known: true,
-            banded_prints_flagged: 0,
+            banded_prints_dropped: 0,
         }
     }
 

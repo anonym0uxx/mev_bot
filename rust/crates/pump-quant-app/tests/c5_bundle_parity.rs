@@ -33,7 +33,30 @@
 //!    concentration window keys on a different span, so the shares are computed over the wrong
 //!    population.
 //!
-//! ## ROOT CAUSE of 2, 3, 4 and 6, found in the producer (2026-09-20)
+//! ## ROOT CAUSE (confirmed 2026-09-20, after two wrong answers)
+//!
+//! The band IS the cause — and the mechanism is worse than "outlier removal". On case 0 the three
+//! excluded buys sit at indices **0, 1 and 2**: the mint's EARLIEST trades, priced 0.0208x and
+//! 0.000114x its median. The corpus's median is taken over the whole run, so it is dominated by
+//! LATER, higher prices, and its 10x band therefore deletes the mint's launch-era trades
+//! systematically. Dropping exactly those three leaves the corpus's own `buy_volume_lamports`
+//! (`59095663715`) to the digit.
+//!
+//! A live ledger cannot reproduce that: at index 0 there is no reference yet, and there never can be.
+//! The corpus's state block for a mint's early clocks is therefore UNDERSERVABLE, by construction,
+//! from a causal reading — which makes it a corpus-side defect to rebuild (deferred: a rebuild forces
+//! an SFT redo), not a live-path bug.
+//!
+//! Two answers that were WRONG and are recorded so they are not retried: (1) "the corpus ages from
+//! the launch" — it uses `tt[0]`, same as us; (2) "the band is not the cause, since it flags 27 trades
+//! while the gap is 3" — that count came from a PREFIX median, whereas the corpus uses the WHOLE-run
+//! median, and the two classify different trades.
+//!
+//! The live ledger keeps a CAUSAL `BAND_FACTOR` (1_000x) hygiene band — measured: 10x drops a quarter
+//! of all trades, 1_000x drops the mis-resolved legs and spares genuine moves (0.01%). It cannot and
+//! does not close this gap.
+//!
+//! ## HISTORY — the earlier (superseded) note claimed the band explained all four
 //!
 //! `build_states_v2` lines 160-166 drop every trade whose price is outside `[med/10, med*10]`,
 //! where `med` is the mint's median price over its WHOLE run — **non-causal lookahead**. That one

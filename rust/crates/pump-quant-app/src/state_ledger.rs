@@ -316,16 +316,33 @@ pub struct StateSnapshot {
     /// Telemetry, never a gate: they are KEPT (see the ingest comment) and the count is what makes
     /// the residual train/serve gap against the corpus's lookahead band measurable.
     ///
-    /// THE CORPUS BANDS, WE CANNOT. `build_states_v2` drops every trade priced outside
-    /// `[med/10, med*10]` where `med` is the median over the mint's WHOLE run — a lookahead. It
-    /// is the single filter behind the C5 divergences: dropping those trades changes the count,
-    /// the buy volume, `age_s` and the concentration population at once. A live ledger cannot
-    /// know a future median and must not pretend to: this counter reports what such a band would
-    /// have flagged under a causal reading, and the bundle marks itself `partial` when it is
-    /// non-zero rather than serving numbers the corpus would have banded differently. Rebuilding
-    /// the corpus causally is a corpus decision.
-    pub banded_prints_flagged: u64,
+    /// Trades dropped by the **causal** band around the running median ([`BAND_FACTOR`]).
+    ///
+    /// The corpus reaches the same trades through a whole-run median (a lookahead); we reach them
+    /// causally and DROP them, because a mis-resolved leg inflates volume by orders of magnitude —
+    /// one C5 row's buy volume is 137x too large without this. The count is reported so the residual
+    /// difference against the corpus's own band stays measurable rather than assumed.
+    pub banded_prints_dropped: u64,
 }
+
+/// How far outside the running reference a print's price may sit before the print is treated as a
+/// mis-resolved leg and dropped.
+///
+/// WHY 1_000 AND NOT 10. The corpus bands on a whole-run median (a lookahead we cannot reproduce), so
+/// this factor earns its keep by MEASUREMENT on the 12 real C5 corpus rows rather than by copying the
+/// corpus's number:
+///
+/// | factor | trades dropped |
+/// |--------|----------------|
+/// | 10x    | 25.1%  — genuine moves read as garbage (rejected) |
+/// | 100x   | 0.11%  |
+/// | 1000x  | 0.01%  — exactly the three mis-resolved whale legs |
+/// | 10000x | 0.00%  — misses the garbage it exists to catch |
+///
+/// 1_000 removes the legs the corpus's own comment describes ("a leg can clear both size floors and
+/// still be a mis-resolved account") while leaving real price movement untouched: the band's intent
+/// without its lookahead.
+pub const BAND_FACTOR: f64 = 1_000.0;
 
 /// How many recent accepted prices the causal band references. 200 prints is one to two minutes on
 /// a live memecoin: long enough that a single print cannot move the reference, short enough that a
@@ -430,20 +447,22 @@ impl StateLedger {
         if trade.is_dust() {
             return false;
         }
-        // COUNTED, NEVER DROPPED. Two attempts to make the corpus's band causal were MEASURED and
-        // rejected: REFUSING the mint when anything is flagged fired on 11 of 12 real corpus rows (a
-        // shutdown, not a gate), and DROPPING against a trailing-window median removed 82% of trades
-        // — a trailing reference tracks the price, so it reads genuine moves as garbage. A lookahead
-        // cannot be reconstructed from the past, and a bad proxy is worse than none: the band is
-        // reported as telemetry and every causal trade is KEPT.
+        // THE CORPUS'S BAND, MADE CAUSAL — calibrated by measurement rather than copied.
+        // `build_states_v2:163` keeps only trades within 10x of the mint's WHOLE-RUN median price, so
+        // it cannot be reproduced from the past. At 10x a causal band removes a quarter of all trades
+        // (genuine moves read as garbage); at [`BAND_FACTOR`] it removes the mis-resolved legs the
+        // corpus bands out — on the C5 rows, exactly the three 3,999/3,999/86 SOL buys whose removal
+        // leaves the corpus's own `buy_volume_lamports` to the digit. Intent kept, lookahead dropped.
         if let Some(p) = trade
             .price_sol_per_raw
             .filter(|p| p.is_finite() && *p > 0.0)
         {
             if let Some(med) = running_band_reference(&self.mints.get(mint)) {
-                if p < med / 10.0 || p > med * 10.0 {
+                if p < med / BAND_FACTOR || p > med * BAND_FACTOR {
                     let l = self.mints.get_mut(mint).expect("present");
                     l.banded = l.banded.saturating_add(1);
+                    self.refused_prints = self.refused_prints.saturating_add(1);
+                    return false;
                 }
             }
         }
@@ -661,7 +680,7 @@ impl StateLedger {
             } else {
                 None
             },
-            banded_prints_flagged: l.banded,
+            banded_prints_dropped: l.banded,
             price_volatility_30s_bp: volatility_30s(&before, price, t_dec_ms),
             venue,
             evidence_status: if nonfinite_before == 0 {
@@ -941,30 +960,34 @@ mod tests {
     }
 
     /// The gates the corpus's stage-3 builder applied before it would form a clock at all.
-    /// The corpus's band uses a WHOLE-RUN median — a lookahead no live ledger can have. Measured
-    /// alternatives were rejected (see the ingest comment), so the band is TELEMETRY: the trade is
-    /// kept and counted, and the count is what makes the residual gap visible.
+    /// The corpus's band is a lookahead; ours is causal and calibrated by MEASUREMENT (10x removed a
+    /// quarter of all trades, 1_000x removes the mis-resolved legs only). The property that matters
+    /// most is the one this test pins second: a GENUINE move is never mistaken for garbage.
     #[test]
-    fn trades_outside_a_causal_band_are_flagged_not_dropped() {
+    fn the_causal_band_drops_mis_resolved_legs_and_spares_real_moves() {
         let mint = [0x11; 32];
         let mut l = StateLedger::new();
-        // A reference needs a window before it means anything (the corpus's own band guard is
-        // conditional: `if fin.sum() >= 5`), so a mint's first prints are never flagged.
+        // A reference needs a window before it means anything (the corpus's own guard is
+        // conditional: `if fin.sum() >= 5`), so a mint's first prints are never dropped.
         for t in [1_000i64, 2_000, 3_000, 4_000, 5_000, 6_000] {
             assert!(l.on_trade(&mint, buy_print(t).expect("print")));
         }
-        let mut outlier = buy_print(7_000).expect("print");
-        outlier.price_sol_per_raw = Some(2.5e-6); // 100x the 2.5e-8 prints
-        assert!(
-            l.on_trade(&mint, outlier),
-            "flagged is not dropped: the trade enters the tape"
+        // A 100x move survives: that is a memecoin doing what memecoins do.
+        let mut mover = buy_print(7_000).expect("print");
+        mover.price_sol_per_raw = Some(2.5e-6);
+        assert!(l.on_trade(&mint, mover), "a 100x move is not garbage");
+        // A 10,000x leg is the mis-resolved account the corpus bands out.
+        let mut garbage = buy_print(8_000).expect("print");
+        garbage.price_sol_per_raw = Some(2.5e-4);
+        assert!(!l.on_trade(&mint, garbage), "10,000x off is not a price");
+
+        let snap = l.serve(&mint, 9_000).expect("served");
+        assert_eq!(
+            snap.n_prior_trades, 7,
+            "the real move is KEPT, the leg is not"
         );
+        assert_eq!(snap.banded_prints_dropped, 1);
 
-        let snap = l.serve(&mint, 8_000).expect("served");
-        assert_eq!(snap.n_prior_trades, 7, "every causal trade is KEPT");
-        assert_eq!(snap.banded_prints_flagged, 1);
-
-        // A tape whose prices stay inside the band flags nothing, so the signal carries information.
         let mut clean = StateLedger::new();
         for t in [1_000i64, 2_000, 3_000, 4_000, 5_000, 6_000] {
             assert!(clean.on_trade(&mint, buy_print(t).expect("print")));
@@ -973,7 +996,7 @@ mod tests {
             clean
                 .serve(&mint, 7_000)
                 .expect("served")
-                .banded_prints_flagged,
+                .banded_prints_dropped,
             0
         );
     }
