@@ -22,7 +22,10 @@
 //! every emitted value; the moment a served feature reads them, this adapter must take them
 //! from the wire instead.
 
-use pump_quant_market_state::flow_reducer::{FlowEvent, Side};
+use pump_quant_market_state::flow_reducer::{
+    FlowAggregates, FlowEvent, FlowOutcome, FlowReducer, MintId, Side,
+};
+use pump_quant_proposal::FlowState;
 
 /// Build the reducer's view of one live print, or `None` when the print cannot honestly
 /// contribute.
@@ -69,6 +72,71 @@ pub fn flow_event_from_market_trade(
         fee_lamports,
         cu_consumed,
     })
+}
+
+/// The bundle's flow block, in the corpus's own units.
+///
+/// # The wiring this closes
+///
+/// `FlowReducer` had a producer and `render_live_flow_state` had a renderer, but nothing joined
+/// them to the bundle: the assembler took `flow` as an input and no caller ever supplied one, so
+/// the `LIVE FLOW STATE` line would have been built from whatever the caller happened to have —
+/// in practice nothing. This is the join.
+///
+/// Unit conversion is `to_corpus_values`' job and stays there: the reducer carries millionths and
+/// tenths so the arithmetic is integer-exact, and the corpus's `round(x, 6)` doubles are what the
+/// renderer prints.
+#[must_use]
+pub fn flow_state_from_aggregates(a: &FlowAggregates) -> FlowState {
+    let cv = a.to_corpus_values();
+    FlowState {
+        entrants_60s: u64::from(a.entrants_60s),
+        entrants_300s: u64::from(a.entrants_300s),
+        net_flow_sol_300s: cv.net_flow_sol_300s,
+        fresh_wallet_share_300s: cv.fresh_wallet_share_300s,
+        flow_lookback_d: cv.flow_lookback_d,
+        sniper_share_300s: cv.sniper_share_300s,
+        bot_uniform_share_300s: cv.bot_uniform_share_300s,
+        smart_entrants_300s: u64::from(a.smart_entrants_300s),
+        smart_net_flow_sol_300s: cv.smart_net_flow_sol_300s,
+        coentry_wallets_300s: u64::from(a.coentry_wallets_300s),
+        creator_trading_own_mint: a.creator_trading_own_mint,
+        entrant_fee_p90_lamports: a.entrant_fee_p90_lamports,
+        entrant_cu_p50: a.entrant_cu_p50,
+    }
+}
+
+/// The `(flow, no_prior_flow)` pair the bundle takes, straight from the live reducer.
+///
+/// `NoPriorFlow` returns a zero-filled state **with the flag set**: the renderer prints the single
+/// `no_prior_flow=true` line, so the zeros are never shown and never read as a real market. That
+/// distinction is the whole reason the flag travels separately from the numbers.
+#[must_use]
+pub fn flow_for_bundle(reducer: &FlowReducer, mint: &MintId, t_dec_ms: i64) -> (FlowState, bool) {
+    match reducer.serve(mint, t_dec_ms) {
+        FlowOutcome::NoPriorFlow => (zero_flow_state(), true),
+        FlowOutcome::Aggregates(a) => (flow_state_from_aggregates(&a), false),
+    }
+}
+
+/// The all-zero state, used only where the `no_prior_flow` marker overrides rendering.
+#[must_use]
+pub fn zero_flow_state() -> FlowState {
+    FlowState {
+        entrants_60s: 0,
+        entrants_300s: 0,
+        net_flow_sol_300s: 0.0,
+        fresh_wallet_share_300s: None,
+        flow_lookback_d: 0.0,
+        sniper_share_300s: None,
+        bot_uniform_share_300s: None,
+        smart_entrants_300s: 0,
+        smart_net_flow_sol_300s: 0.0,
+        coentry_wallets_300s: 0,
+        creator_trading_own_mint: false,
+        entrant_fee_p90_lamports: None,
+        entrant_cu_p50: None,
+    }
 }
 
 #[cfg(test)]
