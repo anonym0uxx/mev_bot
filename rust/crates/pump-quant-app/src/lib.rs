@@ -47,6 +47,7 @@ pub mod attention;
 pub mod authority;
 pub mod brain;
 pub mod brain_analysis;
+pub mod bundle_assemble;
 pub mod config;
 pub mod cost_model;
 pub mod curve_authenticity;
