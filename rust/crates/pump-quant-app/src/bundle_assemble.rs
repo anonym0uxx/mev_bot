@@ -126,7 +126,16 @@ pub fn assemble(inputs: &BundleInputs<'_>) -> Result<DecisionBundle, AssemblyRef
         last_trade_age_s: PyNum::Float(s.last_trade_age_s),
         venue: inputs.venue.to_string(),
         curve_present: !matches!(inputs.curve, CurveState::Absent { .. }),
-        evidence_status: s.evidence_status.clone(),
+        // The corpus bands its own tape on a whole-run median (see the ledger's
+        // `prices_outside_causal_band`). We cannot reproduce that causally, so when such trades are
+        // present the block says `partial` — the corpus's own word for a block that is not exactly
+        // what it would have written — rather than claiming `complete` over numbers it would have
+        // banded differently.
+        evidence_status: if s.prices_outside_causal_band > 0 {
+            "partial".to_string()
+        } else {
+            s.evidence_status.clone()
+        },
         n_prior_trades: s.n_prior_trades as i64,
         buy_count: s.buy_count as i64,
         sell_count: s.sell_count as i64,
@@ -196,6 +205,7 @@ mod tests {
             complete: true,
             identity_known: true,
             token_leg_known: true,
+            prices_outside_causal_band: 0,
         }
     }
 

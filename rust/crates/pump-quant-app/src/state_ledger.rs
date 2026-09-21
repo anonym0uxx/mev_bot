@@ -311,6 +311,17 @@ pub struct StateSnapshot {
     /// Whether every print in the concentration window carried a token leg that could be
     /// cleared against [`MIN_TOKENS_RAW`].
     pub token_leg_known: bool,
+    /// Trades whose price sits outside a **causal** 10x band around the running median.
+    ///
+    /// THE CORPUS BANDS, WE CANNOT. `build_states_v2` drops every trade priced outside
+    /// `[med/10, med*10]` where `med` is the median over the mint's WHOLE run — a lookahead. It
+    /// is the single filter behind the C5 divergences: dropping those trades changes the count,
+    /// the buy volume, `age_s` and the concentration population at once. A live ledger cannot
+    /// know a future median and must not pretend to: this counter reports what such a band would
+    /// have flagged under a causal reading, and the bundle marks itself `partial` when it is
+    /// non-zero rather than serving numbers the corpus would have banded differently. Rebuilding
+    /// the corpus causally is a corpus decision.
+    pub prices_outside_causal_band: u64,
 }
 
 #[derive(Debug, Default)]
@@ -596,6 +607,7 @@ impl StateLedger {
             } else {
                 None
             },
+            prices_outside_causal_band: outside_causal_band(&before),
             price_volatility_30s_bp: volatility_30s(&before, price, t_dec_ms),
             venue,
             evidence_status: if nonfinite_before == 0 {
@@ -632,6 +644,31 @@ fn ret_bp(before: &[&StateTrade], price: f64, t_dec_ms: i64, win_s: i64) -> Opti
 }
 
 /// `build_states_v2._episode`'s volatility block — population std of consecutive log returns.
+/// How many strictly-prior trades sit outside a CAUSAL 10x band around the running median.
+///
+/// The corpus's band uses the whole-run median (a lookahead) and DROPS those trades; we keep every
+/// trade and count them instead, so the divergence is visible rather than silent. The running
+/// median is over the trades before the clock only — the closest causal reading of a rule whose
+/// author had the whole series in hand.
+fn outside_causal_band(before: &[&StateTrade]) -> u64 {
+    let mut prices: Vec<f64> = before
+        .iter()
+        .filter_map(|t| t.price_sol_per_raw.filter(|p| p.is_finite() && *p > 0.0))
+        .collect();
+    // A median over fewer than three prints is not a reference; the corpus's own band guard is
+    // conditional, so refuse to invent one.
+    if prices.len() < 3 {
+        return 0;
+    }
+    prices.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let med = prices[prices.len() / 2];
+    if !(med > 0.0) {
+        return 0;
+    }
+    let (lo, hi) = (med / 10.0, med * 10.0);
+    prices.iter().filter(|p| **p < lo || **p > hi).count() as u64
+}
+
 fn volatility_30s(before: &[&StateTrade], _price: f64, t_dec_ms: i64) -> Option<f64> {
     if before.len() < MIN_TRADES_FOR_VOL {
         return None;
@@ -875,6 +912,37 @@ mod tests {
     }
 
     /// The gates the corpus's stage-3 builder applied before it would form a clock at all.
+    /// The corpus bands its tape on a WHOLE-RUN median — a lookahead. We cannot reproduce that,
+    /// so the outlier is KEPT and COUNTED, which is what makes the divergence visible instead of
+    /// silently serving numbers the corpus would have banded differently.
+    #[test]
+    fn trades_outside_a_causal_band_are_counted_not_dropped() {
+        let mint = [0x11; 32];
+        let mut l = StateLedger::new();
+        for t in [1_000i64, 2_000, 3_000] {
+            assert!(l.on_trade(&mint, buy_print(t).expect("print")));
+        }
+        let mut outlier = buy_print(4_000).expect("print");
+        outlier.price_sol_per_raw = Some(2.5e-6); // 100x the 2.5e-8 prints
+        assert!(l.on_trade(&mint, outlier));
+
+        let snap = l.serve(&mint, 5_000).expect("served");
+        assert_eq!(snap.n_prior_trades, 4, "the outlier is KEPT, never dropped");
+        assert_eq!(snap.prices_outside_causal_band, 1);
+        // A clean tape reports zero, so the flag carries information rather than always firing.
+        let mut clean = StateLedger::new();
+        for t in [1_000i64, 2_000, 3_000] {
+            assert!(clean.on_trade(&mint, buy_print(t).expect("print")));
+        }
+        assert_eq!(
+            clean
+                .serve(&mint, 4_000)
+                .expect("served")
+                .prices_outside_causal_band,
+            0
+        );
+    }
+
     #[test]
     fn the_corpus_clock_gates_are_enforced() {
         let mut ledger = StateLedger::new();

@@ -33,6 +33,26 @@
 //!    concentration window keys on a different span, so the shares are computed over the wrong
 //!    population.
 //!
+//! ## ROOT CAUSE of 2, 3, 4 and 6, found in the producer (2026-09-20)
+//!
+//! `build_states_v2` lines 160-166 drop every trade whose price is outside `[med/10, med*10]`,
+//! where `med` is the mint's median price over its WHOLE run — **non-causal lookahead**. That one
+//! filter explains all four:
+//!
+//! * 3 extra buys: case 0's three whale buys are priced outside the band and are dropped upstream.
+//! * `buy_volume_lamports` 8.14e12 vs 5.91e10: those same three carry ~8.08e12 of the "volume", so
+//!   dropping them collapses it. **Sells match to the digit** because no sell fell outside the band.
+//! * `age_s` 664.291 vs 660.0: dropping early trades moves `tt[0]`, the age basis both sides share.
+//! * `top1_trader_share` 0.979 vs 0.09326: banding changes WHICH trades populate the concentration
+//!   window, so the shares are computed over a different population.
+//!
+//! The live path must NOT reproduce the band — it cannot know a future median, and a rule that
+//! peeks at the full series is exactly the lookahead the causal ledger exists to refuse. So the
+//! treatment is to SURFACE it: the ledger counts trades outside a *causal* (running) 10x band, and
+//! the assembler marks the block `partial` rather than claiming `complete` over numbers the corpus
+//! would have banded differently. Rebuilding the corpus causally is a corpus decision, not a silent
+//! re-derivation here.
+//!
 //! Test-side placeholders (NOT production defects, and excluded from the verdict): `curve_present`
 //! (the fixture supplies `CurveState::Absent`, so `curve_present=False` is the harness talking) and
 //! `unique_traders` (+2 — a consequence of 4's extra trades).
