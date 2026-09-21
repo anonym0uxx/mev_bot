@@ -95,8 +95,13 @@
 
 use pump_quant_app::bundle_assemble::{assemble, BundleInputs};
 use pump_quant_app::creator_history::CreatorHistory;
+use pump_quant_app::curve_annotation::{
+    AmmAttribution, AmmObservation, AnnotationState, CurveObservation,
+};
 use pump_quant_app::enrichment::{enrich, EnrichmentTrade};
+use pump_quant_app::flow_feed::{flow_state_from_aggregates, zero_flow_state};
 use pump_quant_app::state_ledger::{StateLedger, StateTrade, VenueLabel};
+use pump_quant_market_state::flow_reducer::FlowAggregates;
 use pump_quant_proposal::decision::{AmmState, CurveState, DevHistoryDecision};
 use pump_quant_proposal::{render_decision, FlowState};
 use serde_json::Value;
@@ -157,6 +162,103 @@ fn mcap_from_line(line: &str) -> (Option<f64>, String) {
 enum Unserved {
     Refused(String),
     Ineligible(String),
+}
+
+/// The `LIVE FLOW STATE` block driven through its producer: the reducer's integer carries are
+/// rebuilt from the fixture's corpus doubles, `flow_state_from_aggregates` maps them, and the
+/// bundle renders the result — the same round trip `flow_state_parity` grades on its own.
+fn flow_for_case(case: &Value) -> (FlowState, bool) {
+    let block = &case["flow_state"];
+    let Some(inputs) = block["inputs"].as_object() else {
+        return (zero_flow_state(), false);
+    };
+    if inputs.get("no_prior_flow").and_then(Value::as_bool) == Some(true) {
+        return (zero_flow_state(), true);
+    }
+    let ints = &inputs["ints"];
+    let floats = &inputs["floats"];
+    let micro = |k: &str| -> Option<u32> { floats[k].as_f64().map(|v| (v * 1e6).round() as u32) };
+    let agg = FlowAggregates {
+        entrants_60s: ints["entrants_60s"].as_u64().expect("entrants_60s") as u32,
+        entrants_300s: ints["entrants_300s"].as_u64().expect("entrants_300s") as u32,
+        net_flow_sol_300s_micro: (floats["net_flow_sol_300s"].as_f64().expect("net_flow") * 1e6)
+            .round() as i64,
+        fresh_wallet_share_300s_micro: micro("fresh_wallet_share_300s"),
+        flow_lookback_d_tenths: (floats["flow_lookback_d"].as_f64().expect("lookback") * 10.0)
+            .round() as u32,
+        sniper_share_300s_micro: micro("sniper_share_300s"),
+        bot_uniform_share_300s_micro: micro("bot_uniform_share_300s"),
+        smart_entrants_300s: ints["smart_entrants_300s"]
+            .as_u64()
+            .expect("smart_entrants") as u32,
+        smart_net_flow_sol_300s_micro: (floats["smart_net_flow_sol_300s"]
+            .as_f64()
+            .expect("smart_net_flow")
+            * 1e6)
+            .round() as i64,
+        coentry_wallets_300s: ints["coentry_wallets_300s"].as_u64().expect("coentry") as u32,
+        creator_trading_own_mint: inputs["creator_trading_own_mint"]
+            .as_bool()
+            .expect("creator_trading_own_mint"),
+        entrant_fee_p90_lamports: inputs["entrant_fee_p90_lamports"].as_u64(),
+        entrant_cu_p50: inputs["entrant_cu_p50"].as_u64(),
+    };
+    (flow_state_from_aggregates(&agg), false)
+}
+
+/// The reserve plane driven through its producer: one observation per plane, through
+/// `AnnotationState::{observe_curve, set_attribution, observe_amm}` and then
+/// `{curve_state, amm_state}` — never a `CurveState`/`AmmState` lifted from the corpus's text.
+///
+/// The fixture carries the ATTRIBUTION facts for the absent-branch rows (`never_graduated`), so the
+/// refusal is produced by the same rule the corpus applied rather than hard-coded here.
+fn curve_and_amm_for_case(case: &Value, mint: &[u8; 32], t_dec: i64) -> (CurveState, AmmState) {
+    let mut st = AnnotationState::new();
+    if let Some(obs) = case["curve_line"]["input"].as_object() {
+        st.observe_curve(
+            *mint,
+            CurveObservation {
+                v_sol_lamports: obs["v_sol_lamports"].as_u64().expect("v_sol_lamports"),
+                v_tokens: obs["v_tokens"].as_u64().expect("v_tokens"),
+                real_sol_lamports: obs["real_sol_lamports"]
+                    .as_u64()
+                    .expect("real_sol_lamports"),
+                real_tokens: obs["real_tokens"].as_u64().expect("real_tokens"),
+                ts_ms: obs["ts_ms"].as_i64().expect("ts_ms"),
+                slot: 0,
+            },
+        );
+    }
+    let attr = &case["amm_line"]["input"]["attribution"];
+    st.set_attribution(
+        *mint,
+        AmmAttribution {
+            wsol_pools: attr["wsol_pools"]
+                .as_array()
+                .map(|v| {
+                    v.iter()
+                        .map(|p| p.as_str().expect("pool").to_string())
+                        .collect()
+                })
+                .unwrap_or_default(),
+            pools_total: attr["pools_total"].as_u64().unwrap_or(0) as usize,
+            graduated: attr["graduated"].as_bool().unwrap_or(false),
+        },
+    );
+    if let Some(obs) = case["amm_line"]["input"]["obs"].as_object() {
+        st.observe_amm(
+            *mint,
+            AmmObservation {
+                pool: obs["pool"].as_str().expect("pool").to_string(),
+                base_reserves_raw: obs["base_reserves_raw"].as_u64().expect("base"),
+                quote_reserves_lamports: obs["quote_reserves_lamports"].as_u64().expect("quote"),
+                quote_is_wsol: obs["quote_is_wsol"].as_bool().unwrap_or(true),
+                ts_ms: obs["ts_ms"].as_i64().expect("ts_ms"),
+                slot: obs["slot"].as_u64().expect("slot"),
+            },
+        );
+    }
+    (st.curve_state(mint, t_dec), st.amm_state(mint, t_dec))
 }
 
 /// Assemble and render one reading of a case.
@@ -250,21 +352,12 @@ fn render_reading(
         .expect("enriched line");
     let (mcap, mcap_source) = mcap_from_line(expected_enriched);
 
-    let flow = FlowState {
-        entrants_60s: 0,
-        entrants_300s: 0,
-        net_flow_sol_300s: 0.0,
-        fresh_wallet_share_300s: None,
-        flow_lookback_d: 0.0,
-        sniper_share_300s: None,
-        bot_uniform_share_300s: None,
-        smart_entrants_300s: 0,
-        smart_net_flow_sol_300s: 0.0,
-        coentry_wallets_300s: 0,
-        creator_trading_own_mint: false,
-        entrant_fee_p90_lamports: None,
-        entrant_cu_p50: None,
-    };
+    // THE THREE PLANE PRODUCERS, driven from the fixture's own INPUTS. The placeholder
+    // `CurveState::Absent` / zeroed `FlowState` that used to stand here masked exactly the lines
+    // this harness now grades; a case whose inputs are not recoverable carries `null` inputs and
+    // the corresponding line is never compared (it is counted instead).
+    let (flow, flow_no_prior) = flow_for_case(case);
+    let (curve, amm) = curve_and_amm_for_case(case, &mint, t_dec);
     let bundle = assemble(&BundleInputs {
         snapshot: &snapshot,
         enriched: &snapped,
@@ -273,13 +366,9 @@ fn render_reading(
         mcap_sol_at_t: mcap,
         mcap_source: &mcap_source,
         flow: &flow,
-        flow_no_prior: false,
-        curve: CurveState::Absent {
-            reason: "c5".to_string(),
-        },
-        amm: AmmState::Absent {
-            reason: "c5".to_string(),
-        },
+        flow_no_prior,
+        curve,
+        amm,
         dev,
         size_depth_sol: None,
         size_amm: false,
@@ -289,14 +378,43 @@ fn render_reading(
     Ok(render_decision(&bundle))
 }
 
+/// The four reserve/flow PLANE lines the harness grades end-to-end (fixture block, line header).
+const PLANE_LINES: [(&str, &str); 4] = [
+    ("curve_line", "CURVE STATE"),
+    ("amm_line", "AMM POOL STATE"),
+    ("price_units", "PRICE UNITS"),
+    ("flow_state", "LIVE FLOW STATE"),
+];
+
 /// The key that identifies a line's slot in the rendering: state lines are keyed by their first
-/// field name, the ENRICHED line by its header.
+/// field name, the block headers by their own text.
 fn line_key(want: &str) -> &str {
-    if want.starts_with("ENRICHED CANDIDATE STATE") {
-        "ENRICHED CANDIDATE STATE"
-    } else {
-        want.split('=').next().unwrap_or(want)
+    for header in [
+        "ENRICHED CANDIDATE STATE",
+        "CURVE STATE",
+        "AMM POOL STATE",
+        "PRICE UNITS",
+        "LIVE FLOW STATE",
+    ] {
+        if want.starts_with(header) {
+            return header;
+        }
     }
+    want.split('=').next().unwrap_or(want)
+}
+
+/// The reserve/flow PLANE lines: built from observations and aggregates, never from the trade
+/// ledger, so the corpus's lookahead band cannot move them and the two readings must agree.
+fn is_plane_line(want: &str) -> bool {
+    want.starts_with("CURVE STATE")
+        || want.starts_with("AMM POOL STATE")
+        || want.starts_with("LIVE FLOW STATE")
+}
+
+/// `PRICE UNITS` is derived from the ledger's own price (it is the same measurement the state line
+/// carries), so it belongs to the banded/ledger side, not to the plane side.
+fn is_price_line(want: &str) -> bool {
+    want.starts_with("PRICE UNITS")
 }
 
 /// The six STATE lines of the decision prompt — the block whose producer (`build_states_v2`) bands
@@ -346,6 +464,60 @@ fn creator_id(base58: &str) -> u64 {
     h
 }
 
+/// THE HARD RULE, asserted rather than assumed: a graded plane line must carry the INPUTS the
+/// producer under test is driven from and the AUTHORITY's rendering of those inputs. A fixture
+/// that merely copied the corpus's text into `expected` would fail this test — which is the whole
+/// reason `gen_c5_bundle_fixture.py` reconstructs each plane's inputs and re-renders it.
+#[test]
+fn every_graded_plane_line_carries_its_inputs_and_the_authoritys_rendering() {
+    let f = fixture();
+    assert_eq!(
+        f["schema"].as_str(),
+        Some("c5-bundle-parity/3"),
+        "the plane lines arrived with schema /3"
+    );
+    let mut graded = 0usize;
+    for case in f["cases"].as_array().expect("cases") {
+        for (key, name) in PLANE_LINES {
+            let b = &case[key];
+            if b["graded"].as_bool() != Some(true) {
+                continue;
+            }
+            graded += 1;
+            assert!(
+                b["producer"].as_str().is_some_and(|p| !p.is_empty()),
+                "{name}: a graded line names no producer"
+            );
+            let expected = b["expected_line"]
+                .as_str()
+                .unwrap_or_else(|| panic!("{name}: a graded line carries no expected_line"));
+            // The authority's rendering over the recorded inputs must BE the row's own line —
+            // otherwise the inputs we recovered are not the ones the corpus used.
+            assert_eq!(
+                Some(expected),
+                b["corpus_line"].as_str(),
+                "{name}: the authority's rendering of the recorded inputs is not the row's line"
+            );
+            let has_input = match key {
+                "curve_line" => b["input"].is_object(),
+                "amm_line" => b["input"]["attribution"].is_object(),
+                "price_units" => b["input_price_lamports_per_raw_token"].is_number(),
+                "flow_state" => b["inputs"].is_object(),
+                _ => false,
+            };
+            assert!(
+                has_input,
+                "{name}: a graded line carries no INPUTS — a fixture without inputs cannot catch a \
+                 wrong renderer"
+            );
+        }
+    }
+    assert!(
+        graded >= 46,
+        "the four plane lines must be graded on the real rows (got {graded} graded line-instances)"
+    );
+}
+
 #[test]
 fn derived_blocks_render_identically_to_the_corpus_over_the_corpus_tape() {
     let f = fixture();
@@ -366,6 +538,14 @@ fn derived_blocks_render_identically_to_the_corpus_over_the_corpus_tape() {
         std::collections::BTreeMap::new();
     let mut corpus_failures: Vec<String> = Vec::new();
     let mut causal_failures: Vec<String> = Vec::new();
+    let mut plane_failures: Vec<String> = Vec::new();
+    // Per-line graded/skipped counts for the four plane lines, so a silent skip cannot hide.
+    let mut plane_counts: std::collections::BTreeMap<&str, (usize, usize)> = PLANE_LINES
+        .iter()
+        .map(|(_, n)| (*n, (0usize, 0usize)))
+        .collect();
+    let mut plane_skip_causes: std::collections::BTreeMap<String, usize> =
+        std::collections::BTreeMap::new();
 
     let history = creator_history(&f);
     for (i, case) in cases.iter().enumerate() {
@@ -386,7 +566,15 @@ fn derived_blocks_render_identically_to_the_corpus_over_the_corpus_tape() {
                     Unserved::Refused(r) => format!("assembler/{r}"),
                     Unserved::Ineligible(r) => r,
                 };
-                *skip_causes.entry(why).or_default() += 1;
+                *skip_causes.entry(why.clone()).or_default() += 1;
+                // The plane lines are not graded for a case that never assembled: count them so
+                // the per-line tally stays complete.
+                for (_, name) in PLANE_LINES {
+                    plane_counts.get_mut(name).expect("known plane line").1 += 1;
+                    *plane_skip_causes
+                        .entry(format!("{name}: case_not_assembled/{why}"))
+                        .or_default() += 1;
+                }
                 continue;
             }
         };
@@ -424,6 +612,27 @@ fn derived_blocks_render_identically_to_the_corpus_over_the_corpus_tape() {
                 .as_str()
                 .expect("expected_dev_line — the C4 producer's line"),
         );
+        // THE FOUR RESERVE/FLOW PLANE LINES. Each is appended only when the fixture carries the
+        // AUTHORITY's own rendering of the SAME inputs the producers above were driven from — a
+        // line the row does not carry (or whose inputs are not recoverable) is counted, never
+        // graded from a copy of the corpus's own text.
+        for (key, name) in PLANE_LINES {
+            let block = &case[key];
+            if block["graded"].as_bool() == Some(true) {
+                plane_counts.get_mut(name).expect("known plane line").0 += 1;
+                expected.push(
+                    block["expected_line"]
+                        .as_str()
+                        .expect("a graded plane line carries its expected_line"),
+                );
+            } else {
+                let why = block["skip_reason"].as_str().unwrap_or("unspecified");
+                plane_counts.get_mut(name).expect("known plane line").1 += 1;
+                *plane_skip_causes
+                    .entry(format!("{name}: {why}"))
+                    .or_default() += 1;
+            }
+        }
 
         let mut case_failures = 0usize;
         for want in expected {
@@ -432,10 +641,12 @@ fn derived_blocks_render_identically_to_the_corpus_over_the_corpus_tape() {
             // `build_states_v2` (which bands) while the ENRICHED and DEV HISTORY lines come from
             // `build_c9_enrichment_full` (which does NOT — it reads the tape prefix directly, and the
             // dev line reads the launch table). The prompt is the join, so each block is graded
-            // against the reading that reproduces its own producer.
+            // against the reading that reproduces its own producer. The reserve/flow plane lines
+            // are ledger-independent (the band cannot move them) but are graded on the same side as
+            // the STATE block for one uniform rule; `PRICE UNITS` is ledger-derived, so it must be.
             let causal_line = find_key(&causal, key);
             let corpus_line = find_key(&corpus_side, key);
-            let graded_line = if is_state_line(want) {
+            let graded_line = if is_state_line(want) || is_price_line(want) || is_plane_line(want) {
                 corpus_line
             } else {
                 causal_line
@@ -446,6 +657,17 @@ fn derived_blocks_render_identically_to_the_corpus_over_the_corpus_tape() {
                     "case {i}: line not reproduced by its own producer's trade set\n   \
                      corpus: {want}\n   ours  : {}",
                     graded_line.unwrap_or("<no line with that key>")
+                ));
+                continue;
+            }
+            // A plane line is built from observations and aggregates, not from the ledger: if the
+            // band moved it, something downstream is reading trades it should not.
+            if is_plane_line(want) && causal_line != corpus_line {
+                case_failures += 1;
+                plane_failures.push(format!(
+                    "case {i}: a reserve/flow plane line moved with the trade band — the band must \
+                     not touch CURVE / AMM / LIVE FLOW\n   corpus-side: {want}\n   causal     : {}",
+                    causal_line.unwrap_or("<no line with that key>")
                 ));
                 continue;
             }
@@ -482,6 +704,7 @@ fn derived_blocks_render_identically_to_the_corpus_over_the_corpus_tape() {
         causal_failures.len(),
         causal_failures.join("\n\n")
     );
+    assert!(plane_failures.is_empty(), "{plane_failures:?}",);
     assert!(
         graded >= 8,
         "only {graded} case(s) reached a graded comparison (skipped {skipped}: {skip_causes:?}); \
@@ -492,9 +715,29 @@ fn derived_blocks_render_identically_to_the_corpus_over_the_corpus_tape() {
         "the fixture must exercise the band ({band_cases} banded case(s), \
          {band_explained_lines} band-explained line(s))"
     );
+    // THE PLANE LINES ARE THE POINT OF THIS TEST: each must actually be graded on the real rows.
+    // A floor per line (not an equality) keeps the harness honest without pinning the fixture count.
+    let plane_floor = graded.saturating_sub(1).max(1); // one row may be an unrecoverable line
+    for (name, (n_graded, n_skipped)) in &plane_counts {
+        println!(
+            "C5 plane {name}: graded {n_graded}/{} (skipped {n_skipped})",
+            cases.len()
+        );
+        assert!(
+            *n_graded >= plane_floor,
+            "{name}: only {n_graded} of {} real rows graded — the harness must exercise this line \
+             (skips: {plane_skip_causes:?})",
+            cases.len()
+        );
+    }
+    assert!(
+        !plane_skip_causes.is_empty(),
+        "the fixture must exercise at least one out-of-scope line so the skip path is proven"
+    );
     println!(
         "C5: {graded}/{} case(s) byte-identical given the corpus's trade set; \
-         {band_cases} carry the band; {band_explained_lines} causal line(s) attributed to it",
+         {band_cases} carry the band; {band_explained_lines} causal line(s) attributed to it; \
+         plane skips: {plane_skip_causes:?}",
         cases.len()
     );
 }
