@@ -104,6 +104,139 @@ pub struct AmmAttribution {
     pub graduated: bool,
 }
 
+/// The C3/C9 reserve view: everything the bundle takes from the reserve plane at the clock.
+///
+/// # Why this is one object and not four fields filled in by four callers
+///
+/// `mcap_source` and `size_depth_sol` are not independent of the annotations: the corpus's
+/// rule is that once the curve is complete the AMM price governs the market cap, and the
+/// SIZE OPTIONS cost is measured at the pool the next fill lands in. Splitting these across
+/// callers is how a bundle ends up with a curve-priced mcap beside an AMM-priced size line.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReserveView {
+    /// The curve annotation at the clock.
+    pub curve: CurveState,
+    /// The AMM annotation at the clock.
+    pub amm: AmmState,
+    /// `mcap_sol_at_t`, or `None` when neither plane could price the mint (`na` in the corpus).
+    pub mcap_sol_at_t: Option<f64>,
+    /// Which plane the market cap came from: `amm`, `curve`, or `absent`.
+    pub mcap_source: &'static str,
+    /// The SOL-side depth the size costs are measured against, when priceable.
+    pub size_depth_sol: Option<f64>,
+    /// Whether OUR next fill lands on the AMM — the regime the cost authority applies.
+    pub size_amm: bool,
+}
+
+/// Whether a pool was placed at or before the clock. Staleness is deliberately NOT part of
+/// this: a fill still lands on the AMM when the snapshot is old, it is the *price* that
+/// becomes unusable (`pricing_eligible`).
+#[must_use]
+pub fn amm_present(a: &AmmState) -> bool {
+    matches!(a, AmmState::Present { .. })
+}
+
+/// Whether a curve snapshot was placed at or before the clock.
+#[must_use]
+pub fn curve_present(c: &CurveState) -> bool {
+    matches!(c, CurveState::Present { .. })
+}
+
+impl AnnotationState {
+    /// The bundle's reserve view at `t_dec_ms` (C3 assembly + C9 regime tagging).
+    ///
+    /// The market-cap rule is the corpus's own, in its order:
+    ///
+    /// 1. the curve is *complete* (`curve_regime == "graduated"` or `curve_progress == 1.0`) AND
+    ///    the AMM has a price → that AMM price, `mcap_source = "amm"`;
+    /// 2. otherwise the curve price → `mcap_source = "curve"`;
+    /// 3. otherwise no market cap at all — `na`, never a zero that reads as a real price.
+    ///
+    /// Why the switch: the curve formula saturates once the curve completes (410.88 SOL for the
+    /// pump.fun parameters) and would report a flat, wrong market cap for a graduated mint.
+    #[must_use]
+    pub fn reserve_view(&self, mint: &[u8; 32], t_dec_ms: i64) -> ReserveView {
+        let curve = self.curve_state(mint, t_dec_ms);
+        let amm = self.amm_state(mint, t_dec_ms);
+
+        let (curve_px, graduated) = match &curve {
+            CurveState::Present {
+                curve_price_sol_per_raw_token,
+                curve_progress,
+                curve_regime,
+                ..
+            } => (
+                Some(*curve_price_sol_per_raw_token),
+                *curve_regime == "graduated" || *curve_progress >= 1.0,
+            ),
+            CurveState::Absent { .. } => (None, false),
+        };
+        let amm_px = match &amm {
+            AmmState::Present {
+                amm_price_sol_per_raw_token,
+                ..
+            } => Some(*amm_price_sol_per_raw_token),
+            AmmState::Absent { .. } => None,
+        };
+
+        let (price, source) = match (graduated, amm_px, curve_px) {
+            (true, Some(p), _) => (Some(p), "amm"),
+            (_, _, Some(p)) => (Some(p), "curve"),
+            _ => (None, "absent"),
+        };
+        // The corpus's own conversion: a SOL-per-raw-token price times the raw supply (1e15)
+        // is the market cap in SOL. It is computed here and not from trades, which cannot see
+        // the supply at all.
+        let mcap_sol_at_t = price.map(|p| p * RAW_SUPPLY as f64);
+
+        let size_amm = amm_present(&amm);
+        let size_depth_sol = if size_amm {
+            match &amm {
+                AmmState::Present {
+                    quote_reserves_lamports,
+                    ..
+                } => Some(*quote_reserves_lamports as f64 / SOL_LAMPORTS),
+                AmmState::Absent { .. } => None,
+            }
+        } else {
+            match &curve {
+                CurveState::Present {
+                    v_sol_reserves_lamports,
+                    ..
+                } => {
+                    // The observed SOL-side reserve, exactly as the corpus's own engine reported it
+                    // (`engine._depth(t)`) and as the corpus's SIZE OPTIONS line prints it: 51.3 SOL
+                    // for a row whose vsol is 51.336 and whose real_sol is 21.336.
+                    //
+                    // NOT `real_sol`, and NOT `vsol - 30 SOL`. The 30 SOL curve offset is the COST
+                    // model's business - the authority applies regime-dependent impact on top of
+                    // this depth - and subtracting it here would double-count the offset. The
+                    // cross-checked `CurveDepth` (decoded vs derived, with its 1% refuse band) is
+                    // the right tool for capacity questions, which is where it is used; it is the
+                    // wrong number for the line the model was trained to read.
+                    Some(*v_sol_reserves_lamports as f64 / SOL_LAMPORTS)
+                }
+                CurveState::Absent { .. } => None,
+            }
+        };
+
+        ReserveView {
+            curve,
+            amm,
+            mcap_sol_at_t,
+            mcap_source: source,
+            size_depth_sol,
+            size_amm,
+        }
+    }
+}
+
+/// The raw token supply the corpus's market cap is computed against (`1e15` raw units).
+pub const RAW_SUPPLY: u64 = 1_000_000_000_000_000;
+
+/// SOL in lamports, as f64, for the depth conversion.
+const SOL_LAMPORTS: f64 = 1_000_000_000.0;
+
 /// The live annotation state: last observation per mint, and the AMM attribution facts.
 ///
 /// Not a cache with an eviction policy — the *engine* owns lifetime. This holds what the
@@ -323,6 +456,115 @@ mod tests {
             ts_ms: ts,
             slot,
         }
+    }
+
+    /// **The real row.** Every number below is lifted from a c12 decision row and its C9
+    /// enrichment entry, so this test would fail if the market-cap rule, the depth basis or the
+    /// regime tag drifted - not merely if the code stopped compiling.
+    #[test]
+    fn the_reserve_view_reproduces_a_real_graduated_row() {
+        let mut st = AnnotationState::new();
+        let m = mint(11);
+        // CURVE STATE (at decision time): ... v_sol_reserves_sol=115.005359057
+        //   v_tokens_reserves=279900000000000 real_sol_reserves_sol=85.005359057
+        //   real_tokens_reserves=0 curve_price_sol_per_raw_token=0.000000000000410880
+        //   curve_k=32190000000054300000000000 curve_progress=1.000000 curve_regime=graduated
+        st.observe_curve(
+            m,
+            obs(
+                115_005_359_057,
+                279_900_000_000_000,
+                85_005_359_057,
+                0,
+                1_788_970_423_162 - 4_804_291,
+                7,
+            ),
+        );
+        // AMM POOL STATE ... pool=DCWRaevTQYA3BRHXiwLZZgDDwK28m3qUb8kEC4WP48x
+        //   staleness_ms=610 pricing_eligible=true base_reserves_raw=4103523770432
+        //   quote_reserves_lamports=4277289364175 amm_price_sol_per_raw_token=0.000000001042345458
+        st.set_attribution(
+            m,
+            AmmAttribution {
+                wsol_pools: vec!["DCWRaevTQYA3BRHXiwLZZgDDwK28m3qUb8kEC4WP48x".into()],
+                pools_total: 1,
+                graduated: true,
+            },
+        );
+        st.observe_amm(
+            m,
+            AmmObservation {
+                pool: "DCWRaevTQYA3BRHXiwLZZgDDwK28m3qUb8kEC4WP48x".into(),
+                base_reserves_raw: 4_103_523_770_432,
+                quote_reserves_lamports: 4_277_289_364_175,
+                quote_is_wsol: true,
+                ts_ms: 1_788_970_423_162 - 610,
+                slot: 445_653_654,
+            },
+        );
+
+        let v = st.reserve_view(&m, 1_788_970_423_162);
+        assert_eq!(
+            v.mcap_source, "amm",
+            "a completed curve prices off the pool"
+        );
+        let mcap = v.mcap_sol_at_t.expect("mcap");
+        // C9_ENRICHMENT_FULL.jsonl, this row: mcap_sol_at_t = 1042345.458066, source amm.
+        assert!(
+            (mcap - 1_042_345.458_066).abs() < 1e-6,
+            "mcap {mcap} != the corpus's 1042345.458066"
+        );
+        assert!(v.size_amm, "the next fill lands on the pool");
+        let depth = v.size_depth_sol.expect("depth");
+        // The corpus's own SIZE OPTIONS line: "pool depth 4277.3 SOL".
+        assert!(
+            (depth - 4277.289_364_175).abs() < 1e-6,
+            "depth {depth} != the row's quote reserve 4277.289364175"
+        );
+    }
+
+    /// A bonding-curve mint prices off the curve — the case the AMM branch must not hijack.
+    #[test]
+    fn a_bonding_mint_prices_off_the_curve_and_sizes_on_the_curve() {
+        let mut st = AnnotationState::new();
+        let m = mint(12);
+        // 50 SOL virtual, 30 SOL of which is the curve's virtual offset.
+        st.observe_curve(
+            m,
+            obs(
+                50 * LAMPORTS_PER_SOL,
+                600_000_000_000_000,
+                0,
+                400_000_000_000_000,
+                1_000,
+                1,
+            ),
+        );
+        let v = st.reserve_view(&m, 1_500);
+        assert_eq!(v.mcap_source, "curve");
+        assert!(!v.size_amm, "no pool was placed");
+        // The OBSERVED SOL-side reserve, which is what the corpus's own engine measured and
+        // printed. Subtracting the curve's virtual offset here would double-count it, because
+        // the cost model already applies regime-dependent impact on top of this depth.
+        assert_eq!(v.size_depth_sol, Some(50.0));
+        let mcap = v.mcap_sol_at_t.expect("mcap");
+        // vsol_l² / MCAP_DIVISOR / 1e9: 50² / 3.219e10 * 1e9... the curve formula,
+        // which saturates at 410.88 SOL — here 77.66 SOL.
+        assert!(
+            mcap > 0.0 && mcap < 410.88,
+            "curve mcap must sit under the saturation point: {mcap}"
+        );
+    }
+
+    /// Neither plane priceable: `na`, not a zero.
+    #[test]
+    fn an_unpriceable_mint_reports_no_market_cap_rather_than_zero() {
+        let mut st = AnnotationState::new();
+        let v = st.reserve_view(&mint(13), 1_000);
+        assert_eq!(v.mcap_sol_at_t, None);
+        assert_eq!(v.mcap_source, "absent");
+        assert_eq!(v.size_depth_sol, None);
+        assert!(!v.size_amm);
     }
 
     #[test]
