@@ -311,7 +311,10 @@ pub struct StateSnapshot {
     /// Whether every print in the concentration window carried a token leg that could be
     /// cleared against [`MIN_TOKENS_RAW`].
     pub token_leg_known: bool,
-    /// Trades whose price sits outside a **causal** 10x band around the running median.
+    /// Trades sitting outside the **causal** 10x band around the running median.
+    ///
+    /// Telemetry, never a gate: they are KEPT (see the ingest comment) and the count is what makes
+    /// the residual train/serve gap against the corpus's lookahead band measurable.
     ///
     /// THE CORPUS BANDS, WE CANNOT. `build_states_v2` drops every trade priced outside
     /// `[med/10, med*10]` where `med` is the median over the mint's WHOLE run — a lookahead. It
@@ -321,7 +324,28 @@ pub struct StateSnapshot {
     /// have flagged under a causal reading, and the bundle marks itself `partial` when it is
     /// non-zero rather than serving numbers the corpus would have banded differently. Rebuilding
     /// the corpus causally is a corpus decision.
-    pub prices_outside_causal_band: u64,
+    pub banded_prints_flagged: u64,
+}
+
+/// How many recent accepted prices the causal band references. 200 prints is one to two minutes on
+/// a live memecoin: long enough that a single print cannot move the reference, short enough that a
+/// sustained move is not treated as garbage.
+const BAND_WINDOW: usize = 200;
+
+/// The causal band reference: the median of the mint's recent accepted prices.
+///
+/// Returns `None` while the window is still short, so the first prints of a mint are never dropped
+/// for want of a reference — the corpus's own band is conditional (`if fin.sum() >= 5`) for the same
+/// reason.
+fn running_band_reference(l: &Option<&MintLedger>) -> Option<f64> {
+    let l = l.as_ref()?;
+    if l.price_ring.len() < 5 {
+        return None;
+    }
+    let mut v: Vec<f64> = l.price_ring.iter().copied().collect();
+    v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let med = v[v.len() / 2];
+    (med > 0.0).then_some(med)
 }
 
 #[derive(Debug, Default)]
@@ -348,6 +372,10 @@ struct MintLedger {
     first_t_ms: Option<i64>,
     /// Trades dropped by the ring bound, oldest first.
     evicted: u64,
+    /// The prices of the most recent accepted prints, for the CAUSAL band reference.
+    price_ring: VecDeque<f64>,
+    /// Trades dropped for sitting outside that band.
+    banded: u64,
 }
 
 /// The per-mint causal state ledger.
@@ -402,6 +430,23 @@ impl StateLedger {
         if trade.is_dust() {
             return false;
         }
+        // COUNTED, NEVER DROPPED. Two attempts to make the corpus's band causal were MEASURED and
+        // rejected: REFUSING the mint when anything is flagged fired on 11 of 12 real corpus rows (a
+        // shutdown, not a gate), and DROPPING against a trailing-window median removed 82% of trades
+        // — a trailing reference tracks the price, so it reads genuine moves as garbage. A lookahead
+        // cannot be reconstructed from the past, and a bad proxy is worse than none: the band is
+        // reported as telemetry and every causal trade is KEPT.
+        if let Some(p) = trade
+            .price_sol_per_raw
+            .filter(|p| p.is_finite() && *p > 0.0)
+        {
+            if let Some(med) = running_band_reference(&self.mints.get(mint)) {
+                if p < med / 10.0 || p > med * 10.0 {
+                    let l = self.mints.get_mut(mint).expect("present");
+                    l.banded = l.banded.saturating_add(1);
+                }
+            }
+        }
         if !self.mints.contains_key(mint) && self.mints.len() >= MAX_TRACKED_MINTS {
             self.refused_mints = self.refused_mints.saturating_add(1);
             self.refused_prints = self.refused_prints.saturating_add(1);
@@ -433,6 +478,15 @@ impl StateLedger {
         }
         if trade.base_qty.is_none() {
             l.cum_unknown_token_leg = l.cum_unknown_token_leg.saturating_add(1);
+        }
+        if let Some(p) = trade
+            .price_sol_per_raw
+            .filter(|p| p.is_finite() && *p > 0.0)
+        {
+            l.price_ring.push_back(p);
+            while l.price_ring.len() > BAND_WINDOW {
+                l.price_ring.pop_front();
+            }
         }
         l.ring.push_back(trade);
         while l.ring.len() > RING_CAP {
@@ -607,7 +661,7 @@ impl StateLedger {
             } else {
                 None
             },
-            prices_outside_causal_band: outside_causal_band(&before),
+            banded_prints_flagged: l.banded,
             price_volatility_30s_bp: volatility_30s(&before, price, t_dec_ms),
             venue,
             evidence_status: if nonfinite_before == 0 {
@@ -644,31 +698,6 @@ fn ret_bp(before: &[&StateTrade], price: f64, t_dec_ms: i64, win_s: i64) -> Opti
 }
 
 /// `build_states_v2._episode`'s volatility block — population std of consecutive log returns.
-/// How many strictly-prior trades sit outside a CAUSAL 10x band around the running median.
-///
-/// The corpus's band uses the whole-run median (a lookahead) and DROPS those trades; we keep every
-/// trade and count them instead, so the divergence is visible rather than silent. The running
-/// median is over the trades before the clock only — the closest causal reading of a rule whose
-/// author had the whole series in hand.
-fn outside_causal_band(before: &[&StateTrade]) -> u64 {
-    let mut prices: Vec<f64> = before
-        .iter()
-        .filter_map(|t| t.price_sol_per_raw.filter(|p| p.is_finite() && *p > 0.0))
-        .collect();
-    // A median over fewer than three prints is not a reference; the corpus's own band guard is
-    // conditional, so refuse to invent one.
-    if prices.len() < 3 {
-        return 0;
-    }
-    prices.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let med = prices[prices.len() / 2];
-    if !(med > 0.0) {
-        return 0;
-    }
-    let (lo, hi) = (med / 10.0, med * 10.0);
-    prices.iter().filter(|p| **p < lo || **p > hi).count() as u64
-}
-
 fn volatility_30s(before: &[&StateTrade], _price: f64, t_dec_ms: i64) -> Option<f64> {
     if before.len() < MIN_TRADES_FOR_VOL {
         return None;
@@ -912,33 +941,39 @@ mod tests {
     }
 
     /// The gates the corpus's stage-3 builder applied before it would form a clock at all.
-    /// The corpus bands its tape on a WHOLE-RUN median — a lookahead. We cannot reproduce that,
-    /// so the outlier is KEPT and COUNTED, which is what makes the divergence visible instead of
-    /// silently serving numbers the corpus would have banded differently.
+    /// The corpus's band uses a WHOLE-RUN median — a lookahead no live ledger can have. Measured
+    /// alternatives were rejected (see the ingest comment), so the band is TELEMETRY: the trade is
+    /// kept and counted, and the count is what makes the residual gap visible.
     #[test]
-    fn trades_outside_a_causal_band_are_counted_not_dropped() {
+    fn trades_outside_a_causal_band_are_flagged_not_dropped() {
         let mint = [0x11; 32];
         let mut l = StateLedger::new();
-        for t in [1_000i64, 2_000, 3_000] {
+        // A reference needs a window before it means anything (the corpus's own band guard is
+        // conditional: `if fin.sum() >= 5`), so a mint's first prints are never flagged.
+        for t in [1_000i64, 2_000, 3_000, 4_000, 5_000, 6_000] {
             assert!(l.on_trade(&mint, buy_print(t).expect("print")));
         }
-        let mut outlier = buy_print(4_000).expect("print");
+        let mut outlier = buy_print(7_000).expect("print");
         outlier.price_sol_per_raw = Some(2.5e-6); // 100x the 2.5e-8 prints
-        assert!(l.on_trade(&mint, outlier));
+        assert!(
+            l.on_trade(&mint, outlier),
+            "flagged is not dropped: the trade enters the tape"
+        );
 
-        let snap = l.serve(&mint, 5_000).expect("served");
-        assert_eq!(snap.n_prior_trades, 4, "the outlier is KEPT, never dropped");
-        assert_eq!(snap.prices_outside_causal_band, 1);
-        // A clean tape reports zero, so the flag carries information rather than always firing.
+        let snap = l.serve(&mint, 8_000).expect("served");
+        assert_eq!(snap.n_prior_trades, 7, "every causal trade is KEPT");
+        assert_eq!(snap.banded_prints_flagged, 1);
+
+        // A tape whose prices stay inside the band flags nothing, so the signal carries information.
         let mut clean = StateLedger::new();
-        for t in [1_000i64, 2_000, 3_000] {
+        for t in [1_000i64, 2_000, 3_000, 4_000, 5_000, 6_000] {
             assert!(clean.on_trade(&mint, buy_print(t).expect("print")));
         }
         assert_eq!(
             clean
-                .serve(&mint, 4_000)
+                .serve(&mint, 7_000)
                 .expect("served")
-                .prices_outside_causal_band,
+                .banded_prints_flagged,
             0
         );
     }

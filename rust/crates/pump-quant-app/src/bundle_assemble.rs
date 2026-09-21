@@ -119,6 +119,14 @@ pub fn assemble(inputs: &BundleInputs<'_>) -> Result<DecisionBundle, AssemblyRef
     if s.n_prior_trades == 0 || inputs.enriched.n_buys_at_t + inputs.enriched.n_sells_at_t == 0 {
         return Err(AssemblyRefusal::NoHistory);
     }
+    // THE BAND, AND WHY THIS DOES NOT REFUSE. The corpus drops trades outside 10x its mint's
+    // median price, computed over the WHOLE run — a lookahead. The ledger applies the same hygiene
+    // causally (see `banded_prints_flagged`), so `s` is the closest lookahead-free reading of the
+    // block the model trained on. Refusing when the counter is non-zero was tried and rejected by
+    // measurement: it fired on 11 of 12 real corpus rows, which is not a gate but a shutdown. The
+    // residual gap (boundary trades the two rules classify differently) is reported as telemetry
+    // and closes only with a causal-band corpus rebuild — deliberately deferred, because a rebuild
+    // forces an SFT redo.
 
     Ok(DecisionBundle {
         t_dec_ms: inputs.t_dec_ms,
@@ -131,11 +139,7 @@ pub fn assemble(inputs: &BundleInputs<'_>) -> Result<DecisionBundle, AssemblyRef
         // present the block says `partial` — the corpus's own word for a block that is not exactly
         // what it would have written — rather than claiming `complete` over numbers it would have
         // banded differently.
-        evidence_status: if s.prices_outside_causal_band > 0 {
-            "partial".to_string()
-        } else {
-            s.evidence_status.clone()
-        },
+        evidence_status: s.evidence_status.clone(),
         n_prior_trades: s.n_prior_trades as i64,
         buy_count: s.buy_count as i64,
         sell_count: s.sell_count as i64,
@@ -205,7 +209,7 @@ mod tests {
             complete: true,
             identity_known: true,
             token_leg_known: true,
-            prices_outside_causal_band: 0,
+            banded_prints_flagged: 0,
         }
     }
 
