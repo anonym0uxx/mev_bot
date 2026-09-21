@@ -951,77 +951,38 @@ fn decode_base64_std(s: &str) -> Option<Vec<u8>> {
 // Background prefetch thread
 // ---------------------------------------------------------------------------
 
-/// Configuration for the background prefetch updater.
+/// Configuration for the background blockhash warm-up.
+///
+/// Only the blockhash is timed: the bonding-curve cache is fed by the account stream
+/// (`note_stream_reserves`) and refreshed on demand in `fetch_state_hot`, so a timed per-mint
+/// RPC refresh was removed rather than left as a second writer of the same cache.
 #[derive(Clone, Debug)]
 pub struct PrefetchConfig {
     /// How often to refresh the blockhash (in milliseconds).
     pub blockhash_refresh_ms: u64,
-    /// How often to refresh the curve state (in milliseconds).
-    pub curve_refresh_ms: u64,
 }
 
 impl Default for PrefetchConfig {
     fn default() -> Self {
         Self {
             blockhash_refresh_ms: 5_000, // 5 seconds — well within the 60s
-            // blockhash validity window.
-            curve_refresh_ms: 3_000, // 3 seconds — fast enough for the
-                                     // bonding curve to not drift.
+                                         // blockhash validity window.
         }
     }
-}
-
-/// Start a background thread that prefetches blockhash + curve state on a
-/// timer, warming the cache so the hot path has zero RPC round-trips.
-///
-/// Returns a handle to the thread. The thread stops when the fetcher's
-/// shutdown flag is set (via `fetcher.shutdown()`).
-///
-/// The `mint` and `user` are the ones the bot is actively trading — the
-/// prefetch thread warms the cache for this pair. When the bot switches
-/// mints, the old thread is stopped and a new one is started.
-pub fn spawn_prefetch_thread(
-    fetcher: Arc<RpcLiveStateFetcher>,
-    mint: [u8; 32],
-    user: [u8; 32],
-    config: PrefetchConfig,
-) -> std::thread::JoinHandle<()> {
-    std::thread::Builder::new()
-        .name("pq-prefetch".into())
-        .spawn(move || {
-            let mut blockhash_timer = 0u64;
-            let mut curve_timer = 0u64;
-            let tick_ms = 100u64; // 100ms tick — fine-grained enough.
-
-            while !fetcher.is_shutdown() {
-                std::thread::sleep(std::time::Duration::from_millis(tick_ms));
-
-                blockhash_timer += tick_ms;
-                curve_timer += tick_ms;
-
-                if blockhash_timer >= config.blockhash_refresh_ms {
-                    blockhash_timer = 0;
-                    let _ = fetcher.refresh_blockhash_inner();
-                }
-
-                if curve_timer >= config.curve_refresh_ms {
-                    curve_timer = 0;
-                    let _ = fetcher.prefetch_state(&mint, &user);
-                }
-            }
-        })
-        .expect("prefetch thread spawn")
 }
 
 /// Start a background thread that refreshes ONLY the blockhash on a timer,
 /// keeping the global blockhash cache warm so `latest_blockhash()` never pays
 /// a synchronous RPC on the hot path.
 ///
-/// Unlike `spawn_prefetch_thread`, this takes no mint — the blockhash cache is
-/// global and benefits every mint. Use it in the multi-mint daemon, where there
-/// is no single "active mint" to curve-prefetch (curve-prefetch stays on-demand
-/// in `fetch_state_hot`). The first refresh runs immediately, before the loop,
-/// so the cache is warm before the first decision (no cold-start fetch).
+/// This takes no mint — the blockhash cache is global and benefits every mint. It is
+/// the daemon's only background updater: an earlier mint-scoped `spawn_prefetch_thread`
+/// timed curve RPC refreshes, but the multi-mint daemon has no single "active mint",
+/// and the curve cache is now fed by the account stream (`note_stream_reserves`) with
+/// `fetch_state_hot` as the on-demand fallback. A second, timed writer of the same
+/// cache would race the stream's fresher slot and could freeze it. The first refresh
+/// runs immediately, before the loop, so the cache is warm before the first decision
+/// (no cold-start fetch).
 pub fn spawn_blockhash_warmer(
     fetcher: Arc<RpcLiveStateFetcher>,
     config: PrefetchConfig,
