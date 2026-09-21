@@ -91,6 +91,35 @@ pub fn py_g(v: f64, p: usize) -> String {
     }
 }
 
+/// The corpus's `fnum` ladder (`serialize_families.py`), used for the STATE line's return,
+/// volatility and share fields.
+///
+/// WHY NOT `str(float)`. Those fields are DERIVED, so a live value carries full precision.
+/// The corpus printed them through this ladder: `e9`/`e6` shorthands at `1e9`/`1e6`, `%.0f`
+/// at `1e3`, else `%.6g`. `py_float(509.0)` emits `509.0` where the corpus wrote `509`, and
+/// `py_float(304.32986)` emits nine digits where the corpus wrote `304.33` — the same number
+/// as a DIFFERENT token sequence, i.e. out-of-distribution input from correct arithmetic.
+/// The C5 parity harness caught exactly this on real c12 rows; the P1 fixtures could not,
+/// because they round-trip the corpus's already-shortened text (`str(float)` of a value the
+/// corpus had already put through `%g` reproduces it byte for byte).
+#[must_use]
+pub fn py_fnum(x: f64) -> String {
+    let a = x.abs();
+    if a >= 1e9 {
+        let mut s = format!("{:.2}", x / 1e9);
+        s.push_str("e9");
+        s
+    } else if a >= 1e6 {
+        let mut s = format!("{:.2}", x / 1e6);
+        s.push_str("e6");
+        s
+    } else if a >= 1e3 {
+        format!("{x:.0}")
+    } else {
+        py_g(x, 6)
+    }
+}
+
 fn strip_fraction_zeros(s: &mut String) {
     if !s.contains('.') {
         return;
@@ -118,18 +147,82 @@ pub fn round_half_even(x: f64) -> f64 {
     }
 }
 
-/// `round(x, nd)` as Python does it, for the non-negative `nd` this corpus uses.
+/// `round(x, nd)` as Python does it: round the double's EXACT value to `nd` decimals, ties to even.
+///
+/// WHY THE OBVIOUS IMPLEMENTATION IS WRONG. `(x * 10^nd).round_ties_even() / 10^nd` rounds a
+/// product that has ALREADY been rounded to a double. `3.865 * 100` is exactly `386.5`, so that
+/// reading sees a tie and goes to even — `3.86` — while Python's `round(3.865, 2)` is `3.87`,
+/// because the exact value of the double `3.865` is `3.865000000000000213…`, ABOVE the tie. The
+/// corpus renders `last_trade_age_s` and the other decimals this way, so the two disagree on real
+/// prompt LINES (the C5 harness caught it on one of twelve rows).
+///
+/// The fix carries the multiplication's exact residual: `mul_add` gives it (`x·scale − fl(x·scale)`
+/// with no rounding left over), and a two-sum comparison of `frac + err` against one half decides
+/// the direction exactly. No wider arithmetic is needed, and `err == 0` with `frac == 0.5` is the
+/// only true tie.
 pub fn round_half_even_nd(x: f64, nd: usize) -> f64 {
-    if nd == 0 {
-        return round_half_even(x);
+    if !x.is_finite() {
+        return x;
     }
     let scale = 10f64.powi(nd as i32);
-    round_half_even(x * scale) / scale
+    if nd == 0 || !scale.is_finite() || scale == 0.0 {
+        return round_half_even(x);
+    }
+    let scaled = x * scale;
+    if !scaled.is_finite() {
+        return x;
+    }
+    let base = scaled.floor();
+    let frac = scaled - base;
+    let (sum, tail) = two_sum(frac, x.mul_add(scale, -scaled));
+    let up = if sum > 0.5 {
+        true
+    } else if sum < 0.5 {
+        false
+    } else if tail != 0.0 {
+        tail > 0.0
+    } else {
+        // An exact tie: half-to-even, on the scaled integer.
+        (base / 2.0).fract() != 0.0
+    };
+    (if up { base + 1.0 } else { base }) / scale
+}
+
+/// Knuth's two-sum: `(s, e)` with `s + e == a + b` exactly and `s == fl(a + b)`.
+fn two_sum(a: f64, b: f64) -> (f64, f64) {
+    let s = a + b;
+    let bv = s - a;
+    let e = (a - (s - bv)) + (b - bv);
+    (s, e)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn round_half_even_nd_matches_python_where_the_TIE_IS_AN_ARTEFACT() {
+        // Every expectation here is CPython's own `round(x, nd)` output. The first three are the
+        // values that separate the correct implementation from the scaled one: `3.865 * 100` is
+        // exactly 386.5 (looks like a tie, is not — the double is above it), `2.675` and `1.005`
+        // land just below theirs.
+        assert_eq!(round_half_even_nd(3.865, 2), 3.87);
+        assert_eq!(round_half_even_nd(2.675, 2), 2.67);
+        assert_eq!(round_half_even_nd(1.005, 2), 1.0);
+        assert_eq!(round_half_even_nd(-3.865, 2), -3.87);
+        // Exact ties go to even.
+        assert_eq!(round_half_even_nd(0.125, 2), 0.12);
+        assert_eq!(round_half_even_nd(0.135, 2), 0.14);
+        assert_eq!(round_half_even_nd(2.5, 0), 2.0);
+        assert_eq!(round_half_even_nd(3.5, 0), 4.0);
+        assert_eq!(round_half_even_nd(0.5, 0), 0.0);
+        assert_eq!(round_half_even_nd(2.675, 0), 3.0);
+        // Non-ties, and the values the corpus actually stores.
+        assert_eq!(round_half_even_nd(3.865, 1), 3.9);
+        assert_eq!(round_half_even_nd(0.15, 2), 0.15);
+        assert_eq!(round_half_even_nd(664.291, 1), 664.3);
+        assert_eq!(round_half_even_nd(3.87, 2), 3.87);
+    }
 
     #[test]
     fn py_float_keeps_the_python_whole_number_dot() {

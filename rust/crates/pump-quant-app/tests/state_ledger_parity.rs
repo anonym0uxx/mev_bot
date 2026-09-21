@@ -76,7 +76,7 @@ fn the_live_ledger_reproduces_the_corpus_state_block() {
         let price = t["price_sol_per_raw"].as_f64();
         let trade = StateTrade {
             recv_unix_ms: t["recv_unix_ms"].as_i64().expect("t_ms"),
-            price_sol_per_raw: price,
+            price_lamports_per_raw_token: price,
             sol_lamports_signed: t["sol_lamports_signed"].as_i64().expect("sol"),
             base_qty: Some(2_000_000),
             is_buy: t["is_buy"].as_bool().expect("side"),
@@ -136,7 +136,7 @@ fn the_live_ledger_reproduces_the_corpus_state_block() {
             "net_flow @{t_dec}"
         );
         assert_eq!(
-            got.price_sol_per_raw,
+            got.price_lamports_per_raw_token,
             want["price_sol_per_raw"].as_f64().unwrap(),
             "price @{t_dec}"
         );
@@ -195,7 +195,7 @@ fn the_corpus_guards_hold_at_their_boundaries() {
             &mint,
             StateTrade {
                 recv_unix_ms: t0 + i * 1000,
-                price_sol_per_raw: Some(2.0e-8 + i as f64 * 1e-10),
+                price_lamports_per_raw_token: Some(2.0e-8 + i as f64 * 1e-10),
                 sol_lamports_signed: -20_000_000,
                 base_qty: Some(2_000_000),
                 is_buy: true,
@@ -228,7 +228,7 @@ fn the_corpus_guards_hold_at_their_boundaries() {
         &mint,
         StateTrade {
             recv_unix_ms: t0 + 29_000,
-            price_sol_per_raw: Some(2.0e-8 + 30.0 * 1e-10),
+            price_lamports_per_raw_token: Some(2.0e-8 + 30.0 * 1e-10),
             sol_lamports_signed: -20_000_000,
             base_qty: Some(2_000_000),
             is_buy: true,
@@ -249,7 +249,7 @@ fn the_corpus_guards_hold_at_their_boundaries() {
         &mint,
         StateTrade {
             recv_unix_ms: t0 + 32_000,
-            price_sol_per_raw: Some(2.0e-8),
+            price_lamports_per_raw_token: Some(2.0e-8),
             sol_lamports_signed: -99_999,
             base_qty: Some(2_000_000),
             is_buy: true,
@@ -265,7 +265,7 @@ fn the_corpus_guards_hold_at_their_boundaries() {
         &mint,
         StateTrade {
             recv_unix_ms: t0 + 33_000,
-            price_sol_per_raw: None,
+            price_lamports_per_raw_token: None,
             sol_lamports_signed: -20_000_000,
             base_qty: Some(2_000_000),
             is_buy: true,
@@ -276,7 +276,7 @@ fn the_corpus_guards_hold_at_their_boundaries() {
     let s3 = ledger.serve(&mint, t0 + 34_000).expect("snapshot");
     assert_eq!(s3.evidence_status, "partial");
     assert_eq!(
-        s3.price_sol_per_raw,
+        s3.price_lamports_per_raw_token,
         2.0e-8 + 30.0 * 1e-10,
         "the last FINITE price is the reference, not the missing one"
     );
@@ -290,7 +290,7 @@ fn out_of_order_trades_are_refused() {
     let mint = [9u8; 32];
     let mk = |t: i64, p: f64| StateTrade {
         recv_unix_ms: t,
-        price_sol_per_raw: Some(p),
+        price_lamports_per_raw_token: Some(p),
         sol_lamports_signed: -20_000_000,
         base_qty: Some(2_000_000),
         is_buy: true,
@@ -333,7 +333,7 @@ fn an_evicted_clock_is_flagged_incomplete() {
             &mint,
             StateTrade {
                 recv_unix_ms: 1_000_000 + i as i64 * 1000,
-                price_sol_per_raw: Some(2.0e-8),
+                price_lamports_per_raw_token: Some(2.0e-8),
                 sol_lamports_signed: -20_000_000,
                 base_qty: Some(2_000_000),
                 is_buy: true,
@@ -374,7 +374,7 @@ fn counts_are_all_time_and_traders_are_windowed() {
             &mint,
             StateTrade {
                 recv_unix_ms: 5_000_000 + i as i64 * 100,
-                price_sol_per_raw: Some(2.0e-8),
+                price_lamports_per_raw_token: Some(2.0e-8),
                 sol_lamports_signed: if i % 2 == 0 { -30_000_000 } else { 10_000_000 },
                 base_qty: Some(2_000_000),
                 is_buy: i % 2 == 0,

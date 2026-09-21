@@ -1,85 +1,3 @@
-//! ## FINDINGS (2026-09-20) — the harness runs and DISAGREES with the corpus
-//!
-//! This test is `#[ignore]`d until the divergences below are closed. It is not ignored because it is
-//! unreliable — it is ignored because it is RIGHT and the code is not. Running it:
-//! `cargo test -p pump-quant-app --test c5_bundle_parity -- --ignored --nocapture`
-//!
-//! Six classes, each with the case-0 evidence:
-//!
-//! 1. **PRICE UNIT — REAL, in the assembler.** corpus `0.9562185430525267`, ours
-//!    `956218543.0525267`. `bundle_assemble` multiplies by 1e9, but the ledger's
-//!    `price_sol_per_raw` ALREADY holds the corpus's `price_lamports_per_raw_token` (the ratio of the
-//!    tape's two legs). The ledger field's NAME is the misnomer, not the value. Fix: drop the ×1e9,
-//!    and rename the ledger field.
-//! 2. **`age_s` BASIS — REAL, and my first reading of it was WRONG.** corpus `660.0`, ours `664.291`.
-//!    I first said the corpus ages from the mint's LAUNCH. It does not: `build_states_v2` line 240 is
-//!    `age_s = (t_dec - tt[0]) / 1000.0`, the first trade in ITS OWN filtered run — the same basis the
-//!    ledger uses. So the 4-second gap is not a basis difference at all: our trade SET differs.
-//!    Candidate causes, in order: the corpus sorts `np.lexsort((slot, tms, code_inv))` (time, then
-//!    SLOT) while the fixture sorts on time alone; and the corpus's tape may be a different file from
-//!    `renormalized_v7` (check `build_states_v2`'s input path before believing either).
-//! 3. **BUY VOLUME — REAL.** `sell_volume_lamports` matches EXACTLY (`24415268927`) while
-//!    `buy_volume_lamports` is 137× too large (`8.14e12` vs `5.91e10`). Sells agree and buys do not,
-//!    so this is not a units question: it is per-side, which points at the leg a BUY contributes
-//!    (the tape signs a buy's SOL leg negative) or at which leg the corpus sums.
-//! 4. **TAPE STATUS FILTER — REAL.** `n_prior_trades` 1703 vs 1700 and `buy_count` 1677 vs 1674: we
-//!    count three trades the corpus does not. The tape carries `status`/`resolution` columns; a
-//!    failed or unresolved transaction is not a swap and must not enter the ledger.
-//! 5. **FLOAT FORMATTING — REAL, and the one that most needs a decision.** The corpus rounds for
-//!    display (`top1_trader_share=0.09326`, `ret_5s_bp=5.43046`, `holder_hhi=0.5524`) while we render
-//!    full float precision (`0.979236234823295`, `5.4304577631370154`). As rendered, these are
-//!    out-of-distribution prompts even where the underlying value is right.
-//! 6. **CONCENTRATION WINDOW — REAL.** `top1_trader_share` 0.979 vs corpus 0.09326: our
-//!    concentration window keys on a different span, so the shares are computed over the wrong
-//!    population.
-//!
-//! ## ROOT CAUSE (confirmed 2026-09-20, after two wrong answers)
-//!
-//! The band IS the cause — and the mechanism is worse than "outlier removal". On case 0 the three
-//! excluded buys sit at indices **0, 1 and 2**: the mint's EARLIEST trades, priced 0.0208x and
-//! 0.000114x its median. The corpus's median is taken over the whole run, so it is dominated by
-//! LATER, higher prices, and its 10x band therefore deletes the mint's launch-era trades
-//! systematically. Dropping exactly those three leaves the corpus's own `buy_volume_lamports`
-//! (`59095663715`) to the digit.
-//!
-//! A live ledger cannot reproduce that: at index 0 there is no reference yet, and there never can be.
-//! The corpus's state block for a mint's early clocks is therefore UNDERSERVABLE, by construction,
-//! from a causal reading — which makes it a corpus-side defect to rebuild (deferred: a rebuild forces
-//! an SFT redo), not a live-path bug.
-//!
-//! Two answers that were WRONG and are recorded so they are not retried: (1) "the corpus ages from
-//! the launch" — it uses `tt[0]`, same as us; (2) "the band is not the cause, since it flags 27 trades
-//! while the gap is 3" — that count came from a PREFIX median, whereas the corpus uses the WHOLE-run
-//! median, and the two classify different trades.
-//!
-//! The live ledger keeps a CAUSAL `BAND_FACTOR` (1_000x) hygiene band — measured: 10x drops a quarter
-//! of all trades, 1_000x drops the mis-resolved legs and spares genuine moves (0.01%). It cannot and
-//! does not close this gap.
-//!
-//! ## HISTORY — the earlier (superseded) note claimed the band explained all four
-//!
-//! `build_states_v2` lines 160-166 drop every trade whose price is outside `[med/10, med*10]`,
-//! where `med` is the mint's median price over its WHOLE run — **non-causal lookahead**. That one
-//! filter explains all four:
-//!
-//! * 3 extra buys: case 0's three whale buys are priced outside the band and are dropped upstream.
-//! * `buy_volume_lamports` 8.14e12 vs 5.91e10: those same three carry ~8.08e12 of the "volume", so
-//!   dropping them collapses it. **Sells match to the digit** because no sell fell outside the band.
-//! * `age_s` 664.291 vs 660.0: dropping early trades moves `tt[0]`, the age basis both sides share.
-//! * `top1_trader_share` 0.979 vs 0.09326: banding changes WHICH trades populate the concentration
-//!   window, so the shares are computed over a different population.
-//!
-//! The live path must NOT reproduce the band — it cannot know a future median, and a rule that
-//! peeks at the full series is exactly the lookahead the causal ledger exists to refuse. So the
-//! treatment is to SURFACE it: the ledger counts trades outside a *causal* (running) 10x band, and
-//! the assembler marks the block `partial` rather than claiming `complete` over numbers the corpus
-//! would have banded differently. Rebuilding the corpus causally is a corpus decision, not a silent
-//! re-derivation here.
-//!
-//! Test-side placeholders (NOT production defects, and excluded from the verdict): `curve_present`
-//! (the fixture supplies `CurveState::Absent`, so `curve_present=False` is the harness talking) and
-//! `unique_traders` (+2 — a consequence of 4's extra trades).
-
 //! C5 — does the Rust derivation, run over the SAME tape the corpus used, render the same lines?
 //!
 //! This is the check that turns "the assembler works" into "the assembler is indistinguishable from
@@ -90,11 +8,67 @@
 //! - the rows are the corpus's own stored prompts (`candidate_sft_c12_entry/train.jsonl`),
 //! - the trades are the tape prefix `<= t_dec` from `canonical/renormalized_v7/trades.jsonl`, the
 //!   same tape `build_c9_enrichment_full.py` read,
-//! - the expectations are the prompt LINES the corpus stored, byte for byte.
+//! - the expectations are the prompt LINES the corpus stored, byte for byte,
+//! - and, per case, the corpus's own robust-band median (see below), computed from the SAME tape.
 //!
-//! WHAT IS GRADED. Only the blocks whose producers exist today: the as-of-t state block and the
-//! ENRICHED block. The flow / curve / AMM / dev blocks are supplied as placeholders and their lines
-//! are not compared, so this test never grades a block that has no live producer.
+//! ## What this test grades, and the one thing it cannot
+//!
+//! TWO readings of every case, from one ingest path:
+//!
+//! 1. **CAUSAL** — every tape trade at or before `t_dec`, exactly what the live ledger sees.
+//! 2. **CORPUS-SIDE** — the same trades, minus those the corpus's own filter would have dropped:
+//!    `build_states_v2` lines 159-165 delete every trade whose price is outside
+//!    `[median/10, median*10]`, where `median` is the mint's median price over its WHOLE run —
+//!    including trades AFTER `t_dec`. That is lookahead: a live reader cannot know it, and at the
+//!    mint's earliest clocks there is no reference at all, so the corpus's state block for those
+//!    clocks is UNDERSERVABLE by construction.
+//!
+//! The corpus-side reading must reproduce every STATE line BYTE FOR BYTE, and every causal STATE
+//! divergence must be one the band itself produces (causal line ≠ corpus-side line for that key).
+//! That pair of assertions is the whole claim: the derivation is identical given the same trade set,
+//! and the residual is a corpus-side lookahead defect, not a live-path bug. Independent
+//! confirmation (`/tmp/verify_band.py`): the corpus's OWN `_episode`, run over its own banded tape,
+//! reproduces all six STATE lines of all 12 cases; the banded trade set is what the band median in
+//! the fixture reconstructs.
+//!
+//! THE PROMPT JOINS TWO PRODUCERS OVER TWO TRADE SETS, and the test grades each against its own:
+//! the STATE block comes from `build_states_v2` (bands), the ENRICHED block from
+//! `build_c9_enrichment_full` (does not — it reads the tape prefix directly). So the ENRICHED line is
+//! graded against the CAUSAL reading, and it matches: the live path reproduces that block exactly
+//! today. Only the STATE block carries the corpus's band.
+//!
+//! ## Findings this harness forced, all CLOSED (2026-09-20)
+//!
+//! 1. **PRICE UNITS — was REAL, in the assembler.** The corpus stores
+//!    `price_lamports_per_raw_token=0.9562185430525267` for a row whose tape ratio is the same
+//!    number: the ledger's field (per the corpus's own misnomer, `price_sol_per_raw`) already holds
+//!    lamports per raw token. `bundle_assemble` multiplied by 1e9, putting every price nine orders
+//!    out. Fixed by identity, and the ledger field is now named `price_lamports_per_raw_token`
+//!    (`state_ledger::StateTrade::from_market_trade` also converted the wire value with the wrong
+//!    scale — `/1e18` where the corpus's field is `/1e9`).
+//! 2. **`age_s` / counts / volumes / shares — the BAND**, per the two-reading proof above.
+//! 3. **`curve_present` was REAL, in the assembler.** The corpus's `curve_venue_present` is defined
+//!    as `venue != "unknown"` — an OBSERVATION. The assembler read it off the curve ANNOTATION, so a
+//!    bundle over a live venue rendered `curve_present=False`. Now sourced from the served state.
+//! 4. **TAPE STATUS FILTER** — the corpus's tapes carry `status`/`resolution`; this fixture's tape is
+//!    the renormalized one, where the value-leg floors (`|sol| >= 1e5 AND |tok| >= 1e6`) do the work.
+//!    The ledger applies both floors; the residual count differences are the band's.
+//! 5. **FLOAT FORMATTING — was REAL, and the subtlest of the six.** The corpus renders the STATE
+//!    line's return / volatility / share / ratio fields through `serialize_families.py`'s `fnum`
+//!    ladder (`%.2fe9` / `%.2fe6` above 1e9 / 1e6, `%.0f` above 1e3, else `%.6g`), NOT
+//!    `str(float)`. A live value carries full precision, so `ret_5s_bp=304.32986` rendered as
+//!    `304.3299` where the corpus wrote `304.33`, and `vol_30s_bp=2329.60057` as `2329.60057` where
+//!    the corpus wrote `2330` — the same numbers as different token sequences. Ported to
+//!    `fmt::py_fnum`; nine divergences closed by it. **The P1 fixtures could not have caught this**:
+//!    they round-trip the corpus's already-shortened text, and `str(float)` of a value the corpus had
+//!    already put through `%g` reproduces it byte for byte.
+//! 6. **CONCENTRATION WINDOW** — correct as built (`build_states_v2`: the last 2000 trades); the
+//!    apparent mismatch was 2's band changing which trades populate it.
+//!
+//! Test-side placeholders (NOT defects, and excluded from the verdict): the fixture supplies
+//! `CurveState::Absent` / `AmmState::Absent` / an empty `DevHistoryDecision`, so the CURVE / AMM /
+//! DEV blocks are not compared — they have no live producer yet (C3/C4). `curve_present` used to be
+//! collateral of that placeholder; since finding 3 it is not.
 //!
 //! MCAP IS AN INPUT, and that is stated rather than hidden: trades cannot see supply, so
 //! `mcap_sol_at_t`/`mcap_source` are taken from the row's own rendered line and fed in. Every other
@@ -158,8 +132,153 @@ fn mcap_from_line(line: &str) -> (Option<f64>, String) {
     (value, source)
 }
 
+/// Why a reading produced no comparison.
+#[derive(Debug)]
+enum Unserved {
+    Refused(String),
+    Ineligible(String),
+}
+
+/// Assemble and render one reading of a case.
+///
+/// `band` is the corpus's whole-run band median when the reading is the corpus-side one: a trade
+/// whose price falls outside `[median/10, median*10]` is dropped BEFORE ingest, reproducing the
+/// corpus's own trade set. `None` is the causal reading — every trade the tape carries.
+fn render_reading(case: &Value, band: Option<f64>) -> Result<String, Unserved> {
+    let mint = mint_key(case["mint"].as_str().expect("mint"));
+    let t_dec = case["t_dec_ms"].as_i64().expect("t_dec_ms");
+    let trades = case["trades"].as_array().expect("trades");
+
+    let mut ledger = StateLedger::new();
+    let mut enr: Vec<EnrichmentTrade> = Vec::with_capacity(trades.len());
+    for t in trades {
+        let recv = t[0].as_i64().expect("recv_unix_ms");
+        let trader = t[1].as_u64().expect("trader id");
+        let is_buy = t[2].as_u64().expect("side") == 1;
+        let tokens_raw = t[3].as_i64().expect("tokens_raw");
+        let sol = t[4].as_i64().expect("sol_lamports");
+        let slot = t[5].as_i64().expect("slot");
+        let venue = t[6].as_str().expect("venue");
+
+        // price = SOL per raw token, from the legs the tape actually carries. The tape signs a
+        // BUY's SOL leg NEGATIVE (it is SOL leaving the trader), so the price is the ratio of
+        // the two legs' magnitudes — taking `sol` as given yields a negative price, which the
+        // ledger rightly refuses as unusable rather than believing.
+        let price = if tokens_raw != 0 {
+            Some((sol as f64).abs() / (tokens_raw as f64).abs())
+        } else {
+            None
+        };
+
+        // THE CORPUS'S BAND, applied only when this reading is the corpus-side one. It is a filter
+        // on the INPUT, because that is exactly what it was upstream of the corpus's builder. A
+        // trade with no price cannot be judged by a price band; the ledger refuses it anyway.
+        if let (Some(med), Some(p)) = (band, price) {
+            if p < med / 10.0 || p > med * 10.0 {
+                continue;
+            }
+        }
+
+        ledger.on_trade(
+            &mint,
+            StateTrade {
+                recv_unix_ms: recv,
+                price_lamports_per_raw_token: price,
+                sol_lamports_signed: sol,
+                base_qty: Some(tokens_raw),
+                is_buy,
+                // +1: the fixture's ids are dense from 0, and 0 is the workspace's
+                // "unknown trader" sentinel — passing it would make every window unidentifiable.
+                trader: trader + 1,
+                venue: venue_of(venue),
+            },
+        );
+        enr.push(EnrichmentTrade {
+            recv_unix_ms: recv,
+            trader: {
+                let mut w = [0u8; 32];
+                w[..8].copy_from_slice(&(trader + 1).to_le_bytes());
+                w
+            },
+            tokens_raw: i128::from(tokens_raw),
+            sol_lamports: sol.unsigned_abs(),
+            slot: if slot < 0 { None } else { Some(slot as u64) },
+        });
+    }
+
+    // The corpus's own clock gates this row (>= 20 strictly-prior trades, etc.). A row the
+    // ledger refuses is not a parity failure — it is the ledger correctly declining.
+    if let Err(refusal) = ledger.eligibility(&mint, t_dec) {
+        return Err(Unserved::Ineligible(format!("ledger/{refusal:?}")));
+    }
+    let Some(snapshot) = ledger.serve(&mint, t_dec) else {
+        return Err(Unserved::Ineligible("ledger/serve_none".to_string()));
+    };
+    let snapped =
+        enrich(&enr, t_dec).map_err(|e| Unserved::Ineligible(format!("enrichment/{e:?}")))?;
+
+    let expected_enriched = case["expected_enriched_line"]
+        .as_str()
+        .expect("enriched line");
+    let (mcap, mcap_source) = mcap_from_line(expected_enriched);
+
+    let flow = FlowState {
+        entrants_60s: 0,
+        entrants_300s: 0,
+        net_flow_sol_300s: 0.0,
+        fresh_wallet_share_300s: None,
+        flow_lookback_d: 0.0,
+        sniper_share_300s: None,
+        bot_uniform_share_300s: None,
+        smart_entrants_300s: 0,
+        smart_net_flow_sol_300s: 0.0,
+        coentry_wallets_300s: 0,
+        creator_trading_own_mint: false,
+        entrant_fee_p90_lamports: None,
+        entrant_cu_p50: None,
+    };
+    let bundle = assemble(&BundleInputs {
+        snapshot: &snapshot,
+        enriched: &snapped,
+        t_dec_ms: t_dec,
+        venue: &snapshot.venue,
+        mcap_sol_at_t: mcap,
+        mcap_source: &mcap_source,
+        flow: &flow,
+        flow_no_prior: false,
+        curve: CurveState::Absent {
+            reason: "c5".to_string(),
+        },
+        amm: AmmState::Absent {
+            reason: "c5".to_string(),
+        },
+        dev: DevHistoryDecision {
+            creator_past_launches: None,
+            creator_known: 0,
+        },
+        size_depth_sol: None,
+        size_amm: false,
+    })
+    .map_err(|e| Unserved::Refused(e.as_str().to_string()))?;
+
+    Ok(render_decision(&bundle))
+}
+
+/// The key that identifies a line's slot in the rendering: state lines are keyed by their first
+/// field name, the ENRICHED line by its header.
+fn line_key(want: &str) -> &str {
+    if want.starts_with("ENRICHED CANDIDATE STATE") {
+        "ENRICHED CANDIDATE STATE"
+    } else {
+        want.split('=').next().unwrap_or(want)
+    }
+}
+
+fn find_key<'a>(rendered: &'a str, key: &str) -> Option<&'a str> {
+    rendered.lines().find(|l| l.starts_with(key))
+}
+
 #[test]
-#[ignore = "C5 findings 1-6 recorded in this file's header; un-ignore as each is closed"]
 fn derived_blocks_render_identically_to_the_corpus_over_the_corpus_tape() {
     let f = fixture();
     let cases = f["cases"].as_array().expect("cases");
@@ -170,172 +289,104 @@ fn derived_blocks_render_identically_to_the_corpus_over_the_corpus_tape() {
     );
 
     let mut graded = 0usize;
-    let mut skipped_for_eligibility = 0usize;
+    let mut skipped = 0usize;
+    let mut band_cases = 0usize;
+    let mut band_explained_lines = 0usize;
     // WHY a case was skipped, as a histogram: a fixture where every row is refused is not a passing
     // test, it is a mis-wired ingest, and the cause is what says which.
     let mut skip_causes: std::collections::BTreeMap<String, usize> =
         std::collections::BTreeMap::new();
-    let mut failures: Vec<String> = Vec::new();
+    let mut corpus_failures: Vec<String> = Vec::new();
+    let mut causal_failures: Vec<String> = Vec::new();
 
     for (i, case) in cases.iter().enumerate() {
-        let mint = mint_key(case["mint"].as_str().expect("mint"));
-        let t_dec = case["t_dec_ms"].as_i64().expect("t_dec_ms");
-        let trades = case["trades"].as_array().expect("trades");
+        let band = case["band"]["median_lamports_per_raw_token"].as_f64();
+        let band_applies = case["band"]["applies"].as_bool().unwrap_or(false);
+        let banded_out = case["band"]["prefix_trades_banded_out"]
+            .as_u64()
+            .unwrap_or(0);
 
-        // ---- ingest: one tape prefix, two derivations (the corpus's own cutoff, `<= t_dec`)
-        let mut ledger = StateLedger::new();
-        let mut enr: Vec<EnrichmentTrade> = Vec::with_capacity(trades.len());
-        for t in trades {
-            let recv = t[0].as_i64().expect("recv_unix_ms");
-            let trader = t[1].as_u64().expect("trader id");
-            let is_buy = t[2].as_u64().expect("side") == 1;
-            let tokens_raw = t[3].as_i64().expect("tokens_raw");
-            let sol = t[4].as_i64().expect("sol_lamports");
-            let slot = t[5].as_i64().expect("slot");
-            let venue = t[6].as_str().expect("venue");
-
-            // price = SOL per raw token, from the legs the tape actually carries. The tape signs a
-            // BUY's SOL leg NEGATIVE (it is SOL leaving the trader), so the price is the ratio of
-            // the two legs' magnitudes — taking `sol` as given yields a negative price, which the
-            // ledger rightly refuses as unusable rather than believing.
-            let price = if tokens_raw != 0 {
-                Some((sol as f64).abs() / (tokens_raw as f64).abs())
-            } else {
-                None
-            };
-            ledger.on_trade(
-                &mint,
-                StateTrade {
-                    recv_unix_ms: recv,
-                    price_sol_per_raw: price,
-                    sol_lamports_signed: sol,
-                    base_qty: Some(tokens_raw),
-                    is_buy,
-                    // +1: the fixture's ids are dense from 0, and 0 is the workspace's
-                    // "unknown trader" sentinel — passing it would make every window unidentifiable.
-                    trader: trader + 1,
-                    venue: venue_of(venue),
-                },
-            );
-            enr.push(EnrichmentTrade {
-                recv_unix_ms: recv,
-                trader: {
-                    let mut w = [0u8; 32];
-                    w[..8].copy_from_slice(&(trader + 1).to_le_bytes());
-                    w
-                },
-                tokens_raw: i128::from(tokens_raw),
-                sol_lamports: sol.unsigned_abs(),
-                slot: if slot < 0 { None } else { Some(slot as u64) },
-            });
-        }
-
-        // The corpus's own clock gates this row (>= 20 strictly-prior trades, etc.). A row the
-        // ledger refuses is not a parity failure — it is the ledger correctly declining — so it is
-        // counted separately rather than silently dropped.
-        if let Err(refusal) = ledger.eligibility(&mint, t_dec) {
-            skipped_for_eligibility += 1;
-            *skip_causes
-                .entry(format!("ledger/{refusal:?}"))
-                .or_default() += 1;
-            continue;
-        }
-        let Some(snapshot) = ledger.serve(&mint, t_dec) else {
-            skipped_for_eligibility += 1;
-            *skip_causes
-                .entry("ledger/serve_none".to_string())
-                .or_default() += 1;
-            continue;
-        };
-        let snapped = match enrich(&enr, t_dec) {
-            Ok(s) => s,
-            Err(e) => {
-                skipped_for_eligibility += 1;
-                *skip_causes.entry(format!("enrichment/{e:?}")).or_default() += 1;
+        let causal = match render_reading(case, None) {
+            Ok(r) => r,
+            Err(u) => {
+                skipped += 1;
+                let why = match u {
+                    Unserved::Refused(r) => format!("assembler/{r}"),
+                    Unserved::Ineligible(r) => r,
+                };
+                *skip_causes.entry(why).or_default() += 1;
                 continue;
             }
         };
-
-        let expected_enriched = case["expected_enriched_line"]
-            .as_str()
-            .expect("enriched line");
-        let (mcap, mcap_source) = mcap_from_line(expected_enriched);
-
-        let flow = FlowState {
-            entrants_60s: 0,
-            entrants_300s: 0,
-            net_flow_sol_300s: 0.0,
-            fresh_wallet_share_300s: None,
-            flow_lookback_d: 0.0,
-            sniper_share_300s: None,
-            bot_uniform_share_300s: None,
-            smart_entrants_300s: 0,
-            smart_net_flow_sol_300s: 0.0,
-            coentry_wallets_300s: 0,
-            creator_trading_own_mint: false,
-            entrant_fee_p90_lamports: None,
-            entrant_cu_p50: None,
-        };
-        let bundle = match assemble(&BundleInputs {
-            snapshot: &snapshot,
-            enriched: &snapped,
-            t_dec_ms: t_dec,
-            venue: &snapshot.venue,
-            mcap_sol_at_t: mcap,
-            mcap_source: &mcap_source,
-            flow: &flow,
-            flow_no_prior: false,
-            curve: CurveState::Absent {
-                reason: "c5".to_string(),
-            },
-            amm: AmmState::Absent {
-                reason: "c5".to_string(),
-            },
-            dev: DevHistoryDecision {
-                creator_past_launches: None,
-                creator_known: 0,
-            },
-            size_depth_sol: None,
-            size_amm: false,
-        }) {
-            Ok(b) => b,
-            Err(e) => {
-                failures.push(format!(
-                    "case {i} (mint {}): the assembler refused a corpus row: {}",
-                    case["mint"].as_str().unwrap_or("?"),
-                    e.as_str()
-                ));
-                continue;
+        // The corpus-side reading uses the band only where the corpus applied it (it needs >= 5
+        // finite prices); below that the corpus's trade set IS the causal one.
+        let corpus_side = if band_applies {
+            band_cases += 1;
+            match render_reading(case, band) {
+                Ok(r) => r,
+                Err(u) => {
+                    corpus_failures.push(format!(
+                        "case {i}: the corpus-side reading could not be assembled: {u:?} \
+                         (banded out {banded_out} prefix trades)"
+                    ));
+                    continue;
+                }
             }
+        } else {
+            causal.clone()
         };
 
-        let rendered = render_decision(&bundle);
-        let have: Vec<&str> = rendered.lines().collect();
-        let mut case_failures = 0usize;
-
-        for want in case["expected_state_lines"]
+        let mut expected: Vec<&str> = case["expected_state_lines"]
             .as_array()
             .expect("expected_state_lines")
-        {
-            let want = want.as_str().expect("line");
-            if !have.iter().any(|l| *l == want) {
+            .iter()
+            .map(|l| l.as_str().expect("line"))
+            .collect();
+        expected.push(
+            case["expected_enriched_line"]
+                .as_str()
+                .expect("enriched line"),
+        );
+
+        let mut case_failures = 0usize;
+        for want in expected {
+            let key = line_key(want);
+            // TWO PRODUCERS, TWO TRADE SETS. The corpus's STATE block comes from
+            // `build_states_v2` (which bands) while the ENRICHED block comes from
+            // `build_c9_enrichment_full` (which does NOT — it reads the tape prefix directly). The
+            // prompt is the join of the two, so each block is graded against the reading that
+            // reproduces its own producer.
+            let causal_line = find_key(&causal, key);
+            let corpus_line = find_key(&corpus_side, key);
+            let graded_line = if want.starts_with("ENRICHED CANDIDATE STATE") {
+                causal_line
+            } else {
+                corpus_line
+            };
+            if graded_line != Some(want) {
                 case_failures += 1;
-                failures.push(format!(
-                    "case {i}: STATE line not reproduced\n   corpus: {want}\n   ours  : {}",
-                    have.iter()
-                        .find(|l| l.split('=').next() == want.split('=').next())
-                        .unwrap_or(&"<no line with that key>")
+                corpus_failures.push(format!(
+                    "case {i}: line not reproduced by its own producer's trade set\n   \
+                     corpus: {want}\n   ours  : {}",
+                    graded_line.unwrap_or("<no line with that key>")
                 ));
+                continue;
             }
-        }
-        if !have.iter().any(|l| *l == expected_enriched) {
-            case_failures += 1;
-            failures.push(format!(
-                "case {i}: ENRICHED line not reproduced\n   corpus: {expected_enriched}\n   ours  : {}",
-                have.iter()
-                    .find(|l| l.starts_with("ENRICHED CANDIDATE STATE"))
-                    .unwrap_or(&"<no enriched line>")
-            ));
+            // The causal reading may differ on a STATE line — but ONLY where the band itself moves
+            // that line. If the banded and causal readings agree and the corpus does not, the
+            // divergence has another cause and this test must fail on it.
+            if !want.starts_with("ENRICHED CANDIDATE STATE") && causal_line != Some(want) {
+                if causal_line == corpus_line {
+                    case_failures += 1;
+                    causal_failures.push(format!(
+                        "case {i}: the causal reading diverges and the band does NOT explain it\n   \
+                         corpus: {want}\n   causal: {}",
+                        causal_line.unwrap_or("<no line with that key>")
+                    ));
+                } else {
+                    band_explained_lines += 1;
+                }
+            }
         }
         if case_failures == 0 {
             graded += 1;
@@ -343,15 +394,30 @@ fn derived_blocks_render_identically_to_the_corpus_over_the_corpus_tape() {
     }
 
     assert!(
-        failures.is_empty(),
-        "{} line(s) diverged from the corpus:\n\n{}",
-        failures.len(),
-        failures.join("\n\n")
+        corpus_failures.is_empty(),
+        "{} line(s) diverged from the corpus over the corpus's OWN trade set:\n\n{}",
+        corpus_failures.len(),
+        corpus_failures.join("\n\n")
     );
-
+    assert!(
+        causal_failures.is_empty(),
+        "{} causal divergence(s) NOT explained by the corpus's lookahead band:\n\n{}",
+        causal_failures.len(),
+        causal_failures.join("\n\n")
+    );
     assert!(
         graded >= 8,
-        "only {graded} case(s) reached a graded comparison (skipped {skipped_for_eligibility}: \
-         {skip_causes:?}); the fixture must exercise the derivation, not the refusals"
+        "only {graded} case(s) reached a graded comparison (skipped {skipped}: {skip_causes:?}); \
+         the fixture must exercise the derivation, not the refusals"
+    );
+    assert!(
+        band_cases > 0 && band_explained_lines > 0,
+        "the fixture must exercise the band ({band_cases} banded case(s), \
+         {band_explained_lines} band-explained line(s))"
+    );
+    println!(
+        "C5: {graded}/{} case(s) byte-identical given the corpus's trade set; \
+         {band_cases} carry the band; {band_explained_lines} causal line(s) attributed to it",
+        cases.len()
     );
 }

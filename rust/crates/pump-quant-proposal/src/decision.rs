@@ -270,11 +270,18 @@ pub fn flow_line(f: &FlowState, no_prior_flow: bool) -> String {
     }
 }
 
+/// `fnum` for the STATE line's derived fields (returns, volatility, shares, ratio): the
+/// corpus's ladder, not `str(float)`. See [`pump_quant_proposal::fmt::py_fnum`].
 fn opt_bp(v: Option<PyNum>) -> String {
     match v {
-        Some(x) => x.render(),
+        Some(x) => crate::fmt::py_fnum(x.as_f64()),
         None => "n/a".to_string(),
     }
+}
+
+/// [`opt_bp`] for a non-optional derived field.
+fn bp(v: PyNum) -> String {
+    crate::fmt::py_fnum(v.as_f64())
 }
 
 /// The §17 gate's view of a bundle.
@@ -352,8 +359,8 @@ pub fn render_decision(b: &DecisionBundle) -> String {
     ));
     out.push_str(&format!(
         "top1_trader_share={}  top5_trader_share={}  buyer_seller_ratio={}\n",
-        b.top1_trader_share.render(),
-        b.top5_trader_share.render(),
+        bp(b.top1_trader_share),
+        bp(b.top5_trader_share),
         opt_bp(b.buyer_seller_ratio)
     ));
     out.push_str("ENRICHED CANDIDATE STATE (strictly causal at t_dec): ");

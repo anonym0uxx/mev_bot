@@ -110,17 +110,20 @@ impl ClockRefusal {
 /// unwatched mint. The caller frees real capacity with [`StateLedger::forget`] when a mint
 /// leaves the watchlist.
 pub const MAX_TRACKED_MINTS: usize = 4_096;
-/// `pump_quant_features::types::PRICE_SCALE` — `price_fp` is **lamports per raw token**, so
-/// SOL per raw token is `price_fp / (PRICE_SCALE * LAMPORTS_PER_SOL)` = `price_fp / 1e18`.
+/// `pump_quant_features::types::PRICE_SCALE` — the engine's `price_fp = real_price × 1e9`, and
+/// its "real price" is SOL per raw token, so **`price_fp` is lamports per raw token × 1e9**
+/// (`curve_fill::spot_price_fp` is `vsol_lamports · 1e9 / vtok_raw`).
 ///
-/// Both scales are real and only one of them is the one people remember: the corpus's price is
-/// SOL per raw token (~2.8e-8), the engine's `price_fp` is that times 1e9 for the lamport leg
-/// and times another 1e9 for SOL→lamports. Getting this wrong by a single factor of 1e9 puts
-/// every window's reference price off by 1e9 — which is exactly the class of error the corpus's
-/// price floors (1e-11 prices, 1e12x moves) were introduced to kill.
+/// THE CORPUS'S PRICE IS THE LAMPORT FORM. The state block renders `price_lamports_per_raw_token`,
+/// and the corpus's internal `price_lamports_per_raw_token` — despite the name — holds exactly that: the
+/// ratio of the tape's two legs (`|sol_lamports| / |raw tokens|`), which is why the C5 harness's
+/// IDENTITY mapping reproduces the corpus's digits. So the conversion from the wire value is
+/// `price_fp / PRICE_SCALE` = `/1e9`, NOT `/1e18`. (`/1e18` is right for `live_status`'s display
+/// of `entry_price_fp`, which genuinely wants SOL per raw token — a DIFFERENT field, the prompt's
+/// `PRICE UNITS: price_sol_per_raw_token`.) Both scales are real; using the wrong one puts every
+/// window's reference price 1e9 out, the class of error the corpus's price floors (1e-11 prices,
+/// 1e12x moves) were introduced to kill.
 pub const PRICE_SCALE: f64 = 1_000_000_000.0;
-/// Lamports per SOL, as the engine's own conversion does it (`live_status.rs`: `price_fp / 1e18`).
-pub const LAMPORTS_PER_SOL: f64 = 1_000_000_000.0;
 /// Below this, a SOL leg is a pass-through, not a swap (`build_states_v2.MIN_SOL_LAMPORTS`).
 pub const MIN_SOL_LAMPORTS: i64 = 100_000;
 /// Below this, a token leg is rounding residue (`build_states_v2.MIN_TOKENS_RAW`).
@@ -160,8 +163,10 @@ impl VenueLabel {
 pub struct StateTrade {
     /// Receive time in unix milliseconds — the causal clock.
     pub recv_unix_ms: i64,
-    /// Price in SOL per raw token, `None` when the tape's price was non-finite.
-    pub price_sol_per_raw: Option<f64>,
+    /// Price in LAMPORTS per raw token (the corpus's `price_lamports_per_raw_token`, whose own
+    /// internal name is the misnomer `price_lamports_per_raw_token`), `None` when the tape's price was
+    /// non-finite.
+    pub price_lamports_per_raw_token: Option<f64>,
     /// Signed SOL volume in lamports (buys negative on the tape; magnitude is the volume).
     pub sol_lamports_signed: i64,
     /// Signed base (token) volume in raw units, `None` when the producer could not supply it.
@@ -215,9 +220,10 @@ impl StateTrade {
         let sol_lamports_signed = if is_buy { -magnitude } else { magnitude };
         Some(StateTrade {
             recv_unix_ms,
-            // lamports-per-raw-token / 1e9 = SOL per raw token (cross-check against the
-            // engine's own `entry_price_fp / 1e18` in `live_status.rs`)).
-            price_sol_per_raw: Some(price_fp as f64 / (PRICE_SCALE * LAMPORTS_PER_SOL)), // LINT-ALLOW(money_float_cast): corpus price is SOL per raw token; the wire value is fixed-point
+            // `price_fp` is lamports per raw token × 1e9, so /1e9 is the corpus's price EXACTLY
+            // (see `PRICE_SCALE`'s note — /1e18 would be SOL per raw token, a different field).
+            price_lamports_per_raw_token: Some(price_fp as f64 / PRICE_SCALE), // LINT-ALLOW(money_float_cast): the wire value is fixed-point; the corpus price is an f64
+
             sol_lamports_signed,
             base_qty,
             is_buy,
@@ -274,8 +280,9 @@ pub struct StateSnapshot {
     pub sell_volume_lamports: i64,
     /// Buy minus sell, lamports.
     pub net_flow_lamports: i64,
-    /// The last finite price before the clock.
-    pub price_sol_per_raw: f64,
+    /// The last finite price before the clock, in lamports per raw token (the corpus's
+    /// `price_lamports_per_raw_token` field).
+    pub price_lamports_per_raw_token: f64,
     /// Mint age at the clock, seconds.
     pub age_s: f64,
     /// Age of the last trade before the clock, seconds.
@@ -454,7 +461,7 @@ impl StateLedger {
         // corpus bands out — on the C5 rows, exactly the three 3,999/3,999/86 SOL buys whose removal
         // leaves the corpus's own `buy_volume_lamports` to the digit. Intent kept, lookahead dropped.
         if let Some(p) = trade
-            .price_sol_per_raw
+            .price_lamports_per_raw_token
             .filter(|p| p.is_finite() && *p > 0.0)
         {
             if let Some(med) = running_band_reference(&self.mints.get(mint)) {
@@ -489,7 +496,7 @@ impl StateLedger {
             l.cum_sell += 1;
             l.cum_sell_vol = l.cum_sell_vol.saturating_add(trade.volume_lamports());
         }
-        if trade.price_sol_per_raw.is_none() {
+        if trade.price_lamports_per_raw_token.is_none() {
             l.cum_nonfinite += 1;
         }
         if trade.trader == 0 {
@@ -499,7 +506,7 @@ impl StateLedger {
             l.cum_unknown_token_leg = l.cum_unknown_token_leg.saturating_add(1);
         }
         if let Some(p) = trade
-            .price_sol_per_raw
+            .price_lamports_per_raw_token
             .filter(|p| p.is_finite() && *p > 0.0)
         {
             l.price_ring.push_back(p);
@@ -590,7 +597,7 @@ impl StateLedger {
         let price = before
             .iter()
             .rev()
-            .find_map(|t| t.price_sol_per_raw.filter(|p| p.is_finite()))?;
+            .find_map(|t| t.price_lamports_per_raw_token.filter(|p| p.is_finite()))?;
         if !(price > 0.0) {
             return None;
         }
@@ -622,7 +629,7 @@ impl StateLedger {
                 .sum::<i64>();
         let nonfinite_after = after_ring
             .iter()
-            .filter(|t| t.price_sol_per_raw.is_none())
+            .filter(|t| t.price_lamports_per_raw_token.is_none())
             .count() as u64;
         let nonfinite_before = l.cum_nonfinite - nonfinite_after;
         let unknown_identity_after = after_ring.iter().filter(|t| t.trader == 0).count() as u64;
@@ -670,7 +677,7 @@ impl StateLedger {
             buy_volume_lamports: buy_vol,
             sell_volume_lamports: sell_vol,
             net_flow_lamports: buy_vol.saturating_sub(sell_vol),
-            price_sol_per_raw: price,
+            price_lamports_per_raw_token: price,
             age_s: (t_dec_ms - first_t) as f64 / 1000.0, // LINT-ALLOW(money_float_cast): age_s is rendered by the corpus from (t_dec - t0) / 1000.0
             last_trade_age_s: (t_dec_ms - last_t) as f64 / 1000.0, // LINT-ALLOW(money_float_cast): last_trade_age_s, same division as the authority
             top1_trader_share: top1,
@@ -706,7 +713,7 @@ fn ret_bp(before: &[&StateTrade], price: f64, t_dec_ms: i64, win_s: i64) -> Opti
     let seg: Vec<f64> = before
         .iter()
         .filter(|t| t.recv_unix_ms >= start)
-        .filter_map(|t| t.price_sol_per_raw)
+        .filter_map(|t| t.price_lamports_per_raw_token)
         .filter(|p| p.is_finite())
         .collect();
     let first = *seg.first()?;
@@ -725,7 +732,7 @@ fn volatility_30s(before: &[&StateTrade], _price: f64, t_dec_ms: i64) -> Option<
     let seg: Vec<f64> = before
         .iter()
         .filter(|t| t.recv_unix_ms >= start)
-        .filter_map(|t| t.price_sol_per_raw)
+        .filter_map(|t| t.price_lamports_per_raw_token)
         .filter(|p| p.is_finite())
         .collect();
     if seg.len() < 3 || seg.iter().any(|p| !(*p > 0.0)) {
@@ -748,7 +755,8 @@ fn volatility_30s(before: &[&StateTrade], _price: f64, t_dec_ms: i64) -> Option<
 mod tests {
     use super::*;
 
-    /// A real print: 2.5e-8 SOL per raw token, 0.4 SOL bought, a 2M-token leg.
+    /// A real print: `price_fp` = 2.5e10, i.e. 25 lamports per raw token (2.5e-8 SOL per raw),
+    /// 0.4 SOL bought, a 2M-token leg.
     fn buy_print(t: i64) -> Option<StateTrade> {
         StateTrade::from_market_trade(
             t,
@@ -765,9 +773,9 @@ mod tests {
     fn a_real_print_converts_with_the_corpus_units() {
         let t = buy_print(1_700_000_000_000).expect("admitted");
         assert_eq!(
-            t.price_sol_per_raw,
-            Some(2.5e-8),
-            "price_fp is lamports per raw token: / (PRICE_SCALE * LAMPORTS_PER_SOL)"
+            t.price_lamports_per_raw_token,
+            Some(25.0),
+            "price_fp is lamports per raw token x 1e9, so the corpus price is price_fp / 1e9"
         );
         assert!(
             t.is_buy,
@@ -888,7 +896,7 @@ mod tests {
         let s = ledger.serve(&mint, 3_000).expect("snapshot");
         assert_eq!(s.n_prior_trades, 2, "the placeholder is not a trade");
         assert_eq!(
-            s.price_sol_per_raw, 2.5e-8,
+            s.price_lamports_per_raw_token, 25.0,
             "nor a price: the reference stays the last real print"
         );
         assert!(s.identity_known && s.token_leg_known);
@@ -974,11 +982,11 @@ mod tests {
         }
         // A 100x move survives: that is a memecoin doing what memecoins do.
         let mut mover = buy_print(7_000).expect("print");
-        mover.price_sol_per_raw = Some(2.5e-6);
+        mover.price_lamports_per_raw_token = Some(2_500.0);
         assert!(l.on_trade(&mint, mover), "a 100x move is not garbage");
         // A 10,000x leg is the mis-resolved account the corpus bands out.
         let mut garbage = buy_print(8_000).expect("print");
-        garbage.price_sol_per_raw = Some(2.5e-4);
+        garbage.price_lamports_per_raw_token = Some(250_000.0);
         assert!(!l.on_trade(&mint, garbage), "10,000x off is not a price");
 
         let snap = l.serve(&mint, 9_000).expect("served");

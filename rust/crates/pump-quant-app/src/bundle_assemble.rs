@@ -20,10 +20,12 @@
 //! - `token_leg_known == false` — a print carried no token leg, so it could not be cleared against
 //!   the dust floor and the volume/return fields are not the corpus's.
 //!
-//! PRICE UNITS — and a correction the C5 parity harness forced (2026-09-20). `StateSnapshot`'s field
-//! is NAMED `price_sol_per_raw`, which is a misnomer: the value it holds is the ratio of the tape's
-//! two legs, i.e. **lamports per raw token**, which is exactly the bundle's unit. Multiplying by 1e9
-//! (as this module first did, trusting the name) put every price 9 orders out.
+//! PRICE UNITS — and a correction the C5 parity harness forced (2026-09-20). `StateSnapshot`'s
+//! field is NAMED `price_sol_per_raw` in the corpus, which is a misnomer: the value it holds is the
+//! ratio of the tape's two legs, i.e. **lamports per raw token**, which is exactly the bundle's
+//! unit. Multiplying by 1e9 (as this module first did, trusting the name) put every price 9 orders
+//! out. The ledger field is now named `price_lamports_per_raw_token` and carries the corpus value
+//! unconverted (see `state_ledger::PRICE_SCALE`'s note on the two real scales).
 //!
 //! The evidence is a real corpus row: the harness derived `0.9562185430525267` from the tape and the
 //! corpus's own prompt stores `price_lamports_per_raw_token=0.9562185430525267` — identical digits.
@@ -80,15 +82,10 @@ impl AssemblyRefusal {
 /// Python does, and it is observable — 0.5 cases differ.
 #[must_use]
 pub fn py_round(x: f64, dp: u32) -> f64 {
-    if !x.is_finite() {
-        return x;
-    }
-    let scale = 10f64.powi(dp as i32);
-    let scaled = x * scale;
-    if !scaled.is_finite() {
-        return x;
-    }
-    scaled.round_ties_even() / scale
+    // ONE AUTHORITY. This used to be a second, subtly different implementation of the same idea
+    // (`(x * 10^dp).round_ties_even() / 10^dp`), which reads an exactly-representable scaled product
+    // as a tie and rounds the wrong way on values like 3.865 — see `fmt::round_half_even_nd`.
+    pump_quant_proposal::fmt::round_half_even_nd(x, dp as usize)
 }
 
 /// Everything the bundle needs, supplied by the caller — this module derives nothing itself.
@@ -156,7 +153,14 @@ pub fn assemble(inputs: &BundleInputs<'_>) -> Result<DecisionBundle, AssemblyRef
         age_s: PyNum::Float(py_round(s.age_s, 1)),
         last_trade_age_s: PyNum::Float(py_round(s.last_trade_age_s, 2)),
         venue: inputs.venue.to_string(),
-        curve_present: !matches!(inputs.curve, CurveState::Absent { .. }),
+        // `curve_venue_present` in the corpus, and its own definition is the OBSERVATION, not the
+        // annotation: `build_states_v2` line 300 is `curve_venue_present = venue != "unknown"`.
+        // Reading it off `CurveState::Absent` instead (as this did) made a bundle whose tape
+        // showed a live venue render `curve_present=False` — a real divergence the C5 harness
+        // caught, and the reason the harness's `CurveState::Absent` placeholder "masked signal".
+        // `serve` already refuses an unknown-venue clock (`ClockRefusal::VenueUnknown`), so this
+        // is `true` for every served row — exactly as it is on every corpus row.
+        curve_present: s.venue != "unknown",
         // The corpus bands its own tape on a whole-run median (see the ledger's
         // `prices_outside_causal_band`). We cannot reproduce that causally, so when such trades are
         // present the block says `partial` — the corpus's own word for a block that is not exactly
@@ -169,7 +173,7 @@ pub fn assemble(inputs: &BundleInputs<'_>) -> Result<DecisionBundle, AssemblyRef
         unique_traders: s.unique_traders as i64,
         // IDENTITY, not a conversion: the ledger's value is already the corpus's
         // `price_lamports_per_raw_token` (see the module docs — the field name lies).
-        price_lamports_per_raw_token: PyNum::Float(s.price_sol_per_raw),
+        price_lamports_per_raw_token: PyNum::Float(s.price_lamports_per_raw_token),
         ret_5s_bp: s.ret_5s_bp.map(|v| PyNum::Float(py_round(v, 5))),
         ret_30s_bp: s.ret_30s_bp.map(|v| PyNum::Float(py_round(v, 5))),
         vol_30s_bp: s
@@ -224,7 +228,7 @@ mod tests {
             sell_volume_lamports: 900_000_000,
             net_flow_lamports: 1_200_000_000,
             // The corpus row's own `price_lamports_per_raw_token`, i.e. lamports per raw token.
-            price_sol_per_raw: 0.02445740498411998,
+            price_lamports_per_raw_token: 0.02445740498411998,
             age_s: 12.0,
             last_trade_age_s: 1.0,
             top1_trader_share: Some(0.41),
