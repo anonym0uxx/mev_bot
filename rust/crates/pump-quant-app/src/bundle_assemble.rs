@@ -69,6 +69,28 @@ impl AssemblyRefusal {
     }
 }
 
+/// Round exactly as the corpus's serializer does: `round(x, n)` in Python, i.e. ties-to-EVEN.
+///
+/// WHY THIS IS NOT PEDANTRY. The corpus renders these fields through `serialize.py`, which rounds
+/// each one — `age_s` to 1 dp, `last_trade_age_s` to 2, and `ret_5s_bp` / `ret_30s_bp` /
+/// `price_volatility_30s_bp` / `top1_trader_share` / `top5_trader_share` / `buyer_seller_ratio` to 5.
+/// Rendering full precision puts `ret_5s_bp=5.4304577631370154` where the model trained on
+/// `ret_5s_bp=5.43046`: the same value, a different token sequence, i.e. out-of-distribution input
+/// from a *correct* number. Ties-to-even (not Rust's default `round`'s ties-away-from-zero) is what
+/// Python does, and it is observable — 0.5 cases differ.
+#[must_use]
+pub fn py_round(x: f64, dp: u32) -> f64 {
+    if !x.is_finite() {
+        return x;
+    }
+    let scale = 10f64.powi(dp as i32);
+    let scaled = x * scale;
+    if !scaled.is_finite() {
+        return x;
+    }
+    scaled.round_ties_even() / scale
+}
+
 /// Everything the bundle needs, supplied by the caller — this module derives nothing itself.
 pub struct BundleInputs<'a> {
     /// The as-of-t state line.
@@ -130,8 +152,9 @@ pub fn assemble(inputs: &BundleInputs<'_>) -> Result<DecisionBundle, AssemblyRef
 
     Ok(DecisionBundle {
         t_dec_ms: inputs.t_dec_ms,
-        age_s: PyNum::Float(s.age_s),
-        last_trade_age_s: PyNum::Float(s.last_trade_age_s),
+        // round(x, 1) — the corpus's serializer, field by field.
+        age_s: PyNum::Float(py_round(s.age_s, 1)),
+        last_trade_age_s: PyNum::Float(py_round(s.last_trade_age_s, 2)),
         venue: inputs.venue.to_string(),
         curve_present: !matches!(inputs.curve, CurveState::Absent { .. }),
         // The corpus bands its own tape on a whole-run median (see the ledger's
@@ -147,27 +170,34 @@ pub fn assemble(inputs: &BundleInputs<'_>) -> Result<DecisionBundle, AssemblyRef
         // IDENTITY, not a conversion: the ledger's value is already the corpus's
         // `price_lamports_per_raw_token` (see the module docs — the field name lies).
         price_lamports_per_raw_token: PyNum::Float(s.price_sol_per_raw),
-        ret_5s_bp: s.ret_5s_bp.map(PyNum::Float),
-        ret_30s_bp: s.ret_30s_bp.map(PyNum::Float),
-        vol_30s_bp: s.price_volatility_30s_bp.map(PyNum::Float),
+        ret_5s_bp: s.ret_5s_bp.map(|v| PyNum::Float(py_round(v, 5))),
+        ret_30s_bp: s.ret_30s_bp.map(|v| PyNum::Float(py_round(v, 5))),
+        vol_30s_bp: s
+            .price_volatility_30s_bp
+            .map(|v| PyNum::Float(py_round(v, 5))),
         buy_volume_lamports: s.buy_volume_lamports,
         sell_volume_lamports: s.sell_volume_lamports,
         net_flow_lamports: s.net_flow_lamports,
-        top1_trader_share: s.top1_trader_share.map_or(PyNum::Float(0.0), PyNum::Float),
-        top5_trader_share: s.top5_trader_share.map_or(PyNum::Float(0.0), PyNum::Float),
-        buyer_seller_ratio: s.buyer_seller_ratio.map(PyNum::Float),
+        top1_trader_share: s
+            .top1_trader_share
+            .map_or(PyNum::Float(0.0), |v| PyNum::Float(py_round(v, 5))),
+        top5_trader_share: s
+            .top5_trader_share
+            .map_or(PyNum::Float(0.0), |v| PyNum::Float(py_round(v, 5))),
+        buyer_seller_ratio: s.buyer_seller_ratio.map(|v| PyNum::Float(py_round(v, 5))),
         enriched: EnrichedCandidate {
             // An unsourced mcap stays `None` -> `na`; the corpus distinguishes that from 0.
-            mcap_sol_at_t: inputs.mcap_sol_at_t.map(PyNum::Float),
+            mcap_sol_at_t: inputs.mcap_sol_at_t.map(|v| PyNum::Float(py_round(v, 6))),
             mcap_source: inputs.mcap_source.to_string(),
             holders_at_t: PyNum::Int(inputs.enriched.holders_at_t as i64),
-            top1_float_share: PyNum::Float(inputs.enriched.top1_float_share),
-            top5_float_share: PyNum::Float(inputs.enriched.top5_float_share),
-            holder_hhi: PyNum::Float(inputs.enriched.holder_hhi),
+            // round(x, 6) — the c9 producer's own precision for this block.
+            top1_float_share: PyNum::Float(py_round(inputs.enriched.top1_float_share, 6)),
+            top5_float_share: PyNum::Float(py_round(inputs.enriched.top5_float_share, 6)),
+            holder_hhi: PyNum::Float(py_round(inputs.enriched.holder_hhi, 6)),
             bundle_slots: PyNum::Int(inputs.enriched.bundle_slots as i64),
             bundle_wallets: PyNum::Int(inputs.enriched.bundle_wallets as i64),
-            volume_sol_at_t: PyNum::Float(inputs.enriched.volume_sol_at_t),
-            wash_ratio: PyNum::Float(inputs.enriched.wash_ratio),
+            volume_sol_at_t: PyNum::Float(py_round(inputs.enriched.volume_sol_at_t, 6)),
+            wash_ratio: PyNum::Float(py_round(inputs.enriched.wash_ratio, 6)),
         },
         dev: inputs.dev.clone(),
         flow: inputs.flow.clone(),
@@ -299,6 +329,24 @@ mod tests {
         );
         assert!(rendered.contains("ENRICHED CANDIDATE STATE"), "{rendered}");
         assert!(rendered.contains("LIVE FLOW STATE"), "{rendered}");
+    }
+
+    /// The rounding law, pinned where it is observable: the corpus's `round()` is ties-to-EVEN, and a
+    /// ties-away Rust `round()` would differ on exactly the half-way cases.
+    #[test]
+    fn numbers_round_as_pythons_round_does() {
+        // The C5 evidence: full precision in, the corpus's token sequence out.
+        assert_eq!(py_round(5.4304577631370154, 5), 5.43046);
+        assert_eq!(py_round(22.264204271968236, 5), 22.2642);
+        assert_eq!(py_round(0.6618963615440171, 6), 0.661896);
+        assert_eq!(py_round(316.9502157193907, 1), 317.0);
+        assert_eq!(py_round(0.216315, 2), 0.22);
+        // Ties go to the EVEN digit: 0.125 -> 0.12, not 0.13 (which is what `f64::round` gives).
+        assert_eq!(py_round(0.125, 2), 0.12);
+        assert_eq!(py_round(0.135, 2), 0.14);
+        // A non-finite value is returned untouched rather than becoming a number.
+        assert!(py_round(f64::NAN, 5).is_nan());
+        assert!(py_round(f64::INFINITY, 5).is_infinite());
     }
 
     #[test]
