@@ -9,9 +9,10 @@ produce it, and they must not be conflated:
      training format (same market block, same unit names, same staleness_ms and
      pricing_eligible fields). Verified: the corpus splits stay byte-identical
      when this runs, so the eval cannot drift from the training distribution.
-  2. this script -> the SCORED rows: the 3-arm counterfactual group
-     (SKIP/WATCH/BUY) plus reserve/staleness provenance that grpo_loop's
-     load_wall_eval() requires before it will apply the gate.
+  2. this script -> the SCORED rows: the venue's counterfactual arm space
+     (SKIP/WATCH + every size the prompt offers the venue can execute, v9) plus
+     reserve/staleness provenance that grpo_loop's load_wall_eval() requires before
+     it will apply the gate.
 
 Without step 2 the driver refuses at pre-flight, by design: it will not
 fabricate a prompt or a return.

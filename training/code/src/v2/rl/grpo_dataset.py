@@ -128,7 +128,23 @@ def carried_advantage_mode(meta):
 # SKIP/WATCH grading unchanged. A record's action space is therefore 3 arms:
 # {SKIP, WATCH, BUY_<venue tier>}. Records with unresolvable venue are MASKED
 # (refused), never defaulted onto a tier.
-ENTRY_TIER_BY_REGIME = {"amm": "FULL", "bonding_curve": "SMALL"}
+#
+# v9 RE-SCOPE (operator ruling 2026-09-22, from the refusal-edge audit
+# reports/MIXED_VENUE_EDGE_AUDIT_20260922.txt): the group scores EVERY size the PROMPT
+# offers the venue, not just the venue's single live tier.
+#
+# WHY. Every prompt prints all three sizes WITH their depth-derived round-trip costs
+# ("SMALL = 0.25 SOL - 288 bp round trip (pool depth 51.3 SOL)" / MID / FULL), and the
+# live entry path VETOES a clip whose own impact exceeds 90 bp. On a thin AMM row the
+# FULL clip is therefore unexecutable while SMALL executes - and v8 gave that row a
+# FULL-only BUY arm, so the group could not express the size the prompt advertised.
+# Measured with the real engine on 8 thin AMM rows: FULL -2600/-2331/-3042/-2494/
+# -2590/-1734/-4646/-3140 bp vs SMALL -476/-456/-610/-462/-542/-49/-1094/-481 bp net.
+# 21,316 of 95,868 v8 rows carried that FULL-only arm. MID stays RETIRED
+# (KELLY_AUDIT_C12 §b): the added tier is the one the venue can actually execute.
+ENTRY_TIERS_BY_REGIME = {"amm": ("FULL", "SMALL"), "bonding_curve": ("SMALL",)}
+# v8 line kept for provenance of the pre-v9 build:
+#   ENTRY_TIER_BY_REGIME = {"amm": "FULL", "bonding_curve": "SMALL"}
 
 # --- the management arm -------------------------------------------------------------
 # The entry group is a 5-arm counterfactual over sizes (above). The management group is a
@@ -206,18 +222,20 @@ def build_records(rec: dict, tape, engine, horizon_ms: int) -> dict | None:
     group = {"SKIP": SKIP_VALUE, "WATCH": SKIP_VALUE}
     detail = {"SKIP": {"reward": SKIP_VALUE, "pure": 0.0, "kind": "no_position"},
               "WATCH": {"reward": SKIP_VALUE, "pure": 0.0, "kind": "deferral_free"}}
-    # SIZE IS AN ARM, but post-Option-A only the venue's live tier is scorable:
-    # AMM -> FULL, curve -> SMALL. Resolve the venue at the decision instant
-    # from the tape (same resolution the engine uses for regime), then score
-    # that ONE tier through the best exit policy. Unresolvable venue -> masked.
+    # SIZE IS AN ARM. v9: every tier the PROMPT offers that this venue can execute is
+    # scored (AMM -> FULL + SMALL, curve -> SMALL); MID stays retired. Resolve the
+    # venue at the decision instant from the tape (same resolution the engine uses
+    # for regime), then score EACH tier through the best exit policy at that tier's
+    # pinned clip. Unresolvable venue -> masked.
     venue, _t_v = engine.tape_venue_at(tape, t_dec)
     regime = engine._regime_of_venue(venue)
-    tier = ENTRY_TIER_BY_REGIME.get(regime.value) if regime is not None else None
-    if tier is None:
+    tiers = ENTRY_TIERS_BY_REGIME.get(regime.value) if regime is not None else None
+    if not tiers:
         return {"__none__": True, "statuses": ["venue_unresolved"],
                 "reason": f"tape venue={venue!r} at t_dec resolves to no live tier"}
-    arm_space = ("SKIP", "WATCH", "BUY_" + tier)
-    for tier, frac in ((tier, SIZE_FRACTIONS[tier]),):
+    arm_space = ("SKIP", "WATCH") + tuple("BUY_" + t for t in tiers)
+    for tier in tiers:
+        frac = SIZE_FRACTIONS[tier]
         arm = "BUY_" + tier
         best = None
         for pol in BUY_POLICIES:
@@ -483,9 +501,11 @@ def main(argv=None) -> int:
         if not recs:
             bad.append("no_records")
         for r in recs:
-            # RE-ARM: 3-arm venue-conditional space {SKIP, WATCH, BUY_<tier>}
+            # v9: venue-conditional arm space - AMM {SKIP,WATCH,BUY_FULL,BUY_SMALL},
+            # curve {SKIP,WATCH,BUY_SMALL}. MID retired.
             acts = set(r["actions"])
-            if acts not in ({"SKIP", "WATCH", "BUY_FULL"}, {"SKIP", "WATCH", "BUY_SMALL"}):
+            if acts not in ({"SKIP", "WATCH", "BUY_FULL", "BUY_SMALL"},
+                            {"SKIP", "WATCH", "BUY_SMALL"}):
                 bad.append("action_space_wrong")
             if abs(sum(r["advantages"].values())) > 1e-6:
                 bad.append("advantages_not_zero_sum")

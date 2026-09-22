@@ -1,0 +1,66 @@
+STALE-AMM VENUE AUDIT (D2 re-measure) - linux 2026-09-22 PT
+==============================================================
+Instrument: /training/v2/code/src/v2/rl/audit_stale_amm_venue.py
+Corpus: candidate_sft_c12/train.jsonl (BUY-labeled rows whose PROMPT says
+        amm_reserves=present but pricing_eligible=false, with a curve present).
+Sample: 25 rows (one per mint), scored through the real engine (score_entry) at both
+        clips, plus the engine's OWN venue resolution at t_dec.
+
+WHAT IT TESTS. The refusal-edge audit emulated the LIVE rule from the PROMPT and
+concluded these rows were refused-but-profitable (barrier proxy: 3680.9 bp mixed /
+4980.2 bp pumpfun). That is a PROMPT-side view. The offline engine resolves the venue
+from its own oracle, so this re-measures with the instrument that actually drives the
+reward and the wall gate.
+
+RESULT (measured):
+  * the engine routes EVERY sampled row to the CURVE (curve=25, amm=0) and prices 24/25;
+    so the offline RL data never lost these rows - the arm space already chose SMALL.
+  * realized through the exit policy at the SAME engine:
+        FULL @1.00 SOL: mean -1379 bp (n=24)
+        SMALL @0.25 SOL: mean  -308 bp (n=24)
+  * the barrier-proxy claim does NOT survive this instrument. These rows LOSE on
+    average at both clips; SMALL loses ~4.5x less.
+
+RULING-RELEVANT CONCLUSION: D2 is a LIVE-PATH question only, and it is NOT a validated
+edge recovery. Do not force stale-AMM rows through the live path on the strength of the
+barrier proxy. The size-down principle (D1) still holds and is visible here: the SMALL
+clip is the only clip that is close to break-even on exactly this population.
+
+CAVEAT: n=25, and the sample is per-mint (not the full 965 rows). The direction is
+consistent with the thin-pool measurements in audit_mixed_venue_edge.py.
+
+RAW LOG
+-------
+stale-AMM BUY rows with a curve present: 25 sampled
+tapes loaded: 25
+mint          stale_ms engine regime bt out    FULL@1.0    SMALL@0.25 
+AHYY5nBfybmS    95221 bonding_curve tp        ok -2705          ok -646          
+Dx3CLhc47rCU   241778 bonding_curve tp        ok -2023          ok -469          
+2UtQdK37XEuD   429480 bonding_curve timeout   ok -2481          ok -596          
+4dqntevkAyu5  6095985 bonding_curve None      refused_no_reserves - refused_no_reserves -
+3L1u9qDBkiY4  3294428 bonding_curve timeout   ok -1672          ok -389          
+9TFPnYhX48et   303028 bonding_curve censored  ok -2622          ok -628          
+Dz6WZ2A8rMnp   585154 bonding_curve tp        ok -2381          ok -544          
+D3KxoUnQdZZU   112459 bonding_curve timeout   ok -220           ok -22           
+762JHChCERp9   183471 bonding_curve tp        ok -71            ok 25            
+9ynffVGrDBGe   102690 bonding_curve timeout   ok -497           ok -93           
+6vbR8iqPqm7x  2100765 bonding_curve tp        ok -2037          ok -466          
+FhfKgR6Mcm95  4468888 bonding_curve timeout   ok 2037           ok 548           
+379HHMsUSfov  3038780 bonding_curve timeout   ok -3252          ok -789          
+EDJGy2gVEJU5    90499 bonding_curve timeout   ok -1324          ok -303          
+DtVbokpvbqdQ   117402 bonding_curve timeout   ok -1644          ok -376          
+CnNwrasdvCah   554763 bonding_curve timeout   ok -2172          ok -515          
+2J5VvcpryTTb   891519 bonding_curve timeout   ok 1681           ok 486           
+EcLg1ww1u1EF   273264 bonding_curve timeout   ok -1698          ok -388          
+BdEWVJ16bP3V   271702 bonding_curve tp        ok -3782          ok -920          
+283kwTJqBFGg   102214 bonding_curve timeout   ok -1350          ok -302          
+HcMoiwit4YVH   224387 bonding_curve tp        ok -2061          ok -456          
+6HPWxktgoms8    72720 bonding_curve timeout   ok -2519          ok -608          
+DREc3Bg1dwa3    76718 bonding_curve timeout   ok 104            ok 61            
+8LPyiTLw9thZ    87103 bonding_curve tp        ok 2147           ok 598           
+5te4qXdCWkXP   482680 bonding_curve tp        ok -2559          ok -592          
+
+SUMMARY: engine regime at t_dec: curve=25 amm=0 | priced=24/25
+FULL@1.0 net bp: n=24 mean -1379 | SMALL@0.25 net bp: n=24 mean -308
+barrier-proxy claim (for contrast): gross mean 3680.9 bp (mixed) / 4980.2 (pumpfun)
+RC=0

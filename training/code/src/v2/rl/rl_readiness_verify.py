@@ -39,10 +39,14 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 PY = "/home/alon/qwen27b-venv/bin/python"
 ACTIONS = ["SKIP", "WATCH", "BUY_SMALL", "BUY_MID", "BUY_FULL"]
-# RE-ARM (KELLY_AUDIT_C12 §b): entry groups are venue-conditional 3-arm —
-# {SKIP, WATCH, BUY_FULL} on AMM, {SKIP, WATCH, BUY_SMALL} on curve. MID retired.
-# Management rows ride the same file with their own 4-arm space.
-ENTRY_ARM_SETS = ({"SKIP", "WATCH", "BUY_FULL"}, {"SKIP", "WATCH", "BUY_SMALL"})
+# v9 RE-SCOPE (operator ruling 2026-09-22; audit reports/MIXED_VENUE_EDGE_AUDIT_20260922.txt):
+# entry groups are venue-conditional MULTI-TIER — the sizes the prompt offers that the
+# venue can execute. AMM = {SKIP, WATCH, BUY_FULL, BUY_SMALL} (the live own-impact veto
+# refuses a FULL clip on a thin book while SMALL executes); curve = {SKIP, WATCH,
+# BUY_SMALL}. MID stays retired (KELLY_AUDIT_C12 §b). Management rows ride the same file
+# with their own 4-arm space.
+ENTRY_ARM_SETS = ({"SKIP", "WATCH", "BUY_FULL", "BUY_SMALL"},
+                  {"SKIP", "WATCH", "BUY_SMALL"})
 MGMT_ARM_SET = {"HOLD", "ADD", "REDUCE", "EXIT"}
 fails = []
 notes = {}
@@ -123,7 +127,7 @@ def main(argv=None):
     check(ntrl > 0, "B.rows", "train targets non-empty (%d rows)" % ntrl)
     check(bad_schema == 0, "B.schema", "every row has prompt/prompt_sha256/group")
     check(bad_arms == 0, "B.actions",
-          "action space is venue-conditional 3-arm %s / %s or mgmt %s"
+          "action space is venue-conditional multi-tier %s / %s or mgmt %s"
           % (sorted(ENTRY_ARM_SETS[0]), sorted(ENTRY_ARM_SETS[1]), sorted(MGMT_ARM_SET)))
     check(bad_adv == 0, "B.zerosum", "advantages sum to 0 on every row")
     check(bad_skip == 0, "B.skip", "SKIP and WATCH pinned at 0.0 on every row")
