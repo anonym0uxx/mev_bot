@@ -201,8 +201,24 @@ def heartbeat_fresh(within_s=1800):
 
 
 # ---------------------------------------------------------------- stage 0
+def builders_running() -> list:
+    """PIDs of RL target builders alive RIGHT NOW (either builder, any invocation).
+
+    This is the one thing that tells an IN-FLIGHT regen (benign: wait, exit 3) from a
+    target set that does not match its own pin while nothing is building (a fault that
+    waiting cannot fix: exit 2). Both stage0's completeness gate and stage1.5 use it, so
+    "is a build running?" has ONE definition.
+    """
+    pids: list = []
+    for sig in ("grpo_dataset.py", "score_wall_eval.py"):
+        r = subprocess.run(["pgrep", "-f", sig], capture_output=True, text=True)
+        pids += [x for x in r.stdout.split() if x.strip()]
+    return sorted(set(pids))
+
+
 def stage0_precheck():
     missing = []
+    running = builders_running()
     for label, path, kind in (("rl_config", CFG, "file"),
                               ("rl_train_targets", RL_TRAIN, "file"),
                               ("wall_eval_scored", WALL_EVAL, "file")):
@@ -211,8 +227,13 @@ def stage0_precheck():
         if not ok:
             missing.append(path)
     if missing:
-        wait_more("RL inputs missing: %s. The chain will NOT launch on partial inputs."
-               % missing)
+        # Same wait-vs-page rule as the completeness gate below: a builder that is ALIVE
+        # makes a missing input an in-flight regen (benign); nothing building means the
+        # target set was never produced (or was deleted), and waiting cannot fix it.
+        msg = "RL inputs missing: %s. The chain will NOT launch on partial inputs." % missing
+        if running:
+            wait_more(msg + " Builders running: %s" % running)
+        refuse(msg + " Nothing is building, so this cannot resolve by waiting.")
     rows = sum(1 for _ in open(RL_TRAIN, encoding="utf-8"))
     wall = sum(1 for _ in open(WALL_EVAL, encoding="utf-8"))
     cfg = json.load(open(CFG, encoding="utf-8"))
@@ -225,28 +246,76 @@ def stage0_precheck():
     # ---- COMPLETENESS: a build that died mid-flight leaves a file that exists and is
     # non-empty, so existence + rows>0 would both pass and RL would train on a PARTIAL
     # target set after an eight day wait. Pin the exact expectation instead.
+    #
+    # THE PIN IS THE BUILDER'S OWN STATEMENT (grpo_dataset.write_expectation): the
+    # builders write RUNNING before scoring a row and COMPLETE only after the whole
+    # candidate set is processed. Stage 0 therefore refuses anything that is not a
+    # stated COMPLETE - an ABSENT pin is a REFUSAL, never a pass, because "we could not
+    # detect a partial build" is the same failure as a partial build.
+    #
+    # WAIT vs PAGE: a builder that is ALIVE right now is a benign in-flight regen
+    # (exit 3, silent - this is the normal state for days). Nothing running + a pin that
+    # is missing, not COMPLETE, or out of count is a fault waiting cannot fix: exit 2,
+    # which pages and engages the assessing agent.
     exp_path = os.environ.get("RL_CHAIN_EXPECTED",
                               os.path.join(os.path.dirname(RL_TRAIN), "EXPECTED.json"))
-    if os.path.isfile(exp_path):
-        rules = (json.load(open(exp_path, encoding="utf-8")) or {}).get("expected_rows", {})
-        for name, rule in rules.items():
-            fp = os.path.join(os.path.dirname(RL_TRAIN), name)
-            if not os.path.isfile(fp):
+    running = builders_running()
+    if not os.path.isfile(exp_path):
+        if running:
+            wait_more("no expectation pin at %s yet (builders running: %s)"
+                      % (exp_path, running))
+        refuse("no expectation pin at %s - the target set's completeness CANNOT be "
+               "proven and nothing is building. A missing pin is NOT a pass: run the "
+               "builder (it writes its own pin) before RL may launch." % exp_path)
+    pre_doc = json.load(open(exp_path, encoding="utf-8")) or {}
+    status = pre_doc.get("status")
+    if status is not None and str(status) != "COMPLETE":
+        if running:
+            wait_more("expectation pin status=%s (builders running: %s)"
+                      % (status, running))
+        refuse("expectation pin at %s says status=%s (written %s by %s) - a build that "
+               "is not COMPLETE must never launch RL."
+               % (exp_path, status, pre_doc.get("generated_at"),
+                  (pre_doc.get("builder") or {}).get("builder")))
+    rules = pre_doc.get("expected_rows", {})
+    # A pin that does not COVER the gate's own inputs is not a completeness proof: the
+    # loop below can only check the entries it is given, so an expectation missing
+    # `rl_train.jsonl` would silently leave the largest input unverified - exactly the
+    # hole this gate exists to close.
+    must_pin = {os.path.basename(RL_TRAIN), os.path.basename(WALL_EVAL)}
+    unpinned = sorted(must_pin - set(rules))
+    if unpinned:
+        if running:
+            wait_more("expectation pin at %s does not cover %s yet (builders running: %s)"
+                      % (exp_path, unpinned, running))
+        refuse("expectation pin at %s does not cover the gate inputs %s - an unpinned "
+               "input cannot be checked for completeness." % (exp_path, unpinned))
+    for name, rule in rules.items():
+        fp = os.path.join(os.path.dirname(RL_TRAIN), name)
+        if not os.path.isfile(fp):
+            if running:
                 wait_more("completeness: %s is missing (%s)" % (name, exp_path))
-            n = sum(1 for _ in open(fp, encoding="utf-8"))
-            if "exact" in rule and n != int(rule["exact"]):
-                wait_more("completeness: %s has %d rows, expected exactly %d - the build "
-                       "is PARTIAL or died mid-flight. Refusing to launch RL on an "
-                       "incomplete target set." % (name, n, int(rule["exact"])))
-            if "min_frac" in rule:
-                floor_n = int(float(rule["min_frac"]) * int(rule["of"]))
-                if n < floor_n:
-                    wait_more("completeness: %s has %d rows, below the %d floor (%s of %d)"
-                           % (name, n, floor_n, rule["min_frac"], int(rule["of"])))
-            log("completeness", **{name: "%d rows OK" % n})
-    else:
-        log("completeness: no expectation file; PARTIAL builds are NOT detectable",
-            path=exp_path)
+            refuse("completeness: %s is missing but nothing is building (%s)"
+                   % (name, exp_path))
+        n = sum(1 for _ in open(fp, encoding="utf-8"))
+        if "exact" in rule and n != int(rule["exact"]):
+            msg = ("completeness: %s has %d rows, expected exactly %d - the build is "
+                   "PARTIAL or died mid-flight." % (name, n, int(rule["exact"])))
+            if running:
+                wait_more(msg + " Builders running: %s" % running)
+            refuse(msg + " Nothing is building, so waiting cannot fix it: re-run the "
+                         "builder (it re-pins) before RL may launch.")
+        if "min_frac" in rule:
+            floor_n = int(float(rule["min_frac"]) * int(rule["of"]))
+            if n < floor_n:
+                if running:
+                    wait_more("completeness: %s has %d rows, below the %d floor (%s of "
+                              "%d)" % (name, n, floor_n, rule["min_frac"],
+                                       int(rule["of"])))
+                refuse("completeness: %s has %d rows, below the %d floor (%s of %d) and "
+                       "nothing is building" % (name, n, floor_n, rule["min_frac"],
+                                                int(rule["of"])))
+        log("completeness", **{name: "%d rows OK" % n})
     log("stage0 PASS")
     return {"rl_train_rows": rows, "wall_eval_rows": wall}
 
@@ -310,10 +379,7 @@ def stage15_wait_targets(poll_s=60, max_wait_s=0):
     """
     t0 = time.time()
     while True:
-        pids = []
-        for sig in ("grpo_dataset.py", "score_wall_eval.py"):
-            r = subprocess.run(["pgrep", "-f", sig], capture_output=True, text=True)
-            pids += [x for x in r.stdout.split() if x.strip()]
+        pids = builders_running()
         if not pids:
             rows = sum(1 for _ in open(RL_TRAIN, encoding="utf-8")) \
                 if os.path.isfile(RL_TRAIN) else 0

@@ -59,6 +59,7 @@ import json
 import math
 import os
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -288,6 +289,77 @@ def build_records(rec: dict, tape, engine, horizon_ms: int) -> dict | None:
     }
 
 
+EXPECTATION_SCHEMA = "rl_targets_expectation/2"
+
+
+def expectation_path(out_path: str) -> str:
+    """The completeness pin lives NEXT TO the file it describes."""
+    return os.path.join(os.path.dirname(out_path) or ".", "EXPECTED.json")
+
+
+def _builder_fingerprint() -> dict:
+    try:
+        sha = hashlib.sha256(open(__file__, "rb").read()).hexdigest()
+    except OSError:
+        sha = ""
+    return {"builder": os.path.basename(__file__), "sha256": sha}
+
+
+def write_expectation(out_path: str, name: str, *, status: str,
+                      count: int | None = None, extra: dict | None = None) -> dict:
+    """Merge this build's state into `<dir>/EXPECTED.json`, atomically (tmp + replace).
+
+    WHY THE BUILDER OWNS ITS OWN PIN. The RL chain's stage-0 completeness gate reads
+    EXPECTED.json and refuses to launch on a partial target set - after an eight-day wait.
+    When that file was maintained by hand, an ABSENT pin was indistinguishable from a
+    finished build: the gate logged "PARTIAL builds are NOT detectable" and PROCEEDED, so
+    a crashed rebuild could be trained on, and a policy trained on a half-scored corpus
+    would look exactly like a healthy run (and the memorization veto would judge it
+    against the same partial evidence).
+
+    So the builder states its own state, and the chain believes only a stated COMPLETE:
+      * RUNNING   written BEFORE any row is scored. A crash leaves this in place, which
+                  is what makes an interrupted build VISIBLE instead of merely possible.
+      * COMPLETE  written only after the FULL candidate set has been processed (and any
+                  management stage returned normally), with the exact row count read back
+                  from the file itself.
+    `expected_rows` is MERGED, never replaced, so the train pin and the wall pin live in
+    one file without clobbering each other.
+    """
+    p = expectation_path(out_path)
+    try:
+        cur = json.load(open(p, encoding="utf-8"))
+        if not isinstance(cur, dict):
+            cur = {}
+    except Exception:                                            # noqa: BLE001
+        cur = {}
+    rows = dict(cur.get("expected_rows") or {})
+    if count is not None:
+        rows[name] = {
+            "exact": int(count),
+            "note": ("PINNED BY THE BUILDER at %s; exact count read back from the file "
+                     "after the full candidate set was processed." % status),
+        }
+    doc = {**cur, "schema": EXPECTATION_SCHEMA, "status": status,
+           "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+           "builder": _builder_fingerprint(),
+           "entry_tiers_by_regime": {k: list(v)
+                                     for k, v in ENTRY_TIERS_BY_REGIME.items()},
+           "expected_rows": rows}
+    if extra:
+        doc.update(extra)
+    tmp = p + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(doc, fh, indent=1, sort_keys=True, default=str)
+    os.replace(tmp, p)
+    return doc
+
+
+def count_rows(path: str) -> int:
+    with open(path, encoding="utf-8") as fh:
+        return sum(1 for line in fh if line.strip())
+
+
 def _done_shas(out_path: str) -> set:
     """Resume support: prompts already scored are skipped, so a restart is a
     resume, not a restart."""
@@ -353,6 +425,12 @@ def build_split(split: str = "train", *, out_path: str = "",
     rng.shuffle(order)                                # deterministic mint strata
     cand = [cand[i] for i in order]
     stats["candidates"] = len(cand)
+    # RUNNING FIRST, before a single row is scored: an interrupted build must be
+    # VISIBLE to the chain's completeness gate, not merely possible (see
+    # write_expectation).
+    write_expectation(out_path, os.path.basename(out_path), status="RUNNING",
+                      extra={"split": split, "candidates": len(cand),
+                             "max_records": int(max_records or 0)})
     n = 0
     with open(out_path, "a", encoding="utf-8") as fh:
         for t_dec, mint, rec in cand:
@@ -410,6 +488,21 @@ def build_split(split: str = "train", *, out_path: str = "",
     # spaces. It needs no tape or oracle - its values are the reward engine's own outputs.
     stats["management_group"] = (build_management_records(split, out_path, verbose=verbose)
                                  if with_management else {"status": "not_requested"})
+    # ---- the pin: COMPLETE only when the WHOLE candidate set was processed ----------
+    # A resume run writes few (or zero) rows while still processing every candidate, so
+    # completeness is about the CANDIDATE SET, and the count is read back from the file
+    # itself rather than from this run's append count.
+    processed_all = (not max_records) and stats["scanned"] >= stats["candidates"]
+    total = count_rows(out_path)
+    stats["expectation"] = write_expectation(
+        out_path, os.path.basename(out_path),
+        status="COMPLETE" if processed_all else "INCOMPLETE",
+        count=total if processed_all else None,
+        extra={"split": split, "candidates": stats["candidates"],
+               "scanned": stats["scanned"], "scored_this_run": stats["scored"],
+               "skipped_already_done": stats["skipped_already_done"],
+               "refusals": dict(stats["refusals"]), "none": stats["none"],
+               "total_rows_in_file": total})
     if verbose:
         print(json.dumps(stats, indent=1, default=str))
     return stats

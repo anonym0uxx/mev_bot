@@ -29,7 +29,8 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from grpo_dataset import (ACTIONS, build_records,                  # noqa: E402
-                          prompt_of, prompt_sha, wall_state)
+                          count_rows, prompt_of, prompt_sha, wall_state,
+                          write_expectation)
 from rl_reward_v3 import (HORIZON_MS_DEFAULT, ReserveRegistry,     # noqa: E402
                           STALE_ANY, V3Engine, load_canonical_tapes)
 
@@ -101,10 +102,17 @@ def main(argv=None) -> int:
     cand.sort(key=lambda x: x[1])                     # mint-stratified, as corpus
 
     n_written = 0
+    n_processed = 0
+    # RUNNING first: an interrupted wall re-score must be VISIBLE to the chain (see
+    # grpo_dataset.write_expectation - the pin is the builder's own statement of state).
+    write_expectation(a.out, os.path.basename(a.out), status="RUNNING",
+                      extra={"src": a.src, "candidates": len(cand),
+                             "max_records": int(a.max_records or 0)})
     with open(a.out, "a", encoding="utf-8") as fo:
         for t_dec, mint, rec in cand:
             if a.max_records and n_written >= a.max_records:
                 break
+            n_processed += 1
             pr = prompt_of(rec)
             psha = prompt_sha(pr)
             if psha in done:
@@ -146,12 +154,22 @@ def main(argv=None) -> int:
     st["total_lines"] = sum(1 for _ in open(a.out, encoding="utf-8"))
     # RESUME-AWARE VERDICT: what matters is how many scored rows EXIST, not how
     # many this invocation appended. A resume over a complete file writes 0 new
-    # rows — that is success, not failure. (The old `scored >= 2000` rule made
+    # rows - that is success, not failure. (The old `scored >= 2000` rule made
     # every resume of a complete build exit 1, and the builds watchdog then
     # relaunched a finished build hourly, forever.)
     done_total = st["total_lines"]
     st["verdict"] = ("PASS" if done_total >= 2000
                      else f"INSUFFICIENT: {done_total} < gate_min_episodes 2000")
+    # The pin, by the same rule as the corpus builder: COMPLETE only when the WHOLE
+    # candidate set was processed, with the count read back from the file.
+    processed_all = (not a.max_records) and n_processed >= len(cand)
+    st["expectation"] = write_expectation(
+        a.out, os.path.basename(a.out),
+        status="COMPLETE" if processed_all else "INCOMPLETE",
+        count=done_total if processed_all else None,
+        extra={"src": a.src, "candidates": len(cand), "processed": n_processed,
+               "written_this_run": n_written, "total_rows_in_file": done_total,
+               "leak_refused": st["leak_refused"], "refusals": dict(st["refusals"])})
     with open("/training/v2/reports/RL_WALL_EVAL_SCORE.json", "w",
               encoding="utf-8") as fh:
         json.dump(st, fh, indent=1)
