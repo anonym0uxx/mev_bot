@@ -98,8 +98,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
-DEFAULT_TRAIN = "/training/v2/rl_targets_v8/rl_train.jsonl"
-DEFAULT_VALIDATION = "/training/v2/rl_targets_v8/rl_validation.jsonl"
+DEFAULT_TRAIN = "/training/v2/rl_targets_v9/rl_train.jsonl"
+DEFAULT_VALIDATION = "/training/v2/rl_targets_v9/rl_validation.jsonl"
 DEFAULT_OUT = "/training/v2/reports/MEMORIZATION_RECORDS.jsonl"
 DEFAULT_REPORT = "/training/v2/reports/MEMORIZATION_RECORDS_REPORT.json"
 DEFAULT_PREREG = "/training/v2/reports/MEMORIZATION_BOUNDS.json"

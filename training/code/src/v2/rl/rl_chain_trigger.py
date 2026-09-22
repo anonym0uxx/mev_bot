@@ -39,8 +39,8 @@ INIT_FROM = SFT_OUT + "/final"
 CFG = os.path.join(HERE, "configs", "rl_v2.json")
 # RE-ARM (KELLY_AUDIT_C12 §b): v8 targets are venue-conditional (AMM FULL / curve
 # SMALL, MID retired); built from candidate_sft_c12 by the same grpo_dataset path.
-RL_TRAIN = os.environ.get("RL_CHAIN_TRAIN", "/training/v2/rl_targets_v8/rl_train.jsonl")
-WALL_EVAL = os.environ.get("RL_CHAIN_WALL", "/training/v2/rl_targets_v8/rl_wall_scored.jsonl")
+RL_TRAIN = os.environ.get("RL_CHAIN_TRAIN", "/training/v2/rl_targets_v9/rl_train.jsonl")
+WALL_EVAL = os.environ.get("RL_CHAIN_WALL", "/training/v2/rl_targets_v9/rl_wall_scored.jsonl")
 REF_CACHE = "/training/v2/rl_ref/rl_ref_action_dist.pt"
 REF_META = "/training/v2/rl_ref/rl_ref_meta.json"
 JKGATE_EVIDENCE = os.environ.get("RL_CHAIN_JKGATE",

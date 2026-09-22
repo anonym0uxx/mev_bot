@@ -6,9 +6,9 @@
   "init_from": "/training/runs/sft-013/astra_north_star_v3_linux_sft/final",
   "init_from_note": "trainer.save_model(out_dir/final) under FSDP2 writes a CONSOLIDATED BF16 HF dir (verified: the ZeRO-3 gather in consolidate_cpt.py.SUPERSEDED was only needed for CPT's nvme-offloaded checkpoints). launch_rl.py verifies weights exist and hashes the dir.",
   "data": {
-    "train": "/training/v2/rl_targets_v8/rl_train.jsonl",
-    "validation": "/training/v2/rl_targets_v8/rl_validation.jsonl",
-    "eval": "/training/v2/rl_targets_v8/rl_wall_scored.jsonl",
+    "train": "/training/v2/rl_targets_v9/rl_train.jsonl",
+    "validation": "/training/v2/rl_targets_v9/rl_validation.jsonl",
+    "eval": "/training/v2/rl_targets_v9/rl_wall_scored.jsonl",
     "wall_ms": 1788984256517,
     "horizon_ms": 1800000,
     "eval_note": "The forward wall is the RL eval set and is NEVER trained on. Built in two stages so a wall row is rendered by the SAME annotation path as training and scored by the SAME build_records path: build_sft_c6.py --wall-eval-out (annotated prompts, c6 format, c6 proved byte-identical) -> score_wall_eval.py (counterfactual groups). VERIFIED wall-only: leak_refused=0."
