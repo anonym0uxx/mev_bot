@@ -1,0 +1,195 @@
+{
+ "alpha": 0.01,
+ "cases": {
+  "honest": [
+   {
+    "clean": 8,
+    "flagged": 0,
+    "n_per_group": 30,
+    "n_rows": 60,
+    "runs": 8,
+    "tv_bound_min": 0.3,
+    "tv_bound_p50": 0.3336666666666664
+   },
+   {
+    "clean": 8,
+    "flagged": 0,
+    "n_per_group": 50,
+    "n_rows": 100,
+    "runs": 8,
+    "tv_bound_min": 0.26,
+    "tv_bound_p50": 0.27999999999999997
+   },
+   {
+    "clean": 7,
+    "flagged": 1,
+    "n_per_group": 100,
+    "n_rows": 200,
+    "runs": 8,
+    "tv_bound_min": 0.18,
+    "tv_bound_p50": 0.1900999999999999
+   },
+   {
+    "clean": 8,
+    "flagged": 0,
+    "n_per_group": 200,
+    "n_rows": 400,
+    "runs": 8,
+    "tv_bound_min": 0.12504999999999997,
+    "tv_bound_p50": 0.14004999999999995
+   },
+   {
+    "clean": 8,
+    "flagged": 0,
+    "n_per_group": 300,
+    "n_rows": 600,
+    "runs": 8,
+    "tv_bound_min": 0.10339999999999994,
+    "tv_bound_p50": 0.11679999999999988
+   },
+   {
+    "clean": 8,
+    "flagged": 0,
+    "n_per_group": 400,
+    "n_rows": 800,
+    "runs": 8,
+    "tv_bound_min": 0.09000000000000002,
+    "tv_bound_p50": 0.0975
+   }
+  ],
+  "moderate (TV 0.20, gap 120bp)": [
+   {
+    "clean": 0,
+    "flagged": 8,
+    "n_per_group": 30,
+    "n_rows": 60,
+    "runs": 8,
+    "tv_bound_min": 0.3,
+    "tv_bound_p50": 0.3666666666666667
+   },
+   {
+    "clean": 0,
+    "flagged": 8,
+    "n_per_group": 50,
+    "n_rows": 100,
+    "runs": 8,
+    "tv_bound_min": 0.24000000000000002,
+    "tv_bound_p50": 0.2601999999999998
+   },
+   {
+    "clean": 0,
+    "flagged": 8,
+    "n_per_group": 100,
+    "n_rows": 200,
+    "runs": 8,
+    "tv_bound_min": 0.18,
+    "tv_bound_p50": 0.19
+   },
+   {
+    "clean": 0,
+    "flagged": 8,
+    "n_per_group": 200,
+    "n_rows": 400,
+    "runs": 8,
+    "tv_bound_min": 0.12504999999999997,
+    "tv_bound_p50": 0.1300999999999999
+   },
+   {
+    "clean": 0,
+    "flagged": 8,
+    "n_per_group": 300,
+    "n_rows": 600,
+    "runs": 8,
+    "tv_bound_min": 0.1033333333333333,
+    "tv_bound_p50": 0.10669999999999998
+   },
+   {
+    "clean": 0,
+    "flagged": 8,
+    "n_per_group": 400,
+    "n_rows": 800,
+    "runs": 8,
+    "tv_bound_min": 0.09004999999999998,
+    "tv_bound_p50": 0.09757499999999991
+   }
+  ],
+  "subtle (TV 0.10, gap 60bp)": [
+   {
+    "clean": 3,
+    "flagged": 5,
+    "n_per_group": 30,
+    "n_rows": 60,
+    "runs": 8,
+    "tv_bound_min": 0.30000000000000004,
+    "tv_bound_p50": 0.3336666666666664
+   },
+   {
+    "clean": 2,
+    "flagged": 6,
+    "n_per_group": 50,
+    "n_rows": 100,
+    "runs": 8,
+    "tv_bound_min": 0.24039999999999964,
+    "tv_bound_p50": 0.2601999999999998
+   },
+   {
+    "clean": 0,
+    "flagged": 8,
+    "n_per_group": 100,
+    "n_rows": 200,
+    "runs": 8,
+    "tv_bound_min": 0.17019999999999985,
+    "tv_bound_p50": 0.18
+   },
+   {
+    "clean": 0,
+    "flagged": 8,
+    "n_per_group": 200,
+    "n_rows": 400,
+    "runs": 8,
+    "tv_bound_min": 0.12499999999999999,
+    "tv_bound_p50": 0.13999999999999999
+   },
+   {
+    "clean": 0,
+    "flagged": 8,
+    "n_per_group": 300,
+    "n_rows": 600,
+    "runs": 8,
+    "tv_bound_min": 0.10333333333333333,
+    "tv_bound_p50": 0.11336666666666663
+   },
+   {
+    "clean": 0,
+    "flagged": 8,
+    "n_per_group": 400,
+    "n_rows": 800,
+    "runs": 8,
+    "tv_bound_min": 0.08504999999999997,
+    "tv_bound_p50": 0.09504999999999995
+   }
+  ]
+ },
+ "detector": "memorization_detector.py (prereg MEMORIZATION_BOUNDS.json)",
+ "false_positive_rate": "alpha by construction (honest cell flagged 0-1 of 8 at every n)",
+ "findings": {
+  "bound_scales_as": "tv_bound_p50 ~ 2.0/sqrt(n_per_group) (n=30: 0.334, n=100: 0.190, n=200: 0.140, n=300: 0.117, n=400: 0.095)",
+  "decision": "mem_limit = 400 per group: 13x the prereg's 30-row REFUSAL floor, 8/8 on the subtle shape, tv bound 0.095 at alpha=0.01, ~200 rows per regime stratum per group, and a cost of 3,200 generations/checkpoint (~7% of the one wall eval of 43,208 the loop already runs at every save_steps=100)",
+  "moderate_detection": "TV 0.20 / 120 bp: 8/8 at every n tested",
+  "subtle_detection": "TV 0.10 / 60 bp: 5/8 at n=30, 6/8 at n=50, 8/8 at n=100..400"
+ },
+ "method": "for each n: an honest control (identical generator both sides) and two real memoriser shapes - subtle (TV 0.10, outcome gap 60 bp) and moderate (TV 0.20, gap 120 bp) - scored through the REAL memorization_detector.py against the preregistered bounds, at alpha=0.01, N_PERM=400, 8 seeds per cell",
+ "n_perm": 400,
+ "question": "selection.mem_limit: how many matched rows per group does the preregistered memorization veto need to still separate a SUBTLE exposure effect from noise?",
+ "registered_at": "2026-09-22",
+ "rows_per_group": [
+  30,
+  50,
+  100,
+  200,
+  300,
+  400
+ ],
+ "schema": "mem-limit-power-study/1",
+ "seeds": 8
+}

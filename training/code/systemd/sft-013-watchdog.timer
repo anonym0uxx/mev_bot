@@ -1,0 +1,11 @@
+[Unit]
+Description=Hourly tick for the SFT-013 reliability watchdog
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+AccuracySec=1min
+Unit=sft-013-watchdog.service
+
+[Install]
+WantedBy=timers.target

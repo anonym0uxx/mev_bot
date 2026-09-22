@@ -1,0 +1,16 @@
+[Unit]
+Description=SFT-013 hourly reliability watchdog (independent of the Hermes cron dispatcher)
+Documentation=file:/training/v2/reports/SFT_WATCHDOG_RUNBOOK.md
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=alon
+Group=alon
+Environment=HOME=/home/alon
+Environment=HERMES_HOME=/home/alon/.hermes
+Environment=SFT_WATCHDOG_UNIT=qwen-sft-013
+Environment=SFT_WATCHDOG_RUN_ROOT=/training/runs/sft-013
+Environment=SFT_WATCHDOG_LOG=/training/v2/reports/sft_watchdog_013_hourly.log
+ExecStart=/bin/bash /training/v2/code/src/v2/rl/sft_watchdog_timer.sh
+TimeoutStartSec=1500

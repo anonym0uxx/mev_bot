@@ -1,0 +1,1308 @@
+{
+ "cases": [
+  {
+   "creator_trading_own_mint": true,
+   "entrant_cu_p50": 93484,
+   "entrant_fee_p90_lamports": 1005000,
+   "expected_line": "LIVE FLOW STATE: entrants_60s=62 entrants_300s=62 net_flow_sol_300s=4.720618 fresh_wallet_share_300s=1.0 flow_lookback_d=0.0 sniper_share_300s=0.241935 bot_uniform_share_300s=0.046154 smart_entrants_300s=0 smart_net_flow_sol_300s=0.0 coentry_wallets_300s=0 creator_trading_own_mint=True entrant_fee_p90_lamports=1005000 entrant_cu_p50=93484",
+   "floats": {
+    "bot_uniform_share_300s": 0.046154,
+    "flow_lookback_d": 0.0,
+    "fresh_wallet_share_300s": 1.0,
+    "net_flow_sol_300s": 4.720618,
+    "smart_net_flow_sol_300s": 0.0,
+    "sniper_share_300s": 0.241935
+   },
+   "ints": {
+    "coentry_wallets_300s": 0,
+    "entrants_300s": 62,
+    "entrants_60s": 62,
+    "smart_entrants_300s": 0
+   },
+   "no_prior_flow": false
+  },
+  {
+   "creator_trading_own_mint": true,
+   "entrant_cu_p50": 97996,
+   "entrant_fee_p90_lamports": 1005000,
+   "expected_line": "LIVE FLOW STATE: entrants_60s=13 entrants_300s=13 net_flow_sol_300s=1.932478 fresh_wallet_share_300s=1.0 flow_lookback_d=0.0 sniper_share_300s=0.384615 bot_uniform_share_300s=0.0 smart_entrants_300s=0 smart_net_flow_sol_300s=0.0 coentry_wallets_300s=0 creator_trading_own_mint=True entrant_fee_p90_lamports=1005000 entrant_cu_p50=97996",
+   "floats": {
+    "bot_uniform_share_300s": 0.0,
+    "flow_lookback_d": 0.0,
+    "fresh_wallet_share_300s": 1.0,
+    "net_flow_sol_300s": 1.932478,
+    "smart_net_flow_sol_300s": 0.0,
+    "sniper_share_300s": 0.384615
+   },
+   "ints": {
+    "coentry_wallets_300s": 0,
+    "entrants_300s": 13,
+    "entrants_60s": 13,
+    "smart_entrants_300s": 0
+   },
+   "no_prior_flow": false
+  },
+  {
+   "creator_trading_own_mint": true,
+   "entrant_cu_p50": 93473,
+   "entrant_fee_p90_lamports": 1005000,
+   "expected_line": "LIVE FLOW STATE: entrants_60s=64 entrants_300s=64 net_flow_sol_300s=2.785991 fresh_wallet_share_300s=1.0 flow_lookback_d=0.0 sniper_share_300s=0.234375 bot_uniform_share_300s=0.044776 smart_entrants_300s=0 smart_net_flow_sol_300s=0.0 coentry_wallets_300s=0 creator_trading_own_mint=True entrant_fee_p90_lamports=1005000 entrant_cu_p50=93473",
+   "floats": {
+    "bot_uniform_share_300s": 0.044776,
+    "flow_lookback_d": 0.0,
+    "fresh_wallet_share_300s": 1.0,
+    "net_flow_sol_300s": 2.785991,
+    "smart_net_flow_sol_300s": 0.0,
+    "sniper_share_300s": 0.234375
+   },
+   "ints": {
+    "coentry_wallets_300s": 0,
+    "entrants_300s": 64,
+    "entrants_60s": 64,
+    "smart_entrants_300s": 0
+   },
+   "no_prior_flow": false
+  },
+  {
+   "creator_trading_own_mint": true,
+   "entrant_cu_p50": 97996,
+   "entrant_fee_p90_lamports": 1005000,
+   "expected_line": "LIVE FLOW STATE: entrants_60s=13 entrants_300s=13 net_flow_sol_300s=1.932478 fresh_wallet_share_300s=1.0 flow_lookback_d=0.0 sniper_share_300s=0.384615 bot_uniform_share_300s=0.0 smart_entrants_300s=0 smart_net_flow_sol_300s=0.0 coentry_wallets_300s=0 creator_trading_own_mint=True entrant_fee_p90_lamports=1005000 entrant_cu_p50=97996",
+   "floats": {
+    "bot_uniform_share_300s": 0.0,
+    "flow_lookback_d": 0.0,
+    "fresh_wallet_share_300s": 1.0,
+    "net_flow_sol_300s": 1.932478,
+    "smart_net_flow_sol_300s": 0.0,
+    "sniper_share_300s": 0.384615
+   },
+   "ints": {
+    "coentry_wallets_300s": 0,
+    "entrants_300s": 13,
+    "entrants_60s": 13,
+    "smart_entrants_300s": 0
+   },
+   "no_prior_flow": false
+  },
+  {
+   "creator_trading_own_mint": true,
+   "entrant_cu_p50": 93473,
+   "entrant_fee_p90_lamports": 1005000,
+   "expected_line": "LIVE FLOW STATE: entrants_60s=2 entrants_300s=64 net_flow_sol_300s=2.785991 fresh_wallet_share_300s=1.0 flow_lookback_d=0.0 sniper_share_300s=0.234375 bot_uniform_share_300s=0.044776 smart_entrants_300s=0 smart_net_flow_sol_300s=0.0 coentry_wallets_300s=7 creator_trading_own_mint=True entrant_fee_p90_lamports=1005000 entrant_cu_p50=93473",
+   "floats": {
+    "bot_uniform_share_300s": 0.044776,
+    "flow_lookback_d": 0.0,
+    "fresh_wallet_share_300s": 1.0,
+    "net_flow_sol_300s": 2.785991,
+    "smart_net_flow_sol_300s": 0.0,
+    "sniper_share_300s": 0.234375
+   },
+   "ints": {
+    "coentry_wallets_300s": 7,
+    "entrants_300s": 64,
+    "entrants_60s": 2,
+    "smart_entrants_300s": 0
+   },
+   "no_prior_flow": false
+  },
+  {
+   "creator_trading_own_mint": true,
+   "entrant_cu_p50": 93473,
+   "entrant_fee_p90_lamports": 1005000,
+   "expected_line": "LIVE FLOW STATE: entrants_60s=0 entrants_300s=64 net_flow_sol_300s=1.851715 fresh_wallet_share_300s=1.0 flow_lookback_d=0.0 sniper_share_300s=0.234375 bot_uniform_share_300s=0.044776 smart_entrants_300s=0 smart_net_flow_sol_300s=0.0 coentry_wallets_300s=7 creator_trading_own_mint=True entrant_fee_p90_lamports=1005000 entrant_cu_p50=93473",
+   "floats": {
+    "bot_uniform_share_300s": 0.044776,
+    "flow_lookback_d": 0.0,
+    "fresh_wallet_share_300s": 1.0,
+    "net_flow_sol_300s": 1.851715,
+    "smart_net_flow_sol_300s": 0.0,
+    "sniper_share_300s": 0.234375
+   },
+   "ints": {
+    "coentry_wallets_300s": 7,
+    "entrants_300s": 64,
+    "entrants_60s": 0,
+    "smart_entrants_300s": 0
+   },
+   "no_prior_flow": false
+  },
+  {
+   "creator_trading_own_mint": true,
+   "entrant_cu_p50": 96129,
+   "entrant_fee_p90_lamports": 1005000,
+   "expected_line": "LIVE FLOW STATE: entrants_60s=86 entrants_300s=86 net_flow_sol_300s=-3.86604 fresh_wallet_share_300s=1.0 flow_lookback_d=0.0 sniper_share_300s=0.046512 bot_uniform_share_300s=0.071429 smart_entrants_300s=0 smart_net_flow_sol_300s=0.0 coentry_wallets_300s=2 creator_trading_own_mint=True entrant_fee_p90_lamports=1005000 entrant_cu_p50=96129",
+   "floats": {
+    "bot_uniform_share_300s": 0.071429,
+    "flow_lookback_d": 0.0,
+    "fresh_wallet_share_300s": 1.0,
+    "net_flow_sol_300s": -3.86604,
+    "smart_net_flow_sol_300s": 0.0,
+    "sniper_share_300s": 0.046512
+   },
+   "ints": {
+    "coentry_wallets_300s": 2,
+    "entrants_300s": 86,
+    "entrants_60s": 86,
+    "smart_entrants_300s": 0
+   },
+   "no_prior_flow": false
+  },
+  {
+   "creator_trading_own_mint": true,
+   "entrant_cu_p50": 93473,
+   "entrant_fee_p90_lamports": 1005000,
+   "expected_line": "LIVE FLOW STATE: entrants_60s=0 entrants_300s=64 net_flow_sol_300s=1.851715 fresh_wallet_share_300s=1.0 flow_lookback_d=0.0 sniper_share_300s=0.234375 bot_uniform_share_300s=0.044776 smart_entrants_300s=0 smart_net_flow_sol_300s=0.0 coentry_wallets_300s=7 creator_trading_own_mint=True entrant_fee_p90_lamports=1005000 entrant_cu_p50=93473",
+   "floats": {
+    "bot_uniform_share_300s": 0.044776,
+    "flow_lookback_d": 0.0,
+    "fresh_wallet_share_300s": 1.0,
+    "net_flow_sol_300s": 1.851715,
+    "smart_net_flow_sol_300s": 0.0,
+    "sniper_share_300s": 0.234375
+   },
+   "ints": {
+    "coentry_wallets_300s": 7,
+    "entrants_300s": 64,
+    "entrants_60s": 0,
+    "smart_entrants_300s": 0
+   },
+   "no_prior_flow": false
+  },
+  {
+   "creator_trading_own_mint": true,
+   "entrant_cu_p50": 95124,
+   "entrant_fee_p90_lamports": 1005000,
+   "expected_line": "LIVE FLOW STATE: entrants_60s=114 entrants_300s=114 net_flow_sol_300s=-6.095077 fresh_wallet_share_300s=1.0 flow_lookback_d=0.0 sniper_share_300s=0.035088 bot_uniform_share_300s=0.092199 smart_entrants_300s=0 smart_net_flow_sol_300s=0.0 coentry_wallets_300s=3 creator_trading_own_mint=True entrant_fee_p90_lamports=1005000 entrant_cu_p50=95124",
+   "floats": {
+    "bot_uniform_share_300s": 0.092199,
+    "flow_lookback_d": 0.0,
+    "fresh_wallet_share_300s": 1.0,
+    "net_flow_sol_300s": -6.095077,
+    "smart_net_flow_sol_300s": 0.0,
+    "sniper_share_300s": 0.035088
+   },
+   "ints": {
+    "coentry_wallets_300s": 3,
+    "entrants_300s": 114,
+    "entrants_60s": 114,
+    "smart_entrants_300s": 0
+   },
+   "no_prior_flow": false
+  },
+  {
+   "creator_trading_own_mint": true,
+   "entrant_cu_p50": 92047,
+   "entrant_fee_p90_lamports": 313255,
+   "expected_line": "LIVE FLOW STATE: entrants_60s=52 entrants_300s=52 net_flow_sol_300s=14.611966 fresh_wallet_share_300s=1.0 flow_lookback_d=0.0 sniper_share_300s=0.365385 bot_uniform_share_300s=0.0 smart_entrants_300s=0 smart_net_flow_sol_300s=0.0 coentry_wallets_300s=0 creator_trading_own_mint=True entrant_fee_p90_lamports=313255 entrant_cu_p50=92047",
+   "floats": {
+    "bot_uniform_share_300s": 0.0,
+    "flow_lookback_d": 0.0,
+    "fresh_wallet_share_300s": 1.0,
+    "net_flow_sol_300s": 14.611966,
+    "smart_net_flow_sol_300s": 0.0,
+    "sniper_share_300s": 0.365385
+   },
+   "ints": {
+    "coentry_wallets_300s": 0,
+    "entrants_300s": 52,
+    "entrants_60s": 52,
+    "smart_entrants_300s": 0
+   },
+   "no_prior_flow": false
+  },
+  {
+   "creator_trading_own_mint": true,
+   "entrant_cu_p50": 88853,
+   "entrant_fee_p90_lamports": 1891793,
+   "expected_line": "LIVE FLOW STATE: entrants_60s=42 entrants_300s=42 net_flow_sol_300s=2.509621 fresh_wallet_share_300s=1.0 flow_lookback_d=0.0 sniper_share_300s=0.166667 bot_uniform_share_300s=0.109091 smart_entrants_300s=0 smart_net_flow_sol_300s=0.0 coentry_wallets_300s=2 creator_trading_own_mint=True entrant_fee_p90_lamports=1891793 entrant_cu_p50=88853",
+   "floats": {
+    "bot_uniform_share_300s": 0.109091,
+    "flow_lookback_d": 0.0,
+    "fresh_wallet_share_300s": 1.0,
+    "net_flow_sol_300s": 2.509621,
+    "smart_net_flow_sol_300s": 0.0,
+    "sniper_share_300s": 0.166667
+   },
+   "ints": {
+    "coentry_wallets_300s": 2,
+    "entrants_300s": 42,
+    "entrants_60s": 42,
+    "smart_entrants_300s": 0
+   },
+   "no_prior_flow": false
+  },
+  {
+   "creator_trading_own_mint": true,
+   "entrant_cu_p50": 94990,
+   "entrant_fee_p90_lamports": 505000,
+   "expected_line": "LIVE FLOW STATE: entrants_60s=35 entrants_300s=116 net_flow_sol_300s=-8.409886 fresh_wallet_share_300s=1.0 flow_lookback_d=0.0 sniper_share_300s=0.034483 bot_uniform_share_300s=0.083333 smart_entrants_300s=0 smart_net_flow_sol_300s=0.0 coentry_wallets_300s=3 creator_trading_own_mint=True entrant_fee_p90_lamports=505000 entrant_cu_p50=94990",
+   "floats": {
+    "bot_uniform_share_300s": 0.083333,
+    "flow_lookback_d": 0.0,
+    "fresh_wallet_share_300s": 1.0,
+    "net_flow_sol_300s": -8.409886,
+    "smart_net_flow_sol_300s": 0.0,
+    "sniper_share_300s": 0.034483
+   },
+   "ints": {
+    "coentry_wallets_300s": 3,
+    "entrants_300s": 116,
+    "entrants_60s": 35,
+    "smart_entrants_300s": 0
+   },
+   "no_prior_flow": false
+  },
+  {
+   "creator_trading_own_mint": true,
+   "entrant_cu_p50": 87957,
+   "entrant_fee_p90_lamports": 313255,
+   "expected_line": "LIVE FLOW STATE: entrants_60s=55 entrants_300s=55 net_flow_sol_300s=13.828107 fresh_wallet_share_300s=1.0 flow_lookback_d=0.0 sniper_share_300s=0.345455 bot_uniform_share_300s=0.0 smart_entrants_300s=0 smart_net_flow_sol_300s=0.0 coentry_wallets_300s=0 creator_trading_own_mint=True entrant_fee_p90_lamports=313255 entrant_cu_p50=87957",
+   "floats": {
+    "bot_uniform_share_300s": 0.0,
+    "flow_lookback_d": 0.0,
+    "fresh_wallet_share_300s": 1.0,
+    "net_flow_sol_300s": 13.828107,
+    "smart_net_flow_sol_300s": 0.0,
+    "sniper_share_300s": 0.345455
+   },
+   "ints": {
+    "coentry_wallets_300s": 0,
+    "entrants_300s": 55,
+    "entrants_60s": 55,
+    "smart_entrants_300s": 0
+   },
+   "no_prior_flow": false
+  },
+  {
+   "creator_trading_own_mint": true,
+   "entrant_cu_p50": 88855,
+   "entrant_fee_p90_lamports": 1891793,
+   "expected_line": "LIVE FLOW STATE: entrants_60s=43 entrants_300s=43 net_flow_sol_300s=1.831767 fresh_wallet_share_300s=1.0 flow_lookback_d=0.0 sniper_share_300s=0.162791 bot_uniform_share_300s=0.107143 smart_entrants_300s=0 smart_net_flow_sol_300s=0.0 coentry_wallets_300s=4 creator_trading_own_mint=True entrant_fee_p90_lamports=1891793 entrant_cu_p50=88855",
+   "floats": {
+    "bot_uniform_share_300s": 0.107143,
+    "flow_lookback_d": 0.0,
+    "fresh_wallet_share_300s": 1.0,
+    "net_flow_sol_300s": 1.831767,
+    "smart_net_flow_sol_300s": 0.0,
+    "sniper_share_300s": 0.162791
+   },
+   "ints": {
+    "coentry_wallets_300s": 4,
+    "entrants_300s": 43,
+    "entrants_60s": 43,
+    "smart_entrants_300s": 0
+   },
+   "no_prior_flow": false
+  },
+  {
+   "creator_trading_own_mint": true,
+   "entrant_cu_p50": 91784,
+   "entrant_fee_p90_lamports": 255000,
+   "expected_line": "LIVE FLOW STATE: entrants_60s=10 entrants_300s=10 net_flow_sol_300s=0.373101 fresh_wallet_share_300s=1.0 flow_lookback_d=0.0 sniper_share_300s=0.8 bot_uniform_share_300s=0.0 smart_entrants_300s=0 smart_net_flow_sol_300s=0.0 coentry_wallets_300s=7 creator_trading_own_mint=True entrant_fee_p90_lamports=255000 entrant_cu_p50=91784",
+   "floats": {
+    "bot_uniform_share_300s": 0.0,
+    "flow_lookback_d": 0.0,
+    "fresh_wallet_share_300s": 1.0,
+    "net_flow_sol_300s": 0.373101,
+    "smart_net_flow_sol_300s": 0.0,
+    "sniper_share_300s": 0.8
+   },
+   "ints": {
+    "coentry_wallets_300s": 7,
+    "entrants_300s": 10,
+    "entrants_60s": 10,
+    "smart_entrants_300s": 0
+   },
+   "no_prior_flow": false
+  },
+  {
+   "creator_trading_own_mint": true,
+   "entrant_cu_p50": 94988,
+   "entrant_fee_p90_lamports": 505000,
+   "expected_line": "LIVE FLOW STATE: entrants_60s=11 entrants_300s=117 net_flow_sol_300s=-8.9622 fresh_wallet_share_300s=1.0 flow_lookback_d=0.0 sniper_share_300s=0.034188 bot_uniform_share_300s=0.089172 smart_entrants_300s=0 smart_net_flow_sol_300s=0.0 coentry_wallets_300s=3 creator_trading_own_mint=True entrant_fee_p90_lamports=505000 entrant_cu_p50=94988",
+   "floats": {
+    "bot_uniform_share_300s": 0.089172,
+    "flow_lookback_d": 0.0,
+    "fresh_wallet_share_300s": 1.0,
+    "net_flow_sol_300s": -8.9622,
+    "smart_net_flow_sol_300s": 0.0,
+    "sniper_share_300s": 0.034188
+   },
+   "ints": {
+    "coentry_wallets_300s": 3,
+    "entrants_300s": 117,
+    "entrants_60s": 11,
+    "smart_entrants_300s": 0
+   },
+   "no_prior_flow": false
+  },
+  {
+   "creator_trading_own_mint": true,
+   "entrant_cu_p50": 87957,
+   "entrant_fee_p90_lamports": 313255,
+   "expected_line": "LIVE FLOW STATE: entrants_60s=6 entrants_300s=55 net_flow_sol_300s=2.846651 fresh_wallet_share_300s=1.0 flow_lookback_d=0.0 sniper_share_300s=0.345455 bot_uniform_share_300s=0.0 smart_entrants_300s=0 smart_net_flow_sol_300s=0.0 coentry_wallets_300s=0 creator_trading_own_mint=True entrant_fee_p90_lamports=313255 entrant_cu_p50=87957",
+   "floats": {
+    "bot_uniform_share_300s": 0.0,
+    "flow_lookback_d": 0.0,
+    "fresh_wallet_share_300s": 1.0,
+    "net_flow_sol_300s": 2.846651,
+    "smart_net_flow_sol_300s": 0.0,
+    "sniper_share_300s": 0.345455
+   },
+   "ints": {
+    "coentry_wallets_300s": 0,
+    "entrants_300s": 55,
+    "entrants_60s": 6,
+    "smart_entrants_300s": 0
+   },
+   "no_prior_flow": false
+  },
+  {
+   "creator_trading_own_mint": true,
+   "entrant_cu_p50": 88723,
+   "entrant_fee_p90_lamports": 1891793,
+   "expected_line": "LIVE FLOW STATE: entrants_60s=18 entrants_300s=57 net_flow_sol_300s=11.587872 fresh_wallet_share_300s=1.0 flow_lookback_d=0.0 sniper_share_300s=0.122807 bot_uniform_share_300s=0.077922 smart_entrants_300s=0 smart_net_flow_sol_300s=0.0 coentry_wallets_300s=4 creator_trading_own_mint=True entrant_fee_p90_lamports=1891793 entrant_cu_p50=88723",
+   "floats": {
+    "bot_uniform_share_300s": 0.077922,
+    "flow_lookback_d": 0.0,
+    "fresh_wallet_share_300s": 1.0,
+    "net_flow_sol_300s": 11.587872,
+    "smart_net_flow_sol_300s": 0.0,
+    "sniper_share_300s": 0.122807
+   },
+   "ints": {
+    "coentry_wallets_300s": 4,
+    "entrants_300s": 57,
+    "entrants_60s": 18,
+    "smart_entrants_300s": 0
+   },
+   "no_prior_flow": false
+  },
+  {
+   "creator_trading_own_mint": true,
+   "entrant_cu_p50": 94775,
+   "entrant_fee_p90_lamports": 515000,
+   "expected_line": "LIVE FLOW STATE: entrants_60s=119 entrants_300s=119 net_flow_sol_300s=16.666665 fresh_wallet_share_300s=1.0 flow_lookback_d=0.0 sniper_share_300s=0.184874 bot_uniform_share_300s=0.140845 smart_entrants_300s=0 smart_net_flow_sol_300s=0.0 coentry_wallets_300s=7 creator_trading_own_mint=True entrant_fee_p90_lamports=515000 entrant_cu_p50=94775",
+   "floats": {
+    "bot_uniform_share_300s": 0.140845,
+    "flow_lookback_d": 0.0,
+    "fresh_wallet_share_300s": 1.0,
+    "net_flow_sol_300s": 16.666665,
+    "smart_net_flow_sol_300s": 0.0,
+    "sniper_share_300s": 0.184874
+   },
+   "ints": {
+    "coentry_wallets_300s": 7,
+    "entrants_300s": 119,
+    "entrants_60s": 119,
+    "smart_entrants_300s": 0
+   },
+   "no_prior_flow": false
+  },
+  {
+   "creator_trading_own_mint": true,
+   "entrant_cu_p50": 94990,
+   "entrant_fee_p90_lamports": 1005000,
+   "expected_line": "LIVE FLOW STATE: entrants_60s=4 entrants_300s=119 net_flow_sol_300s=-9.074659 fresh_wallet_share_300s=1.0 flow_lookback_d=0.0 sniper_share_300s=0.033613 bot_uniform_share_300s=0.0875 smart_entrants_300s=0 smart_net_flow_sol_300s=0.0 coentry_wallets_300s=3 creator_trading_own_mint=True entrant_fee_p90_lamports=1005000 entrant_cu_p50=94990",
+   "floats": {
+    "bot_uniform_share_300s": 0.0875,
+    "flow_lookback_d": 0.0,
+    "fresh_wallet_share_300s": 1.0,
+    "net_flow_sol_300s": -9.074659,
+    "smart_net_flow_sol_300s": 0.0,
+    "sniper_share_300s": 0.033613
+   },
+   "ints": {
+    "coentry_wallets_300s": 3,
+    "entrants_300s": 119,
+    "entrants_60s": 4,
+    "smart_entrants_300s": 0
+   },
+   "no_prior_flow": false
+  },
+  {
+   "creator_trading_own_mint": false,
+   "entrant_cu_p50": 69022,
+   "entrant_fee_p90_lamports": 105000,
+   "expected_line": "LIVE FLOW STATE: entrants_60s=4 entrants_300s=4 net_flow_sol_300s=0.376902 fresh_wallet_share_300s=1.0 flow_lookback_d=0.0 sniper_share_300s=0.25 bot_uniform_share_300s=0.0 smart_entrants_300s=0 smart_net_flow_sol_300s=0.0 coentry_wallets_300s=0 creator_trading_own_mint=False entrant_fee_p90_lamports=105000 entrant_cu_p50=69022",
+   "floats": {
+    "bot_uniform_share_300s": 0.0,
+    "flow_lookback_d": 0.0,
+    "fresh_wallet_share_300s": 1.0,
+    "net_flow_sol_300s": 0.376902,
+    "smart_net_flow_sol_300s": 0.0,
+    "sniper_share_300s": 0.25
+   },
+   "ints": {
+    "coentry_wallets_300s": 0,
+    "entrants_300s": 4,
+    "entrants_60s": 4,
+    "smart_entrants_300s": 0
+   },
+   "no_prior_flow": false
+  },
+  {
+   "creator_trading_own_mint": true,
+   "entrant_cu_p50": 87957,
+   "entrant_fee_p90_lamports": 313255,
+   "expected_line": "LIVE FLOW STATE: entrants_60s=0 entrants_300s=55 net_flow_sol_300s=2.843764 fresh_wallet_share_300s=1.0 flow_lookback_d=0.0 sniper_share_300s=0.345455 bot_uniform_share_300s=0.0 smart_entrants_300s=0 smart_net_flow_sol_300s=0.0 coentry_wallets_300s=0 creator_trading_own_mint=True entrant_fee_p90_lamports=313255 entrant_cu_p50=87957",
+   "floats": {
+    "bot_uniform_share_300s": 0.0,
+    "flow_lookback_d": 0.0,
+    "fresh_wallet_share_300s": 1.0,
+    "net_flow_sol_300s": 2.843764,
+    "smart_net_flow_sol_300s": 0.0,
+    "sniper_share_300s": 0.345455
+   },
+   "ints": {
+    "coentry_wallets_300s": 0,
+    "entrants_300s": 55,
+    "entrants_60s": 0,
+    "smart_entrants_300s": 0
+   },
+   "no_prior_flow": false
+  },
+  {
+   "creator_trading_own_mint": true,
+   "entrant_cu_p50": 95089,
+   "entrant_fee_p90_lamports": 1005000,
+   "expected_line": "LIVE FLOW STATE: entrants_60s=48 entrants_300s=48 net_flow_sol_300s=1.739176 fresh_wallet_share_300s=1.0 flow_lookback_d=0.0 sniper_share_300s=0.104167 bot_uniform_share_300s=0.0 smart_entrants_300s=0 smart_net_flow_sol_300s=0.0 coentry_wallets_300s=0 creator_trading_own_mint=True entrant_fee_p90_lamports=1005000 entrant_cu_p50=95089",
+   "floats": {
+    "bot_uniform_share_300s": 0.0,
+    "flow_lookback_d": 0.0,
+    "fresh_wallet_share_300s": 1.0,
+    "net_flow_sol_300s": 1.739176,
+    "smart_net_flow_sol_300s": 0.0,
+    "sniper_share_300s": 0.104167
+   },
+   "ints": {
+    "coentry_wallets_300s": 0,
+    "entrants_300s": 48,
+    "entrants_60s": 48,
+    "smart_entrants_300s": 0
+   },
+   "no_prior_flow": false
+  },
+  {
+   "creator_trading_own_mint": true,
+   "entrant_cu_p50": 88754,
+   "entrant_fee_p90_lamports": 1891793,
+   "expected_line": "LIVE FLOW STATE: entrants_60s=19 entrants_300s=59 net_flow_sol_300s=8.931138 fresh_wallet_share_300s=1.0 flow_lookback_d=0.0 sniper_share_300s=0.118644 bot_uniform_share_300s=0.075949 smart_entrants_300s=0 smart_net_flow_sol_300s=0.0 coentry_wallets_300s=4 creator_trading_own_mint=True entrant_fee_p90_lamports=1891793 entrant_cu_p50=88754",
+   "floats": {
+    "bot_uniform_share_300s": 0.075949,
+    "flow_lookback_d": 0.0,
+    "fresh_wallet_share_300s": 1.0,
+    "net_flow_sol_300s": 8.931138,
+    "smart_net_flow_sol_300s": 0.0,
+    "sniper_share_300s": 0.118644
+   },
+   "ints": {
+    "coentry_wallets_300s": 4,
+    "entrants_300s": 59,
+    "entrants_60s": 19,
+    "smart_entrants_300s": 0
+   },
+   "no_prior_flow": false
+  },
+  {
+   "creator_trading_own_mint": true,
+   "entrant_cu_p50": 93642,
+   "entrant_fee_p90_lamports": 510000,
+   "expected_line": "LIVE FLOW STATE: entrants_60s=148 entrants_300s=148 net_flow_sol_300s=17.373237 fresh_wallet_share_300s=1.0 flow_lookback_d=0.0 sniper_share_300s=0.148649 bot_uniform_share_300s=0.142105 smart_entrants_300s=0 smart_net_flow_sol_300s=0.0 coentry_wallets_300s=7 creator_trading_own_mint=True entrant_fee_p90_lamports=510000 entrant_cu_p50=93642",
+   "floats": {
+    "bot_uniform_share_300s": 0.142105,
+    "flow_lookback_d": 0.0,
+    "fresh_wallet_share_300s": 1.0,
+    "net_flow_sol_300s": 17.373237,
+    "smart_net_flow_sol_300s": 0.0,
+    "sniper_share_300s": 0.148649
+   },
+   "ints": {
+    "coentry_wallets_300s": 7,
+    "entrants_300s": 148,
+    "entrants_60s": 148,
+    "smart_entrants_300s": 0
+   },
+   "no_prior_flow": false
+  },
+  {
+   "creator_trading_own_mint": true,
+   "entrant_cu_p50": 94990,
+   "entrant_fee_p90_lamports": 1005000,
+   "expected_line": "LIVE FLOW STATE: entrants_60s=3 entrants_300s=119 net_flow_sol_300s=-9.243114 fresh_wallet_share_300s=1.0 flow_lookback_d=0.0 sniper_share_300s=0.033613 bot_uniform_share_300s=0.0875 smart_entrants_300s=0 smart_net_flow_sol_300s=0.0 coentry_wallets_300s=3 creator_trading_own_mint=True entrant_fee_p90_lamports=1005000 entrant_cu_p50=94990",
+   "floats": {
+    "bot_uniform_share_300s": 0.0875,
+    "flow_lookback_d": 0.0,
+    "fresh_wallet_share_300s": 1.0,
+    "net_flow_sol_300s": -9.243114,
+    "smart_net_flow_sol_300s": 0.0,
+    "sniper_share_300s": 0.033613
+   },
+   "ints": {
+    "coentry_wallets_300s": 3,
+    "entrants_300s": 119,
+    "entrants_60s": 3,
+    "smart_entrants_300s": 0
+   },
+   "no_prior_flow": false
+  },
+  {
+   "creator_trading_own_mint": false,
+   "entrant_cu_p50": 69014,
+   "entrant_fee_p90_lamports": 105000,
+   "expected_line": "LIVE FLOW STATE: entrants_60s=4 entrants_300s=4 net_flow_sol_300s=0.554891 fresh_wallet_share_300s=1.0 flow_lookback_d=0.0 sniper_share_300s=0.25 bot_uniform_share_300s=0.0 smart_entrants_300s=0 smart_net_flow_sol_300s=0.0 coentry_wallets_300s=0 creator_trading_own_mint=False entrant_fee_p90_lamports=105000 entrant_cu_p50=69014",
+   "floats": {
+    "bot_uniform_share_300s": 0.0,
+    "flow_lookback_d": 0.0,
+    "fresh_wallet_share_300s": 1.0,
+    "net_flow_sol_300s": 0.554891,
+    "smart_net_flow_sol_300s": 0.0,
+    "sniper_share_300s": 0.25
+   },
+   "ints": {
+    "coentry_wallets_300s": 0,
+    "entrants_300s": 4,
+    "entrants_60s": 4,
+    "smart_entrants_300s": 0
+   },
+   "no_prior_flow": false
+  },
+  {
+   "creator_trading_own_mint": true,
+   "entrant_cu_p50": 87957,
+   "entrant_fee_p90_lamports": 313255,
+   "expected_line": "LIVE FLOW STATE: entrants_60s=0 entrants_300s=55 net_flow_sol_300s=2.843764 fresh_wallet_share_300s=1.0 flow_lookback_d=0.0 sniper_share_300s=0.345455 bot_uniform_share_300s=0.0 smart_entrants_300s=0 smart_net_flow_sol_300s=0.0 coentry_wallets_300s=2 creator_trading_own_mint=True entrant_fee_p90_lamports=313255 entrant_cu_p50=87957",
+   "floats": {
+    "bot_uniform_share_300s": 0.0,
+    "flow_lookback_d": 0.0,
+    "fresh_wallet_share_300s": 1.0,
+    "net_flow_sol_300s": 2.843764,
+    "smart_net_flow_sol_300s": 0.0,
+    "sniper_share_300s": 0.345455
+   },
+   "ints": {
+    "coentry_wallets_300s": 2,
+    "entrants_300s": 55,
+    "entrants_60s": 0,
+    "smart_entrants_300s": 0
+   },
+   "no_prior_flow": false
+  },
+  {
+   "creator_trading_own_mint": true,
+   "entrant_cu_p50": 94990,
+   "entrant_fee_p90_lamports": 1005000,
+   "expected_line": "LIVE FLOW STATE: entrants_60s=3 entrants_300s=119 net_flow_sol_300s=-9.280981 fresh_wallet_share_300s=1.0 flow_lookback_d=0.0 sniper_share_300s=0.033613 bot_uniform_share_300s=0.0875 smart_entrants_300s=0 smart_net_flow_sol_300s=0.0 coentry_wallets_300s=4 creator_trading_own_mint=True entrant_fee_p90_lamports=1005000 entrant_cu_p50=94990",
+   "floats": {
+    "bot_uniform_share_300s": 0.0875,
+    "flow_lookback_d": 0.0,
+    "fresh_wallet_share_300s": 1.0,
+    "net_flow_sol_300s": -9.280981,
+    "smart_net_flow_sol_300s": 0.0,
+    "sniper_share_300s": 0.033613
+   },
+   "ints": {
+    "coentry_wallets_300s": 4,
+    "entrants_300s": 119,
+    "entrants_60s": 3,
+    "smart_entrants_300s": 0
+   },
+   "no_prior_flow": false
+  },
+  {
+   "creator_trading_own_mint": true,
+   "entrant_cu_p50": 95089,
+   "entrant_fee_p90_lamports": 1005000,
+   "expected_line": "LIVE FLOW STATE: entrants_60s=49 entrants_300s=49 net_flow_sol_300s=1.146327 fresh_wallet_share_300s=1.0 flow_lookback_d=0.0 sniper_share_300s=0.102041 bot_uniform_share_300s=0.0 smart_entrants_300s=0 smart_net_flow_sol_300s=0.0 coentry_wallets_300s=4 creator_trading_own_mint=True entrant_fee_p90_lamports=1005000 entrant_cu_p50=95089",
+   "floats": {
+    "bot_uniform_share_300s": 0.0,
+    "flow_lookback_d": 0.0,
+    "fresh_wallet_share_300s": 1.0,
+    "net_flow_sol_300s": 1.146327,
+    "smart_net_flow_sol_300s": 0.0,
+    "sniper_share_300s": 0.102041
+   },
+   "ints": {
+    "coentry_wallets_300s": 4,
+    "entrants_300s": 49,
+    "entrants_60s": 49,
+    "smart_entrants_300s": 0
+   },
+   "no_prior_flow": false
+  },
+  {
+   "creator_trading_own_mint": true,
+   "entrant_cu_p50": 88754,
+   "entrant_fee_p90_lamports": 1891793,
+   "expected_line": "LIVE FLOW STATE: entrants_60s=2 entrants_300s=59 net_flow_sol_300s=8.931138 fresh_wallet_share_300s=1.0 flow_lookback_d=0.0 sniper_share_300s=0.118644 bot_uniform_share_300s=0.075949 smart_entrants_300s=0 smart_net_flow_sol_300s=0.0 coentry_wallets_300s=4 creator_trading_own_mint=True entrant_fee_p90_lamports=1891793 entrant_cu_p50=88754",
+   "floats": {
+    "bot_uniform_share_300s": 0.075949,
+    "flow_lookback_d": 0.0,
+    "fresh_wallet_share_300s": 1.0,
+    "net_flow_sol_300s": 8.931138,
+    "smart_net_flow_sol_300s": 0.0,
+    "sniper_share_300s": 0.118644
+   },
+   "ints": {
+    "coentry_wallets_300s": 4,
+    "entrants_300s": 59,
+    "entrants_60s": 2,
+    "smart_entrants_300s": 0
+   },
+   "no_prior_flow": false
+  },
+  {
+   "creator_trading_own_mint": true,
+   "entrant_cu_p50": 93333,
+   "entrant_fee_p90_lamports": 505000,
+   "expected_line": "LIVE FLOW STATE: entrants_60s=73 entrants_300s=180 net_flow_sol_300s=18.032401 fresh_wallet_share_300s=1.0 flow_lookback_d=0.0 sniper_share_300s=0.122222 bot_uniform_share_300s=0.222222 smart_entrants_300s=0 smart_net_flow_sol_300s=0.0 coentry_wallets_300s=7 creator_trading_own_mint=True entrant_fee_p90_lamports=505000 entrant_cu_p50=93333",
+   "floats": {
+    "bot_uniform_share_300s": 0.222222,
+    "flow_lookback_d": 0.0,
+    "fresh_wallet_share_300s": 1.0,
+    "net_flow_sol_300s": 18.032401,
+    "smart_net_flow_sol_300s": 0.0,
+    "sniper_share_300s": 0.122222
+   },
+   "ints": {
+    "coentry_wallets_300s": 7,
+    "entrants_300s": 180,
+    "entrants_60s": 73,
+    "smart_entrants_300s": 0
+   },
+   "no_prior_flow": false
+  },
+  {
+   "creator_trading_own_mint": true,
+   "entrant_cu_p50": 89088,
+   "entrant_fee_p90_lamports": 1005000,
+   "expected_line": "LIVE FLOW STATE: entrants_60s=72 entrants_300s=72 net_flow_sol_300s=17.0929 fresh_wallet_share_300s=1.0 flow_lookback_d=0.0 sniper_share_300s=0.069444 bot_uniform_share_300s=0.028037 smart_entrants_300s=0 smart_net_flow_sol_300s=0.0 coentry_wallets_300s=0 creator_trading_own_mint=True entrant_fee_p90_lamports=1005000 entrant_cu_p50=89088",
+   "floats": {
+    "bot_uniform_share_300s": 0.028037,
+    "flow_lookback_d": 0.0,
+    "fresh_wallet_share_300s": 1.0,
+    "net_flow_sol_300s": 17.0929,
+    "smart_net_flow_sol_300s": 0.0,
+    "sniper_share_300s": 0.069444
+   },
+   "ints": {
+    "coentry_wallets_300s": 0,
+    "entrants_300s": 72,
+    "entrants_60s": 72,
+    "smart_entrants_300s": 0
+   },
+   "no_prior_flow": false
+  },
+  {
+   "creator_trading_own_mint": true,
+   "entrant_cu_p50": 94990,
+   "entrant_fee_p90_lamports": 1005000,
+   "expected_line": "LIVE FLOW STATE: entrants_60s=0 entrants_300s=119 net_flow_sol_300s=-9.670916 fresh_wallet_share_300s=1.0 flow_lookback_d=0.0 sniper_share_300s=0.033613 bot_uniform_share_300s=0.0875 smart_entrants_300s=0 smart_net_flow_sol_300s=0.0 coentry_wallets_300s=4 creator_trading_own_mint=True entrant_fee_p90_lamports=1005000 entrant_cu_p50=94990",
+   "floats": {
+    "bot_uniform_share_300s": 0.0875,
+    "flow_lookback_d": 0.0,
+    "fresh_wallet_share_300s": 1.0,
+    "net_flow_sol_300s": -9.670916,
+    "smart_net_flow_sol_300s": 0.0,
+    "sniper_share_300s": 0.033613
+   },
+   "ints": {
+    "coentry_wallets_300s": 4,
+    "entrants_300s": 119,
+    "entrants_60s": 0,
+    "smart_entrants_300s": 0
+   },
+   "no_prior_flow": false
+  },
+  {
+   "creator_trading_own_mint": true,
+   "entrant_cu_p50": 100806,
+   "entrant_fee_p90_lamports": 3894585,
+   "expected_line": "LIVE FLOW STATE: entrants_60s=52 entrants_300s=52 net_flow_sol_300s=4.66239 fresh_wallet_share_300s=1.0 flow_lookback_d=0.0 sniper_share_300s=0.057692 bot_uniform_share_300s=0.0 smart_entrants_300s=0 smart_net_flow_sol_300s=0.0 coentry_wallets_300s=3 creator_trading_own_mint=True entrant_fee_p90_lamports=3894585 entrant_cu_p50=100806",
+   "floats": {
+    "bot_uniform_share_300s": 0.0,
+    "flow_lookback_d": 0.0,
+    "fresh_wallet_share_300s": 1.0,
+    "net_flow_sol_300s": 4.66239,
+    "smart_net_flow_sol_300s": 0.0,
+    "sniper_share_300s": 0.057692
+   },
+   "ints": {
+    "coentry_wallets_300s": 3,
+    "entrants_300s": 52,
+    "entrants_60s": 52,
+    "smart_entrants_300s": 0
+   },
+   "no_prior_flow": false
+  },
+  {
+   "creator_trading_own_mint": false,
+   "entrant_cu_p50": 69014,
+   "entrant_fee_p90_lamports": 105000,
+   "expected_line": "LIVE FLOW STATE: entrants_60s=2 entrants_300s=4 net_flow_sol_300s=1.594906 fresh_wallet_share_300s=1.0 flow_lookback_d=0.0 sniper_share_300s=0.25 bot_uniform_share_300s=0.0 smart_entrants_300s=0 smart_net_flow_sol_300s=0.0 coentry_wallets_300s=0 creator_trading_own_mint=False entrant_fee_p90_lamports=105000 entrant_cu_p50=69014",
+   "floats": {
+    "bot_uniform_share_300s": 0.0,
+    "flow_lookback_d": 0.0,
+    "fresh_wallet_share_300s": 1.0,
+    "net_flow_sol_300s": 1.594906,
+    "smart_net_flow_sol_300s": 0.0,
+    "sniper_share_300s": 0.25
+   },
+   "ints": {
+    "coentry_wallets_300s": 0,
+    "entrants_300s": 4,
+    "entrants_60s": 2,
+    "smart_entrants_300s": 0
+   },
+   "no_prior_flow": false
+  },
+  {
+   "creator_trading_own_mint": true,
+   "entrant_cu_p50": 87957,
+   "entrant_fee_p90_lamports": 313255,
+   "expected_line": "LIVE FLOW STATE: entrants_60s=0 entrants_300s=55 net_flow_sol_300s=2.831097 fresh_wallet_share_300s=1.0 flow_lookback_d=0.0 sniper_share_300s=0.345455 bot_uniform_share_300s=0.0 smart_entrants_300s=0 smart_net_flow_sol_300s=0.0 coentry_wallets_300s=3 creator_trading_own_mint=True entrant_fee_p90_lamports=313255 entrant_cu_p50=87957",
+   "floats": {
+    "bot_uniform_share_300s": 0.0,
+    "flow_lookback_d": 0.0,
+    "fresh_wallet_share_300s": 1.0,
+    "net_flow_sol_300s": 2.831097,
+    "smart_net_flow_sol_300s": 0.0,
+    "sniper_share_300s": 0.345455
+   },
+   "ints": {
+    "coentry_wallets_300s": 3,
+    "entrants_300s": 55,
+    "entrants_60s": 0,
+    "smart_entrants_300s": 0
+   },
+   "no_prior_flow": false
+  },
+  {
+   "creator_trading_own_mint": true,
+   "entrant_cu_p50": 87957,
+   "entrant_fee_p90_lamports": 313255,
+   "expected_line": "LIVE FLOW STATE: entrants_60s=0 entrants_300s=55 net_flow_sol_300s=2.831097 fresh_wallet_share_300s=1.0 flow_lookback_d=0.0 sniper_share_300s=0.345455 bot_uniform_share_300s=0.0 smart_entrants_300s=0 smart_net_flow_sol_300s=0.0 coentry_wallets_300s=3 creator_trading_own_mint=True entrant_fee_p90_lamports=313255 entrant_cu_p50=87957",
+   "floats": {
+    "bot_uniform_share_300s": 0.0,
+    "flow_lookback_d": 0.0,
+    "fresh_wallet_share_300s": 1.0,
+    "net_flow_sol_300s": 2.831097,
+    "smart_net_flow_sol_300s": 0.0,
+    "sniper_share_300s": 0.345455
+   },
+   "ints": {
+    "coentry_wallets_300s": 3,
+    "entrants_300s": 55,
+    "entrants_60s": 0,
+    "smart_entrants_300s": 0
+   },
+   "no_prior_flow": false
+  },
+  {
+   "creator_trading_own_mint": true,
+   "entrant_cu_p50": 94956,
+   "entrant_fee_p90_lamports": 1005000,
+   "expected_line": "LIVE FLOW STATE: entrants_60s=10 entrants_300s=126 net_flow_sol_300s=-3.408813 fresh_wallet_share_300s=1.0 flow_lookback_d=0.0 sniper_share_300s=0.031746 bot_uniform_share_300s=0.082353 smart_entrants_300s=0 smart_net_flow_sol_300s=0.0 coentry_wallets_300s=4 creator_trading_own_mint=True entrant_fee_p90_lamports=1005000 entrant_cu_p50=94956",
+   "floats": {
+    "bot_uniform_share_300s": 0.082353,
+    "flow_lookback_d": 0.0,
+    "fresh_wallet_share_300s": 1.0,
+    "net_flow_sol_300s": -3.408813,
+    "smart_net_flow_sol_300s": 0.0,
+    "sniper_share_300s": 0.031746
+   },
+   "ints": {
+    "coentry_wallets_300s": 4,
+    "entrants_300s": 126,
+    "entrants_60s": 10,
+    "smart_entrants_300s": 0
+   },
+   "no_prior_flow": false
+  },
+  {
+   "creator_trading_own_mint": true,
+   "entrant_cu_p50": 94928,
+   "entrant_fee_p90_lamports": 1005000,
+   "expected_line": "LIVE FLOW STATE: entrants_60s=15 entrants_300s=131 net_flow_sol_300s=-4.690356 fresh_wallet_share_300s=1.0 flow_lookback_d=0.0 sniper_share_300s=0.030534 bot_uniform_share_300s=0.079545 smart_entrants_300s=0 smart_net_flow_sol_300s=0.0 coentry_wallets_300s=4 creator_trading_own_mint=True entrant_fee_p90_lamports=1005000 entrant_cu_p50=94928",
+   "floats": {
+    "bot_uniform_share_300s": 0.079545,
+    "flow_lookback_d": 0.0,
+    "fresh_wallet_share_300s": 1.0,
+    "net_flow_sol_300s": -4.690356,
+    "smart_net_flow_sol_300s": 0.0,
+    "sniper_share_300s": 0.030534
+   },
+   "ints": {
+    "coentry_wallets_300s": 4,
+    "entrants_300s": 131,
+    "entrants_60s": 15,
+    "smart_entrants_300s": 0
+   },
+   "no_prior_flow": false
+  },
+  {
+   "creator_trading_own_mint": true,
+   "entrant_cu_p50": 95089,
+   "entrant_fee_p90_lamports": 1005000,
+   "expected_line": "LIVE FLOW STATE: entrants_60s=3 entrants_300s=49 net_flow_sol_300s=1.146327 fresh_wallet_share_300s=1.0 flow_lookback_d=0.0 sniper_share_300s=0.102041 bot_uniform_share_300s=0.0 smart_entrants_300s=0 smart_net_flow_sol_300s=0.0 coentry_wallets_300s=4 creator_trading_own_mint=True entrant_fee_p90_lamports=1005000 entrant_cu_p50=95089",
+   "floats": {
+    "bot_uniform_share_300s": 0.0,
+    "flow_lookback_d": 0.0,
+    "fresh_wallet_share_300s": 1.0,
+    "net_flow_sol_300s": 1.146327,
+    "smart_net_flow_sol_300s": 0.0,
+    "sniper_share_300s": 0.102041
+   },
+   "ints": {
+    "coentry_wallets_300s": 4,
+    "entrants_300s": 49,
+    "entrants_60s": 3,
+    "smart_entrants_300s": 0
+   },
+   "no_prior_flow": false
+  },
+  {
+   "creator_trading_own_mint": true,
+   "entrant_cu_p50": 88754,
+   "entrant_fee_p90_lamports": 1891793,
+   "expected_line": "LIVE FLOW STATE: entrants_60s=0 entrants_300s=59 net_flow_sol_300s=7.718657 fresh_wallet_share_300s=1.0 flow_lookback_d=0.0 sniper_share_300s=0.118644 bot_uniform_share_300s=0.075949 smart_entrants_300s=0 smart_net_flow_sol_300s=0.0 coentry_wallets_300s=4 creator_trading_own_mint=True entrant_fee_p90_lamports=1891793 entrant_cu_p50=88754",
+   "floats": {
+    "bot_uniform_share_300s": 0.075949,
+    "flow_lookback_d": 0.0,
+    "fresh_wallet_share_300s": 1.0,
+    "net_flow_sol_300s": 7.718657,
+    "smart_net_flow_sol_300s": 0.0,
+    "sniper_share_300s": 0.118644
+   },
+   "ints": {
+    "coentry_wallets_300s": 4,
+    "entrants_300s": 59,
+    "entrants_60s": 0,
+    "smart_entrants_300s": 0
+   },
+   "no_prior_flow": false
+  },
+  {
+   "creator_trading_own_mint": true,
+   "entrant_cu_p50": 93333,
+   "entrant_fee_p90_lamports": 361200,
+   "expected_line": "LIVE FLOW STATE: entrants_60s=49 entrants_300s=189 net_flow_sol_300s=14.694273 fresh_wallet_share_300s=1.0 flow_lookback_d=0.0 sniper_share_300s=0.116402 bot_uniform_share_300s=0.217228 smart_entrants_300s=0 smart_net_flow_sol_300s=0.0 coentry_wallets_300s=7 creator_trading_own_mint=True entrant_fee_p90_lamports=361200 entrant_cu_p50=93333",
+   "floats": {
+    "bot_uniform_share_300s": 0.217228,
+    "flow_lookback_d": 0.0,
+    "fresh_wallet_share_300s": 1.0,
+    "net_flow_sol_300s": 14.694273,
+    "smart_net_flow_sol_300s": 0.0,
+    "sniper_share_300s": 0.116402
+   },
+   "ints": {
+    "coentry_wallets_300s": 7,
+    "entrants_300s": 189,
+    "entrants_60s": 49,
+    "smart_entrants_300s": 0
+   },
+   "no_prior_flow": false
+  },
+  {
+   "creator_trading_own_mint": true,
+   "entrant_cu_p50": 89043,
+   "entrant_fee_p90_lamports": 1005000,
+   "expected_line": "LIVE FLOW STATE: entrants_60s=113 entrants_300s=113 net_flow_sol_300s=22.424907 fresh_wallet_share_300s=1.0 flow_lookback_d=0.0 sniper_share_300s=0.044248 bot_uniform_share_300s=0.036145 smart_entrants_300s=0 smart_net_flow_sol_300s=0.0 coentry_wallets_300s=3 creator_trading_own_mint=True entrant_fee_p90_lamports=1005000 entrant_cu_p50=89043",
+   "floats": {
+    "bot_uniform_share_300s": 0.036145,
+    "flow_lookback_d": 0.0,
+    "fresh_wallet_share_300s": 1.0,
+    "net_flow_sol_300s": 22.424907,
+    "smart_net_flow_sol_300s": 0.0,
+    "sniper_share_300s": 0.044248
+   },
+   "ints": {
+    "coentry_wallets_300s": 3,
+    "entrants_300s": 113,
+    "entrants_60s": 113,
+    "smart_entrants_300s": 0
+   },
+   "no_prior_flow": false
+  },
+  {
+   "creator_trading_own_mint": true,
+   "entrant_cu_p50": 94927,
+   "entrant_fee_p90_lamports": 1005000,
+   "expected_line": "LIVE FLOW STATE: entrants_60s=17 entrants_300s=133 net_flow_sol_300s=-9.066581 fresh_wallet_share_300s=1.0 flow_lookback_d=0.0 sniper_share_300s=0.030075 bot_uniform_share_300s=0.078212 smart_entrants_300s=0 smart_net_flow_sol_300s=0.0 coentry_wallets_300s=6 creator_trading_own_mint=True entrant_fee_p90_lamports=1005000 entrant_cu_p50=94927",
+   "floats": {
+    "bot_uniform_share_300s": 0.078212,
+    "flow_lookback_d": 0.0,
+    "fresh_wallet_share_300s": 1.0,
+    "net_flow_sol_300s": -9.066581,
+    "smart_net_flow_sol_300s": 0.0,
+    "sniper_share_300s": 0.030075
+   },
+   "ints": {
+    "coentry_wallets_300s": 6,
+    "entrants_300s": 133,
+    "entrants_60s": 17,
+    "smart_entrants_300s": 0
+   },
+   "no_prior_flow": false
+  },
+  {
+   "creator_trading_own_mint": true,
+   "entrant_cu_p50": 100806,
+   "entrant_fee_p90_lamports": 3894585,
+   "expected_line": "LIVE FLOW STATE: entrants_60s=52 entrants_300s=52 net_flow_sol_300s=4.033599 fresh_wallet_share_300s=1.0 flow_lookback_d=0.0 sniper_share_300s=0.057692 bot_uniform_share_300s=0.0 smart_entrants_300s=0 smart_net_flow_sol_300s=0.0 coentry_wallets_300s=3 creator_trading_own_mint=True entrant_fee_p90_lamports=3894585 entrant_cu_p50=100806",
+   "floats": {
+    "bot_uniform_share_300s": 0.0,
+    "flow_lookback_d": 0.0,
+    "fresh_wallet_share_300s": 1.0,
+    "net_flow_sol_300s": 4.033599,
+    "smart_net_flow_sol_300s": 0.0,
+    "sniper_share_300s": 0.057692
+   },
+   "ints": {
+    "coentry_wallets_300s": 3,
+    "entrants_300s": 52,
+    "entrants_60s": 52,
+    "smart_entrants_300s": 0
+   },
+   "no_prior_flow": false
+  },
+  {
+   "creator_trading_own_mint": false,
+   "entrant_cu_p50": 69014,
+   "entrant_fee_p90_lamports": 105000,
+   "expected_line": "LIVE FLOW STATE: entrants_60s=2 entrants_300s=4 net_flow_sol_300s=0.771173 fresh_wallet_share_300s=1.0 flow_lookback_d=0.0 sniper_share_300s=0.25 bot_uniform_share_300s=0.0 smart_entrants_300s=0 smart_net_flow_sol_300s=0.0 coentry_wallets_300s=0 creator_trading_own_mint=False entrant_fee_p90_lamports=105000 entrant_cu_p50=69014",
+   "floats": {
+    "bot_uniform_share_300s": 0.0,
+    "flow_lookback_d": 0.0,
+    "fresh_wallet_share_300s": 1.0,
+    "net_flow_sol_300s": 0.771173,
+    "smart_net_flow_sol_300s": 0.0,
+    "sniper_share_300s": 0.25
+   },
+   "ints": {
+    "coentry_wallets_300s": 0,
+    "entrants_300s": 4,
+    "entrants_60s": 2,
+    "smart_entrants_300s": 0
+   },
+   "no_prior_flow": false
+  },
+  {
+   "creator_trading_own_mint": true,
+   "entrant_cu_p50": 87957,
+   "entrant_fee_p90_lamports": 313255,
+   "expected_line": "LIVE FLOW STATE: entrants_60s=0 entrants_300s=55 net_flow_sol_300s=2.336507 fresh_wallet_share_300s=1.0 flow_lookback_d=0.0 sniper_share_300s=0.345455 bot_uniform_share_300s=0.0 smart_entrants_300s=0 smart_net_flow_sol_300s=0.0 coentry_wallets_300s=5 creator_trading_own_mint=True entrant_fee_p90_lamports=313255 entrant_cu_p50=87957",
+   "floats": {
+    "bot_uniform_share_300s": 0.0,
+    "flow_lookback_d": 0.0,
+    "fresh_wallet_share_300s": 1.0,
+    "net_flow_sol_300s": 2.336507,
+    "smart_net_flow_sol_300s": 0.0,
+    "sniper_share_300s": 0.345455
+   },
+   "ints": {
+    "coentry_wallets_300s": 5,
+    "entrants_300s": 55,
+    "entrants_60s": 0,
+    "smart_entrants_300s": 0
+   },
+   "no_prior_flow": false
+  },
+  {
+   "creator_trading_own_mint": true,
+   "entrant_cu_p50": 167908,
+   "entrant_fee_p90_lamports": 88500,
+   "expected_line": "LIVE FLOW STATE: entrants_60s=34 entrants_300s=34 net_flow_sol_300s=13.99323 fresh_wallet_share_300s=1.0 flow_lookback_d=0.0 sniper_share_300s=0.176471 bot_uniform_share_300s=0.0 smart_entrants_300s=0 smart_net_flow_sol_300s=0.0 coentry_wallets_300s=7 creator_trading_own_mint=True entrant_fee_p90_lamports=88500 entrant_cu_p50=167908",
+   "floats": {
+    "bot_uniform_share_300s": 0.0,
+    "flow_lookback_d": 0.0,
+    "fresh_wallet_share_300s": 1.0,
+    "net_flow_sol_300s": 13.99323,
+    "smart_net_flow_sol_300s": 0.0,
+    "sniper_share_300s": 0.176471
+   },
+   "ints": {
+    "coentry_wallets_300s": 7,
+    "entrants_300s": 34,
+    "entrants_60s": 34,
+    "smart_entrants_300s": 0
+   },
+   "no_prior_flow": false
+  },
+  {
+   "creator_trading_own_mint": true,
+   "entrant_cu_p50": 95089,
+   "entrant_fee_p90_lamports": 1005000,
+   "expected_line": "LIVE FLOW STATE: entrants_60s=0 entrants_300s=49 net_flow_sol_300s=0.954221 fresh_wallet_share_300s=1.0 flow_lookback_d=0.0 sniper_share_300s=0.102041 bot_uniform_share_300s=0.0 smart_entrants_300s=0 smart_net_flow_sol_300s=0.0 coentry_wallets_300s=4 creator_trading_own_mint=True entrant_fee_p90_lamports=1005000 entrant_cu_p50=95089",
+   "floats": {
+    "bot_uniform_share_300s": 0.0,
+    "flow_lookback_d": 0.0,
+    "fresh_wallet_share_300s": 1.0,
+    "net_flow_sol_300s": 0.954221,
+    "smart_net_flow_sol_300s": 0.0,
+    "sniper_share_300s": 0.102041
+   },
+   "ints": {
+    "coentry_wallets_300s": 4,
+    "entrants_300s": 49,
+    "entrants_60s": 0,
+    "smart_entrants_300s": 0
+   },
+   "no_prior_flow": false
+  },
+  {
+   "creator_trading_own_mint": true,
+   "entrant_cu_p50": 88754,
+   "entrant_fee_p90_lamports": 1891793,
+   "expected_line": "LIVE FLOW STATE: entrants_60s=0 entrants_300s=59 net_flow_sol_300s=7.718657 fresh_wallet_share_300s=1.0 flow_lookback_d=0.0 sniper_share_300s=0.118644 bot_uniform_share_300s=0.075949 smart_entrants_300s=0 smart_net_flow_sol_300s=0.0 coentry_wallets_300s=4 creator_trading_own_mint=True entrant_fee_p90_lamports=1891793 entrant_cu_p50=88754",
+   "floats": {
+    "bot_uniform_share_300s": 0.075949,
+    "flow_lookback_d": 0.0,
+    "fresh_wallet_share_300s": 1.0,
+    "net_flow_sol_300s": 7.718657,
+    "smart_net_flow_sol_300s": 0.0,
+    "sniper_share_300s": 0.118644
+   },
+   "ints": {
+    "coentry_wallets_300s": 4,
+    "entrants_300s": 59,
+    "entrants_60s": 0,
+    "smart_entrants_300s": 0
+   },
+   "no_prior_flow": false
+  },
+  {
+   "creator_trading_own_mint": true,
+   "entrant_cu_p50": 93248,
+   "entrant_fee_p90_lamports": 505051,
+   "expected_line": "LIVE FLOW STATE: entrants_60s=34 entrants_300s=200 net_flow_sol_300s=9.639708 fresh_wallet_share_300s=1.0 flow_lookback_d=0.0 sniper_share_300s=0.11 bot_uniform_share_300s=0.208191 smart_entrants_300s=0 smart_net_flow_sol_300s=0.0 coentry_wallets_300s=10 creator_trading_own_mint=True entrant_fee_p90_lamports=505051 entrant_cu_p50=93248",
+   "floats": {
+    "bot_uniform_share_300s": 0.208191,
+    "flow_lookback_d": 0.0,
+    "fresh_wallet_share_300s": 1.0,
+    "net_flow_sol_300s": 9.639708,
+    "smart_net_flow_sol_300s": 0.0,
+    "sniper_share_300s": 0.11
+   },
+   "ints": {
+    "coentry_wallets_300s": 10,
+    "entrants_300s": 200,
+    "entrants_60s": 34,
+    "smart_entrants_300s": 0
+   },
+   "no_prior_flow": false
+  },
+  {
+   "creator_trading_own_mint": true,
+   "entrant_cu_p50": 89128,
+   "entrant_fee_p90_lamports": 1005000,
+   "expected_line": "LIVE FLOW STATE: entrants_60s=94 entrants_300s=155 net_flow_sol_300s=18.604897 fresh_wallet_share_300s=1.0 flow_lookback_d=0.0 sniper_share_300s=0.032258 bot_uniform_share_300s=0.064103 smart_entrants_300s=0 smart_net_flow_sol_300s=0.0 coentry_wallets_300s=3 creator_trading_own_mint=True entrant_fee_p90_lamports=1005000 entrant_cu_p50=89128",
+   "floats": {
+    "bot_uniform_share_300s": 0.064103,
+    "flow_lookback_d": 0.0,
+    "fresh_wallet_share_300s": 1.0,
+    "net_flow_sol_300s": 18.604897,
+    "smart_net_flow_sol_300s": 0.0,
+    "sniper_share_300s": 0.032258
+   },
+   "ints": {
+    "coentry_wallets_300s": 3,
+    "entrants_300s": 155,
+    "entrants_60s": 94,
+    "smart_entrants_300s": 0
+   },
+   "no_prior_flow": false
+  },
+  {
+   "creator_trading_own_mint": true,
+   "entrant_cu_p50": 94922,
+   "entrant_fee_p90_lamports": 1005000,
+   "expected_line": "LIVE FLOW STATE: entrants_60s=19 entrants_300s=133 net_flow_sol_300s=-8.362571 fresh_wallet_share_300s=1.0 flow_lookback_d=0.0 sniper_share_300s=0.030075 bot_uniform_share_300s=0.077348 smart_entrants_300s=0 smart_net_flow_sol_300s=0.0 coentry_wallets_300s=6 creator_trading_own_mint=True entrant_fee_p90_lamports=1005000 entrant_cu_p50=94922",
+   "floats": {
+    "bot_uniform_share_300s": 0.077348,
+    "flow_lookback_d": 0.0,
+    "fresh_wallet_share_300s": 1.0,
+    "net_flow_sol_300s": -8.362571,
+    "smart_net_flow_sol_300s": 0.0,
+    "sniper_share_300s": 0.030075
+   },
+   "ints": {
+    "coentry_wallets_300s": 6,
+    "entrants_300s": 133,
+    "entrants_60s": 19,
+    "smart_entrants_300s": 0
+   },
+   "no_prior_flow": false
+  },
+  {
+   "creator_trading_own_mint": true,
+   "entrant_cu_p50": 100806,
+   "entrant_fee_p90_lamports": 3894585,
+   "expected_line": "LIVE FLOW STATE: entrants_60s=1 entrants_300s=53 net_flow_sol_300s=5.024311 fresh_wallet_share_300s=1.0 flow_lookback_d=0.0 sniper_share_300s=0.056604 bot_uniform_share_300s=0.0 smart_entrants_300s=0 smart_net_flow_sol_300s=0.0 coentry_wallets_300s=3 creator_trading_own_mint=True entrant_fee_p90_lamports=3894585 entrant_cu_p50=100806",
+   "floats": {
+    "bot_uniform_share_300s": 0.0,
+    "flow_lookback_d": 0.0,
+    "fresh_wallet_share_300s": 1.0,
+    "net_flow_sol_300s": 5.024311,
+    "smart_net_flow_sol_300s": 0.0,
+    "sniper_share_300s": 0.056604
+   },
+   "ints": {
+    "coentry_wallets_300s": 3,
+    "entrants_300s": 53,
+    "entrants_60s": 1,
+    "smart_entrants_300s": 0
+   },
+   "no_prior_flow": false
+  },
+  {
+   "creator_trading_own_mint": false,
+   "entrant_cu_p50": 69013,
+   "entrant_fee_p90_lamports": 105000,
+   "expected_line": "LIVE FLOW STATE: entrants_60s=2 entrants_300s=4 net_flow_sol_300s=1.057244 fresh_wallet_share_300s=1.0 flow_lookback_d=0.0 sniper_share_300s=0.25 bot_uniform_share_300s=0.0 smart_entrants_300s=0 smart_net_flow_sol_300s=0.0 coentry_wallets_300s=0 creator_trading_own_mint=False entrant_fee_p90_lamports=105000 entrant_cu_p50=69013",
+   "floats": {
+    "bot_uniform_share_300s": 0.0,
+    "flow_lookback_d": 0.0,
+    "fresh_wallet_share_300s": 1.0,
+    "net_flow_sol_300s": 1.057244,
+    "smart_net_flow_sol_300s": 0.0,
+    "sniper_share_300s": 0.25
+   },
+   "ints": {
+    "coentry_wallets_300s": 0,
+    "entrants_300s": 4,
+    "entrants_60s": 2,
+    "smart_entrants_300s": 0
+   },
+   "no_prior_flow": false
+  },
+  {
+   "creator_trading_own_mint": true,
+   "entrant_cu_p50": 137408,
+   "entrant_fee_p90_lamports": 58618,
+   "expected_line": "LIVE FLOW STATE: entrants_60s=3 entrants_300s=3 net_flow_sol_300s=0.292989 fresh_wallet_share_300s=1.0 flow_lookback_d=0.0 sniper_share_300s=0.333333 bot_uniform_share_300s=0.0 smart_entrants_300s=0 smart_net_flow_sol_300s=0.0 coentry_wallets_300s=2 creator_trading_own_mint=True entrant_fee_p90_lamports=58618 entrant_cu_p50=137408",
+   "floats": {
+    "bot_uniform_share_300s": 0.0,
+    "flow_lookback_d": 0.0,
+    "fresh_wallet_share_300s": 1.0,
+    "net_flow_sol_300s": 0.292989,
+    "smart_net_flow_sol_300s": 0.0,
+    "sniper_share_300s": 0.333333
+   },
+   "ints": {
+    "coentry_wallets_300s": 2,
+    "entrants_300s": 3,
+    "entrants_60s": 3,
+    "smart_entrants_300s": 0
+   },
+   "no_prior_flow": false
+  },
+  {
+   "creator_trading_own_mint": true,
+   "entrant_cu_p50": 87957,
+   "entrant_fee_p90_lamports": 313255,
+   "expected_line": "LIVE FLOW STATE: entrants_60s=0 entrants_300s=55 net_flow_sol_300s=2.302161 fresh_wallet_share_300s=1.0 flow_lookback_d=0.0 sniper_share_300s=0.345455 bot_uniform_share_300s=0.0 smart_entrants_300s=0 smart_net_flow_sol_300s=0.0 coentry_wallets_300s=8 creator_trading_own_mint=True entrant_fee_p90_lamports=313255 entrant_cu_p50=87957",
+   "floats": {
+    "bot_uniform_share_300s": 0.0,
+    "flow_lookback_d": 0.0,
+    "fresh_wallet_share_300s": 1.0,
+    "net_flow_sol_300s": 2.302161,
+    "smart_net_flow_sol_300s": 0.0,
+    "sniper_share_300s": 0.345455
+   },
+   "ints": {
+    "coentry_wallets_300s": 8,
+    "entrants_300s": 55,
+    "entrants_60s": 0,
+    "smart_entrants_300s": 0
+   },
+   "no_prior_flow": false
+  },
+  {
+   "creator_trading_own_mint": true,
+   "entrant_cu_p50": 138227,
+   "entrant_fee_p90_lamports": 123800,
+   "expected_line": "LIVE FLOW STATE: entrants_60s=36 entrants_300s=36 net_flow_sol_300s=-0.459481 fresh_wallet_share_300s=1.0 flow_lookback_d=0.0 sniper_share_300s=0.166667 bot_uniform_share_300s=0.0 smart_entrants_300s=0 smart_net_flow_sol_300s=0.0 coentry_wallets_300s=7 creator_trading_own_mint=True entrant_fee_p90_lamports=123800 entrant_cu_p50=138227",
+   "floats": {
+    "bot_uniform_share_300s": 0.0,
+    "flow_lookback_d": 0.0,
+    "fresh_wallet_share_300s": 1.0,
+    "net_flow_sol_300s": -0.459481,
+    "smart_net_flow_sol_300s": 0.0,
+    "sniper_share_300s": 0.166667
+   },
+   "ints": {
+    "coentry_wallets_300s": 7,
+    "entrants_300s": 36,
+    "entrants_60s": 36,
+    "smart_entrants_300s": 0
+   },
+   "no_prior_flow": false
+  },
+  {
+   "creator_trading_own_mint": true,
+   "entrant_cu_p50": 95089,
+   "entrant_fee_p90_lamports": 1005000,
+   "expected_line": "LIVE FLOW STATE: entrants_60s=0 entrants_300s=49 net_flow_sol_300s=0.86349 fresh_wallet_share_300s=1.0 flow_lookback_d=0.0 sniper_share_300s=0.102041 bot_uniform_share_300s=0.0 smart_entrants_300s=0 smart_net_flow_sol_300s=0.0 coentry_wallets_300s=4 creator_trading_own_mint=True entrant_fee_p90_lamports=1005000 entrant_cu_p50=95089",
+   "floats": {
+    "bot_uniform_share_300s": 0.0,
+    "flow_lookback_d": 0.0,
+    "fresh_wallet_share_300s": 1.0,
+    "net_flow_sol_300s": 0.86349,
+    "smart_net_flow_sol_300s": 0.0,
+    "sniper_share_300s": 0.102041
+   },
+   "ints": {
+    "coentry_wallets_300s": 4,
+    "entrants_300s": 49,
+    "entrants_60s": 0,
+    "smart_entrants_300s": 0
+   },
+   "no_prior_flow": false
+  },
+  {
+   "creator_trading_own_mint": false,
+   "entrant_cu_p50": null,
+   "entrant_fee_p90_lamports": null,
+   "expected_line": "LIVE FLOW STATE: entrants_60s=0 entrants_300s=0 net_flow_sol_300s=0.0 fresh_wallet_share_300s=None flow_lookback_d=7.0 sniper_share_300s=None bot_uniform_share_300s=None smart_entrants_300s=0 smart_net_flow_sol_300s=0.0 coentry_wallets_300s=0 creator_trading_own_mint=False entrant_fee_p90_lamports=None entrant_cu_p50=None",
+   "floats": {
+    "bot_uniform_share_300s": null,
+    "flow_lookback_d": 7.0,
+    "fresh_wallet_share_300s": null,
+    "net_flow_sol_300s": 0.0,
+    "smart_net_flow_sol_300s": 0.0,
+    "sniper_share_300s": null
+   },
+   "ints": {
+    "coentry_wallets_300s": 0,
+    "entrants_300s": 0,
+    "entrants_60s": 0,
+    "smart_entrants_300s": 0
+   },
+   "no_prior_flow": false
+  },
+  {
+   "expected_line": "LIVE FLOW STATE: no_prior_flow=true",
+   "no_prior_flow": true
+  }
+ ],
+ "fields": [
+  "entrants_60s",
+  "entrants_300s",
+  "net_flow_sol_300s",
+  "fresh_wallet_share_300s",
+  "flow_lookback_d",
+  "sniper_share_300s",
+  "bot_uniform_share_300s",
+  "smart_entrants_300s",
+  "smart_net_flow_sol_300s",
+  "coentry_wallets_300s",
+  "creator_trading_own_mint",
+  "entrant_fee_p90_lamports",
+  "entrant_cu_p50"
+ ],
+ "n_cases": 62,
+ "n_entries_seen": 60,
+ "producer": "C11_FLOW_ENRICHMENT.jsonl via inject_c11_flow.render",
+ "schema": "flow-state-parity/1"
+}

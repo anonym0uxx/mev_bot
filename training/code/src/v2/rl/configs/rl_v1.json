@@ -1,0 +1,63 @@
+{
+  "_schema": "rl_config_v1",
+  "_note": "The single source of truth for the RL run. launch_rl.py refuses to start without it; rl_plan.py checks it. init_from and the reference cache are the ONLY items that must wait for SFT.",
+  "run_id": "rl-001",
+  "phase": "rl",
+  "init_from": "/training/runs/sft-004/astra_north_star_v3_linux_sft/BEST",
+  "init_from_note": "FILL AT TRANSITION: the SFT best checkpoint path. launch_rl.py verifies weights exist and hashes the dir.",
+
+  "data": {
+    "train": "/training/v2/rl_targets_v3/rl_train.jsonl",
+    "validation": "/training/v2/rl_targets_v3/rl_validation.jsonl",
+    "eval": "/training/v2/forward_wall_v1/wall_episodes.jsonl",
+    "wall_ms": 1788984256517,
+    "eval_note": "The forward wall is the RL eval set and is NEVER trained on. The dataset builder refuses to emit a wall episode."
+  },
+
+  "loop": {
+    "group_size": 4,
+    "temperature": 0.9,
+    "top_p": 0.95,
+    "max_new_tokens": 320,
+    "batch_prompts": 4,
+    "grad_accum": 8,
+    "mask_rationale": true,
+    "min_usable_candidates": 2,
+    "normalize_advantage": true,
+    "kl_coef": 0.02,
+    "kl_kind": "action_distribution",
+    "kl_note": "KL is over the 3-action distribution (BUY/WATCH/SKIP) against a cached reference distribution. Token-level KL is NOT computable at rollout time because the cached reference logprobs belong to the SFT completion, not the sampled one."
+  },
+
+  "optim": {
+    "lr": 5e-7,
+    "lr_note": "RL LR << SFT LR (2e-6): the policy is already good.",
+    "weight_decay": 0.0,
+    "warmup_ratio": 0.0,
+    "optim": "adamw_8bit",
+    "optim_note": "8-bit AdamW is the proven path on this box; full fp32 state does not fit. train_qwen27b.py asserts no fp32 master set - keep that assert.",
+    "max_grad_norm": 1.0,
+    "epochs": 1.0,
+    "max_steps": 4000
+  },
+
+  "gate": {
+    "gate_floor_net_sol": 0.0,
+    "gate_min_episodes": 2000,
+    "gate_confidence": 0.95,
+    "gate_note": "CHECKPOINT SELECTION ONLY. Never select on training reward. The lower 95% bound of net return per episode on the wall must exceed the floor."
+  },
+
+  "checkpoint": {
+    "save_steps": 100,
+    "keep_last": 2,
+    "resume": true,
+    "resume_note": "Resume, never restart: the loop reloads optimizer+step from the newest checkpoint and skips completed prompts by prompt_sha256."
+  },
+
+  "cost_calibration": {
+    "prompt_states_cost_bp": 210,
+    "measured_reserve_cost_bp": null,
+    "note": "The SFT prompts state a 210 bp round-trip cost. The V3 engine charges the RESERVE-PRICED cost, which differs. Record the measured median here before drawing conclusions across SFT and RL behaviour."
+  }
+}

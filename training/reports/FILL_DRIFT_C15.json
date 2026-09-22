@@ -1,0 +1,155 @@
+{
+ "schema": "fill_drift_c15_v1",
+ "code_sha256": "c9423c7ccc834e1b3951641d0589cf92217213805fd477ee3cfc8cdcd20af56f",
+ "accounting": {
+  "bps_one": 10000,
+  "population": {
+   "decisions_with_fill": 84556,
+   "by_venue": {
+    "pumpfun": 56027,
+    "pumpswap": 28529
+   }
+  },
+  "sampled_decisions": 84556,
+  "quantile": "p90 of the signed drift (positive = paid MORE than the decision price, the adverse side for a buy)",
+  "sign_convention": "drift_bp = (fill_price/decision_price - 1) * 10000",
+  "inputs": [
+   {
+    "path": "/training/v2/canonical/renormalized_v7/trades.jsonl",
+    "rows": 15894228,
+    "rows_for_decision_mints": 2338932
+   },
+   {
+    "path": "/training/v2/candidate_sft_c8/examination.jsonl",
+    "rows": 29129
+   },
+   {
+    "path": "/training/v2/candidate_sft_c8/train.jsonl",
+    "rows": 172758
+   },
+   {
+    "path": "/training/v2/candidate_sft_c8/validation.jsonl",
+    "rows": 18674
+   }
+  ]
+ },
+ "values": {
+  "entry_slippage_bps": 1863,
+  "entry_slippage_bps_stress": 2175
+ },
+ "measured": {
+  "source": "/training/v2/canonical/renormalized_v7/trades.jsonl",
+  "decision_files": [
+   "/training/v2/candidate_sft_c8/train.jsonl",
+   "/training/v2/candidate_sft_c8/validation.jsonl",
+   "/training/v2/candidate_sft_c8/examination.jsonl"
+  ],
+  "decision_rows_read": 220561,
+  "decision_rows_missing_clock": 39821,
+  "decision_rows_by_file": {
+   "/training/v2/candidate_sft_c8/train.jsonl": 172758,
+   "/training/v2/candidate_sft_c8/validation.jsonl": 18674,
+   "/training/v2/candidate_sft_c8/examination.jsonl": 29129
+  },
+  "sampled_decisions": 84556,
+  "decisions_without_following_trade": 176,
+  "decisions_dropped_price_scale_guard": 354,
+  "mints": 3161,
+  "mints_with_trades": 3161,
+  "tape": {
+   "rows": 15894228,
+   "kept": 2338932,
+   "skipped": 0,
+   "mints": 3161,
+   "dust_below_notional_floor": 831598,
+   "notional_floor_lamports": 1000000
+  },
+  "population": {
+   "decisions_with_fill": 84556,
+   "by_venue": {
+    "pumpfun": 56027,
+    "pumpswap": 28529
+   }
+  },
+  "quantiles_pooled": {
+   "10": -1463.2932512194293,
+   "25": -412.55129604727324,
+   "50": -0.5357872079403414,
+   "75": 375.85407915677604,
+   "90": 1862.8904229172526,
+   "95": 5612.848236127549,
+   "99": 51821.62148904726
+  },
+  "quantiles_by_venue": {
+   "pumpfun": {
+    "25": -481.6964051207128,
+    "50": -51.54988169448815,
+    "75": 467.3019468623807,
+    "90": 1771.9692433062748,
+    "99": 18799.443364640512
+   },
+   "pumpswap": {
+    "25": -251.51731857242842,
+    "50": 1.0733167209853178,
+    "75": 191.09678561225473,
+    "90": 2174.8702538881284,
+    "99": 108855.35183044801
+   }
+  },
+  "latency_ms": {
+   "p50": 6862.0,
+   "p90": 151203.0,
+   "p99": 29121336.25,
+   "max": 1414594514
+  },
+  "positive_fraction": 0.4932115994134065,
+  "systematic": {
+   "mean_bp": 3844.559889150969,
+   "median_bp": -0.5357872079403414,
+   "sd_bp": 90750.24576513575,
+   "stderr_bp": 312.0869398665965,
+   "t_stat": 12.318874640490725,
+   "positive_fraction": 0.4932115994134065
+  },
+  "positive_side_quantiles": {
+   "50": 389.5046366635346,
+   "75": 1319.7270549782459,
+   "90": 5730.788723616316,
+   "99": 113092.36969538454
+  },
+  "latency_capped": {
+   "<=5s": {
+    "n": 37953,
+    "quantiles": {
+     "25": -384.0586683719438,
+     "50": 0.0005665450197867017,
+     "75": 325.9332679980487,
+     "90": 1479.232374050556,
+     "99": 83395.68645693304
+    }
+   },
+   "<=30s": {
+    "n": 61747,
+    "quantiles": {
+     "25": -391.3897675434791,
+     "50": -5.5355238376197935,
+     "75": 301.4690562736289,
+     "90": 1349.1041714449887,
+     "99": 71251.89828931914
+    }
+   },
+   "<=300s": {
+    "n": 81597,
+    "quantiles": {
+     "25": -395.8148732665234,
+     "50": -0.6511213538640259,
+     "75": 341.85685781748634,
+     "90": 1601.0381290005494,
+     "99": 53591.00270566681
+    }
+   }
+  }
+ },
+ "justification": "Measured on 84,556 of our own decisions (candidate_sft_c8 train/validation/examination, 220,561 rows read, 84,919 carrying a decision clock and a following print) matched to the first notional-qualified print (>=1,000,000 lamports, the same tradeable-print floor rl_reward_v3 uses) of the same mint at or after the decision clock in the 15.9M-row canonical/renormalized_v7 trade tape. The honest headline is that the decision price is NOT a biased estimate of the fill: the median drift is -0.5 bp and 49.3% of fills are worse than the decision price, so there is no systematic decision-to-fill penalty and an artifact that charged one would be inventing it. What is real is the DISPERSION: p25/p75 are -413/+376 bp and the adverse p90 is +1,863 bp; capping the population to fills within 30 s of the decision still gives p90 +1,349 bp, so the tail is execution-window dispersion rather than only quiet mints matched to a print hours later. The shipped value is p90 of the SIGNED drift - the adverse side for a buy - because the reward is required to be conservative against the realized return (readiness class E), NOT because the mean is positive. Alternatives and why they were not shipped: the exact mirror of the exit artifact p25 sell penalty would be p75 (+376 bp), too lenient to bound a cost that sits between the decision and the first tick; p99 (+51,822 bp) is dominated by the tape coverage artifact (fill latency p90 151 s, p99 8 h) rather than by a price we would deliberately cross. The venue split is reported and does not hide a worse market: curve p90 +1,772 bp vs AMM p90 +2,175 bp bracket the pooled +1,863 bp, so the pooled value understates the AMM market by 14% and the stress value records the worse venue. Instances whose fill/decision ratio leaves the 1000x band (the unit-error class) are counted and excluded, never winsorized into the quantiles: 354 of 84,910.",
+ "replaced": null
+}

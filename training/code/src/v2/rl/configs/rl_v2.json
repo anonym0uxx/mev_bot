@@ -1,0 +1,101 @@
+{
+  "_schema": "rl_config_v1",
+  "_note": "The single source of truth for the RL run. launch_rl.py refuses to start without it. This revision points at the RE-ARMED RL targets (v8: venue-conditional entry — AMM {SKIP,WATCH,BUY_FULL} / curve {SKIP,WATCH,BUY_SMALL}, MID retired per KELLY_AUDIT_C12 §b — + 4-arm management from mgmt_c12_aligned), the SCORED forward-wall eval set, and the SFT-013 policy. Everything here is produced by the chain trigger; nothing is filled in by hand.",
+  "run_id": "rl-005",
+  "phase": "rl",
+  "init_from": "/training/runs/sft-013/astra_north_star_v3_linux_sft/final",
+  "init_from_note": "trainer.save_model(out_dir/final) under FSDP2 writes a CONSOLIDATED BF16 HF dir (verified: the ZeRO-3 gather in consolidate_cpt.py.SUPERSEDED was only needed for CPT's nvme-offloaded checkpoints). launch_rl.py verifies weights exist and hashes the dir.",
+  "data": {
+    "train": "/training/v2/rl_targets_v8/rl_train.jsonl",
+    "validation": "/training/v2/rl_targets_v8/rl_validation.jsonl",
+    "eval": "/training/v2/rl_targets_v8/rl_wall_scored.jsonl",
+    "wall_ms": 1788984256517,
+    "horizon_ms": 1800000,
+    "eval_note": "The forward wall is the RL eval set and is NEVER trained on. Built in two stages so a wall row is rendered by the SAME annotation path as training and scored by the SAME build_records path: build_sft_c6.py --wall-eval-out (annotated prompts, c6 format, c6 proved byte-identical) -> score_wall_eval.py (counterfactual groups). VERIFIED wall-only: leak_refused=0."
+  },
+  "reference": {
+    "action_dist_cache": "/training/v2/rl_ref/rl_ref_action_dist.pt",
+    "note": "Built by grpo_ref_cache.py --action-dist from init_from over the RL train prompts. The cache key is prompt_sha256 and MUST equal the RL dataset key (grpo_ref_cache.py --verify-prompt-hash proves it on a real record)."
+  },
+  "loop": {
+    "group_size": 4,
+    "temperature": 0.9,
+    "top_p": 0.95,
+    "max_new_tokens": 320,
+    "batch_prompts": 4,
+    "grad_accum": 8,
+    "mask_rationale": true,
+    "min_usable_candidates": 2,
+    "normalize_advantage": true,
+    "kl_coef": 0.02,
+    "kl_kind": "action_distribution",
+    "kl_note": "KL is over the 3-action distribution (BUY/WATCH/SKIP) against the cached reference distribution. Token-level KL is NOT computable at rollout time because the cached reference logprobs belong to the SFT completion, not the sampled one."
+  },
+  "optim": {
+    "lr": 5e-07,
+    "lr_note": "RL LR << SFT LR (2e-6): the policy is already good.",
+    "weight_decay": 0.0,
+    "warmup_ratio": 0.0,
+    "optim": "adamw_8bit",
+    "optim_note": "8-bit AdamW is the proven path on this box; full fp32 state does not fit. train_qwen27b.py asserts no fp32 master set - keep that assert.",
+    "max_grad_norm": 1.0,
+    "epochs": 1.0,
+    "max_steps": 4000
+  },
+  "gate": {
+    "gate_floor_net_sol": 0.0,
+    "gate_min_episodes": 2000,
+    "gate_confidence": 0.95,
+    "gate_note": "CHECKPOINT SELECTION ONLY. Never select on training reward. The lower 95% bound of net return per episode on the wall must exceed the floor. Selection input is wall episodes only (grpo_loop.run_gate records training_reward_used_for_selection=false)."
+  },
+  "selection": {
+    "emit_memorization_records": true,
+    "mem_limit": 400,
+    "mem_seed": 7,
+    "mem_report": "/training/v2/reports/MEMORIZATION_RECORDS_REPORT.json",
+    "selection_note": "CHECKPOINT SELECTION NEEDS TWO SIGNALS: the wall lower bound (gate) AND a clean memorization verdict from the preregistered instrument (reports/MEMORIZATION_BOUNDS.json, which names this producer). With emit_memorization_records=true the loop re-emits the records FROM THE CANDIDATE POLICY ITSELF at every checkpoint, immediately before the verdict, and reads the file back to refuse a verdict that names a different checkpoint - a stale file can never authorise a selection. FAIL-CLOSED: emission failure is a refusal, never a pass.",
+    "mem_limit_note": "mem_limit = rows PER GROUP of matched in-sample/unseen prompts the emitter scores (the detector's own floor is 30/group, which is a REFUSAL floor, not a power requirement). 400 was chosen by MEASUREMENT (reports/MEM_LIMIT_POWER_STUDY.json): at 400/group the permutation bound on total-variation choice distance is ~0.095 at alpha=0.01, and a SUBTLE exposure effect (TV 0.10 with a 60 bp outcome gap) was flagged 8/8 seeds - at the 30-row floor the same effect was caught only 5/8. Cost: 400x2 = 800 prompts x group_size(4) = 3,200 generations per checkpoint, i.e. ~7% of the ONE wall eval (10,802 prompts x 4 = 43,208 generations) the loop already runs at every save.",
+    "mem_limit_floor_rule": "A shortfall against mem_limit is REPORTED in the report json (limit_shortfall), never silently absorbed and never fatal; below the prereg's 30/group the producer REFUSES."
+  },
+  "checkpoint": {
+    "save_steps": 100,
+    "keep_last": 2,
+    "resume": true,
+    "resume_note": "Resume, never restart: the loop reloads optimizer+step from the newest checkpoint and skips completed prompts by prompt_sha256."
+  },
+  "cost_calibration": {
+    "prior_round_trip_bp": 210,
+    "prior_source": "/training/v2/reports/EXECUTION_CALIBRATION.json (north_star_execution_calibration_v2)",
+    "prior_components_bp": {
+      "pump_fee": 100,
+      "slippage": 50,
+      "priority_fee": 8,
+      "failure": "10% x 220 bp failed_cost"
+    },
+    "on_chain_inputs": {
+      "bonding_fee_bp": 94.63,
+      "bonding_fee_population": "65,927 clean swaps, instruction-account resolution (regime_pricing.FEE_RATE_BONDING = 0.009463)",
+      "tx_fee_lamports_per_leg": {
+        "p50": 10000,
+        "p90": 45000,
+        "p99": 1005000
+      },
+      "tx_fee_population": "91,735 fills, from on-chain tx meta.fee (calibrate_costs.py)",
+      "amm_venue_fee": "INSIDE the pool price - gross/net ratio p50 = 1.0 over 88,918 fills; adding it again would double-charge"
+    },
+    "engine_floor_bp_at_1p0_sol_deploy": {
+      "bonding_curve": {
+        "p50": 189,
+        "p90": 190,
+        "p99": 209
+      },
+      "amm": {
+        "p50": 0,
+        "p90": 1,
+        "p99": 20
+      }
+    },
+    "engine_floor_source": "exit_mechanics.cost_floor_bps(notional_sol=1.0), the notional the RL engine actually trades (grpo_dataset: V3Engine(deploy_sol=1.0))",
+    "note": "DERIVED, not inherited. Reconciliation is exact: the 210 bp prior is an ALL-IN execution prior, and at the engine's real 1.0 SOL deploy size the bonding-curve floor is 189-209 bp - so the prior sits at or above every fee quantile. The AMM floor is far lower (0-20 bp) because the AMM venue fee lives INSIDE the reserve price and is deliberately not charged twice. Size matters: the fixed tx fee is a lamport amount, so in bp it scales as 1/notional (p99 = 10.05 bp/leg at 1.0 SOL but 100.5 at 0.1 SOL). CHARGE p50 in training (189 bp curve / 0 bp AMM) and evaluate the gate at p99 (209 / 20) so a policy is never promoted on optimistic costs. WATCH: grpo_dataset deploys 1.0 SOL while reward_engine/economic_exam use 0.5 - always compute the floor at the notional the engine actually trades."
+  }
+}

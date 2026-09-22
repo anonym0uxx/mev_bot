@@ -1,0 +1,21 @@
+[Unit]
+Description=RL chain trigger for the sft-013 handoff (stages 0-4, fail-closed)
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=alon
+Group=alon
+Environment=HOME=/home/alon
+Environment=HERMES_HOME=/home/alon/.hermes
+Environment=RL_CHAIN_SFT_UNIT=qwen-sft-013
+Environment=RL_CHAIN_SFT_OUT=/training/runs/sft-013/astra_north_star_v3_linux_sft
+Environment=RL_CHAIN_TRAIN=/training/v2/rl_targets_v8/rl_train.jsonl
+Environment=RL_CHAIN_WALL=/training/v2/rl_targets_v8/rl_wall_scored.jsonl
+Environment=RL_CHAIN_JKGATE=/training/v2/reports/RL_JOINT_KL_GATE.json
+Environment=RL_CHAIN_STATE=/training/v2/reports/rl_chain_state_013.json
+Environment=RL_CHAIN_LOG=/training/v2/reports/rl_chain_trigger_013.log
+Environment=RL_CHAIN_WRAPPER_LOG=/training/v2/reports/rl_chain_013_hourly.log
+Environment=RL_CHAIN_UNIT=qwen-rl-001
+ExecStart=/bin/bash /training/v2/code/src/v2/rl/rl_chain_timer.sh
+TimeoutStartSec=3600

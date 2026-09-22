@@ -1,0 +1,605 @@
+{
+ "cases": [
+  {
+   "expected_line": "CURVE STATE (at decision time): curve_reserves=present src=laserstream staleness_ms=500 pricing_eligible=true v_sol_reserves_sol=30.000000000 v_tokens_reserves=1073000000000000 real_sol_reserves_sol=0.000000000 real_tokens_reserves=793100000000000 curve_price_sol_per_raw_token=0.000000000000027959 curve_k=32190000000000000000000000 curve_progress=0.000000 curve_regime=bonding",
+   "expected_line_live": "CURVE STATE (at decision time): curve_reserves=present src=laserstream staleness_ms=500 pricing_eligible=true v_sol_reserves_sol=30.000000000 v_tokens_reserves=1073000000000000 real_sol_reserves_sol=0.000000000 real_tokens_reserves=793100000000000 curve_price_sol_per_raw_token=0.000000000000027959 curve_k=32190000000000000000000000 curve_progress=0.000000 curve_regime=bonding",
+   "expected_status": "present",
+   "expected_status_live": "present",
+   "expected_why": "matched",
+   "kind": "curve",
+   "live_differs": false,
+   "live_reachable": true,
+   "mint": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+   "samples": [
+    {
+     "rsol": 0,
+     "rtok": 793100000000000,
+     "ts": 1000000,
+     "vsol": 30000000000,
+     "vtok": 1073000000000000
+    }
+   ],
+   "t_dec_ms": 1000500
+  },
+  {
+   "expected_line": "CURVE STATE (at decision time): curve_reserves=present src=laserstream staleness_ms=30000 pricing_eligible=true v_sol_reserves_sol=30.000000000 v_tokens_reserves=1073000000000000 real_sol_reserves_sol=0.000000000 real_tokens_reserves=793100000000000 curve_price_sol_per_raw_token=0.000000000000027959 curve_k=32190000000000000000000000 curve_progress=0.000000 curve_regime=bonding",
+   "expected_line_live": "CURVE STATE (at decision time): curve_reserves=present src=laserstream staleness_ms=30000 pricing_eligible=true v_sol_reserves_sol=30.000000000 v_tokens_reserves=1073000000000000 real_sol_reserves_sol=0.000000000 real_tokens_reserves=793100000000000 curve_price_sol_per_raw_token=0.000000000000027959 curve_k=32190000000000000000000000 curve_progress=0.000000 curve_regime=bonding",
+   "expected_status": "present",
+   "expected_status_live": "present",
+   "expected_why": "matched",
+   "kind": "curve",
+   "live_differs": false,
+   "live_reachable": true,
+   "mint": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+   "samples": [
+    {
+     "rsol": 0,
+     "rtok": 793100000000000,
+     "ts": 1000000,
+     "vsol": 30000000000,
+     "vtok": 1073000000000000
+    },
+    {
+     "rsol": 25000000000,
+     "rtok": 428000000000000,
+     "ts": 1060000,
+     "vsol": 55000000000,
+     "vtok": 585000000000000
+    }
+   ],
+   "t_dec_ms": 1030000
+  },
+  {
+   "expected_line": "CURVE STATE (at decision time): curve_reserves=present src=laserstream staleness_ms=130000 pricing_eligible=false v_sol_reserves_sol=120.000000000 v_tokens_reserves=268000000000000 real_sol_reserves_sol=90.000000000 real_tokens_reserves=175000000000000 curve_price_sol_per_raw_token=0.000000000000447761 curve_k=32160000000000000000000000 curve_progress=1.000000 curve_regime=graduated",
+   "expected_line_live": "CURVE STATE (at decision time): curve_reserves=present src=laserstream staleness_ms=130000 pricing_eligible=false v_sol_reserves_sol=120.000000000 v_tokens_reserves=268000000000000 real_sol_reserves_sol=90.000000000 real_tokens_reserves=175000000000000 curve_price_sol_per_raw_token=0.000000000000447761 curve_k=32160000000000000000000000 curve_progress=1.000000 curve_regime=graduated",
+   "expected_status": "present",
+   "expected_status_live": "present",
+   "expected_why": "matched",
+   "kind": "curve",
+   "live_differs": false,
+   "live_reachable": true,
+   "mint": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+   "samples": [
+    {
+     "rsol": 0,
+     "rtok": 793100000000000,
+     "ts": 1000000,
+     "vsol": 30000000000,
+     "vtok": 1073000000000000
+    },
+    {
+     "rsol": 25000000000,
+     "rtok": 428000000000000,
+     "ts": 1060000,
+     "vsol": 55000000000,
+     "vtok": 585000000000000
+    },
+    {
+     "rsol": 90000000000,
+     "rtok": 175000000000000,
+     "ts": 1120000,
+     "vsol": 120000000000,
+     "vtok": 268000000000000
+    }
+   ],
+   "t_dec_ms": 1250000
+  },
+  {
+   "expected_line": "CURVE STATE (at decision time): curve_reserves=present src=laserstream staleness_ms=180000 pricing_eligible=false v_sol_reserves_sol=120.000000000 v_tokens_reserves=268000000000000 real_sol_reserves_sol=90.000000000 real_tokens_reserves=175000000000000 curve_price_sol_per_raw_token=0.000000000000447761 curve_k=32160000000000000000000000 curve_progress=1.000000 curve_regime=graduated",
+   "expected_line_live": "CURVE STATE (at decision time): curve_reserves=present src=laserstream staleness_ms=180000 pricing_eligible=false v_sol_reserves_sol=120.000000000 v_tokens_reserves=268000000000000 real_sol_reserves_sol=90.000000000 real_tokens_reserves=175000000000000 curve_price_sol_per_raw_token=0.000000000000447761 curve_k=32160000000000000000000000 curve_progress=1.000000 curve_regime=graduated",
+   "expected_status": "present",
+   "expected_status_live": "present",
+   "expected_why": "matched",
+   "kind": "curve",
+   "live_differs": false,
+   "live_reachable": true,
+   "mint": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+   "samples": [
+    {
+     "rsol": 0,
+     "rtok": 793100000000000,
+     "ts": 1000000,
+     "vsol": 30000000000,
+     "vtok": 1073000000000000
+    },
+    {
+     "rsol": 25000000000,
+     "rtok": 428000000000000,
+     "ts": 1060000,
+     "vsol": 55000000000,
+     "vtok": 585000000000000
+    },
+    {
+     "rsol": 90000000000,
+     "rtok": 175000000000000,
+     "ts": 1120000,
+     "vsol": 120000000000,
+     "vtok": 268000000000000
+    }
+   ],
+   "t_dec_ms": 1300000
+  },
+  {
+   "expected_line": "CURVE STATE (at decision time): curve_reserves=absent reason=no_event_before_t_dec",
+   "expected_line_live": "CURVE STATE (at decision time): curve_reserves=absent reason=mint_absent",
+   "expected_status": "absent",
+   "expected_status_live": "absent",
+   "expected_why": "no_event_before_t_dec",
+   "kind": "curve",
+   "live_differs": true,
+   "live_reachable": false,
+   "mint": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+   "samples": [
+    {
+     "rsol": 0,
+     "rtok": 793100000000000,
+     "ts": 1000000,
+     "vsol": 30000000000,
+     "vtok": 1073000000000000
+    }
+   ],
+   "t_dec_ms": 999000
+  },
+  {
+   "expected_line": "CURVE STATE (at decision time): curve_reserves=absent reason=mint_absent",
+   "expected_line_live": "CURVE STATE (at decision time): curve_reserves=absent reason=mint_absent",
+   "expected_status": "absent",
+   "expected_status_live": "absent",
+   "expected_why": "mint_absent",
+   "kind": "curve",
+   "live_differs": false,
+   "live_reachable": false,
+   "mint": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+   "samples": [],
+   "t_dec_ms": 1000500
+  },
+  {
+   "expected_line": "CURVE STATE (at decision time): curve_reserves=absent reason=older_than_annotation_cap",
+   "expected_line_live": "CURVE STATE (at decision time): curve_reserves=absent reason=older_than_annotation_cap",
+   "expected_status": "absent",
+   "expected_status_live": "absent",
+   "expected_why": "older_than_annotation_cap",
+   "kind": "curve",
+   "live_differs": false,
+   "live_reachable": true,
+   "mint": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+   "samples": [
+    {
+     "rsol": 0,
+     "rtok": 793100000000000,
+     "ts": 1000000,
+     "vsol": 30000000000,
+     "vtok": 1073000000000000
+    }
+   ],
+   "t_dec_ms": 87400001
+  },
+  {
+   "expected_line": "CURVE STATE (at decision time): curve_reserves=absent reason=no_event_before_t_dec",
+   "expected_line_live": "CURVE STATE (at decision time): curve_reserves=absent reason=mint_absent",
+   "expected_status": "absent",
+   "expected_status_live": "absent",
+   "expected_why": "no_event_before_t_dec",
+   "kind": "curve",
+   "live_differs": true,
+   "live_reachable": false,
+   "mint": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+   "samples": [
+    {
+     "rsol": 0,
+     "rtok": 700000000000000,
+     "ts": 3000000,
+     "vsol": 40000000000,
+     "vtok": 900000000000000
+    }
+   ],
+   "t_dec_ms": 2000000
+  },
+  {
+   "expected_line": "CURVE STATE (at decision time): curve_reserves=absent reason=nonpositive_reserve",
+   "expected_line_live": "CURVE STATE (at decision time): curve_reserves=absent reason=nonpositive_reserve",
+   "expected_status": "absent",
+   "expected_status_live": "absent",
+   "expected_why": "nonpositive_reserve",
+   "kind": "curve",
+   "live_differs": false,
+   "live_reachable": true,
+   "mint": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+   "samples": [
+    {
+     "rsol": 0,
+     "rtok": 700000000000000,
+     "ts": 1000000,
+     "vsol": 0,
+     "vtok": 900000000000000
+    }
+   ],
+   "t_dec_ms": 2000000
+  },
+  {
+   "expected_line": "CURVE STATE (at decision time): curve_reserves=present src=laserstream staleness_ms=100 pricing_eligible=true v_sol_reserves_sol=140.000000000 v_tokens_reserves=230000000000000 real_sol_reserves_sol=85.000000000 real_tokens_reserves=150000000000000 curve_price_sol_per_raw_token=0.000000000000608696 curve_k=32200000000000000000000000 curve_progress=1.000000 curve_regime=graduated",
+   "expected_line_live": "CURVE STATE (at decision time): curve_reserves=present src=laserstream staleness_ms=100 pricing_eligible=true v_sol_reserves_sol=140.000000000 v_tokens_reserves=230000000000000 real_sol_reserves_sol=85.000000000 real_tokens_reserves=150000000000000 curve_price_sol_per_raw_token=0.000000000000608696 curve_k=32200000000000000000000000 curve_progress=1.000000 curve_regime=graduated",
+   "expected_status": "present",
+   "expected_status_live": "present",
+   "expected_why": "matched",
+   "kind": "curve",
+   "live_differs": false,
+   "live_reachable": true,
+   "mint": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+   "samples": [
+    {
+     "rsol": 85000000000,
+     "rtok": 150000000000000,
+     "ts": 1000000,
+     "vsol": 140000000000,
+     "vtok": 230000000000000
+    }
+   ],
+   "t_dec_ms": 1000100
+  },
+  {
+   "expected_line": "CURVE STATE (at decision time): curve_reserves=present src=laserstream staleness_ms=95864 pricing_eligible=false v_sol_reserves_sol=40544.000000000 v_tokens_reserves=1466775249630990 real_sol_reserves_sol=6.000000000 real_tokens_reserves=106980619624491 curve_price_sol_per_raw_token=0.000000000027641590 curve_k=59468935721038858560000000000 curve_progress=0.070588 curve_regime=bonding",
+   "expected_line_live": "CURVE STATE (at decision time): curve_reserves=present src=laserstream staleness_ms=95864 pricing_eligible=false v_sol_reserves_sol=40544.000000000 v_tokens_reserves=1466775249630990 real_sol_reserves_sol=6.000000000 real_tokens_reserves=106980619624491 curve_price_sol_per_raw_token=0.000000000027641590 curve_k=59468935721038858560000000000 curve_progress=0.070588 curve_regime=bonding",
+   "expected_status": "present",
+   "expected_status_live": "present",
+   "expected_why": "matched",
+   "kind": "curve",
+   "live_differs": false,
+   "live_reachable": true,
+   "mint": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+   "samples": [
+    {
+     "rsol": 0,
+     "rtok": 793100000000000,
+     "ts": 1000000,
+     "vsol": 30000000000,
+     "vtok": 1073000000000000
+    },
+    {
+     "rsol": 6000000000,
+     "rtok": 106980619624491,
+     "ts": 1339563,
+     "vsol": 40544000000000,
+     "vtok": 1466775249630990
+    }
+   ],
+   "t_dec_ms": 1435427
+  },
+  {
+   "expected_line": "CURVE STATE (at decision time): curve_reserves=present src=laserstream staleness_ms=113678 pricing_eligible=false v_sol_reserves_sol=16204.000000000 v_tokens_reserves=1143645596511636 real_sol_reserves_sol=27.000000000 real_tokens_reserves=97765774221528 curve_price_sol_per_raw_token=0.000000000014168725 curve_k=18531633245874549744000000000 curve_progress=0.317647 curve_regime=bonding",
+   "expected_line_live": "CURVE STATE (at decision time): curve_reserves=present src=laserstream staleness_ms=113678 pricing_eligible=false v_sol_reserves_sol=16204.000000000 v_tokens_reserves=1143645596511636 real_sol_reserves_sol=27.000000000 real_tokens_reserves=97765774221528 curve_price_sol_per_raw_token=0.000000000014168725 curve_k=18531633245874549744000000000 curve_progress=0.317647 curve_regime=bonding",
+   "expected_status": "present",
+   "expected_status_live": "present",
+   "expected_why": "matched",
+   "kind": "curve",
+   "live_differs": false,
+   "live_reachable": true,
+   "mint": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+   "samples": [
+    {
+     "rsol": 0,
+     "rtok": 793100000000000,
+     "ts": 1000000,
+     "vsol": 30000000000,
+     "vtok": 1073000000000000
+    },
+    {
+     "rsol": 27000000000,
+     "rtok": 97765774221528,
+     "ts": 1611097,
+     "vsol": 16204000000000,
+     "vtok": 1143645596511636
+    }
+   ],
+   "t_dec_ms": 1724775
+  },
+  {
+   "expected_line": "CURVE STATE (at decision time): curve_reserves=present src=laserstream staleness_ms=148231 pricing_eligible=false v_sol_reserves_sol=19312.000000000 v_tokens_reserves=205265383270180 real_sol_reserves_sol=70.000000000 real_tokens_reserves=67552341547558 curve_price_sol_per_raw_token=0.000000000094083083 curve_k=3964085081713716160000000000 curve_progress=0.823529 curve_regime=bonding",
+   "expected_line_live": "CURVE STATE (at decision time): curve_reserves=present src=laserstream staleness_ms=148231 pricing_eligible=false v_sol_reserves_sol=19312.000000000 v_tokens_reserves=205265383270180 real_sol_reserves_sol=70.000000000 real_tokens_reserves=67552341547558 curve_price_sol_per_raw_token=0.000000000094083083 curve_k=3964085081713716160000000000 curve_progress=0.823529 curve_regime=bonding",
+   "expected_status": "present",
+   "expected_status_live": "present",
+   "expected_why": "matched",
+   "kind": "curve",
+   "live_differs": false,
+   "live_reachable": true,
+   "mint": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+   "samples": [
+    {
+     "rsol": 0,
+     "rtok": 793100000000000,
+     "ts": 1000000,
+     "vsol": 30000000000,
+     "vtok": 1073000000000000
+    },
+    {
+     "rsol": 70000000000,
+     "rtok": 67552341547558,
+     "ts": 1438485,
+     "vsol": 19312000000000,
+     "vtok": 205265383270180
+    }
+   ],
+   "t_dec_ms": 1586716
+  },
+  {
+   "expected_line": "AMM POOL STATE (at decision time): amm_reserves=present src=helius_amm_backfill pool=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA quote=WSOL staleness_ms=10000 pricing_eligible=true base_reserves_raw=1000000000 quote_reserves_lamports=2500000000000 quote_reserves_sol=2500.000000000 amm_price_sol_per_raw_token=0.000002500000000000 reserve_slot=55",
+   "expected_line_live": "AMM POOL STATE (at decision time): amm_reserves=present src=helius_amm_backfill pool=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA quote=WSOL staleness_ms=10000 pricing_eligible=true base_reserves_raw=1000000000 quote_reserves_lamports=2500000000000 quote_reserves_sol=2500.000000000 amm_price_sol_per_raw_token=0.000002500000000000 reserve_slot=55",
+   "expected_status": "present",
+   "expected_status_live": "present",
+   "expected_why": "matched",
+   "graduated": true,
+   "has_tape": true,
+   "kind": "amm",
+   "live_differs": false,
+   "live_reachable": true,
+   "mint": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+   "pools_total": 1,
+   "rows": [
+    [
+     1000000,
+     "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+     1000000000,
+     2500000000000,
+     55,
+     "trad\u0435"
+    ]
+   ],
+   "t_dec_ms": 1010000,
+   "wsol_pools": [
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+   ]
+  },
+  {
+   "expected_line": "AMM POOL STATE (at decision time): amm_reserves=present src=helius_amm_backfill pool=BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB quote=WSOL staleness_ms=10000 pricing_eligible=true base_reserves_raw=500000000 quote_reserves_lamports=1200000000000 quote_reserves_sol=1200.000000000 amm_price_sol_per_raw_token=0.000002400000000000 reserve_slot=77",
+   "expected_line_live": "AMM POOL STATE (at decision time): amm_reserves=present src=helius_amm_backfill pool=BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB quote=WSOL staleness_ms=10000 pricing_eligible=true base_reserves_raw=500000000 quote_reserves_lamports=1200000000000 quote_reserves_sol=1200.000000000 amm_price_sol_per_raw_token=0.000002400000000000 reserve_slot=77",
+   "expected_status": "present",
+   "expected_status_live": "present",
+   "expected_why": "matched",
+   "graduated": true,
+   "has_tape": true,
+   "kind": "amm",
+   "live_differs": false,
+   "live_reachable": true,
+   "mint": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+   "pools_total": 1,
+   "rows": [
+    [
+     1000000,
+     "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+     500000000,
+     1200000000000,
+     77,
+     "trade"
+    ]
+   ],
+   "t_dec_ms": 1010000,
+   "wsol_pools": [
+    "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+   ]
+  },
+  {
+   "expected_line": "AMM POOL STATE (at decision time): amm_reserves=absent reason=pool_not_authoritative_wsol",
+   "expected_line_live": "AMM POOL STATE (at decision time): amm_reserves=absent reason=pool_not_authoritative_wsol",
+   "expected_status": "absent",
+   "expected_status_live": "absent",
+   "expected_why": "pool_not_authoritative_wsol",
+   "graduated": true,
+   "has_tape": true,
+   "kind": "amm",
+   "live_differs": false,
+   "live_reachable": true,
+   "mint": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+   "pools_total": 2,
+   "rows": [
+    [
+     1000000,
+     "USDCUSDCUSDCUSDCUSDCUSDCUSDCUSDCUSDCUSDCUSDC",
+     1000000,
+     9000000,
+     88,
+     "trade"
+    ]
+   ],
+   "t_dec_ms": 1010000,
+   "wsol_pools": [
+    "WSOLWSOLWSOLWSOLWSOLWSOLWSOLWSOLWSOLWSOLWSOL"
+   ]
+  },
+  {
+   "expected_line": "AMM POOL STATE (at decision time): amm_reserves=present src=helius_amm_backfill pool=WSOLWSOLWSOLWSOLWSOLWSOLWSOLWSOLWSOLWSOLWSOL quote=WSOL staleness_ms=10000 pricing_eligible=true base_reserves_raw=1000000 quote_reserves_lamports=9000000000 quote_reserves_sol=9.000000000 amm_price_sol_per_raw_token=0.000009000000000000 reserve_slot=88",
+   "expected_line_live": "AMM POOL STATE (at decision time): amm_reserves=present src=helius_amm_backfill pool=WSOLWSOLWSOLWSOLWSOLWSOLWSOLWSOLWSOLWSOLWSOL quote=WSOL staleness_ms=10000 pricing_eligible=true base_reserves_raw=1000000 quote_reserves_lamports=9000000000 quote_reserves_sol=9.000000000 amm_price_sol_per_raw_token=0.000009000000000000 reserve_slot=88",
+   "expected_status": "present",
+   "expected_status_live": "present",
+   "expected_why": "matched",
+   "graduated": true,
+   "has_tape": true,
+   "kind": "amm",
+   "live_differs": false,
+   "live_reachable": true,
+   "mint": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+   "pools_total": 2,
+   "rows": [
+    [
+     1000000,
+     "WSOLWSOLWSOLWSOLWSOLWSOLWSOLWSOLWSOLWSOLWSOL",
+     1000000,
+     9000000000,
+     88,
+     "trade"
+    ]
+   ],
+   "t_dec_ms": 1010000,
+   "wsol_pools": [
+    "WSOLWSOLWSOLWSOLWSOLWSOLWSOLWSOLWSOLWSOLWSOL"
+   ]
+  },
+  {
+   "expected_line": "AMM POOL STATE (at decision time): amm_reserves=absent reason=no_amm_event_in_backfill",
+   "expected_line_live": "AMM POOL STATE (at decision time): amm_reserves=absent reason=no_amm_event_in_backfill",
+   "expected_status": "absent",
+   "expected_status_live": "absent",
+   "expected_why": "no_amm_event_in_backfill",
+   "graduated": true,
+   "has_tape": false,
+   "kind": "amm",
+   "live_differs": false,
+   "live_reachable": false,
+   "mint": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+   "pools_total": 1,
+   "rows": [],
+   "t_dec_ms": 1010000,
+   "wsol_pools": [
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+   ]
+  },
+  {
+   "expected_line": "AMM POOL STATE (at decision time): amm_reserves=absent reason=never_graduated",
+   "expected_line_live": "AMM POOL STATE (at decision time): amm_reserves=absent reason=never_graduated",
+   "expected_status": "absent",
+   "expected_status_live": "absent",
+   "expected_why": "never_graduated",
+   "graduated": false,
+   "has_tape": true,
+   "kind": "amm",
+   "live_differs": false,
+   "live_reachable": true,
+   "mint": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+   "pools_total": 1,
+   "rows": [
+    [
+     1000000,
+     "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+     1,
+     1,
+     1,
+     "t"
+    ]
+   ],
+   "t_dec_ms": 1010000,
+   "wsol_pools": [
+    "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+   ]
+  },
+  {
+   "expected_line": "AMM POOL STATE (at decision time): amm_reserves=absent reason=nonpositive_reserve",
+   "expected_line_live": "AMM POOL STATE (at decision time): amm_reserves=absent reason=nonpositive_reserve",
+   "expected_status": "absent",
+   "expected_status_live": "absent",
+   "expected_why": "nonpositive_reserve",
+   "graduated": true,
+   "has_tape": true,
+   "kind": "amm",
+   "live_differs": false,
+   "live_reachable": true,
+   "mint": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+   "pools_total": 1,
+   "rows": [
+    [
+     1000000,
+     "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+     0,
+     1000000,
+     1,
+     "t"
+    ]
+   ],
+   "t_dec_ms": 1010000,
+   "wsol_pools": [
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+   ]
+  },
+  {
+   "expected_line": "AMM POOL STATE (at decision time): amm_reserves=absent reason=no_event_before_t_dec",
+   "expected_line_live": "AMM POOL STATE (at decision time): amm_reserves=absent reason=no_amm_event_in_backfill",
+   "expected_status": "absent",
+   "expected_status_live": "absent",
+   "expected_why": "no_event_before_t_dec",
+   "graduated": true,
+   "has_tape": true,
+   "kind": "amm",
+   "live_differs": true,
+   "live_reachable": false,
+   "mint": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+   "pools_total": 1,
+   "rows": [
+    [
+     1000000,
+     "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+     1000000,
+     1000000,
+     1,
+     "t"
+    ]
+   ],
+   "t_dec_ms": 900000,
+   "wsol_pools": [
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+   ]
+  },
+  {
+   "expected_line": "AMM POOL STATE (at decision time): amm_reserves=absent reason=older_than_annotation_cap",
+   "expected_line_live": "AMM POOL STATE (at decision time): amm_reserves=absent reason=older_than_annotation_cap",
+   "expected_status": "absent",
+   "expected_status_live": "absent",
+   "expected_why": "older_than_annotation_cap",
+   "graduated": true,
+   "has_tape": true,
+   "kind": "amm",
+   "live_differs": false,
+   "live_reachable": true,
+   "mint": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+   "pools_total": 1,
+   "rows": [
+    [
+     1000000,
+     "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+     1000000,
+     1000000,
+     1,
+     "t"
+    ]
+   ],
+   "t_dec_ms": 87400005,
+   "wsol_pools": [
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+   ]
+  },
+  {
+   "expected_line": "AMM POOL STATE (at decision time): amm_reserves=present src=helius_amm_backfill pool=BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB quote=WSOL staleness_ms=300000 pricing_eligible=false base_reserves_raw=700000000 quote_reserves_lamports=3000000000000 quote_reserves_sol=3000.000000000 amm_price_sol_per_raw_token=0.000004285714285714 reserve_slot=91",
+   "expected_line_live": "AMM POOL STATE (at decision time): amm_reserves=present src=helius_amm_backfill pool=BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB quote=WSOL staleness_ms=300000 pricing_eligible=false base_reserves_raw=700000000 quote_reserves_lamports=3000000000000 quote_reserves_sol=3000.000000000 amm_price_sol_per_raw_token=0.000004285714285714 reserve_slot=91",
+   "expected_status": "present",
+   "expected_status_live": "present",
+   "expected_why": "matched",
+   "graduated": true,
+   "has_tape": true,
+   "kind": "amm",
+   "live_differs": false,
+   "live_reachable": true,
+   "mint": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+   "pools_total": 1,
+   "rows": [
+    [
+     1000000,
+     "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+     700000000,
+     3000000000000,
+     91,
+     "trade"
+    ]
+   ],
+   "t_dec_ms": 1300000,
+   "wsol_pools": [
+    "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+   ]
+  }
+ ],
+ "constants": {
+  "ANNOTATION_CAP_MS": 86400000,
+  "LAMPORTS_PER_SOL": 1000000000,
+  "PRICING_BUDGET_MS": 60000,
+  "TOKEN_SCALE": 1000000,
+  "V_GRAD_LAMPORTS": 85000000000
+ },
+ "producer": "build_sft_c6.curve_state/amm_state/curve_line/amm_line",
+ "schema": "c3-annotation-parity/1"
+}
