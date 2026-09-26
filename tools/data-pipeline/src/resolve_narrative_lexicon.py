@@ -88,12 +88,39 @@ def content_words(text):
     return out
 
 
+def _to_epoch_ms(col):
+    """Epoch MILLISECONDS from a timestamp column, whatever its storage unit.
+
+    Unit-proof on purpose. `col.astype("int64") // 1_000_000` looks like a
+    microsecond-to-millisecond conversion but silently yields SECONDS when the
+    column is `datetime64[us]` — and owning to a parquet written by a different
+    tool, the unit is not something to assume. That bug put seconds into every
+    `*_ms` field of the lexicon artifact, 1000x too small, so the consumer
+    computed every entry as long expired and matched NOTHING. The symptom read
+    as a vocabulary gap; the cause was a unit.
+    """
+    import pandas as pd
+    if str(col.dtype).startswith("datetime64"):
+        epoch = pd.Timestamp("1970-01-01", tz="UTC")
+        c = col if col.dt.tz is not None else col.dt.tz_localize("UTC")
+        return ((c - epoch) // pd.Timedelta("1ms")).astype("int64")
+    v = col.astype("int64")
+    med = int(v.median())
+    if med < 10_000_000_000:          # seconds
+        return v * 1000
+    if med > 10_000_000_000_000_000:  # nanoseconds
+        return v // 1_000_000
+    if med > 10_000_000_000_000:      # microseconds
+        return v // 1000
+    return v                          # already milliseconds
+
+
 def load_mint_stream(corpus):
     """(alias -> first_seen_ms, count) from OUR OWN mint stream. Authoritative for timing."""
     import pandas as pd
     t = pd.read_parquet(os.path.join(corpus, "tokens.parquet"),
                         columns=["mint", "name", "symbol", "detected_at"])
-    t["ms"] = (t.detected_at.astype("int64") // 1_000_000)
+    t["ms"] = _to_epoch_ms(t.detected_at)
     rows = []
     for name, sym, ms in zip(t.name.tolist(), t.symbol.tolist(), t.ms.tolist()):
         words = set(content_words(name)) | set(content_words(sym))
@@ -202,6 +229,27 @@ def main():
     if bad:
         print(f"FATAL: {len(bad)} entries violate first_seen_ms <= as_of_ms", file=sys.stderr)
         return 2
+
+    # UNIT GUARD. A millisecond epoch is ~1.7e12; a second epoch is ~1.7e9. If the
+    # artifact carries seconds in a `*_ms` EPOCH field the consumer compares them
+    # against milliseconds, computes every entry as long expired, and matches
+    # NOTHING — and the symptom (everything Unresolved) reads as a thin vocabulary
+    # rather than as the unit bug it is. Fail loudly instead.
+    #
+    # Only EPOCH fields are checked. `ttl_ms` is a DURATION (48h = 1.728e8 ms), and
+    # a duration is legitimately far below an epoch — checking it here would reject
+    # every correct artifact, which is how a guard becomes noise.
+    for label, val in (("as_of_ms", as_of),
+                       ("max(first_seen_ms)", max((e["first_seen_ms"] for e in entries), default=0))):
+        if int(val) and int(val) < 10 ** 12:
+            print(f"FATAL: {label}={val} is not in milliseconds (looks like seconds). "
+                  f"The consumer compares milliseconds and would expire every entry.",
+                  file=sys.stderr)
+            return 3
+    if int(a.ttl_ms) >= 10 ** 12:
+        print(f"FATAL: ttl_ms={a.ttl_ms} looks like an EPOCH, not a duration.",
+              file=sys.stderr)
+        return 3
 
     doc = {
         "schema_version": 1,
