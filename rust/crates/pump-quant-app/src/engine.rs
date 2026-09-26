@@ -1073,6 +1073,12 @@ pub struct Engine {
     /// until fed, so a run without auxiliary events leaves the gate's wangr
     /// filters at sentinel zero — byte-identical to prior behavior.
     mint_aux: BTreeMap<[u8; 32], (u8, u8)>,
+    /// Narrative precondition state (operator ruling 2026-09-26): per-mint
+    /// `(verdict, stage, family, lexicon_version)` fed by
+    /// `AppEvent::NarrativeResolved`. Bounded (§99) with the same eviction
+    /// pattern as `mint_aux`. Empty => every narrative field stays at its zero
+    /// sentinel and the gate's narrative precondition is a no-op.
+    mint_narrative: BTreeMap<[u8; 32], (u8, u8, u8, u32)>,
     /// Rev-14 wangr intelligence: latest wall-clock time signal (dow, hour_utc)
     /// fed by `AppEvent::TimeSignal`. Defaults to (0, 255) = unobserved, which
     /// is a no-op for all time-based gate filters. The engine is a pure tick-
@@ -1434,6 +1440,7 @@ impl Engine {
             first_slot_fees: BTreeMap::new(),
             // Rev-14 wangr intelligence: empty/sentinel until fed — no-op.
             mint_aux: BTreeMap::new(),
+            mint_narrative: BTreeMap::new(),
             time_signal: (0, 255),
             retired: [false; 4],
             f_recommended: None,
@@ -2232,6 +2239,26 @@ impl Engine {
                     }
                 }
                 self.mint_aux.insert(m, (token_standard, symbol_len));
+            }
+            // Narrative precondition (operator ruling 2026-09-26): store the
+            // resolved verdict for this mint. Same §99 bounded-eviction pattern
+            // as mint_aux — the map is a cache of the resolution lane's output,
+            // never a source of truth of its own.
+            AppEvent::NarrativeResolved {
+                mint,
+                verdict,
+                stage,
+                family,
+                lexicon_version,
+            } => {
+                let m = *mint.as_bytes();
+                if !self.mint_narrative.contains_key(&m) && self.mint_narrative.len() >= 1024 {
+                    if let Some(victim) = self.mint_narrative.keys().next().copied() {
+                        self.mint_narrative.remove(&victim);
+                    }
+                }
+                self.mint_narrative
+                    .insert(m, (verdict, stage, family, lexicon_version));
             }
             // Rev-14 wangr intelligence: store the latest wall-clock time signal.
             // The engine is a pure tick-based state machine (§22); this is the
@@ -3237,7 +3264,9 @@ impl Engine {
         // either confirmation path consumes it. When no auxiliary data was fed,
         // the sentinels (0, 255) are no-ops for all wangr gate filters, so the
         // decision is byte-identical to prior behavior.
-        let numeric_feats = numeric_feats.map(|f| self.enrich_wangr_features(f, &mint_bytes));
+        let numeric_feats = numeric_feats
+            .map(|f| self.enrich_wangr_features(f, &mint_bytes))
+            .map(|f| self.enrich_narrative_features(f, &mint_bytes));
         // Confirmation exists only with an on-chain confirm AND numeric evidence;
         // a confirm with no numeric snapshot degrades to a NoNumericConfirmation
         // reject inside the gate (default features carry zero liquidity).
@@ -4205,6 +4234,25 @@ impl Engine {
             if let Some(&(launches, _, _)) = self.creator_launches.get(&creator) {
                 f.creator_launches = launches;
             }
+        }
+        f
+    }
+
+    /// Narrative precondition enrichment (operator ruling 2026-09-26).
+    ///
+    /// Copies the per-mint narrative verdict onto the gate's `Features`
+    /// snapshot. A mint that never received a `NarrativeResolved` event keeps the
+    /// zero sentinel, which the gate reads as UNOBSERVED and ADMITS: the
+    /// precondition can only act on a verdict that actually exists, and a market
+    /// whose name was never resolved must not be refused by a filter that never
+    /// ran. Enrichment is impl-level (not nested in `gate_evaluate`) for the same
+    /// reason `enrich_wangr_features` is.
+    fn enrich_narrative_features(&self, mut f: Features, mint: &[u8; 32]) -> Features {
+        if let Some(&(verdict, stage, family, version)) = self.mint_narrative.get(mint) {
+            f.narrative_verdict = verdict;
+            f.narrative_stage = stage;
+            f.narrative_family = family;
+            f.narrative_lexicon_version = version;
         }
         f
     }
@@ -7375,6 +7423,15 @@ const fn reject_code(r: GateReject) -> u8 {
         GateReject::WangrSymbolLength => 32,
         GateReject::WangrCreatorTrack => 33,
         GateReject::WangrLiquidityZone => 34,
+        // Narrative precondition (operator ruling 2026-09-26): SELECTION refusals,
+        // distinct from economic unviability — the trade may clear costs, it just
+        // has no positive evidence of a rising attention narrative. Cannot fire in
+        // golden tape (no NarrativeResolved events fed, so the verdict sentinel
+        // stays 0 = unobserved and the gate admits).
+        GateReject::NarrativeSaturated => 35,
+        GateReject::NarrativeNoAttach => 36,
+        GateReject::NarrativeThrowaway => 37,
+        GateReject::NarrativeUnresolved => 38,
     }
 }
 

@@ -108,6 +108,99 @@ pub enum AmmState {
     },
 }
 
+/// The mint's IDENTITY and its resolved narrative, as the model sees them.
+///
+/// Operator decision 2026-09-26: the token NAME is an INPUT the model reasons
+/// over. The name is resolved, the external query plane (j7) is consulted, and
+/// the MODEL infers the narrative. It is explicitly NOT a gate — nothing refuses
+/// on these fields — so an unresolved or unclassified value is information the
+/// model may weigh, not a shutdown switch.
+///
+/// `None` on the bundle renders NO block at all (see [`render_identity`]). That
+/// absence is load-bearing: the c5 parity harness assembles bundles with no
+/// identity, so the frozen corpus text must be reproduced byte for byte.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TokenIdentity {
+    /// On-chain token name (≤32 bytes by construction at mint detection).
+    pub name: String,
+    /// On-chain symbol.
+    pub symbol: String,
+    /// Resolved narrative family label, `unclassified` when the vocabulary had
+    /// nothing to attach.
+    pub family: String,
+    /// Crowding stage: `novel`/`rising`/`cresting`/`saturated`/`unobserved`.
+    pub stage: String,
+    /// The resolved verdict. RECORDED for the model, never enforced.
+    pub verdict: String,
+    /// The lexicon version the verdict was resolved against.
+    pub lexicon_version: u32,
+    /// Free-text evidence from the external query plane (j7), when a session was
+    /// available. Rendered verbatim; `None` renders as `none`.
+    pub query_evidence: Option<String>,
+}
+
+impl TokenIdentity {
+    /// Build the model-facing identity from the integer codes the live path carries.
+    ///
+    /// The engine and the event stream are integer-only on the outcome path, so the
+    /// narrative arrives as discriminants (see `pump-quant-narrative`). This is the
+    /// ONE place those codes become the labels the prompt renders — keeping the
+    /// mapping in a single auditable table rather than scattered matches that can
+    /// drift apart from the enums they mirror.
+    ///
+    /// An unrecognised code renders as `Unobserved`/`unobserved`/`unclassified`, never
+    /// silently coerced onto a real class: a code we do not understand is not
+    /// evidence of a narrative.
+    #[must_use]
+    pub fn from_codes(
+        name: &str,
+        symbol: &str,
+        verdict: u8,
+        stage: u8,
+        family: u8,
+        lexicon_version: u32,
+        query_evidence: Option<String>,
+    ) -> Self {
+        // Mirrors `entry_narrative::NarrativeVerdict` (1..=5) and `DynamicLexicon`.
+        let verdict = match verdict {
+            1 => "Eligible",
+            2 => "Saturated",
+            3 => "NoAttach",
+            4 => "Throwaway",
+            5 => "Unresolved",
+            _ => "Unobserved",
+        };
+        // Mirrors `alias_stage::AliasStage` (1..=4); 0 is the unobserved sentinel.
+        let stage = match stage {
+            1 => "novel",
+            2 => "rising",
+            3 => "cresting",
+            4 => "saturated",
+            _ => "unobserved",
+        };
+        // Mirrors `narrative_family::NarrativeFamily` (Unclassified..Seasonal).
+        let family = match family {
+            1 => "animal",
+            2 => "political",
+            3 => "celebrity",
+            4 => "tech",
+            5 => "derivative",
+            6 => "stream",
+            7 => "seasonal",
+            _ => "unclassified",
+        };
+        Self {
+            name: name.to_string(),
+            symbol: symbol.to_string(),
+            family: family.to_string(),
+            stage: stage.to_string(),
+            verdict: verdict.to_string(),
+            lexicon_version,
+            query_evidence,
+        }
+    }
+}
+
 /// Everything the `decision` user prompt states.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DecisionBundle {
@@ -169,6 +262,49 @@ pub struct DecisionBundle {
     pub size_depth_sol: Option<f64>,
     /// Whether OUR next fill lands on the AMM (the regime the cost authority applies).
     pub size_amm: bool,
+    /// The mint's identity and its resolved narrative. See [`TokenIdentity`].
+    ///
+    /// `None` renders NO identity block — which is what keeps the c5 parity
+    /// harness's frozen corpus text byte-identical. The block appears only when a
+    /// producer actually supplied an identity, so an absence stays an absence
+    /// rather than a default that could be mistaken for a resolved name.
+    pub identity: Option<TokenIdentity>,
+}
+
+/// Render the identity + narrative block, or `""` when no identity was supplied.
+///
+/// The model reads this to infer the narrative. Nothing downstream refuses on it
+/// (operator decision 2026-09-26): the verdict is an input, not a gate.
+#[must_use]
+pub fn render_identity(identity: &Option<TokenIdentity>) -> String {
+    let Some(id) = identity else {
+        return String::new();
+    };
+    format!(
+        "TOKEN IDENTITY AND NARRATIVE (knowable at the decision time; the name is the mint's \
+         creation metadata, the narrative is the resolved attachment and its crowding stage):\n  \
+         token_name={}  token_symbol={}\n  narrative_family={}  narrative_stage={}  \
+         narrative_verdict={}  narrative_lexicon_version={}\n  query_evidence={}\n",
+        if id.name.is_empty() {
+            "unresolved"
+        } else {
+            id.name.as_str()
+        },
+        if id.symbol.is_empty() {
+            "unresolved"
+        } else {
+            id.symbol.as_str()
+        },
+        if id.family.is_empty() {
+            "unclassified"
+        } else {
+            id.family.as_str()
+        },
+        id.stage,
+        id.verdict,
+        id.lexicon_version,
+        id.query_evidence.as_deref().unwrap_or("none"),
+    )
 }
 
 /// Render the `CURVE STATE (at decision time): …` line.
@@ -342,6 +478,7 @@ pub fn render_decision(b: &DecisionBundle) -> String {
         if b.curve_present { "True" } else { "False" },
         b.evidence_status
     ));
+    out.push_str(&render_identity(&b.identity));
     out.push_str(&format!(
         "n_prior_trades={}  buy_count={}  sell_count={}  unique_traders={}\n",
         b.n_prior_trades, b.buy_count, b.sell_count, b.unique_traders
@@ -484,6 +621,36 @@ mod tests {
             },
             size_depth_sol: None,
             size_amm: false,
+            identity: None,
+        }
+    }
+
+    /// The identity block is ADDITIVE: supplied => the model sees the name and the
+    /// narrative; absent => the frozen rendering is reproduced exactly.
+    #[test]
+    fn identity_block_is_additive_only() {
+        let base = render_decision(&minimal_bundle());
+        assert!(
+            !base.contains("TOKEN IDENTITY"),
+            "an identity must never be invented:\n{base}"
+        );
+
+        let mut b = minimal_bundle();
+        b.identity = Some(TokenIdentity {
+            name: "mensa".into(),
+            symbol: "MENSA".into(),
+            family: "animal".into(),
+            stage: "novel".into(),
+            verdict: "Eligible".into(),
+            lexicon_version: 7,
+            query_evidence: None,
+        });
+        let with = render_decision(&b);
+        assert!(with.contains("token_name=mensa"), "{with}");
+        assert!(with.contains("narrative_verdict=Eligible"), "{with}");
+        // Purely additive: every line the frozen rendering had is still present.
+        for line in base.lines() {
+            assert!(with.contains(line), "lost a frozen line: {line:?}");
         }
     }
 
@@ -558,5 +725,74 @@ mod tests {
                 FieldFamily::LiveFlowState
             ))
         );
+    }
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+
+    fn sample() -> TokenIdentity {
+        TokenIdentity {
+            name: "mensa".to_string(),
+            symbol: "MENSA".to_string(),
+            family: "animal".to_string(),
+            stage: "novel".to_string(),
+            verdict: "Eligible".to_string(),
+            lexicon_version: 7,
+            query_evidence: Some("j7: 3 mentions in 24h".to_string()),
+        }
+    }
+
+    /// ABSENCE IS NOT AN EMPTY BLOCK. With no identity the rendering is the empty
+    /// string, so the frozen corpus text is reproduced byte for byte by callers
+    /// that supply none — that equality is what the c5 parity harness grades.
+    #[test]
+    fn absent_identity_renders_nothing_at_all() {
+        assert_eq!(render_identity(&None), "");
+        assert!(!render_identity(&None).contains("TOKEN IDENTITY"));
+    }
+
+    /// The whole point of the wiring: the model can see the name and the
+    /// resolved narrative, so it has something to infer FROM.
+    #[test]
+    fn the_name_and_narrative_reach_the_prompt() {
+        let out = render_identity(&Some(sample()));
+        for needle in [
+            "TOKEN IDENTITY AND NARRATIVE",
+            "token_name=mensa",
+            "token_symbol=MENSA",
+            "narrative_family=animal",
+            "narrative_stage=novel",
+            "narrative_verdict=Eligible",
+            "narrative_lexicon_version=7",
+            "query_evidence=j7: 3 mentions in 24h",
+        ] {
+            assert!(out.contains(needle), "missing {needle:?} in:\n{out}");
+        }
+    }
+
+    /// An unresolved name is STATED as unresolved. It is never dropped and never
+    /// silently replaced by a default that could be mistaken for a real name.
+    #[test]
+    fn an_unresolved_name_is_stated_unresolved() {
+        let mut id = sample();
+        id.name = String::new();
+        id.symbol = String::new();
+        id.family = String::new();
+        let out = render_identity(&Some(id));
+        assert!(out.contains("token_name=unresolved"), "{out}");
+        assert!(out.contains("token_symbol=unresolved"), "{out}");
+        assert!(out.contains("narrative_family=unclassified"), "{out}");
+    }
+
+    /// No external query plane consulted => `none`, not an empty field and not a
+    /// fabricated observation.
+    #[test]
+    fn absent_query_evidence_renders_none() {
+        let mut id = sample();
+        id.query_evidence = None;
+        let out = render_identity(&Some(id));
+        assert!(out.contains("query_evidence=none"), "{out}");
     }
 }

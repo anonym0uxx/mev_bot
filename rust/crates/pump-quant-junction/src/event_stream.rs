@@ -202,6 +202,20 @@ fn parse_event_line(line: &str) -> Result<AppEvent, String> {
             dow: extract_int_field(line, "dow").ok_or("missing dow")? as u8,
             hour_utc: extract_int_field(line, "hour_utc").ok_or("missing hour_utc")? as u8,
         }),
+        // Narrative precondition (operator ruling 2026-09-26): parse the resolved
+        // narrative verdict so a replay reproduces the gate's decision exactly.
+        "NarrativeResolved" => {
+            let mint_str = extract_string_field(line, "mint").ok_or("missing mint")?;
+            let mint = parse_mint(&mint_str)?;
+            Ok(AppEvent::NarrativeResolved {
+                mint,
+                verdict: extract_int_field(line, "verdict").ok_or("missing verdict")? as u8,
+                stage: extract_int_field(line, "stage").ok_or("missing stage")? as u8,
+                family: extract_int_field(line, "family").ok_or("missing family")? as u8,
+                lexicon_version: extract_int_field(line, "lexicon_version")
+                    .ok_or("missing lexicon_version")? as u32,
+            })
+        }
         // Rev-19 on-chain feedback: parse confirmation events.
         "OurBuyConfirmed" => {
             let mint_str = extract_string_field(line, "mint").ok_or("missing mint")?;
@@ -401,6 +415,7 @@ fn event_kind(event: &AppEvent) -> &'static str {
         // Rev-14 wangr intelligence: new event variants.
         AppEvent::MarketAuxiliary { .. } => "MarketAuxiliary",
         AppEvent::TimeSignal { .. } => "TimeSignal",
+        AppEvent::NarrativeResolved { .. } => "NarrativeResolved",
         // Rev-19 on-chain feedback: new event variants.
         AppEvent::OurBuyConfirmed { .. } => "OurBuyConfirmed",
         AppEvent::OurBuyFailed { .. } => "OurBuyFailed",
@@ -517,6 +532,18 @@ fn event_fields_json(event: &AppEvent) -> String {
         AppEvent::TimeSignal { dow, hour_utc } => {
             parts.push(format!(r#""dow":{}"#, dow));
             parts.push(format!(r#""hour_utc":{}"#, hour_utc));
+        }
+        AppEvent::NarrativeResolved {
+            verdict,
+            stage,
+            family,
+            lexicon_version,
+            ..
+        } => {
+            parts.push(format!(r#""verdict":{}"#, verdict));
+            parts.push(format!(r#""stage":{}"#, stage));
+            parts.push(format!(r#""family":{}"#, family));
+            parts.push(format!(r#""lexicon_version":{}"#, lexicon_version));
         }
         // Rev-19 on-chain feedback: serialize signature + slot for confirmation events.
         AppEvent::OurBuyConfirmed {

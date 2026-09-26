@@ -256,6 +256,32 @@ pub enum AppEvent {
         symbol_len: u8,
     },
 
+    /// **Narrative precondition** (operator ruling 2026-09-26) — the resolved
+    /// narrative verdict for a market's NAME. Produced off the decision path by
+    /// the resolution lane (`dynamic_lexicon` + the alias stage counters, or the
+    /// model lane for names the vocabulary has never seen) and carried here so
+    /// the engine can enrich the gate's `Features` at gate_evaluate time.
+    ///
+    /// Integer-only (§22), never wall-clock. A market that never receives this
+    /// event leaves the gate fields at their zero sentinel, which the gate treats
+    /// as UNOBSERVED and ADMITS — the precondition can only act on a verdict that
+    /// exists. `lexicon_version` travels with the verdict so an assignment stays
+    /// auditable against the vocabulary that produced it (criterion 81).
+    NarrativeResolved {
+        /// The market this verdict describes.
+        mint: Mint,
+        /// `NarrativeVerdict` discriminant: 1=Eligible, 2=Saturated, 3=NoAttach,
+        /// 4=Throwaway, 5=Unresolved. (0 is never sent — it means unobserved.)
+        verdict: u8,
+        /// `AliasStage` discriminant: 1=Novel, 2=Rising, 3=Cresting,
+        /// 4=Saturated. 0 = the stage was not observed.
+        stage: u8,
+        /// `NarrativeFamily` discriminant: 1..=8. 0 = unclassified.
+        family: u8,
+        /// The lexicon version the verdict was resolved against. 0 = unobserved.
+        lexicon_version: u32,
+    },
+
     /// **Rev-14 wangr intelligence** — a wall-clock time signal. The engine is
     /// a pure tick-based state machine (§22) and NEVER reads wall-clock itself;
     /// this event is the sole channel through which the caller can inform the
@@ -344,6 +370,7 @@ impl AppEvent {
             | AppEvent::CreatorAction { mint, .. }
             | AppEvent::Migration { mint, .. }
             | AppEvent::MarketAuxiliary { mint, .. }
+            | AppEvent::NarrativeResolved { mint, .. }
             | AppEvent::OurBuyConfirmed { mint, .. }
             | AppEvent::OurBuyFailed { mint, .. }
             | AppEvent::OurSellConfirmed { mint, .. }

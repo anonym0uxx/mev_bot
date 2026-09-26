@@ -1247,6 +1247,31 @@ pub struct Config {
     pub wangr_liq_zone_lo_lamports: u64,
     /// Liquidity zone ceiling, lamports. Default: 10_000 SOL = 1e13 lamports.
     pub wangr_liq_zone_hi_lamports: u64,
+
+    // ---- Narrative precondition (operator ruling 2026-09-26) ----
+    //
+    // A memecoin's NAME must be inferred against the current documented meta
+    // pre-entry, and that inference is an INPUT the model reasons over. The
+    // verdict reaches the gate via
+    // `AppEvent::NarrativeResolved` -> `Features.narrative_verdict` and is
+    // recorded on the candidate; it does not refuse (see the mode below).
+    //
+    // MODE, not a filter toggle. The shipped default is OBSERVE (0): the narrative
+    // is an INPUT the model reasons over, not a refusal. Operator decision
+    // 2026-09-26 — the name is resolved, handed to the model (and to the j7
+    // query), and the MODEL infers the narrative. The gate records the verdict
+    // and never refuses on it.
+    //   0 = OBSERVE  — the verdict is recorded on every candidate and passed
+    //                  downstream; it never rejects. DEFAULT.
+    //   1 = ENFORCE  — the verdict becomes a hard precondition. NOT shipped.
+    //                  Retained only so a refused cohort can be priced THROUGH
+    //                  THE ENGINE (a barrier proxy and score_entry can disagree
+    //                  in sign on the same rows) before anything binds.
+    //
+    // The sentinel still admits: a market that never received a
+    // `NarrativeResolved` event is UNOBSERVED and untouched by either mode, so
+    // the golden tape and replay are unaffected.
+    pub narrative_gate_mode: u8,
 }
 
 /// LAW D2 default designated-caller attention weight: half the standard attention
@@ -1686,6 +1711,12 @@ impl Config {
             wangr_liq_zone_filter_enable: false,
             wangr_liq_zone_lo_lamports: 1_000_000_000_000, // 1_000 SOL
             wangr_liq_zone_hi_lamports: 10_000_000_000_000, // 10_000 SOL
+            // Narrative precondition — OBSERVE (operator decision 2026-09-26): the
+            // name is resolved, the j7 query is consulted, and the MODEL infers
+            // the narrative. The gate records the verdict and never refuses on
+            // it, so no launch is blocked for want of vocabulary. ENFORCE (1)
+            // remains available for pricing a refused cohort; it is not shipped.
+            narrative_gate_mode: 0,
         }
     }
 

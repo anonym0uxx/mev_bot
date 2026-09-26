@@ -35,7 +35,7 @@
 #![forbid(unsafe_code)]
 
 use pump_quant_proposal::decision::{
-    AmmState, CurveState, DecisionBundle, DevHistoryDecision, EnrichedCandidate,
+    AmmState, CurveState, DecisionBundle, DevHistoryDecision, EnrichedCandidate, TokenIdentity,
 };
 use pump_quant_proposal::{render_decision, FlowState, PyNum};
 
@@ -122,6 +122,13 @@ pub struct BundleInputs<'a> {
     pub size_depth_sol: Option<f64>,
     /// Whether OUR next fill lands on the AMM.
     pub size_amm: bool,
+    /// The mint's identity and resolved narrative, when a producer supplied one.
+    ///
+    /// `None` is the default posture everywhere the identity is not plumbed, and
+    /// it renders NO block — which is what keeps the c5 parity harness's frozen
+    /// corpus text byte-identical. Operator decision 2026-09-26: the name is an
+    /// input the model infers over, never a gate.
+    pub identity: Option<TokenIdentity>,
 }
 
 /// Assemble the bundle, or refuse with the missing input's name.
@@ -238,6 +245,9 @@ pub fn assemble(inputs: &BundleInputs<'_>) -> Result<DecisionBundle, AssemblyRef
         amm: inputs.amm.clone(),
         size_depth_sol: inputs.size_depth_sol,
         size_amm: inputs.size_amm,
+        // Carried straight through: the identity is an INPUT, and this module does
+        // not invent one it was not given.
+        identity: inputs.identity.clone(),
     })
 }
 
@@ -335,6 +345,9 @@ mod tests {
             },
             size_depth_sol: Some(62.5),
             size_amm: false,
+            // No identity in the parity fixtures: the frozen corpus text must be
+            // reproduced byte for byte, so the block must not appear.
+            identity: None,
         }
     }
 

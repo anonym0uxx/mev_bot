@@ -27,7 +27,7 @@ pub mod system;
 pub use cost::{
     cost_line, decompose, size_options, CostBreakdown, Regime, BPS_ONE, LAMPORTS_PER_SOL,
 };
-pub use decision::{render_decision, DecisionBundle};
+pub use decision::{render_decision, render_identity, DecisionBundle, TokenIdentity};
 pub use fmt::py_float;
 pub use management::{render_management, ManagementBundle};
 pub use pynum::PyNum;
