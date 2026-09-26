@@ -38,15 +38,21 @@ pub enum ResolutionLane {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NarrativeVerdict {
     /// Positive evidence of a rising narrative. The rest of the EV gate decides.
-    Eligible,
+    ///
+    /// NOTE the explicit discriminants: `0` is RESERVED for "unobserved" (no
+    /// resolution ever ran, so the wire sentinel is 0 and never a real verdict).
+    /// The values are spelled out rather than implied by declaration order so the
+    /// wire codes cannot drift when variants are added — `TokenIdentity::from_codes`
+    /// mirrors this table.
+    Eligible = 1,
     /// Attached, but cresting or crowded: the crowd is already there.
-    Saturated,
+    Saturated = 2,
     /// Resolved and attaches to nothing live (model verdict, positive evidence).
-    NoAttach,
+    NoAttach = 3,
     /// Throwaway/scatology name. Cheap pre-filter, not the signal.
-    Throwaway,
+    Throwaway = 4,
     /// We could not determine. Uncertainty is a REFUSAL.
-    Unresolved,
+    Unresolved = 5,
 }
 
 impl NarrativeVerdict {

@@ -227,6 +227,9 @@ fn decision_bundle(v: &Value) -> DecisionBundle {
         amm: amm_state(&v["amm"]),
         size_depth_sol: v["size_depth_sol"].as_f64(),
         size_amm: v["size_amm"].as_bool().unwrap_or(false),
+        // A PARITY fixture carries no identity: the corpus text predates the field
+        // and must render byte for byte, so the additive block cannot appear here.
+        identity: None,
     }
 }
 

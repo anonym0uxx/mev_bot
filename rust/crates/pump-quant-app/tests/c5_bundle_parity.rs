@@ -376,6 +376,10 @@ fn render_reading(
         dev,
         size_depth_sol: view.size_depth_sol,
         size_amm: view.size_amm,
+        // The parity harness grades the FROZEN corpus text. No identity is
+        // supplied by construction, so the additive block cannot appear and the
+        // comparison stays byte-for-byte.
+        identity: None,
     })
     .map_err(|e| Unserved::Refused(e.as_str().to_string()))?;
 

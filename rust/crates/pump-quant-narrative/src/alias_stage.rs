@@ -16,13 +16,18 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AliasStage {
     /// The alias is new to OUR stream (or younger than the novelty window).
-    Novel,
+    ///
+    /// NOTE the explicit discriminants: `0` is RESERVED for "no stage observed"
+    /// (the wire carries `Option<AliasStage>` as 0 = `None`). The values are spelled
+    /// out rather than implied by declaration order so the wire codes cannot drift
+    /// when variants are added — `TokenIdentity::from_codes` mirrors this table.
+    Novel = 1,
     /// Attached, spreading, not yet crowded.
-    Rising,
+    Rising = 2,
     /// Attached and decelerating — the wave is cresting.
-    Cresting,
+    Cresting = 3,
     /// Crowded. Thousands of copycats have already launched.
-    Saturated,
+    Saturated = 4,
 }
 
 /// Per-alias observations supplied by the daemon at the decision instant.
