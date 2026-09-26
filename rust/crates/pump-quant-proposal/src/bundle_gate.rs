@@ -35,15 +35,26 @@ pub enum FieldFamily {
     LeadingIndicators,
     /// Funding-graph provenance features. Captured; **not yet trained.**
     FundingGraph,
+    /// The mint's NAME and its resolved narrative (`TokenIdentity`). Captured at
+    /// mint detection; **not yet trained.**
+    ///
+    /// Operator decision 2026-09-26: the narrative is an INPUT the model infers
+    /// over, not a gate. That makes it a field family like any other, and it is
+    /// therefore governed here: emitting a name + narrative the model has never
+    /// seen in training is out-of-distribution input, exactly the §17 failure
+    /// this gate exists to prevent. It is enabled by the one-line toggle in
+    /// [`BundlePolicy::enable`] once a corpus trained on it is accepted.
+    TokenIdentity,
 }
 
 impl FieldFamily {
     /// Every family, in the order they should appear in a bundle.
-    pub const ALL: [FieldFamily; 4] = [
+    pub const ALL: [FieldFamily; 5] = [
         FieldFamily::LiveFlowState,
         FieldFamily::CalloutImpact,
         FieldFamily::LeadingIndicators,
         FieldFamily::FundingGraph,
+        FieldFamily::TokenIdentity,
     ];
 
     /// The stable label (logs and dashboards key on this — never reword).
@@ -54,6 +65,7 @@ impl FieldFamily {
             FieldFamily::CalloutImpact => "callout_impact",
             FieldFamily::LeadingIndicators => "leading_indicators",
             FieldFamily::FundingGraph => "funding_graph",
+            FieldFamily::TokenIdentity => "token_identity",
         }
     }
 
@@ -70,7 +82,8 @@ impl FieldFamily {
             // these before its corpus lands is the OOD failure this gate exists to prevent.
             FieldFamily::CalloutImpact
             | FieldFamily::LeadingIndicators
-            | FieldFamily::FundingGraph => false,
+            | FieldFamily::FundingGraph
+            | FieldFamily::TokenIdentity => false,
         }
     }
 }
@@ -198,14 +211,34 @@ mod tests {
             FieldFamily::CalloutImpact,
             FieldFamily::LeadingIndicators,
             FieldFamily::FundingGraph,
+            FieldFamily::TokenIdentity,
         ] {
             assert!(
                 p.is_withheld(withheld),
-                "{} is derived and captured but must NOT reach the model until c12",
+                "{} is derived and captured but must NOT reach the model until a corpus trains on it",
                 withheld.as_str()
             );
         }
         assert_eq!(p.emitted(), vec![FieldFamily::LiveFlowState]);
+    }
+
+    /// The identity is captured at mint detection and the model is NOT shown it
+    /// until a corpus trained on it exists — the §17 OOD protection applied to the
+    /// narrative. Enabling it is the documented one-line toggle.
+    #[test]
+    fn the_token_identity_is_withheld_until_a_corpus_trains_on_it() {
+        let mut p = BundlePolicy::trained_only();
+        assert!(p.is_withheld(FieldFamily::TokenIdentity));
+        assert_eq!(FieldFamily::TokenIdentity.as_str(), "token_identity");
+        assert!(!FieldFamily::TokenIdentity.is_trained());
+
+        // A widening attempt without an accepted corpus fails closed...
+        assert!(p.enable(FieldFamily::TokenIdentity, "").is_err());
+        // ...and with one it sticks, touching nothing else.
+        p.enable(FieldFamily::TokenIdentity, "c13")
+            .expect("c13 is an accepted corpus");
+        assert!(p.is_emitted(FieldFamily::TokenIdentity));
+        assert!(p.is_withheld(FieldFamily::CalloutImpact));
     }
 
     #[test]

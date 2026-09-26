@@ -181,7 +181,36 @@ impl Parser<'_> {
                         b't' => out.push('\t'),
                         b'u' => {
                             let cp = self.parse_hex4()?;
-                            out.push(char::from_u32(cp)?);
+                            // SURROGATE PAIRS. `char::from_u32` rejects a lone
+                            // surrogate outright, so before this fix any string
+                            // containing a non-BMP character written as `\uXXXX`
+                            // escapes — every emoji — failed the whole parse, and
+                            // the caller dropped the row. Memecoin names are full
+                            // of emoji and the name is now a first-class model
+                            // input, so a silently dropped emoji name is a silently
+                            // missing narrative.
+                            let ch = if (0xD800..=0xDBFF).contains(&cp) {
+                                // High surrogate: a low surrogate MUST follow.
+                                if self.peek()? != b'\\' {
+                                    return None;
+                                }
+                                self.i += 1;
+                                if self.peek()? != b'u' {
+                                    return None;
+                                }
+                                self.i += 1;
+                                let lo = self.parse_hex4()?;
+                                if !(0xDC00..=0xDFFF).contains(&lo) {
+                                    return None;
+                                }
+                                0x1_0000 + ((cp - 0xD800) << 10) + (lo - 0xDC00)
+                            } else if (0xDC00..=0xDFFF).contains(&cp) {
+                                // A low surrogate with no high before it is invalid.
+                                return None;
+                            } else {
+                                cp
+                            };
+                            out.push(char::from_u32(ch)?);
                         }
                         _ => return None,
                     }
