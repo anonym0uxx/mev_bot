@@ -744,6 +744,16 @@ mod identity_tests {
         }
     }
 
+    /// GOLDEN GENERATOR — not an assertion. Run explicitly to emit the exact block the
+    /// Python port (`rl/parity_rust/p1_ref2.py::render_identity`) must reproduce
+    /// byte for byte:
+    ///   cargo test -p pump-quant-proposal -- --ignored --nocapture print_identity_block
+    #[test]
+    #[ignore = "golden generator for the Python parity port, not an assertion"]
+    fn print_identity_block() {
+        print!("{}", render_identity(&Some(sample())));
+    }
+
     /// ABSENCE IS NOT AN EMPTY BLOCK. With no identity the rendering is the empty
     /// string, so the frozen corpus text is reproduced byte for byte by callers
     /// that supply none — that equality is what the c5 parity harness grades.
