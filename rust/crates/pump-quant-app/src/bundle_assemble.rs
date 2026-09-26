@@ -34,6 +34,7 @@
 
 #![forbid(unsafe_code)]
 
+use pump_quant_proposal::bundle_gate::{BundlePolicy, FieldFamily};
 use pump_quant_proposal::decision::{
     AmmState, CurveState, DecisionBundle, DevHistoryDecision, EnrichedCandidate, TokenIdentity,
 };
@@ -124,11 +125,15 @@ pub struct BundleInputs<'a> {
     pub size_amm: bool,
     /// The mint's identity and resolved narrative, when a producer supplied one.
     ///
-    /// `None` is the default posture everywhere the identity is not plumbed, and
-    /// it renders NO block — which is what keeps the c5 parity harness's frozen
-    /// corpus text byte-identical. Operator decision 2026-09-26: the name is an
-    /// input the model infers over, never a gate.
+    /// This is the CANDIDATE identity. Whether it reaches the model is decided by
+    /// [`BundleInputs::policy`], never by this field alone: an identity the corpus
+    /// has not trained on is withheld rather than emitted (§17), because showing
+    /// the model an input distribution it has never seen is the failure mode the
+    /// field-family gate exists to prevent.
     pub identity: Option<TokenIdentity>,
+    /// Which field families may enter the bundle. Withholds the identity until a
+    /// corpus trained on it is accepted (`BundlePolicy::enable`).
+    pub policy: &'a BundlePolicy,
 }
 
 /// Assemble the bundle, or refuse with the missing input's name.
@@ -245,9 +250,15 @@ pub fn assemble(inputs: &BundleInputs<'_>) -> Result<DecisionBundle, AssemblyRef
         amm: inputs.amm.clone(),
         size_depth_sol: inputs.size_depth_sol,
         size_amm: inputs.size_amm,
-        // Carried straight through: the identity is an INPUT, and this module does
-        // not invent one it was not given.
-        identity: inputs.identity.clone(),
+        // Carried straight through ONLY when the policy emits it: this module does
+        // not invent an identity, and it does not leak an untrained one either.
+        // Withheld is not lost — the caller still holds it; the MODEL simply does
+        // not see it, which is what "captured but withheld" means.
+        identity: if inputs.policy.is_emitted(FieldFamily::TokenIdentity) {
+            inputs.identity.clone()
+        } else {
+            None
+        },
     })
 }
 
@@ -348,7 +359,76 @@ mod tests {
             // No identity in the parity fixtures: the frozen corpus text must be
             // reproduced byte for byte, so the block must not appear.
             identity: None,
+            policy: trained_only_policy(),
         }
+    }
+
+    /// The live policy as the corpora stand: `trained_only()`, which withholds
+    /// `TokenIdentity`. Built once and shared so every fixture in this module is
+    /// graded against the SAME policy the live daemon would use, rather than each
+    /// test inventing its own.
+    fn trained_only_policy() -> &'static BundlePolicy {
+        static P: std::sync::OnceLock<BundlePolicy> = std::sync::OnceLock::new();
+        P.get_or_init(BundlePolicy::trained_only)
+    }
+
+    /// The policy WITH the identity family enabled — what the live policy becomes
+    /// only once a corpus trained on the identity has been accepted.
+    fn identity_enabled_policy() -> BundlePolicy {
+        let mut p = BundlePolicy::trained_only();
+        p.enable(FieldFamily::TokenIdentity, "c13")
+            .expect("c13 is an accepted corpus");
+        p
+    }
+
+    fn sample_identity() -> TokenIdentity {
+        TokenIdentity {
+            name: "mensa".to_string(),
+            symbol: "MENSA".to_string(),
+            family: "animal".to_string(),
+            stage: "novel".to_string(),
+            verdict: "Eligible".to_string(),
+            lexicon_version: 3,
+            query_evidence: None,
+        }
+    }
+
+    /// A candidate identity the corpus has not trained on is WITHHELD, not
+    /// rendered. The field-family gate is what stops an OOD input reaching the
+    /// model, and it has to hold even when a producer supplies the identity —
+    /// otherwise "we captured the name" would silently become "we changed the
+    /// model's input distribution".
+    #[test]
+    fn the_identity_is_withheld_until_the_policy_enables_the_family() {
+        let (s, e, f) = (snapshot(), enriched(), flow());
+        let mut i = inputs(&s, &e, &f);
+        i.identity = Some(sample_identity());
+
+        // trained_only is the SHIPPED posture: supplied, yet not shown.
+        let withheld = assemble(&i).expect("assembles");
+        assert!(
+            withheld.identity.is_none(),
+            "an untrained family must be withheld from the model"
+        );
+        assert!(
+            !render_decision(&withheld).contains("TOKEN IDENTITY"),
+            "the withheld identity must not reach the rendered prompt"
+        );
+
+        // With the family enabled, the SAME candidate now reaches the model.
+        let pol = identity_enabled_policy();
+        i.policy = &pol;
+        let shown = assemble(&i).expect("assembles");
+        assert!(
+            shown.identity.is_some(),
+            "an enabled identity must be emitted"
+        );
+        let rendered = render_decision(&shown);
+        assert!(rendered.contains("token_name=mensa"), "{rendered}");
+        assert!(
+            rendered.contains("narrative_verdict=Eligible"),
+            "{rendered}"
+        );
     }
 
     /// F1 RULING (operator, 2026-09-21): a partial evidence packet is **ACCEPTED** — not every

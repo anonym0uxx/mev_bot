@@ -102,6 +102,7 @@ use pump_quant_app::enrichment::{enrich, EnrichmentTrade};
 use pump_quant_app::flow_feed::{flow_state_from_aggregates, zero_flow_state};
 use pump_quant_app::state_ledger::{StateLedger, StateTrade, VenueLabel};
 use pump_quant_market_state::flow_reducer::FlowAggregates;
+use pump_quant_proposal::bundle_gate::BundlePolicy;
 use pump_quant_proposal::decision::DevHistoryDecision;
 use pump_quant_proposal::{render_decision, FlowState};
 use serde_json::Value;
@@ -377,9 +378,10 @@ fn render_reading(
         size_depth_sol: view.size_depth_sol,
         size_amm: view.size_amm,
         // The parity harness grades the FROZEN corpus text. No identity is
-        // supplied by construction, so the additive block cannot appear and the
-        // comparison stays byte-for-byte.
+        // supplied by construction, and the trained-only policy withholds the
+        // family anyway, so the comparison stays byte-for-byte.
         identity: None,
+        policy: &BundlePolicy::trained_only(),
     })
     .map_err(|e| Unserved::Refused(e.as_str().to_string()))?;
 
