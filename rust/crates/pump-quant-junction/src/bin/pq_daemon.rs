@@ -1881,6 +1881,26 @@ fn main() -> ExitCode {
     // Note: creator_launches is tracked internally by the engine via its own
     // mint_creator/creator_launches maps — no daemon-side tracker needed.
     let mut aux_emitted: std::collections::HashSet<[u8; 32]> = std::collections::HashSet::new();
+    // Narrative precondition (operator ruling 2026-09-26): the rotating lexicon.
+    // Absent or malformed => `None`, and then NO narrative verdicts are emitted at
+    // all. That is a COVERAGE GAP: the gate sees the zero sentinel and admits.
+    // Never a silent refusal, and never a fabricated family.
+    let narrative_lexicon_path = std::env::var("PQ_NARRATIVE_LEXICON")
+        .unwrap_or_else(|_| "tools/data-pipeline/output/dynamic_lexicon_v1.json".to_string());
+    let mut narrative_lex =
+        pump_quant_junction::narrative_lexicon::NarrativeLexicon::load(&narrative_lexicon_path);
+    match &narrative_lex {
+        Some(l) => eprintln!(
+            "[pq-daemon] narrative lexicon loaded: v{} {} entries from {}",
+            l.version(),
+            l.len(),
+            narrative_lexicon_path
+        ),
+        None => eprintln!(
+            "[pq-daemon] narrative lexicon UNAVAILABLE at {narrative_lexicon_path} -> no narrative \
+             verdicts will be emitted (coverage gap; the gate admits on the sentinel)"
+        ),
+    }
     let mut last_slot_seen: u64 = 0;
     let mut last_slot_time = Instant::now();
 
@@ -2766,6 +2786,40 @@ fn main() -> ExitCode {
                                 },
                                 0,
                             );
+
+                            // ── Narrative precondition: resolve the NAME ──────────
+                            // Emitted at the same instant as the auxiliary data,
+                            // because the name is known here and the gate must hold
+                            // the verdict before it can evaluate this market. Only
+                            // the LEXICAL lane can fire at launch time — the
+                            // attention plane has no history yet and the model lane
+                            // is offline — so an unmatched name resolves
+                            // `Unresolved`. That is a refusal under ENFORCE and a
+                            // recorded fact under the default OBSERVE mode; absence
+                            // is never fabricated into `false`.
+                            if let Some(lex) = narrative_lex.as_mut() {
+                                let now_ms = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .map(|d| d.as_millis() as u64)
+                                    .unwrap_or(0);
+                                let (verdict, stage, family, lexicon_version) =
+                                    lex.resolve(&meta.name, &meta.symbol, now_ms);
+                                queue.push(
+                                    ProvenancedEvent {
+                                        event: AppEvent::NarrativeResolved {
+                                            mint: Mint(mint_bytes),
+                                            verdict,
+                                            stage,
+                                            family,
+                                            lexicon_version,
+                                        },
+                                        source: ProvenanceSource::PumpPortalTrade,
+                                        slot: 0,
+                                        is_live: true,
+                                    },
+                                    0,
+                                );
+                            }
                         }
 
                         if trade_sub_tracker.add(&mint_b58) {

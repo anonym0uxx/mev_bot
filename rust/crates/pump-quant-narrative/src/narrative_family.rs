@@ -341,7 +341,15 @@ fn starts_with_ci(hay: &[u8], at: usize, needle: &[u8]) -> bool {
 /// never matches (it would otherwise fire on every token).
 #[must_use]
 pub fn matches_needle(hay: &str, needle: &Needle) -> bool {
-    let n = needle.text.as_bytes();
+    matches_needle_text(hay, needle.text, needle.mode)
+}
+
+/// [`matches_needle`] over caller-supplied needle text, so a lexicon loaded at
+/// runtime (rather than a `&'static` table) matches with IDENTICAL semantics.
+/// The pinned path delegates here, so the two can never drift.
+#[must_use]
+pub fn matches_needle_text(hay: &str, text: &str, mode: MatchMode) -> bool {
+    let n = text.as_bytes();
     let h = hay.as_bytes();
     if n.is_empty() || n.len() > h.len() {
         return false;
@@ -350,7 +358,7 @@ pub fn matches_needle(hay: &str, needle: &Needle) -> bool {
     let mut i = 0usize;
     while i <= last_start {
         if starts_with_ci(h, i, n) {
-            match needle.mode {
+            match mode {
                 MatchMode::Substring => return true,
                 MatchMode::Word => {
                     let before_ok = match i.checked_sub(1).and_then(|p| h.get(p)) {

@@ -44,11 +44,27 @@
 // crate, so there is no `unsafe` this attribute could legitimately block.
 #![forbid(unsafe_code)]
 
+pub mod alias_stage;
 pub mod attention_decay;
 pub mod attention_state;
 pub mod catalyst_classifier;
+pub mod dynamic_lexicon;
+pub mod entry_narrative;
 pub mod narrative;
 pub mod narrative_family;
+
+pub use alias_stage::{
+    nv_alias_stage, AliasObservation, AliasStage, StageThresholds, STAGE_THRESHOLDS_V1,
+};
+pub use dynamic_lexicon::{
+    entry_expired_at, entry_usable_at, nv_family_resolve, DynFamilyEntry, DynNeedle,
+    DynamicLexicon, FamilyResolution, LexiconFreshness, LexiconSource, Provenance,
+    DYNAMIC_LEXICON_SCHEMA_VERSION,
+};
+pub use entry_narrative::{
+    nv_is_throwaway, nv_narrative_verdict, NarrativeDecision, NarrativeInputs, NarrativeVerdict,
+    ResolutionLane, THROWAWAY_NEEDLES_V1,
+};
 
 pub use narrative_family::{
     nv_family_classify, nv_family_classify_default, FamilyClassification, FamilyEvidence,

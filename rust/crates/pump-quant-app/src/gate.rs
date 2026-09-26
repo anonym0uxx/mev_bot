@@ -102,6 +102,28 @@ pub enum GateReject {
     /// **Rev-14 wangr #6** — liquidity-zone filter. The candidate's pool
     /// liquidity falls outside the graduation zone (1k-10k SOL per wangr).
     WangrLiquidityZone,
+    /// **Narrative precondition** (operator ruling 2026-09-26) — the name
+    /// attaches to a narrative that is CRESTING or SATURATED, so the crowd is
+    /// already there. Measured walk-forward: names attaching to a currently-hot
+    /// alias graduate 2.00% with P(peak>200 SOL) 3.88%, vs 2.89% / 4.98% for
+    /// names attaching to no hot alias, and monotone worse with more hot terms.
+    NarrativeSaturated,
+    /// **Narrative precondition** — the name resolved against a live lexicon
+    /// and attaches to nothing, and a model verdict independently says so. A
+    /// SELECTION refusal: we looked, and there is no narrative to trade.
+    NarrativeNoAttach,
+    /// **Narrative precondition** — the name is throwaway (scatology/sexual).
+    /// A cheap pre-filter, NOT the signal: measured, the blocklist alone gives
+    /// 0.9% vs 0.7% graduation, i.e. no discrimination. It is a veto because it
+    /// is free, not because it is predictive.
+    NarrativeThrowaway,
+    /// **Narrative precondition** — UNRESOLVED: no positive evidence of a
+    /// RISING attention narrative, and the vocabulary is stale or silent.
+    /// Uncertainty is a refusal, because a trader only enters what they can
+    /// identify. This carries the honest cost — it refuses the novel-meta cohort
+    /// the vocabulary cannot yet name — so it is measured before it binds
+    /// (`narrative_gate_mode`).
+    NarrativeUnresolved,
 }
 
 /// The gate's verdict on one candidate.
@@ -327,6 +349,36 @@ pub fn decide(
             || nf.liquidity_lamports > cfg.wangr_liq_zone_hi_lamports)
     {
         return GateDecision::Reject(GateReject::WangrLiquidityZone);
+    }
+
+    // ---- NARRATIVE PRECONDITION (operator ruling 2026-09-26).
+    //
+    // A memecoin's name must be inferred against the current documented meta
+    // before entry, and the inference is BINDING: a trader only enters a coin
+    // they are SURE matches the attention narrative. The predicate is positive
+    // evidence of a RISING narrative, satisfied by either lane (lexical novel
+    // attachment, or attention emergence) — see
+    // `pump_quant_narrative::entry_narrative::nv_narrative_verdict`, which is
+    // where that logic lives and is unit-tested. The gate consumes its verdict.
+    //
+    // NOT "is it in my vocabulary": that reading admits the saturated cohort and
+    // refuses the not-yet-hot cohort, which is the one that outperforms.
+    //
+    // Sentinel discipline: `narrative_verdict == 0` means UNOBSERVED, and an
+    // unobserved verdict is ADMITTED past this gate — a market whose name was
+    // never resolved must not be refused by a filter that never ran. The mode
+    // defaults to OBSERVE (0) because the refused cohort has not yet been priced
+    // through the engine; the verdict still travels on `Features` for that
+    // measurement.
+    if cfg.narrative_gate_mode == 1 && nf.narrative_verdict != 0 {
+        match nf.narrative_verdict {
+            2 => return GateDecision::Reject(GateReject::NarrativeSaturated),
+            3 => return GateDecision::Reject(GateReject::NarrativeNoAttach),
+            4 => return GateDecision::Reject(GateReject::NarrativeThrowaway),
+            5 => return GateDecision::Reject(GateReject::NarrativeUnresolved),
+            // 1 = Eligible; 0 = unobserved (guarded above).
+            _ => {}
+        }
     }
 
     // ---- COST INPUTS, DERIVED PER CANDIDATE (2026-07-28 cost-model unification).

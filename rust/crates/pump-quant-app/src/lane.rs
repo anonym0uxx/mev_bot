@@ -357,6 +357,12 @@ impl NumericLane {
                 dow: 0,
                 hour_utc: 255,
                 creator_launches: 0,
+                // Narrative precondition: zero-sentinel here, enriched by the
+                // engine at gate_evaluate from AppEvent::NarrativeResolved.
+                narrative_verdict: 0,
+                narrative_stage: 0,
+                narrative_family: 0,
+                narrative_lexicon_version: 0,
             }
         })
     }
@@ -456,6 +462,11 @@ impl NumericLane {
                         dow: 0,
                         hour_utc: 255,
                         creator_launches: 0,
+                        // Narrative precondition: zero-sentinel for the candidate.
+                        narrative_verdict: 0,
+                        narrative_stage: 0,
+                        narrative_family: 0,
+                        narrative_lexicon_version: 0,
                     },
                 )
                 .with_discovery_lane(DiscoveryLane::ActiveMarket),

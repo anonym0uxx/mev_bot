@@ -120,6 +120,7 @@ pub mod laserstream;
 pub mod layout_fixtures;
 pub mod live_adapters;
 pub mod memory_bank;
+pub mod narrative_lexicon;
 pub mod outbound;
 pub mod pumpportal;
 pub mod queue;

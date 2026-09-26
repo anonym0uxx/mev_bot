@@ -16,6 +16,7 @@ pump-quant-domain = { path = "../pump-quant-domain" }
 pump-quant-protocol = { path = "../pump-quant-protocol" }
 pump-quant-core = { path = "../pump-quant-core" }
 pump-quant-market-state = { path = "../pump-quant-market-state" }
+pump-quant-narrative = { path = "../pump-quant-narrative" }
 pump-quant-execution = { path = "../pump-quant-execution" }
 pq-stream-capture = { path = "../../../tools/stream-capture-rs" }
 pump-quant-evaluator = { path = "../pump-quant-evaluator" }

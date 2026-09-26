@@ -1247,6 +1247,26 @@ pub struct Config {
     pub wangr_liq_zone_lo_lamports: u64,
     /// Liquidity zone ceiling, lamports. Default: 10_000 SOL = 1e13 lamports.
     pub wangr_liq_zone_hi_lamports: u64,
+
+    // ---- Narrative precondition (operator ruling 2026-09-26) ----
+    //
+    // A memecoin's NAME must be inferred against the current documented meta
+    // pre-entry, and that inference is BINDING. The verdict reaches the gate via
+    // `AppEvent::NarrativeResolved` -> `Features.narrative_verdict`.
+    //
+    // MODE, not a filter toggle, and it defaults to OBSERVE:
+    //   0 = OBSERVE  — the verdict is recorded but never rejects. This is the
+    //                  default because the decisive test has not run yet: the
+    //                  cohort the gate would refuse must be priced THROUGH THE
+    //                  ENGINE (a barrier proxy and score_entry can disagree in
+    //                  sign on the same rows) before the refusal can bind.
+    //   1 = ENFORCE  — the verdict is a hard precondition.
+    //
+    // Shipping ENFORCE today would refuse nearly everything: the rotating
+    // vocabulary holds 20 classified aliases against 25,016 above threshold.
+    // That is a COVERAGE problem and the standing ruling is to fix coverage, not
+    // to weaken the gate — so the gate is wired and measured first.
+    pub narrative_gate_mode: u8,
 }
 
 /// LAW D2 default designated-caller attention weight: half the standard attention
@@ -1686,6 +1706,10 @@ impl Config {
             wangr_liq_zone_filter_enable: false,
             wangr_liq_zone_lo_lamports: 1_000_000_000_000, // 1_000 SOL
             wangr_liq_zone_hi_lamports: 10_000_000_000_000, // 10_000 SOL
+            // Narrative precondition — OBSERVE by default. The verdict is
+            // recorded on every candidate but does not reject until the refused
+            // cohort has been priced through the engine (see the field docs).
+            narrative_gate_mode: 0,
         }
     }
 

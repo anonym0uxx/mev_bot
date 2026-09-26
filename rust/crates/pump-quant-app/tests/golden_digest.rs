@@ -681,7 +681,13 @@ use tape_golden::*;
 // Decision vector identical: promoted=504 admitted=11 rejected=493 net=42_037_539 universe_filtered=72.
 // Re-pin Rev-17: config struct Debug changed (2 new fields: entry_min_buy_pressure_bp,
 // entry_min_unique_buyers, both OFF by default). Decision vector byte-identical.
-const GOLDEN_DIGEST: u64 = 3_370_041_134_944_657_002;
+// Re-pin 2026-09-26 (narrative precondition): config struct Debug changed — 1 new field,
+// `narrative_gate_mode`, default 0 = OBSERVE. The seed is `format!("{cfg:?}")`, so ANY new
+// Config field re-seeds it. Decision vector BYTE-IDENTICAL: promoted=504 admitted=11
+// rejected=493 net=42_037_539 universe_filtered=72, per-lane unchanged. The golden tape feeds
+// no `NarrativeResolved` event, so the verdict sentinel stays 0 = UNOBSERVED and the gate
+// admits exactly as before — the precondition can only act on a verdict that exists.
+const GOLDEN_DIGEST: u64 = 845_975_226_394_607_646;
 // Re-pin #28: net changed 31_111_528 → 30_889_282 (exit ladder fires earlier on
 // micro-moves; TP1 tranche recovers principal at +5% rather than holding to thesis
 // invalidation). promoted/admitted/rejected/universe_filtered unchanged.

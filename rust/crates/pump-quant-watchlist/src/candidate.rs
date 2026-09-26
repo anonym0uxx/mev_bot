@@ -269,6 +269,26 @@ pub struct Features {
     /// Sourced from the engine's existing `creator_launches` map at gate
     /// time; 0 when the creator is unknown or has no prior launches.
     pub creator_launches: u32,
+    // ---- Narrative precondition (operator ruling 2026-09-26) ----
+    //
+    // A memecoin's NAME must be inferred against the current documented meta
+    // pre-entry, and that inference is BINDING, not enrichment. The engine
+    // enriches these at gate time from `AppEvent::NarrativeResolved`; a market
+    // that never receives that event leaves every field at 0 = UNOBSERVED, which
+    // is a no-op for the gate — the same sentinel discipline the wangr fields
+    // use, so a golden tape that never feeds the event stays byte-identical.
+    /// `NarrativeVerdict` discriminant: 0=unobserved, 1=Eligible, 2=Saturated,
+    /// 3=NoAttach, 4=Throwaway, 5=Unresolved. ONLY 1 admits.
+    pub narrative_verdict: u8,
+    /// `AliasStage` discriminant: 0=unobserved, 1=Novel, 2=Rising, 3=Cresting,
+    /// 4=Saturated. Attachment WITHOUT an observed stage is not positive
+    /// evidence, so it resolves Unresolved rather than Eligible.
+    pub narrative_stage: u8,
+    /// `NarrativeFamily` discriminant: 0=unobserved, 1..=8 otherwise.
+    pub narrative_family: u8,
+    /// Lexicon version the verdict was resolved against (criterion 81).
+    /// 0 = unobserved.
+    pub narrative_lexicon_version: u32,
 }
 
 /// A single discovery observation: one lane's claim that one mint is worth
