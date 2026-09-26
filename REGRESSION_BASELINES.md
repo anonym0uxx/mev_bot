@@ -15,31 +15,51 @@ Run it with:
 python3 scripts/regression_e2e.py --repo . --vendor-dir /tmp/vw/vendor
 ```
 
+> **Status (measured 2026-09-26):** `scripts/regression_e2e.py` and
+> `scripts/ci_gate.py` are **not present in this tree** (`scripts/` holds only
+> `extract_layout_fixtures.py`), so the commands above cannot be run as written.
+> The values below were measured directly. Re-pin them from the live run, and
+> restore the runner, rather than trusting the historical figures.
+
 ---
 
 ## 1. Rust workspace gate  (referenced, not duplicated)
 
 The Rust digest / net-SOL / promoted-admitted-rejected counts are **owned by
-QA-1** and live in the regression manifest
-[`rust/crates/pq-regression/src/baselines.rs`](rust/crates/pq-regression/src/baselines.rs)
-(narrated in QA-1's `BASELINES.md`). This runner **references** that manifest and
-only asserts the gate is green — it does not re-pin those numbers here. The
-canonical values, for cross-reference, are:
+QA-1**. QA-1's manifest (`rust/crates/pq-regression/src/baselines.rs`, narrated in
+`BASELINES.md`) is **not present in this tree** — the `pq-regression` crate does
+not exist here, so there is nothing to reference. The values that actually gate
+today live in the in-tree golden test, which is the authoritative source until
+QA-1's crate is restored:
 
-| Invariant | Value | Source (authoritative) |
+[`rust/crates/pump-quant-app/tests/golden_digest.rs`](rust/crates/pump-quant-app/tests/golden_digest.rs)
+
+| Invariant | Value (measured 2026-09-26) | Source (authoritative) |
 |---|---|---|
-| Golden decision-journal digest | `3_203_929_616_839_788_134` | `baselines.rs::GOLDEN_DIGEST` |
-| Golden net-SOL (lamports) | `31_465_931` | `baselines.rs::GOLDEN_NET_LAMPORTS` |
-| Promoted / admitted / rejected | `504 / 11 / 493` | `baselines.rs::GOLDEN_{PROMOTED,ADMITTED,REJECTED}` |
-| Universe-filtered | `72` | `baselines.rs::GOLDEN_UNIVERSE_FILTERED` |
-| `cargo test --workspace` | 1908 tests / 0 fail | live workspace run |
-| `cargo fmt --all --check` | clean | live |
-| `cargo clippy --workspace --all-targets -- -D warnings` | clean | live |
-| `pq-regression` crate (golden-tape / fail-closed tripwire) | all pass (16) | `cargo test -p pq-regression` |
+| Golden decision-journal digest | `845_975_226_394_607_646` | `golden_digest.rs::GOLDEN_DIGEST` |
+| Golden net-SOL (lamports) | `42_037_539` | `golden_digest.rs` GOLDEN line |
+| Promoted / admitted / rejected | `504 / 11 / 493` | `golden_digest.rs` GOLDEN line |
+| Universe-filtered | `72` | `golden_digest.rs` GOLDEN line |
+| `cargo test --workspace` | 3384 passed / 0 failed | live workspace run |
+| `cargo fmt --all --check` | **NOT clean** — 3 files differ | live |
+| `cargo clippy --workspace --all-targets -- -D warnings` | **not runnable here** | live |
+| `pq-regression` crate (golden-tape / fail-closed tripwire) | **absent from this tree** | `cargo test -p pq-regression` |
 
-The runner asserts: fmt clean, clippy clean, workspace tests all pass, and — if
+Two of these are honest negatives, not oversights:
+
+- **fmt is not clean.** `cargo fmt --all --check` reports `Diff in` for
+  `tools/stream-capture-rs/src/sender.rs` (×2) and
+  `tools/stream-capture-rs/src/ws.rs`. These are pre-existing and unrelated to
+  the narrative work; they were not introduced here and are not fixed here.
+- **clippy cannot be run.** `cargo-clippy` is not installed for
+  `stable-x86_64-unknown-linux-gnu` (`rustup component add clippy` is required).
+  The historical "clean" claim is therefore **unverifiable in this environment**
+  and must not be copied forward as though it had been re-measured.
+
+The runner asserts fmt clean, clippy clean, workspace tests all pass, and — if
 QA-1's `pq-regression` crate is present — that crate's golden-tape tests all
-pass. **If those numbers change, change them in QA-1's manifest, not here.**
+pass. **Re-pin the table above from a live run; do not carry these numbers
+forward once the crate is restored.**
 
 ---
 

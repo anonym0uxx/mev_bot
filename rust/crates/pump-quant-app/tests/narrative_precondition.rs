@@ -183,3 +183,30 @@ fn eligible_verdict_is_never_refused_by_the_precondition() {
         );
     }
 }
+
+/// The SHIPPED default records the verdict and does NOT refuse on it (operator
+/// decision 2026-09-26: the name is resolved and the MODEL infers the narrative).
+/// Pinned so a later edit cannot quietly turn a recorded input into a gate.
+#[test]
+fn the_shipped_default_is_observe() {
+    assert_eq!(
+        Config::dev_portable().narrative_gate_mode,
+        0,
+        "the narrative must ship as OBSERVE (recorded input), not as a gate"
+    );
+}
+
+/// ...and the default config must actually ADMIT an unresolved name, not merely
+/// claim to. No launch is blocked for want of vocabulary.
+#[test]
+fn the_shipped_default_admits_an_unresolved_name() {
+    let c = Config::dev_portable();
+    assert_reaches_the_precondition(&c, 5);
+    let d = decide(&cand(5, 0, 0), Some(conf(5, 0, 0)), &c, cold_start(&c));
+    assert!(
+        !NARRATIVE_REJECTS
+            .iter()
+            .any(|r| matches!(d, GateDecision::Reject(x) if x == *r)),
+        "the SHIPPED default must not refuse a name whose narrative is unresolved; got {d:?}"
+    );
+}
