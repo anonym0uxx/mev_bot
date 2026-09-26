@@ -47,10 +47,31 @@ struct OwnedEntry {
     confidence_bps: u16,
 }
 
+/// One bucket's span in the flat, `as_of`-ascending `entries` vector.
+///
+/// Buckets exist because of CAUSALITY: an entry is usable only when
+/// `first_seen_ms <= as_of_ms <= t_ms`. A single artifact cut "as of now" can
+/// therefore label only rows that come AFTER it — measured, that is 0 of 200,000
+/// historical rows, which reads as a thin vocabulary rather than as the rule
+/// working. Each bucket is a frozen view of what was knowable at its boundary.
+#[derive(Debug, Clone, Copy)]
+struct BucketSpan {
+    /// The boundary this bucket was computed as of.
+    as_of_ms: u64,
+    /// The artifact version in force at that boundary.
+    version: u32,
+    /// Half-open span of this bucket's entries in the flat vector.
+    start: usize,
+    end: usize,
+}
+
 /// The loaded lexicon plus the per-alias observation state it needs.
 pub struct NarrativeLexicon {
     version: u32,
+    /// All buckets' entries, ascending by their bucket's `as_of_ms`.
     entries: Vec<OwnedEntry>,
+    /// The bucket boundaries, ascending. Never empty for a successfully loaded file.
+    buckets: Vec<BucketSpan>,
     /// alias -> mint timestamps observed (kept to the 7d window).
     alias_seen: HashMap<String, Vec<u64>>,
     /// family ordinal -> (ms, entry index) observed, kept to the 1h window. Used
@@ -120,55 +141,107 @@ impl NarrativeLexicon {
             .and_then(|v| v.as_number_str())
             .and_then(|s| s.parse::<u32>().ok())
             .unwrap_or(0);
-        let raw_entries = root.get("entries")?.as_array()?;
-        let mut entries = Vec::with_capacity(raw_entries.len());
-        for e in raw_entries {
-            let Some(family) = e
-                .get("family")
-                .and_then(|v| v.as_str())
-                .and_then(family_from_str)
-            else {
-                continue; // unnameable family: drop, never guess
-            };
-            let Some(needles) = e.get("needles").and_then(|v| v.as_array()) else {
-                continue;
-            };
-            for n in needles {
-                let Some(alias) = n.get("text").and_then(|v| v.as_str()) else {
-                    continue;
-                };
-                let Some(mode) = n
-                    .get("mode")
+        // Parse ONE bucket's entries into the flat, as_of-ascending vector.
+        fn parse_into(arr: &[json::JsonValue], out: &mut Vec<OwnedEntry>) {
+            for e in arr {
+                let Some(family) = e
+                    .get("family")
                     .and_then(|v| v.as_str())
-                    .and_then(mode_from_str)
+                    .and_then(family_from_str)
                 else {
+                    continue; // unnameable family: drop, never guess
+                };
+                let Some(needles) = e.get("needles").and_then(|v| v.as_array()) else {
                     continue;
                 };
-                let num = |k: &str| -> u64 {
-                    e.get(k)
-                        .and_then(|v| v.as_number_str())
-                        .and_then(|s| s.parse::<u64>().ok())
-                        .unwrap_or(0)
-                };
-                entries.push(OwnedEntry {
-                    family,
-                    alias: alias.to_string(),
-                    mode,
-                    first_seen_ms: num("first_seen_ms"),
-                    as_of_ms: num("as_of_ms"),
-                    ttl_ms: num("ttl_ms"),
-                    provenance: Provenance::Pipeline,
-                    confidence_bps: e
-                        .get("confidence_bps")
-                        .and_then(|v| v.as_number_str())
-                        .and_then(|s| s.parse::<u16>().ok())
-                        .unwrap_or(0),
+                for n in needles {
+                    let Some(alias) = n.get("text").and_then(|v| v.as_str()) else {
+                        continue;
+                    };
+                    let Some(mode) = n
+                        .get("mode")
+                        .and_then(|v| v.as_str())
+                        .and_then(mode_from_str)
+                    else {
+                        continue;
+                    };
+                    let num = |k: &str| -> u64 {
+                        e.get(k)
+                            .and_then(|v| v.as_number_str())
+                            .and_then(|s| s.parse::<u64>().ok())
+                            .unwrap_or(0)
+                    };
+                    out.push(OwnedEntry {
+                        family,
+                        alias: alias.to_string(),
+                        mode,
+                        first_seen_ms: num("first_seen_ms"),
+                        as_of_ms: num("as_of_ms"),
+                        ttl_ms: num("ttl_ms"),
+                        provenance: Provenance::Pipeline,
+                        confidence_bps: e
+                            .get("confidence_bps")
+                            .and_then(|v| v.as_number_str())
+                            .and_then(|s| s.parse::<u16>().ok())
+                            .unwrap_or(0),
+                    });
+                }
+            }
+        }
+
+        let mut entries: Vec<OwnedEntry> = Vec::new();
+        let mut buckets: Vec<BucketSpan> = Vec::new();
+
+        if let Some(bs) = root.get("buckets").and_then(|v| v.as_array()) {
+            let mut spans: Vec<BucketSpan> = Vec::with_capacity(bs.len());
+            for b in bs {
+                let as_of_ms = b
+                    .get("as_of_ms")
+                    .and_then(|v| v.as_number_str())
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .unwrap_or(0);
+                let bver = b
+                    .get("version")
+                    .and_then(|v| v.as_number_str())
+                    .and_then(|s| s.parse::<u32>().ok())
+                    .unwrap_or(version);
+                let start = entries.len();
+                if let Some(arr) = b.get("entries").and_then(|v| v.as_array()) {
+                    parse_into(arr, &mut entries);
+                }
+                spans.push(BucketSpan {
+                    as_of_ms,
+                    version: bver,
+                    start,
+                    end: entries.len(),
                 });
             }
+            // Ascending `as_of` is the contract: "the latest bucket at or before t"
+            // means nothing over an unordered list, so order it here rather than
+            // trusting the producer's emission order.
+            spans.sort_by_key(|s| s.as_of_ms);
+            buckets = spans;
+        } else {
+            // Legacy single-cut artifact: one bucket, stamped with the document's
+            // own `as_of_ms`. It can only ever label rows at or after that instant.
+            let raw_entries = root.get("entries")?.as_array()?;
+            parse_into(raw_entries, &mut entries);
+            let as_of_ms = root
+                .get("as_of_ms")
+                .and_then(|v| v.as_number_str())
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(0);
+            buckets.push(BucketSpan {
+                as_of_ms,
+                version,
+                start: 0,
+                end: entries.len(),
+            });
         }
         Some(NarrativeLexicon {
             version,
             entries,
+            buckets,
             alias_seen: HashMap::new(),
             family_seen: HashMap::new(),
         })
@@ -188,6 +261,30 @@ impl NarrativeLexicon {
     #[must_use]
     pub fn version(&self) -> u32 {
         self.version
+    }
+
+    /// How many time buckets the artifact carries. `1` for a legacy single-cut file.
+    #[must_use]
+    pub fn bucket_count(&self) -> usize {
+        self.buckets.len()
+    }
+
+    /// Index of the latest bucket whose boundary is at or before `now_ms`.
+    ///
+    /// `None` when `now_ms` precedes every boundary: nothing was knowable yet, so
+    /// the launch resolves `Unresolved` — the CAUSAL answer, not a failure. The
+    /// scan is linear because there are a handful of buckets, and it exits early
+    /// on the first boundary that is still in the future.
+    fn bucket_for(&self, now_ms: u64) -> Option<usize> {
+        let mut found = None;
+        for (i, b) in self.buckets.iter().enumerate() {
+            if b.as_of_ms <= now_ms {
+                found = Some(i);
+            } else {
+                break;
+            }
+        }
+        found
     }
 
     /// Counts of OTHER mints sharing `idx`'s alias, strictly before `now_ms`.
@@ -259,11 +356,27 @@ impl NarrativeLexicon {
     /// resolves `Unresolved`, which is a refusal under ENFORCE and a recorded
     /// fact under OBSERVE.
     pub fn resolve(&mut self, name: &str, symbol: &str, now_ms: u64) -> (u8, u8, u8, u32) {
+        // The bucket in force at `now_ms`. `None` means this instant precedes every
+        // boundary we hold: nothing was knowable yet, so it resolves `Unresolved`
+        // with the sentinel stage/family. Refusing to guess is the entire point of
+        // bucketing — the alternative is labelling history with a lexicon that had
+        // not been built at that instant.
+        let Some(bi) = self.bucket_for(now_ms) else {
+            return (
+                verdict_code(NarrativeVerdict::Unresolved),
+                0,
+                0,
+                self.version,
+            );
+        };
+        let (bstart, bend) = (self.buckets[bi].start, self.buckets[bi].end);
+        let bversion = self.buckets[bi].version;
+
         // The borrowed lexicon view lives only inside this block: `record` below
         // needs `&mut self`, so every borrow of `self.entries` must end first.
         let (out, hit) = {
-            let needles: Vec<Vec<DynNeedle<'_>>> = self
-                .entries
+            let slice = &self.entries[bstart..bend];
+            let needles: Vec<Vec<DynNeedle<'_>>> = slice
                 .iter()
                 .map(|e| {
                     vec![DynNeedle {
@@ -272,8 +385,7 @@ impl NarrativeLexicon {
                     }]
                 })
                 .collect();
-            let entries: Vec<DynFamilyEntry<'_>> = self
-                .entries
+            let entries: Vec<DynFamilyEntry<'_>> = slice
                 .iter()
                 .zip(needles.iter())
                 .map(|(e, ns)| DynFamilyEntry {
@@ -287,7 +399,7 @@ impl NarrativeLexicon {
                 })
                 .collect();
             let dl = DynamicLexicon {
-                version: self.version,
+                version: bversion,
                 entries: &entries,
             };
             let resolution = nv_family_resolve(
@@ -301,9 +413,11 @@ impl NarrativeLexicon {
 
             // Which entry fired, if any — needed for the alias stage.
             let hit: Option<usize> = resolution.matched_text.and_then(|t| {
-                self.entries
+                slice
                     .iter()
                     .position(|e| e.alias == t && Some(e.family) == Some(resolution.family))
+                    // GLOBAL index: `observation`/`record` key on the flat vector.
+                    .map(|i| bstart + i)
             });
             let stage = hit.map(|idx| {
                 nv_alias_stage(now_ms, &self.observation(idx, now_ms), &STAGE_THRESHOLDS_V1)
@@ -446,5 +560,69 @@ mod tests {
     #[test]
     fn a_missing_artifact_is_none_not_a_silent_refusal() {
         assert!(NarrativeLexicon::load("/nonexistent/pq_lex.json").is_none());
+    }
+
+    // ---- TIME BUCKETS -------------------------------------------------------
+    //
+    // These pin the reason bucketing exists: a single artifact cut "as of now"
+    // cannot label history, because causality requires `as_of_ms <= t_ms`.
+
+    /// Two boundaries: as of 1000 (ansem only) and as of 5000 (ansem + spcx).
+    const BUCKETS: &str = r#"{"version":7,"schema_version":2,"as_of_ms":9000,"bucket_ms":4000,
+      "buckets":[
+        {"as_of_ms":1000,"version":7,"entries":[
+          {"family":"celebrity","needles":[{"text":"ansem","mode":"substring"}],
+           "first_seen_ms":500,"as_of_ms":1000,"ttl_ms":1000000000}]},
+        {"as_of_ms":5000,"version":7,"entries":[
+          {"family":"celebrity","needles":[{"text":"ansem","mode":"substring"}],
+           "first_seen_ms":500,"as_of_ms":1000,"ttl_ms":1000000000},
+          {"family":"tech","needles":[{"text":"spcx","mode":"substring"}],
+           "first_seen_ms":4000,"as_of_ms":5000,"ttl_ms":1000000000}]}]}"#;
+
+    #[test]
+    fn a_row_before_every_boundary_is_unresolved() {
+        let p = fixture(BUCKETS);
+        let mut l = NarrativeLexicon::load(&p).unwrap();
+        assert_eq!(l.bucket_count(), 2);
+        let (v, s, f, _) = l.resolve("ansem thing", "ANSEM", 500);
+        assert_eq!(
+            (v, s, f),
+            (5, 0, 0),
+            "nothing was knowable before the first boundary - and that is the answer"
+        );
+    }
+
+    #[test]
+    fn a_row_resolves_against_the_bucket_in_force_then() {
+        let p = fixture(BUCKETS);
+        let mut l = NarrativeLexicon::load(&p).unwrap();
+        let (v, _, f, lv) = l.resolve("ansem thing", "ANSEM", 1500);
+        assert_eq!((v, f), (1, NarrativeFamily::Celebrity.ordinal()));
+        assert_eq!(lv, 7);
+    }
+
+    #[test]
+    fn a_bucket_cannot_see_its_successors_entries() {
+        // `spcx` exists ONLY in the bucket as of 5000. At t=1500 it must not match:
+        // matching would label a launch with knowledge from the future, which is the
+        // look-ahead this whole structure exists to prevent.
+        let p = fixture(BUCKETS);
+        let mut l = NarrativeLexicon::load(&p).unwrap();
+        let (v, _, f, _) = l.resolve("SPCX", "SPCX", 1500);
+        assert_eq!((v, f), (5, 0), "a later bucket must not leak backwards");
+        // ...and the same name DOES resolve once its bucket is in force.
+        let (v2, _, f2, _) = l.resolve("SPCX", "SPCX", 6000);
+        assert_eq!((v2, f2), (1, NarrativeFamily::Tech.ordinal()));
+    }
+
+    #[test]
+    fn a_legacy_single_cut_loads_as_one_bucket() {
+        let p = fixture(LIVE);
+        let l = NarrativeLexicon::load(&p).unwrap();
+        assert_eq!(
+            l.bucket_count(),
+            1,
+            "no `buckets` key -> one bucket stamped from the document's as_of_ms"
+        );
     }
 }

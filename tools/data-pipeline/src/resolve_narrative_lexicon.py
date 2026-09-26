@@ -115,8 +115,14 @@ def _to_epoch_ms(col):
     return v                          # already milliseconds
 
 
-def load_mint_stream(corpus):
-    """(alias -> first_seen_ms, count) from OUR OWN mint stream. Authoritative for timing."""
+def load_mint_pairs(corpus):
+    """(alias, ms) — one row per (alias, mint). The RAW stream.
+
+    Bucketing needs this rather than the aggregate: a bucket's entry set must be
+    "aliases with >= min_prior mints BY THAT BOUNDARY", and a global count would be
+    look-ahead — an alias that only became crowded next week would leak into a
+    bucket from last week.
+    """
     import pandas as pd
     t = pd.read_parquet(os.path.join(corpus, "tokens.parquet"),
                         columns=["mint", "name", "symbol", "detected_at"])
@@ -126,11 +132,19 @@ def load_mint_stream(corpus):
         words = set(content_words(name)) | set(content_words(sym))
         for w in words:
             rows.append((w, ms))
-    import pandas as pd
-    d = pd.DataFrame(rows, columns=["alias", "ms"])
+    return pd.DataFrame(rows, columns=["alias", "ms"]).sort_values("ms")
+
+
+def aggregate(d):
+    """(alias -> first/last/count) from the raw pairs."""
     g = d.groupby("alias").ms.agg(["min", "max", "size"]).rename(
         columns={"min": "first_seen_ms", "max": "last_seen_ms", "size": "mints"})
     return g.reset_index()
+
+
+def load_mint_stream(corpus):
+    """(alias -> first_seen_ms, count) from OUR OWN mint stream. Authoritative for timing."""
+    return aggregate(load_mint_pairs(corpus))
 
 
 def wayback_first_archive(alias, timeout=20):
@@ -168,13 +182,18 @@ def main():
                     help="minimum mints sharing the alias to consider it")
     ap.add_argument("--ttl-ms", type=int, default=48 * 3600 * 1000,
                     help="entry shelf life; the meta rotates in hours")
+    ap.add_argument("--bucket-hours", type=float, default=24.0,
+                    help="emit a time-bucketed lexicon with this boundary spacing. "
+                         "0 disables bucketing (single as-of artifact, which can only "
+                         "label rows AFTER its as_of — see the module docstring)")
     ap.add_argument("--as-of-ms", type=int, default=None,
                     help="defaults to the corpus's last observation (reproducible)")
     ap.add_argument("--top-wayback", type=int, default=25,
                     help="how many aliases to enrich from Wayback (rate-limited)")
     a = ap.parse_args()
 
-    g = load_mint_stream(a.corpus)
+    raw = load_mint_pairs(a.corpus)
+    g = aggregate(raw)
     as_of = a.as_of_ms if a.as_of_ms is not None else int(g.last_seen_ms.max())
     print(f"aliases discovered: {len(g):,}  as_of_ms={as_of}")
 
@@ -251,12 +270,63 @@ def main():
               file=sys.stderr)
         return 3
 
+    # ---- TIME BUCKETS -------------------------------------------------------
+    #
+    # Causality is `first_seen_ms <= as_of_ms <= t_ms`. A SINGLE artifact can only
+    # label rows at or after its OWN as_of, so one built "as of now" labels no
+    # history at all. Measured: 0 of 200,000 rows matched against a single cut,
+    # which reads as a thin vocabulary rather than as the causality rule working.
+    #
+    # So emit a bucket per boundary T, each carrying only the aliases crowded BY T
+    # (RUNNING counts, never the global total, or the bucket would see next week's
+    # crowding) and stamped `as_of_ms = T`. A consumer picks the latest bucket with
+    # `as_of_ms <= t`; a row that precedes every boundary stays `Unresolved` because
+    # nothing was knowable yet. That is the truthful answer, not a gap to hide.
+    buckets = []
+    if a.bucket_hours and a.bucket_hours > 0 and len(raw):
+        step = int(a.bucket_hours * 3600 * 1000)
+        running, seen_first = {}, {}
+        pos = 0
+        ms_values = raw["ms"].to_numpy()
+        alias_values = raw["alias"].to_numpy()
+        boundary = int(ms_values[0]) + step
+        last_ms = int(ms_values[-1])
+        while boundary <= last_ms and pos < len(ms_values):
+            while pos < len(ms_values) and int(ms_values[pos]) <= boundary:
+                al = alias_values[pos]
+                running[al] = running.get(al, 0) + 1
+                seen_first.setdefault(al, int(ms_values[pos]))
+                pos += 1
+            bentries = []
+            for al, cnt in running.items():
+                if cnt < a.min_prior or al not in FAMILY_HINTS:
+                    continue
+                bentries.append({
+                    "family": FAMILY_HINTS[al],
+                    "needles": [{"text": al, "mode": "substring"}],
+                    "first_seen_ms": int(seen_first[al]),
+                    "as_of_ms": int(boundary),
+                    "ttl_ms": int(a.ttl_ms),
+                    "provenance": "pipeline_bucketed",
+                    "confidence_bps": 8000,
+                    "_evidence": {"mints_as_of": int(cnt)},
+                })
+            if bentries:
+                bentries.sort(key=lambda e: -e["_evidence"]["mints_as_of"])
+                buckets.append({"as_of_ms": int(boundary), "version": a.version,
+                                "entries": bentries})
+            boundary += step
+        print(f"buckets: {len(buckets)} at {a.bucket_hours}h spacing, "
+              f"{sum(len(b['entries']) for b in buckets)} entry-instances")
+
     doc = {
-        "schema_version": 1,
+        "schema_version": 2,
         "version": a.version,
         "generated_at_ms": int(time.time() * 1000),
         "as_of_ms": int(as_of),
         "ttl_ms": int(a.ttl_ms),
+        "bucket_ms": int(a.bucket_hours * 3600 * 1000) if buckets else 0,
+        "min_prior": int(a.min_prior),
         "source": "mint_stream+wayback_cdx",
         "coverage": {
             "aliases_discovered": int(len(g)),
@@ -280,11 +350,12 @@ def main():
             "j7tracker.io: session token supplied; routes consumed via j7tracker_source.",
         ])),
         "entries": entries,
+        "buckets": buckets,
     }
     with open(a.out, "w") as f:
         json.dump(doc, f, indent=1, sort_keys=True)
-    print(f"wrote {a.out}: {len(entries)} entries, version={a.version}, "
-          f"ttl={a.ttl_ms // 3600000}h")
+    print(f"wrote {a.out}: {len(entries)} entries in {len(buckets)} buckets, "
+          f"version={a.version}, ttl={a.ttl_ms // 3600000}h")
     for e in entries[:8]:
         print(f"  {e['needles'][0]['text']:<12} family={e['family']:<10} "
               f"mints={e['_evidence']['mints']:<6} wayback={bool(e['_evidence']['wayback_first'])}")
