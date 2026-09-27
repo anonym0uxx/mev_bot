@@ -36,14 +36,15 @@ pub enum FieldFamily {
     /// Funding-graph provenance features. Captured; **not yet trained.**
     FundingGraph,
     /// The mint's NAME and its resolved narrative (`TokenIdentity`). Captured at
-    /// mint detection; **not yet trained.**
+    /// mint detection; **still not trained** — `is_trained()` stays `false` and says so.
     ///
     /// Operator decision 2026-09-26: the narrative is an INPUT the model infers
-    /// over, not a gate. That makes it a field family like any other, and it is
-    /// therefore governed here: emitting a name + narrative the model has never
-    /// seen in training is out-of-distribution input, exactly the §17 failure
-    /// this gate exists to prevent. It is enabled by the one-line toggle in
-    /// [`BundlePolicy::enable`] once a corpus trained on it is accepted.
+    /// over, not a gate. And the operator's follow-up ruling the same day: the
+    /// CURRENT model must be able to use the token name, before any corpus has
+    /// trained on the block. That is the shipped posture — see
+    /// [`BundlePolicy::live`] — and it is a deliberate widening, not a claim that
+    /// the corpus exists. The gate's §17 refusal still governs the derived
+    /// families; the reasoning for treating the identity differently is in `live`.
     TokenIdentity,
 }
 
@@ -118,8 +119,10 @@ pub struct BundlePolicy {
 }
 
 impl Default for BundlePolicy {
+    /// The shipped posture is the LIVE policy. See [`BundlePolicy::live`] for the
+    /// operator decision that widens it past `trained_only()`.
     fn default() -> Self {
-        Self::trained_only()
+        Self::live()
     }
 }
 
@@ -135,6 +138,30 @@ impl BundlePolicy {
             .filter(|f| f.is_trained())
             .collect();
         BundlePolicy { emitted }
+    }
+
+    /// The policy the LIVE bundle uses, as the operator has ruled it.
+    ///
+    /// Trained families **plus `TokenIdentity`**. Operator decision 2026-09-26: the token name
+    /// must reach the CURRENT model, before any corpus has trained on the block.
+    ///
+    /// Why this is not the §17 failure the gate exists to prevent. That guard is about **derived
+    /// feature families**, whose meaning exists only in a training distribution — a new numeric
+    /// aggregate is uninterpretable without one, which is why emitting it early is genuinely
+    /// out-of-distribution. The identity block is not that: it is the mint's own **creation
+    /// metadata plus human-readable labels**. The name is text the model reads, and the narrative
+    /// renders as `animal` / `novel` / `Eligible`, never as bare wire codes. The current model can
+    /// therefore use it without having trained on the block's *format*.
+    ///
+    /// The honest cost, stated so nobody reads this as validation: the block will be in the live
+    /// prompt, but the model has never been taught to weight it, so it is evidence of **unknown
+    /// reliability** until the c13 corpus lands. Capture it, emit it, measure what it does — do not
+    /// treat it as signal that has been paid for.
+    #[must_use]
+    pub fn live() -> Self {
+        let mut p = Self::trained_only();
+        p.emitted.insert(FieldFamily::TokenIdentity);
+        p
     }
 
     /// Build a policy from an explicit set, **failing closed** on any untrained family.
@@ -202,6 +229,35 @@ impl BundlePolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Pins the operator decision: the CURRENT model sees the token name. If this flips back,
+    /// the live prompt silently loses the name again and nobody notices.
+    #[test]
+    fn the_shipped_policy_emits_the_token_identity() {
+        let p = BundlePolicy::default();
+        assert!(
+            p.is_emitted(FieldFamily::TokenIdentity),
+            "the shipped policy must emit the identity"
+        );
+        assert!(p.is_emitted(FieldFamily::LiveFlowState));
+        assert_eq!(BundlePolicy::live().emitted(), p.emitted());
+    }
+
+    /// The FACT is unchanged and must keep being stated: no corpus has trained on the identity.
+    /// `live()` widens the shipped posture; it does not rewrite what is true about training.
+    /// The §17 refusal must remain reachable, or it is not a guard.
+    #[test]
+    fn the_untrained_fact_and_the_refusal_path_survive_the_widening() {
+        assert!(!FieldFamily::TokenIdentity.is_trained());
+        assert!(BundlePolicy::trained_only().is_withheld(FieldFamily::TokenIdentity));
+        assert_eq!(
+            BundlePolicy::new([FieldFamily::LiveFlowState, FieldFamily::TokenIdentity]),
+            Err(GateError::UntrainedFamilyEmitted(
+                FieldFamily::TokenIdentity
+            )),
+            "hand-assembling a widened policy must still fail closed"
+        );
+    }
 
     #[test]
     fn the_live_bundle_emits_exactly_the_trained_families() {
