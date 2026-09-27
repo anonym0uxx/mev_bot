@@ -256,6 +256,161 @@ pub const FAMILY_LEXICON_V1: &[FamilyLexicon] = &[
     },
 ];
 
+/// Version of the name-inference table. Bump on any change to
+/// [`NAME_INFERENCE_V1`].
+pub const NAME_INFERENCE_VERSION: u32 = 1;
+
+/// The versioned NAME-INFERENCE table (2026-09-26).
+///
+/// WHY IT EXISTS. [`FAMILY_LEXICON_V1`] is a table of SPECIFIC observed memes
+/// (`doge`, `pepe`, `trump`, `elon`) and it leaves most novel names `Unclassified`
+/// — measured, 86.7% of a 200,000-mint stream. The operator's instruction was to
+/// look at the names and INFER the family, so this table carries the general,
+/// unambiguous category vocabulary a human reader would apply: `cat` is an animal,
+/// `biden` is political, `quantum` is tech.
+///
+/// WHAT IT IS NOT. Inference is a DESCRIPTIVE claim about what the name is about.
+/// It says nothing about attention, crowding or novelty, and it does not make a
+/// token eligible. It is therefore tried LAST — after every observed table — and
+/// every hit is labelled [`LexiconSource::NameInference`] so no reader can mistake
+/// it for measured evidence.
+///
+/// CONSERVATIVE ON PURPOSE. A cue is included only when it denotes the family's
+/// subject unambiguously:
+/// * Platform and asset words (`solana`, `eth`, `usdc`, `crypto`) are EXCLUDED —
+///   they name the chain you are already on, not a narrative, and filing them
+///   under Tech would be a mislabel that trains the model on noise.
+/// * `bull` and `bear` stay with Animal: they are also market-direction words, but
+///   the mascot reading is the meme, and Animal is the more specific claim.
+///
+/// Scanned in declaration order, first family with a hit wins, mirroring the
+/// narrowed→broader cascade of [`FAMILY_LEXICON_V1`].
+pub const NAME_INFERENCE_V1: &[FamilyLexicon] = &[
+    FamilyLexicon {
+        family: NarrativeFamily::Seasonal,
+        needles: &[
+            sub("winter"),
+            sub("summer"),
+            word("spring"),
+            sub("autumn"),
+            sub("holiday"),
+            sub("birthday"),
+            sub("december"),
+            sub("january"),
+            sub("july"),
+            word("snow"),
+        ],
+    },
+    FamilyLexicon {
+        family: NarrativeFamily::Political,
+        needles: &[
+            sub("vance"),
+            sub("harris"),
+            sub("desantis"),
+            sub("congress"),
+            word("vote"),
+            sub("patriot"),
+            sub("milei"),
+            sub("bukele"),
+            word("liberty"),
+            sub("freedom"),
+            sub("government"),
+        ],
+    },
+    FamilyLexicon {
+        family: NarrativeFamily::Celebrity,
+        needles: &[
+            sub("ansem"),
+            word("tate"),
+            word("rogan"),
+            sub("gates"),
+            sub("buffett"),
+            word("snoop"),
+            word("drake"),
+            word("bieber"),
+            sub("eminem"),
+            word("cuban"),
+            sub("dorsey"),
+            sub("buterin"),
+            sub("hogan"),
+            sub("influencer"),
+        ],
+    },
+    FamilyLexicon {
+        family: NarrativeFamily::Tech,
+        needles: &[
+            sub("cyber"),
+            sub("silicon"),
+            word("gpu"),
+            word("chip"),
+            sub("android"),
+            sub("hologram"),
+            sub("digital"),
+            sub("machine"),
+            sub("compute"),
+            sub("software"),
+            sub("hardware"),
+            sub("internet"),
+        ],
+    },
+    FamilyLexicon {
+        family: NarrativeFamily::Animal,
+        needles: &[
+            word("bull"),
+            word("bear"),
+            word("frog"),
+            word("wolf"),
+            word("duck"),
+            word("monkey"),
+            word("ape"),
+            word("bird"),
+            word("fish"),
+            word("shark"),
+            sub("whale"),
+            word("goat"),
+            word("horse"),
+            word("cow"),
+            word("pig"),
+            word("sheep"),
+            word("lion"),
+            word("tiger"),
+            word("snake"),
+            word("eagle"),
+            word("owl"),
+            word("rabbit"),
+            word("mouse"),
+            word("fox"),
+            word("koala"),
+            word("panda"),
+            word("otter"),
+            word("dolphin"),
+            word("crab"),
+            word("spider"),
+            word("dragon"),
+            sub("unicorn"),
+            sub("phoenix"),
+            word("goose"),
+            word("chicken"),
+            word("squirrel"),
+            sub("raccoon"),
+            word("llama"),
+            word("alpaca"),
+            word("moose"),
+            word("turtle"),
+            word("toad"),
+            word("snail"),
+            sub("butterfly"),
+            word("beetle"),
+            sub("gator"),
+            sub("croc"),
+            word("beast"),
+            sub("kitten"),
+            sub("puppy"),
+            sub("bunny"),
+        ],
+    },
+];
+
 /// Deterministic evidence available at classification time.
 ///
 /// Every metadata field is an [`Option`]: `None` means the lane was not

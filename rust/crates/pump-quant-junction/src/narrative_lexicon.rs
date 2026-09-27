@@ -22,12 +22,17 @@ use pump_quant_narrative::alias_stage::{
     nv_alias_stage, AliasObservation, AliasStage, STAGE_THRESHOLDS_V1,
 };
 use pump_quant_narrative::dynamic_lexicon::{
-    nv_family_resolve, DynFamilyEntry, DynNeedle, DynamicLexicon, Provenance,
+    nv_family_resolve_with_inference, DynFamilyEntry, DynNeedle, DynamicLexicon, LexiconSource,
+    Provenance,
 };
 use pump_quant_narrative::entry_narrative::{
     nv_narrative_verdict, NarrativeInputs, NarrativeVerdict,
 };
-use pump_quant_narrative::narrative_family::{MatchMode, NarrativeFamily, FAMILY_LEXICON_V1};
+use pump_quant_narrative::narrative_family::{
+    MatchMode, NarrativeFamily, FAMILY_LEXICON_V1, NAME_INFERENCE_V1,
+};
+// The serve-side bridge: live inputs -> the exact block the model is shown.
+use pump_quant_proposal::TokenIdentity;
 
 /// Window the alias ring keeps for crowding counts (24h) and for the weekly
 /// baseline that acceleration is measured against (7d).
@@ -402,23 +407,37 @@ impl NarrativeLexicon {
                 version: bversion,
                 entries: &entries,
             };
-            let resolution = nv_family_resolve(
+            let resolution = nv_family_resolve_with_inference(
                 name,
                 symbol,
                 FAMILY_LEXICON_V1,
                 Some(&dl),
+                // Tried LAST, and only ever reported as `NameInference`. The operator's
+                // instruction was to infer from the name: a name is creation metadata, so
+                // this reading cannot look ahead and needs no time window.
+                NAME_INFERENCE_V1,
                 now_ms,
                 false, // quarantine (model proposals) is measurement-only
             );
 
             // Which entry fired, if any — needed for the alias stage.
-            let hit: Option<usize> = resolution.matched_text.and_then(|t| {
-                slice
-                    .iter()
-                    .position(|e| e.alias == t && Some(e.family) == Some(resolution.family))
-                    // GLOBAL index: `observation`/`record` key on the flat vector.
-                    .map(|i| bstart + i)
-            });
+            //
+            // Only an OBSERVED hit may be attributed to a bucket entry. An inference
+            // hit is a reading of the name, not evidence that this entry fired; if it
+            // were allowed through, a name whose text happens to equal an observed
+            // alias (say `ansem`) would be recorded against that alias and the ring
+            // buffer would stop being strictly causal — the precise failure the
+            // causality guard exists to prevent.
+            let hit: Option<usize> = match resolution.source {
+                Some(LexiconSource::NameInference) | None => None,
+                Some(_) => resolution.matched_text.and_then(|t| {
+                    slice
+                        .iter()
+                        .position(|e| e.alias == t && Some(e.family) == Some(resolution.family))
+                        // GLOBAL index: `observation`/`record` key on the flat vector.
+                        .map(|i| bstart + i)
+                }),
+            };
             let stage = hit.map(|idx| {
                 nv_alias_stage(now_ms, &self.observation(idx, now_ms), &STAGE_THRESHOLDS_V1)
             });
@@ -449,6 +468,23 @@ impl NarrativeLexicon {
             self.record(idx, now_ms);
         }
         out
+    }
+
+    /// The model-facing identity for a launch — **the serve-side call.**
+    ///
+    /// THIS IS THE GAP, CLOSED. The engine carries the narrative codes as integers
+    /// (§22 keeps strings off the outcome path) and the bundle has an `identity` slot
+    /// that nothing ever filled, so the live model was being shown no name at all. A
+    /// serve path holding a mint's creation metadata calls this once and attaches the
+    /// result to `BundleInputs::identity`, which the shipped `BundlePolicy::live()`
+    /// then emits.
+    ///
+    /// `query_evidence` stays `None` deliberately: no j7/social evidence is wired at
+    /// this point, and a slot that renders `none` is honest where a placeholder string
+    /// would be fabricated.
+    pub fn resolve_identity(&mut self, name: &str, symbol: &str, now_ms: u64) -> TokenIdentity {
+        let (verdict, stage, family, version) = self.resolve(name, symbol, now_ms);
+        TokenIdentity::from_codes(name, symbol, verdict, stage, family, version, None)
     }
 }
 
@@ -545,15 +581,23 @@ mod tests {
 
     /// The causality guard, end to end through the loader: a mint seen BEFORE an
     /// entry became usable must not be recorded against it.
+    ///
+    /// NB the family still resolves — from the NAME-INFERENCE table, which reads
+    /// creation metadata and needs no time window. That is not the observed entry
+    /// firing early, and the ring-buffer assertion below is what proves it.
     #[test]
     fn a_mint_predating_the_entry_is_not_counted_against_it() {
         let p = fixture(LIVE); // as_of_ms = 500
         let mut l = NarrativeLexicon::load(&p).unwrap();
-        let (v, _, f, _) = l.resolve("ansem thing", "ANSEM", 100); // before as_of
-        assert_eq!((v, f), (5, 0), "not usable yet -> unresolved, no family");
+        let (_, _, f, _) = l.resolve("ansem thing", "ANSEM", 100); // before as_of
         assert!(
             !l.alias_seen.contains_key("ansem"),
             "a pre-as_of mint must leave no trace in the ring buffer"
+        );
+        assert_eq!(
+            f,
+            NarrativeFamily::Celebrity.ordinal(),
+            "the family comes from inference, not from the not-yet-usable entry"
         );
     }
 
@@ -624,5 +668,51 @@ mod tests {
             1,
             "no `buckets` key -> one bucket stamped from the document's as_of_ms"
         );
+    }
+
+    // ---- SERVE PATH, END TO END ---------------------------------------------
+    //
+    // Live inputs (creation metadata + clock) must produce the model-facing block.
+    // Before `resolve_identity` existed, nothing filled `BundleInputs::identity` and
+    // the live prompt carried no name at all.
+
+    #[test]
+    fn the_serve_path_renders_the_token_name_into_the_model_prompt() {
+        let p = fixture(LIVE);
+        let mut l = NarrativeLexicon::load(&p).unwrap();
+        let id = l.resolve_identity("ansem thing", "ANSEM", 2000);
+        assert_eq!(id.name, "ansem thing");
+        assert_eq!(id.symbol, "ANSEM");
+        let rendered = pump_quant_proposal::render_identity(&Some(id));
+        assert!(rendered.contains("token_name=ansem thing"), "{rendered}");
+        assert!(rendered.contains("token_symbol=ANSEM"), "{rendered}");
+        assert!(
+            rendered.contains("narrative_family=celebrity"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("narrative_verdict=Eligible"),
+            "{rendered}"
+        );
+    }
+
+    /// The live case that matters most: a brand-new meta with NO resolved narrative.
+    /// The name must still reach the model, with the unresolved state stated plainly
+    /// rather than the block being suppressed.
+    #[test]
+    fn the_serve_path_still_carries_an_unresolved_name() {
+        let p = fixture(LIVE);
+        let mut l = NarrativeLexicon::load(&p).unwrap();
+        let id = l.resolve_identity("totally novel thing", "NOVEL", 2000);
+        let rendered = pump_quant_proposal::render_identity(&Some(id));
+        assert!(
+            rendered.contains("token_name=totally novel thing"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("narrative_verdict=Unresolved"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("query_evidence=none"), "{rendered}");
     }
 }
