@@ -181,6 +181,7 @@ pub const fn brain_narrative_class(family: NarrativeFamily) -> BrainNarrativeCla
         NarrativeFamily::Derivative => BrainNarrativeClass::Derivative,
         NarrativeFamily::Stream => BrainNarrativeClass::Stream,
         NarrativeFamily::Seasonal => BrainNarrativeClass::Seasonal,
+        NarrativeFamily::Promotional => BrainNarrativeClass::Promotional,
     }
 }
 

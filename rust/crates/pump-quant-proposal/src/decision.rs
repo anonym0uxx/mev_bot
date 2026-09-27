@@ -178,7 +178,7 @@ impl TokenIdentity {
             4 => "saturated",
             _ => "unobserved",
         };
-        // Mirrors `narrative_family::NarrativeFamily` (Unclassified..Seasonal).
+        // Mirrors `narrative_family::NarrativeFamily` (Unclassified..Promotional).
         let family = match family {
             1 => "animal",
             2 => "political",
@@ -187,6 +187,7 @@ impl TokenIdentity {
             5 => "derivative",
             6 => "stream",
             7 => "seasonal",
+            8 => "promotional",
             _ => "unclassified",
         };
         Self {
