@@ -85,6 +85,26 @@ pub enum NarrativeFamily {
     Stream = 6,
     /// Recurring seasonal or calendar meme.
     Seasonal = 7,
+    /// The name is PROMOTIONAL BOILERPLATE — an advertisement or an instruction,
+    /// not a narrative ("read this", "check my wallet", "free money", "send sol").
+    ///
+    /// WHY THIS IS A LABEL AND NOT A DISCARD (measured 2026-09-26, 798,430 mints).
+    /// These names are anti-predictive, so the class is real signal rather than a
+    /// coverage gap:
+    ///
+    /// | stratum | boilerplate | baseline |
+    /// |---|---|---|
+    /// | active (n>=50 trades) | **2.32%** grad | 2.81% |
+    /// | all rows | **0.328%** grad | 0.622% |
+    ///
+    /// Roughly half the base rate in both strata. Filing these under `Unclassified`
+    /// would throw that away AND conflate "we found no evidence" with "there is
+    /// nothing to find" — two different facts the model must be able to tell apart.
+    ///
+    /// It is deliberately NOT applied to instruction-shaped text that tries to
+    /// command the reader; that is adversarial, not merely promotional, and it is
+    /// quarantined from training instead of labelled. See the SFT builder.
+    Promotional = 8,
 }
 
 impl NarrativeFamily {
@@ -106,6 +126,7 @@ impl NarrativeFamily {
             5 => Some(Self::Derivative),
             6 => Some(Self::Stream),
             7 => Some(Self::Seasonal),
+            8 => Some(Self::Promotional),
             _ => None,
         }
     }
@@ -260,6 +281,12 @@ pub const FAMILY_LEXICON_V1: &[FamilyLexicon] = &[
 /// [`NAME_INFERENCE_V1`].
 pub const NAME_INFERENCE_VERSION: u32 = 1;
 
+/// Version of the promotional-boilerplate rule ([`nv_is_promotional`]). Bump on any
+/// change to [`PROMOTIONAL_WORDS`] or the ratio — and re-measure
+/// [`NarrativeFamily::Promotional`]'s graduation numbers when you do, because the
+/// label's justification IS that measurement.
+pub const PROMOTIONAL_RULE_VERSION: u32 = 1;
+
 /// The versioned NAME-INFERENCE table (2026-09-26).
 ///
 /// WHY IT EXISTS. [`FAMILY_LEXICON_V1`] is a table of SPECIFIC observed memes
@@ -410,6 +437,63 @@ pub const NAME_INFERENCE_V1: &[FamilyLexicon] = &[
         ],
     },
 ];
+
+/// Words that carry no narrative. Drawn from the corpus's most frequent name
+/// tokens, MINUS anything that denotes a subject (those are inference cues in
+/// [`NAME_INFERENCE_V1`], not boilerplate).
+///
+/// Exact set used by the measurement that produced
+/// [`NarrativeFamily::Promotional`]'s graduation numbers, so the evidence and the
+/// rule stay in step. Changing this set invalidates those numbers until re-measured.
+const PROMOTIONAL_WORDS: &[&str] = &[
+    "the", "this", "for", "read", "hello", "good", "live", "world", "its", "and", "just", "check",
+    "claimed", "not", "real", "name", "said", "with", "has", "all", "will", "his", "they", "only",
+    "free", "you", "one", "times", "best", "new", "test", "send", "posted", "viral", "white",
+    "black", "life", "works", "supply", "money", "fees", "buy", "coin", "meme", "dev", "mayhem",
+    "what", "when", "who", "how", "now", "get", "got", "make", "made", "take", "took", "come",
+    "came", "want", "need", "know", "like", "look", "see", "ask", "tell", "say",
+];
+
+/// ASCII-case-insensitive equality without allocating.
+fn eq_word(a: &str, b: &str) -> bool {
+    a.len() == b.len()
+        && a.bytes()
+            .zip(b.bytes())
+            .all(|(x, y)| x.eq_ignore_ascii_case(&y))
+}
+
+/// Whether the name is promotional boilerplate rather than a narrative.
+///
+/// The rule, which mirrors the measurement behind [`NarrativeFamily::Promotional`]:
+/// tokenise to lowercase alphanumeric runs of length `>= 3` that are not purely
+/// numeric; the name is promotional when **every** such word is a
+/// [`PROMOTIONAL_WORDS`] entry, or when it has at least two words and `>= 60%` of
+/// them are.
+///
+/// The ratio form is why this cannot be a needle table: the claim is about the name
+/// as a WHOLE, and a substring needle like `the` would fire on `the dog` — which is
+/// an animal meme, not an advertisement.
+///
+/// Allocation-free, panic-free on any input.
+#[must_use]
+pub fn nv_is_promotional(name: &str) -> bool {
+    let mut total = 0u32;
+    let mut hits = 0u32;
+    for w in name.split(|c: char| !c.is_ascii_alphanumeric()) {
+        if w.len() < 3 || w.bytes().all(|b| b.is_ascii_digit()) {
+            continue;
+        }
+        total = total.saturating_add(1);
+        if PROMOTIONAL_WORDS.iter().any(|k| eq_word(w, k)) {
+            hits = hits.saturating_add(1);
+        }
+    }
+    if total == 0 {
+        return false;
+    }
+    // all words, or >= 60% with at least two words (integer ratio: hits*10 >= total*6)
+    hits == total || (total >= 2 && hits.saturating_mul(10) >= total.saturating_mul(6))
+}
 
 /// Deterministic evidence available at classification time.
 ///

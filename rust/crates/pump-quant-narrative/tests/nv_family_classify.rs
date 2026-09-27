@@ -93,11 +93,15 @@ fn family_ordinals_are_stable_and_round_trip() {
         (NarrativeFamily::Derivative, 5),
         (NarrativeFamily::Stream, 6),
         (NarrativeFamily::Seasonal, 7),
+        (NarrativeFamily::Promotional, 8),
     ] {
         assert_eq!(f.ordinal(), o);
         assert_eq!(NarrativeFamily::from_ordinal(o), Some(f));
     }
-    assert_eq!(NarrativeFamily::from_ordinal(8), None);
+    // Append-only: a new family takes the next ordinal and the sentinel for
+    // "beyond the table" moves with it. Existing values must never be reused or
+    // renumbered, because the ordinal is the dense one-hot index downstream.
+    assert_eq!(NarrativeFamily::from_ordinal(9), None);
 }
 
 // ---------------------------------------------------------------------------

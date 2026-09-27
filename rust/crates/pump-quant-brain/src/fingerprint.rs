@@ -246,6 +246,11 @@ pub enum NarrativeClass {
     Stream,
     /// Recurring seasonal or calendar meme.
     Seasonal,
+    /// Promotional boilerplate rather than a narrative — an advertisement or an
+    /// instruction, not a subject. Anti-predictive of graduation (roughly half the
+    /// base rate), so it is kept as its own nominal slot rather than folded into
+    /// `Unclassified`, which would silently discard that signal from the fingerprint.
+    Promotional,
 }
 
 impl NarrativeClass {
@@ -261,6 +266,7 @@ impl NarrativeClass {
             Self::Derivative => 5,
             Self::Stream => 6,
             Self::Seasonal => 7,
+            Self::Promotional => 8,
         }
     }
 }

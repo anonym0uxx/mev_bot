@@ -96,6 +96,7 @@ fn family_from_str(s: &str) -> Option<NarrativeFamily> {
         "derivative" => Some(NarrativeFamily::Derivative),
         "stream" => Some(NarrativeFamily::Stream),
         "seasonal" => Some(NarrativeFamily::Seasonal),
+        "promotional" => Some(NarrativeFamily::Promotional),
         _ => None,
     }
 }

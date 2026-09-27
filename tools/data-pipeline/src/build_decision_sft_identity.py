@@ -121,6 +121,40 @@ def decision_word_in(text):
     return None
 
 
+# Instruction-shaped text. This is ADVERSARIAL, not merely promotional: the name is
+# carried into the prompt VERBATIM, so a name that tries to COMMAND the reader is a
+# prompt-injection vector sitting inside the training data. Such records are
+# QUARANTINED rather than labelled — giving them a family would still put the
+# instruction in front of the model, which is the thing being avoided.
+#
+# Narrow on purpose, because a false positive costs a real record. Ordinary shill
+# text ("free money", "check my wallet") is NOT injection; it is the `Promotional`
+# family. Only text that addresses the READER or names a channel is caught here.
+INJECTION_PATTERNS = (
+    r"\bignore\b.{0,24}\b(previous|above|prior|earlier|instruction)",
+    r"\b(disregard|forget)\b.{0,24}\b(instruction|prompt|above|previous|rules)",
+    r"\byou\s+(are|must|should|will|need to)\b",
+    r"\byour\s+(task|job|role|instruction)",
+    r"\b(system|assistant|developer)\s*:",
+    r"\b(return|answer|respond|reply|output|print|say)\s+(with\s+)?(buy|sell|hold|skip)\b",
+    r"\b(act as|pretend to be)\b",
+    r"\bnew\s+(rule|instruction)",
+    r"\bdo not\s+(buy|sell|trade|hold)\b",
+    r"\boverride\b.{0,24}\b(instruction|rule|prompt)",
+)
+
+
+def injection_in(text):
+    """The first instruction-shaped pattern in the text, if any."""
+    if text is None:
+        return None
+    low = text.lower()
+    for pat in INJECTION_PATTERNS:
+        if re.search(pat, low):
+            return pat
+    return None
+
+
 def build_record_with_identity(record, events, name, symbol, narrative, forward=False):
     """Frozen record + identity/narrative. Returns (record, prompt, failures).
 
@@ -139,6 +173,10 @@ def build_record_with_identity(record, events, name, symbol, narrative, forward=
         hit = decision_word_in(field)
         if hit:
             failures.append("identity_name_contains_decision_word:" + hit)
+        # ...nor carry instruction-shaped text into the prompt at all. Frozen mode
+        # passes None here, so this can never perturb the byte-identical path.
+        if injection_in(field):
+            failures.append("identity_name_is_instruction_shaped")
     if narrative:
         for key in ("family", "stage", "verdict"):
             hit = decision_word_in(str(narrative.get(key)))

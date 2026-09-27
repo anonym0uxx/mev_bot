@@ -25,6 +25,8 @@
 use std::io::{BufRead, BufWriter, Write};
 
 use pump_quant_junction::narrative_lexicon::NarrativeLexicon;
+// The ONE wire-code -> label mapping. Never re-implement it here.
+use pump_quant_proposal::TokenIdentity;
 
 fn main() {
     let mut args = std::env::args().skip(1);
@@ -127,15 +129,20 @@ fn main() {
         last_t = last_t.max(t_ms);
 
         let (verdict, stage, family, lexicon_version) = lex.resolve(&name, &symbol, t_ms);
+        // The labels are NOT mapped in this file. `TokenIdentity::from_codes` is the one
+        // wire-code -> label source; a second copy here is exactly how code 8 came out as
+        // "unclassified" in the sidecar while the resolver was correctly emitting
+        // `Promotional`. Delegating means a new family cannot be half-added again.
+        let id = TokenIdentity::from_codes("", "", verdict, stage, family, lexicon_version, None);
         let _ = writeln!(
             out,
             "{{\"mint\":\"{}\",\"t_ms\":{},\"family\":\"{}\",\"stage\":\"{}\",\
               \"verdict\":\"{}\",\"lexicon_version\":{}}}",
             mint.escape_default(),
             t_ms,
-            label_family(family),
-            label_stage(stage),
-            label_verdict(verdict),
+            id.family,
+            id.stage,
+            id.verdict,
             lexicon_version
         );
         n += 1;
@@ -149,39 +156,5 @@ fn main() {
              for those rows was computed against a stream that had already seen later mints"
         );
         std::process::exit(4);
-    }
-}
-
-fn label_verdict(code: u8) -> &'static str {
-    match code {
-        1 => "Eligible",
-        2 => "Saturated",
-        3 => "NoAttach",
-        4 => "Throwaway",
-        5 => "Unresolved",
-        _ => "Unobserved",
-    }
-}
-
-fn label_stage(code: u8) -> &'static str {
-    match code {
-        1 => "novel",
-        2 => "rising",
-        3 => "cresting",
-        4 => "saturated",
-        _ => "unobserved",
-    }
-}
-
-fn label_family(code: u8) -> &'static str {
-    match code {
-        1 => "animal",
-        2 => "political",
-        3 => "celebrity",
-        4 => "tech",
-        5 => "derivative",
-        6 => "stream",
-        7 => "seasonal",
-        _ => "unclassified",
     }
 }

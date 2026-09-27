@@ -246,7 +246,23 @@ pub fn nv_family_resolve_with_inference<'a>(
         }
     }
 
-    // 3. NAME-INFERENCE table. A descriptive reading only, and only when nothing
+    // 3. Promotional boilerplate. The name carries an ADVERTISEMENT or an instruction
+    // rather than a narrative, so no subject family would be the truthful answer even
+    // if a cue happens to fire inside it ("buy dog coin" is a shill, not an animal
+    // meme). Checked before subject inference for that reason, but still AFTER every
+    // observed table: an observed alias match is real evidence about the meta.
+    if crate::narrative_family::nv_is_promotional(name) {
+        return FamilyResolution {
+            family: NarrativeFamily::Promotional,
+            source: Some(LexiconSource::NameInference),
+            matched_text: None,
+            version: crate::narrative_family::PROMOTIONAL_RULE_VERSION,
+            freshness: freshness_of(dynamic, now_ms),
+            age_ms: None,
+        };
+    }
+
+    // 4. NAME-INFERENCE table. A descriptive reading only, and only when nothing
     // observed fired. It cannot look ahead — the name is creation metadata known at
     // the decision instant — so no time window applies, but it is still reported
     // under its own source rather than smuggled in as evidence.
@@ -267,7 +283,7 @@ pub fn nv_family_resolve_with_inference<'a>(
         }
     }
 
-    // 4. No evidence. Never a guess (§6.4).
+    // 5. No evidence. Never a guess (§6.4).
     let freshness = freshness_of(dynamic, now_ms);
     FamilyResolution {
         family: NarrativeFamily::Unclassified,
@@ -584,10 +600,28 @@ mod tests {
         }
     }
 
-    /// A name with no cue stays Unclassified. Inference must not manufacture a
-    /// family for boilerplate — "read this" is not a narrative.
+    /// A name with no cue AT ALL stays Unclassified — inference must not manufacture a
+    /// family from nothing. Boilerplate is a different case and now has its own label
+    /// (see the promotional tests): "read this for good luck" is an advertisement, not
+    /// an absence.
     #[test]
-    fn inference_never_invents_a_family_for_boilerplate() {
+    fn inference_never_invents_a_family_from_nothing() {
+        let r = nv_family_resolve_with_inference(
+            "vandelay industries",
+            "VI",
+            FAMILY_LEXICON_V1,
+            None,
+            crate::narrative_family::NAME_INFERENCE_V1,
+            2_000,
+            false,
+        );
+        assert_eq!(r.source, None, "no cue fired, so there is no family");
+        assert_eq!(r.family, NarrativeFamily::Unclassified);
+    }
+
+    /// ...and the boilerplate case it used to be folded into is now labelled.
+    #[test]
+    fn boilerplate_is_labelled_rather_than_left_unclassified() {
         let r = nv_family_resolve_with_inference(
             "read this for good luck",
             "READ",
@@ -597,8 +631,7 @@ mod tests {
             2_000,
             false,
         );
-        assert_eq!(r.source, None, "no cue fired, so there is no family");
-        assert_eq!(r.family, NarrativeFamily::Unclassified);
+        assert_eq!(r.family, NarrativeFamily::Promotional);
     }
 
     /// The default entry point must stay observed-only: existing callers were
@@ -615,5 +648,102 @@ mod tests {
         );
         assert_eq!(r.source, None);
         assert_eq!(r.family, NarrativeFamily::Unclassified);
+    }
+
+    // ---- PROMOTIONAL --------------------------------------------------------
+
+    /// Boilerplate resolves to its OWN family, not `Unclassified`. The distinction is
+    /// the point: "we found no evidence" and "there is an advertisement here" are
+    /// different facts, and the measured graduation rates differ (2.32% vs 2.49%).
+    #[test]
+    fn a_boilerplate_name_is_promotional_not_unclassified() {
+        for name in [
+            "read this",
+            "free money",
+            "buy coin",
+            "the best coin",
+            "test",
+        ] {
+            let r = nv_family_resolve_with_inference(
+                name,
+                "X",
+                FAMILY_LEXICON_V1,
+                None,
+                crate::narrative_family::NAME_INFERENCE_V1,
+                2_000,
+                false,
+            );
+            assert_eq!(r.family, NarrativeFamily::Promotional, "{name}");
+            assert_eq!(r.source, Some(LexiconSource::NameInference), "{name}");
+        }
+    }
+
+    /// The rule is about the name as a WHOLE, so one stock word does not condemn a
+    /// real subject. `the dog` is an animal meme, and `silicon duck` is tech.
+    #[test]
+    fn one_boilerplate_word_does_not_make_a_subject_promotional() {
+        for (name, want) in [
+            ("the dog", NarrativeFamily::Animal),
+            ("silicon duck", NarrativeFamily::Tech),
+        ] {
+            let r = nv_family_resolve_with_inference(
+                name,
+                "X",
+                FAMILY_LEXICON_V1,
+                None,
+                crate::narrative_family::NAME_INFERENCE_V1,
+                2_000,
+                false,
+            );
+            assert_eq!(r.family, want, "{name}");
+        }
+    }
+
+    /// Observed evidence outranks promotional detection, exactly as it outranks
+    /// subject inference: a resolved alias is a measured fact about the meta.
+    #[test]
+    fn observed_evidence_still_outranks_promotional() {
+        let needles = [dsub("ansem")];
+        let entries = [entry(
+            NarrativeFamily::Celebrity,
+            &needles,
+            1_000,
+            1_000,
+            86_400_000,
+            Provenance::Pipeline,
+        )];
+        let dl = DynamicLexicon {
+            version: 1,
+            entries: &entries,
+        };
+        let r = nv_family_resolve_with_inference(
+            "ansem read this",
+            "ANSEM",
+            FAMILY_LEXICON_V1,
+            Some(&dl),
+            crate::narrative_family::NAME_INFERENCE_V1,
+            2_000,
+            false,
+        );
+        assert_eq!(r.source, Some(LexiconSource::Dynamic));
+        assert_eq!(r.family, NarrativeFamily::Celebrity);
+    }
+
+    /// No words, or nothing but numbers/emoji, is NOT promotional — absence stays
+    /// absence rather than becoming a claim.
+    #[test]
+    fn an_empty_or_numeric_name_is_not_promotional() {
+        for name in ["", "   ", "12345", "\u{1F355}"] {
+            let r = nv_family_resolve_with_inference(
+                name,
+                "X",
+                FAMILY_LEXICON_V1,
+                None,
+                crate::narrative_family::NAME_INFERENCE_V1,
+                2_000,
+                false,
+            );
+            assert_ne!(r.family, NarrativeFamily::Promotional, "{name}");
+        }
     }
 }
