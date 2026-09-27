@@ -393,6 +393,62 @@ mod tests {
         }
     }
 
+    /// The SHIPPED policy puts the token NAME in front of the CURRENT model.
+    ///
+    /// Operator decision 2026-09-26: the name is the mint's own creation metadata and the
+    /// narrative renders as human-readable labels, so the model can infer over it without
+    /// having trained on the block's format. This is the end of the wiring that matters —
+    /// detection -> policy -> rendered prompt — and it is what "use the token name with the
+    /// current model" means in code. The policy here is `BundlePolicy::default()`, i.e. the
+    /// shipped posture, NOT a test-only widening.
+    #[test]
+    fn the_shipped_policy_shows_the_token_name_to_the_current_model() {
+        let (s, e, f) = (snapshot(), enriched(), flow());
+        let mut i = inputs(&s, &e, &f);
+        i.identity = Some(sample_identity());
+        let pol = BundlePolicy::default();
+        i.policy = &pol;
+
+        let rendered = render_decision(&assemble(&i).expect("assembles"));
+        assert!(
+            rendered.contains("token_name=mensa"),
+            "the shipped policy must put the name in the prompt: {rendered}"
+        );
+        assert!(rendered.contains("token_symbol=MENSA"), "{rendered}");
+        assert!(
+            rendered.contains("narrative_verdict=Eligible"),
+            "{rendered}"
+        );
+    }
+
+    /// An UNRESOLVED narrative must not suppress the name.
+    ///
+    /// This is the case that matters most in live trading: a brand-new meta the lexicon has
+    /// never seen. The prompt still carries the name and says plainly that there is no resolved
+    /// attachment, so the model infers on the name alone — which is the entire point of the
+    /// operator's ruling. Dropping the block here would make the model blind exactly when the
+    /// name is the only signal available.
+    #[test]
+    fn an_unresolved_narrative_still_puts_the_name_before_the_model() {
+        let (s, e, f) = (snapshot(), enriched(), flow());
+        let mut i = inputs(&s, &e, &f);
+        let mut id = sample_identity();
+        id.family = "unclassified".to_string();
+        id.stage = "unobserved".to_string();
+        id.verdict = "Unresolved".to_string();
+        i.identity = Some(id);
+        let pol = BundlePolicy::default();
+        i.policy = &pol;
+
+        let rendered = render_decision(&assemble(&i).expect("assembles"));
+        assert!(rendered.contains("token_name=mensa"), "{rendered}");
+        assert!(
+            rendered.contains("narrative_verdict=Unresolved"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("query_evidence=none"), "{rendered}");
+    }
+
     /// A candidate identity the corpus has not trained on is WITHHELD, not
     /// rendered. The field-family gate is what stops an OOD input reaching the
     /// model, and it has to hold even when a producer supplies the identity —
@@ -404,7 +460,9 @@ mod tests {
         let mut i = inputs(&s, &e, &f);
         i.identity = Some(sample_identity());
 
-        // trained_only is the SHIPPED posture: supplied, yet not shown.
+        // `trained_only()` encodes the FACT: no corpus has trained on the identity yet. The
+        // same candidate is supplied, and the fact-encoding policy does not show it.
+        // (The SHIPPED posture is `live()` — see the test below.)
         let withheld = assemble(&i).expect("assembles");
         assert!(
             withheld.identity.is_none(),
