@@ -96,6 +96,10 @@ pub enum LexiconSource {
     Pinned,
     /// A runtime-loaded entry.
     Dynamic,
+    /// The name-INFERENCE table: a descriptive reading of what the name is about,
+    /// not measured evidence about attention or crowding. Always tried last, so it
+    /// can never outrank an observed match.
+    NameInference,
 }
 
 /// Freshness of the dynamic layer AT the supplied instant. Reported, never
@@ -162,12 +166,39 @@ pub const fn entry_expired_at(e: &DynFamilyEntry<'_>, now_ms: u64) -> bool {
 ///   entries are skipped entirely. Pass `true` only for measurement/analysis.
 ///
 /// Pure, allocation-free, panic-free on any input.
+///
+/// This is [`nv_family_resolve_with_inference`] with no inference table, so every
+/// existing caller keeps the observed-only semantics it was written against.
 #[must_use]
 pub fn nv_family_resolve<'a>(
     name: &str,
     symbol: &str,
     pinned: &[crate::narrative_family::FamilyLexicon],
     dynamic: Option<&DynamicLexicon<'a>>,
+    now_ms: u64,
+    use_quarantine: bool,
+) -> FamilyResolution<'a> {
+    nv_family_resolve_with_inference(name, symbol, pinned, dynamic, &[], now_ms, use_quarantine)
+}
+
+/// As [`nv_family_resolve`], with a NAME-INFERENCE table tried **last**.
+///
+/// The cascade is `pinned` (curated, observed) → `dynamic` (mined, observed) →
+/// `inference` (a descriptive reading of the name). Inference is entered only when
+/// nothing observed fired, and a hit is reported as
+/// [`LexiconSource::NameInference`] so it can never be read as measured evidence.
+///
+/// No causality guard applies to this stage, and that is not an oversight: the name
+/// is the mint's own creation metadata, known at the instant of the decision, so a
+/// reading of it cannot look ahead. The dynamic stage needs time windows precisely
+/// because crowd evidence ACCRUES; a name does not.
+#[must_use]
+pub fn nv_family_resolve_with_inference<'a>(
+    name: &str,
+    symbol: &str,
+    pinned: &[crate::narrative_family::FamilyLexicon],
+    dynamic: Option<&DynamicLexicon<'a>>,
+    inference: &[crate::narrative_family::FamilyLexicon],
     now_ms: u64,
     use_quarantine: bool,
 ) -> FamilyResolution<'a> {
@@ -215,7 +246,28 @@ pub fn nv_family_resolve<'a>(
         }
     }
 
-    // 3. No evidence. Never a guess (§6.4).
+    // 3. NAME-INFERENCE table. A descriptive reading only, and only when nothing
+    // observed fired. It cannot look ahead — the name is creation metadata known at
+    // the decision instant — so no time window applies, but it is still reported
+    // under its own source rather than smuggled in as evidence.
+    for entry in inference {
+        for needle in entry.needles {
+            if matches_needle_text(name, needle.text, needle.mode)
+                || matches_needle_text(symbol, needle.text, needle.mode)
+            {
+                return FamilyResolution {
+                    family: entry.family,
+                    source: Some(LexiconSource::NameInference),
+                    matched_text: Some(needle.text),
+                    version: crate::narrative_family::NAME_INFERENCE_VERSION,
+                    freshness: freshness_of(dynamic, now_ms),
+                    age_ms: None,
+                };
+            }
+        }
+    }
+
+    // 4. No evidence. Never a guess (§6.4).
     let freshness = freshness_of(dynamic, now_ms);
     FamilyResolution {
         family: NarrativeFamily::Unclassified,
@@ -473,5 +525,95 @@ mod tests {
         );
         assert_eq!(with_none.family, pinned_only.family);
         assert_eq!(with_none.matched_text, pinned_only.matched_needle);
+    }
+
+    // ---- NAME INFERENCE -----------------------------------------------------
+
+    #[test]
+    fn inference_resolves_a_novel_name_the_observed_tables_miss() {
+        // `silicon duck` fires nothing in the pinned table (no `silicon`, no `duck`)
+        // or the dynamic one. A human reading the name infers a family; that gap is
+        // exactly what inference closes.
+        let r = nv_family_resolve_with_inference(
+            "silicon duck",
+            "SDUCK",
+            FAMILY_LEXICON_V1,
+            None,
+            crate::narrative_family::NAME_INFERENCE_V1,
+            2_000,
+            false,
+        );
+        assert!(r.is_resolved(), "the name must resolve");
+        assert_eq!(r.source, Some(LexiconSource::NameInference));
+        assert_eq!(r.family, NarrativeFamily::Tech);
+    }
+
+    /// Inference must NEVER outrank observed evidence. `elon cat` trips a PINNED
+    /// Celebrity needle and the inference Animal cue; the pinned hit wins.
+    #[test]
+    fn observed_evidence_always_outranks_inference() {
+        let r = nv_family_resolve_with_inference(
+            "elon cat",
+            "ELONCAT",
+            FAMILY_LEXICON_V1,
+            None,
+            crate::narrative_family::NAME_INFERENCE_V1,
+            2_000,
+            false,
+        );
+        assert_eq!(r.source, Some(LexiconSource::Pinned));
+        assert_eq!(r.family, NarrativeFamily::Celebrity);
+    }
+
+    /// The name is creation metadata, so inference needs NO time window: it resolves
+    /// at any instant, including before any lexicon existed.
+    #[test]
+    fn inference_needs_no_time_window() {
+        for now in [0u64, 1, 1_000_000_000_000] {
+            let r = nv_family_resolve_with_inference(
+                "vance duck", // inference-only Political cue beats the Animal cue
+                "VDUCK",
+                FAMILY_LEXICON_V1,
+                None,
+                crate::narrative_family::NAME_INFERENCE_V1,
+                now,
+                false,
+            );
+            assert_eq!(r.source, Some(LexiconSource::NameInference));
+            assert_eq!(r.family, NarrativeFamily::Political);
+        }
+    }
+
+    /// A name with no cue stays Unclassified. Inference must not manufacture a
+    /// family for boilerplate — "read this" is not a narrative.
+    #[test]
+    fn inference_never_invents_a_family_for_boilerplate() {
+        let r = nv_family_resolve_with_inference(
+            "read this for good luck",
+            "READ",
+            FAMILY_LEXICON_V1,
+            None,
+            crate::narrative_family::NAME_INFERENCE_V1,
+            2_000,
+            false,
+        );
+        assert_eq!(r.source, None, "no cue fired, so there is no family");
+        assert_eq!(r.family, NarrativeFamily::Unclassified);
+    }
+
+    /// The default entry point must stay observed-only: existing callers were
+    /// written against a cascade with no inference stage.
+    #[test]
+    fn the_default_entry_point_has_no_inference_stage() {
+        let r = nv_family_resolve(
+            "silicon duck",
+            "SDUCK",
+            FAMILY_LEXICON_V1,
+            None,
+            2_000,
+            false,
+        );
+        assert_eq!(r.source, None);
+        assert_eq!(r.family, NarrativeFamily::Unclassified);
     }
 }
