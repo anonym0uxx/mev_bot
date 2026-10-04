@@ -75,6 +75,7 @@ pub mod market_context;
 pub mod measured_state;
 pub mod model_authority;
 pub mod model_lane;
+pub mod model_worker;
 pub mod parse;
 pub mod portfolio;
 pub mod position;
