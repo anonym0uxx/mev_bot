@@ -217,6 +217,39 @@ pub enum AppEvent {
         real_sol_lamports: u64,
     },
 
+    /// A full bonding-curve reserve observation, as decoded from the account update. Additive to
+    /// `OnchainConfirm` (which carries only the SOL side and no clock): the model lane's curve
+    /// plane needs all four reserves plus WHEN the update was received, and a decision may only
+    /// use an observation received at or before its clock.
+    CurveObserved {
+        /// The curve's mint.
+        mint: Mint,
+        /// `virtual_sol_reserves`, lamports.
+        v_sol_lamports: u64,
+        /// `virtual_token_reserves`, raw token units.
+        v_tokens: u64,
+        /// `real_sol_reserves`, lamports.
+        real_sol_lamports: u64,
+        /// `real_token_reserves`, raw token units.
+        real_tokens: u64,
+        /// The sidecar's receive time of the account update, unix ms. `None` is refused by the
+        /// cache: a local clock would be a different quantity.
+        recv_unix_ms: Option<i64>,
+        /// The account update's slot.
+        slot: u64,
+    },
+
+    /// A token launch: who created the mint and when the launch was RECEIVED. First observation
+    /// of a trade is not a launch; this is the only event that establishes creator history.
+    LaunchObserved {
+        /// The launched mint.
+        mint: Mint,
+        /// The creator's wallet address.
+        creator: [u8; 32],
+        /// The launch event's receive time, unix ms.
+        launch_unix_ms: i64,
+    },
+
     /// A deterministic, **on-chain-led** category assignment for a market. The
     /// category classifier ran UPSTREAM on the token's decoded name/symbol (an
     /// `[S]`-boundary concern in `token_ingest`); the engine sees only the resolved
@@ -388,6 +421,8 @@ impl AppEvent {
             | AppEvent::SocialCall { mint, .. }
             | AppEvent::WalletAction { mint, .. }
             | AppEvent::OnchainConfirm { mint, .. }
+            | AppEvent::CurveObserved { mint, .. }
+            | AppEvent::LaunchObserved { mint, .. }
             | AppEvent::TokenMetadata { mint, .. }
             | AppEvent::CreatorAction { mint, .. }
             | AppEvent::Migration { mint, .. }

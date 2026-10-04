@@ -2407,6 +2407,45 @@ impl Engine {
                         .reverse_paper_exit(mint.as_bytes(), pending.size);
                 }
             }
+            // Model-lane provenance feeds. Pure cache writes, armed-only: with the lane off these
+            // are no-ops, so no legacy or golden path can observe them.
+            AppEvent::CurveObserved {
+                mint,
+                v_sol_lamports,
+                v_tokens,
+                real_sol_lamports,
+                real_tokens,
+                recv_unix_ms,
+                slot,
+            } => {
+                if self.paper_model_mode {
+                    // A reserve observation with no wire clock cannot be ordered against a decision
+                    // cutoff, so it is not admitted (a local clock is a different quantity).
+                    if let Some(ts_ms) = recv_unix_ms {
+                        self.model_cache.observe_curve(
+                            *mint.as_bytes(),
+                            crate::curve_annotation::CurveObservation {
+                                v_sol_lamports,
+                                v_tokens,
+                                real_sol_lamports,
+                                real_tokens,
+                                ts_ms,
+                                slot,
+                            },
+                        );
+                    }
+                }
+            }
+            AppEvent::LaunchObserved {
+                mint,
+                creator,
+                launch_unix_ms,
+            } => {
+                if self.paper_model_mode {
+                    self.model_cache
+                        .observe_launch(*mint.as_bytes(), creator, launch_unix_ms);
+                }
+            }
             AppEvent::Tick => self.evaluate(),
         }
     }

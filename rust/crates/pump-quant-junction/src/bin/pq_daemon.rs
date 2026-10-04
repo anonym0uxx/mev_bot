@@ -2525,6 +2525,18 @@ fn main() -> ExitCode {
                             decode_onchain_confirm_with_curve(&mb, &data, slot)
                         {
                             queue.push(provenanced, slot);
+                            // Model lane: the full four-reserve observation with its wire clock.
+                            // Additive; an update with no clock emits nothing.
+                            if let Some(obs) =
+                                pump_quant_junction::decode::curve_observed_from_curve(
+                                    &mb,
+                                    &curve,
+                                    slot,
+                                    recv_unix_ms,
+                                )
+                            {
+                                queue.push(obs, slot);
+                            }
                             stats.ls_onchain_confirms_decoded += 1;
                             stats.last_confirm_tick = tick_counter;
                             stats.pda_venue_matches += 1;

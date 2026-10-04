@@ -413,6 +413,8 @@ fn event_kind(event: &AppEvent) -> &'static str {
         AppEvent::SocialCall { .. } => "SocialCall",
         AppEvent::WalletAction { .. } => "WalletAction",
         AppEvent::OnchainConfirm { .. } => "OnchainConfirm",
+        AppEvent::CurveObserved { .. } => "CurveObserved",
+        AppEvent::LaunchObserved { .. } => "LaunchObserved",
         AppEvent::TokenMetadata { .. } => "TokenMetadata",
         AppEvent::CreatorAction { .. } => "CreatorAction",
         AppEvent::Migration { .. } => "Migration",
@@ -504,6 +506,27 @@ fn event_fields_json(event: &AppEvent) -> String {
                 virtual_sol_lamports
             ));
             parts.push(format!(r#""real_sol_lamports":{}"#, real_sol_lamports));
+        }
+        AppEvent::CurveObserved {
+            v_sol_lamports,
+            v_tokens,
+            real_sol_lamports,
+            real_tokens,
+            recv_unix_ms,
+            slot,
+            ..
+        } => {
+            parts.push(format!(r#""v_sol_lamports":{}"#, v_sol_lamports));
+            parts.push(format!(r#""v_tokens":{}"#, v_tokens));
+            parts.push(format!(r#""real_sol_lamports":{}"#, real_sol_lamports));
+            parts.push(format!(r#""real_tokens":{}"#, real_tokens));
+            if let Some(t) = recv_unix_ms {
+                parts.push(format!(r#""recv_unix_ms":{}"#, t));
+            }
+            parts.push(format!(r#""slot":{}"#, slot));
+        }
+        AppEvent::LaunchObserved { launch_unix_ms, .. } => {
+            parts.push(format!(r#""launch_unix_ms":{}"#, launch_unix_ms));
         }
         AppEvent::TokenMetadata {
             category_id,

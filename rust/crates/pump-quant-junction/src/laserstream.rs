@@ -90,6 +90,11 @@ pub struct LaserStreamTx {
     pub cu_consumed: Option<u64>,
 }
 
+/// pump.fun `create` instruction discriminator (`sha256("global:create")[..8]`).
+pub const PUMP_CREATE_DISCRIMINATOR: [u8; 8] = [24, 30, 200, 40, 5, 28, 7, 119];
+/// pump.fun `create_v2` instruction discriminator (`sha256("global:create_v2")[..8]`).
+pub const PUMP_CREATE_V2_DISCRIMINATOR: [u8; 8] = [214, 144, 76, 236, 95, 139, 49, 180];
+
 /// Classification of a pump.fun instruction found in a LaserStream transaction.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PumpInstruction {
@@ -135,6 +140,10 @@ pub enum PumpInstruction {
     CreatePool { pool: [u8; 32], base_mint: [u8; 32] },
     /// pump.fun → PumpSwap migration.
     Migrate { mint: [u8; 32] },
+    /// pump.fun token launch (`create` / `create_v2`). `creator` is the TRANSACTION SIGNER
+    /// (account key 0), verified against 29 of 30 sampled corpus launches: instruction account
+    /// [1] is NOT the creator on `create_v2`.
+    Launch { mint: [u8; 32], creator: [u8; 32] },
 }
 
 /// Decode a LaserStream transaction into classified pump.fun instructions.
@@ -168,6 +177,17 @@ pub fn classify_pump_instructions(tx: &LaserStreamTx) -> Vec<PumpInstruction> {
                             min_tokens,
                             buyer,
                         });
+                    }
+                } else if (disc == PUMP_CREATE_DISCRIMINATOR
+                    || disc == PUMP_CREATE_V2_DISCRIMINATOR)
+                    && ix.data.len() > 8
+                {
+                    // Launch: instruction account [0] is the mint; the creator is the first
+                    // signer (account key 0). Anything else is refused, never guessed.
+                    if let (Some(mint), Some(creator)) =
+                        (account_key_at(ix, tx, 0), tx.account_keys.first().copied())
+                    {
+                        out.push(PumpInstruction::Launch { mint, creator });
                     }
                 } else if disc == SELL_DISCRIMINATOR && ix.data.len() >= 8 + 8 + 8 {
                     // Account [2] = mint, Account [6] = user (signer — the seller's wallet)
@@ -443,6 +463,22 @@ pub fn instructions_to_events_with_meta(
                     slot,
                     is_live,
                 });
+            }
+            PumpInstruction::Launch { mint, creator } => {
+                // A launch without a wire clock cannot be ordered against a decision cutoff, and
+                // the first trade's time must never stand in for it: emit nothing.
+                if let Some(launch_unix_ms) = recv_unix_ms {
+                    events.push(ProvenancedEvent {
+                        event: AppEvent::LaunchObserved {
+                            mint: Mint(*mint),
+                            creator: *creator,
+                            launch_unix_ms,
+                        },
+                        source: ProvenanceSource::LaserStream,
+                        slot,
+                        is_live,
+                    });
+                }
             }
         }
     }
@@ -870,6 +906,49 @@ mod tests {
             }
             _ => panic!("Expected Migration event"),
         }
+    }
+
+    #[test]
+    fn a_create_v2_transaction_classifies_as_a_launch_with_the_signer_as_creator() {
+        let signer = [0x11u8; 32];
+        let mint = [0x22u8; 32];
+        let mut tx = make_tx(500, true);
+        tx.account_keys = vec![signer, mint, [0x33; 32]];
+        let mut data = PUMP_CREATE_V2_DISCRIMINATOR.to_vec();
+        data.extend_from_slice(&[0u8; 16]);
+        tx.instructions = vec![LaserStreamInstruction {
+            program_id: PUMP_FUN_PROGRAM,
+            data,
+            accounts: vec![1, 2, 0],
+        }];
+        let c = classify_pump_instructions(&tx);
+        assert_eq!(
+            c,
+            vec![PumpInstruction::Launch {
+                mint,
+                creator: signer
+            }]
+        );
+        // v1 `create` classifies identically.
+        tx.instructions[0].data[..8].copy_from_slice(&PUMP_CREATE_DISCRIMINATOR);
+        assert_eq!(classify_pump_instructions(&tx), c);
+    }
+
+    #[test]
+    fn a_launch_emits_its_own_receive_time_and_nothing_without_one() {
+        let ix = vec![PumpInstruction::Launch {
+            mint: [1; 32],
+            creator: [2; 32],
+        }];
+        let with = instructions_to_events(&ix, 9, true, Some(1_800_000_000_123));
+        assert!(matches!(
+            with[0].event,
+            AppEvent::LaunchObserved { launch_unix_ms: 1_800_000_000_123, creator, .. } if creator == [2; 32]
+        ));
+        assert!(
+            instructions_to_events(&ix, 9, true, None).is_empty(),
+            "no wire clock -> no launch event; the first trade's time is never substituted"
+        );
     }
 
     #[test]
