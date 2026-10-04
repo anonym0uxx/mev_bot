@@ -144,7 +144,8 @@ pub fn derive_market_trade_from_delta(
         // This producer is the only one with a real `price_fp`, so its clock is what the
         // live ledger's windows are keyed on.
         recv_unix_ms,
-        slot: None,
+        // The account notification's slot: known here, so carried (not dropped).
+        slot: Some(slot),
         fee_lamports: None,
         cu_consumed: None,
     };

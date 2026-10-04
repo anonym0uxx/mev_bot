@@ -42,6 +42,12 @@ pub struct PendingIdentity {
     pub is_buy: bool,
     /// When the instruction was observed, for diagnostics.
     pub recv_unix_ms: Option<i64>,
+    /// The transaction's TOTAL fee (lamports) as the instruction path read it from `meta.fee`.
+    /// Only the instruction print has the transaction; the reserve print is account data. `None`
+    /// stays `None` — never defaulted to 0.
+    pub fee_lamports: Option<u64>,
+    /// The transaction's `compute_units_consumed` (consumed, not requested).
+    pub cu_consumed: Option<u64>,
 }
 
 /// What the join could say about a reserve print's identity.
@@ -53,6 +59,10 @@ pub enum JoinOutcome {
         entity: u64,
         /// The trader's wallet bytes (what address-keyed derivations key on).
         pubkey: [u8; 32],
+        /// The matched transaction's total fee, when its instruction print carried one.
+        fee_lamports: Option<u64>,
+        /// The matched transaction's compute units consumed, when carried.
+        cu_consumed: Option<u64>,
     },
     /// No matching instruction (or it was pruned): the print stays identity-unknown.
     Unknown,
@@ -120,6 +130,33 @@ impl TradeJoin {
         is_buy: bool,
         recv_unix_ms: Option<i64>,
     ) {
+        self.note_instruction_with_meta(
+            mint,
+            slot,
+            buyer_entity,
+            pubkey,
+            is_buy,
+            recv_unix_ms,
+            None,
+            None,
+        );
+    }
+
+    /// As [`Self::note_instruction`], additionally keeping the transaction's total fee and
+    /// compute units so the reserve print can be stamped with them (the corpus counts both per
+    /// trade row).
+    #[allow(clippy::too_many_arguments)]
+    pub fn note_instruction_with_meta(
+        &mut self,
+        mint: &[u8; 32],
+        slot: u64,
+        buyer_entity: u64,
+        pubkey: [u8; 32],
+        is_buy: bool,
+        recv_unix_ms: Option<i64>,
+        fee_lamports: Option<u64>,
+        cu_consumed: Option<u64>,
+    ) {
         if buyer_entity == 0 || pubkey == [0u8; 32] {
             return;
         }
@@ -149,6 +186,8 @@ impl TradeJoin {
                 pubkey,
                 is_buy,
                 recv_unix_ms,
+                fee_lamports,
+                cu_consumed,
             });
         } else {
             self.dropped += 1;
@@ -175,12 +214,19 @@ impl TradeJoin {
             1 => {
                 let entity = entry[matching[0]].buyer_entity;
                 let pubkey = entry[matching[0]].pubkey;
+                let fee_lamports = entry[matching[0]].fee_lamports;
+                let cu_consumed = entry[matching[0]].cu_consumed;
                 entry.remove(matching[0]);
                 if entry.is_empty() {
                     self.pending.remove(&key);
                 }
                 self.joined += 1;
-                JoinOutcome::Identity { entity, pubkey }
+                JoinOutcome::Identity {
+                    entity,
+                    pubkey,
+                    fee_lamports,
+                    cu_consumed,
+                }
             }
             _ => {
                 // Leave the candidates in place: the other reserve print on this key may still
@@ -253,7 +299,9 @@ mod tests {
             join.take_identity(&MINT, 100, true),
             JoinOutcome::Identity {
                 entity: 0xAB,
-                pubkey: [0xCD; 32]
+                pubkey: [0xCD; 32],
+                fee_lamports: None,
+                cu_consumed: None,
             }
         );
         assert_eq!(join.joined(), 1);
@@ -285,7 +333,9 @@ mod tests {
             join.take_identity(&MINT, 9, false),
             JoinOutcome::Identity {
                 entity: 3,
-                pubkey: [3u8; 32]
+                pubkey: [3u8; 32],
+                fee_lamports: None,
+                cu_consumed: None,
             }
         );
     }
@@ -299,7 +349,9 @@ mod tests {
             join.take_identity(&MINT, 11, true),
             JoinOutcome::Identity {
                 entity: 7,
-                pubkey: [7u8; 32]
+                pubkey: [7u8; 32],
+                fee_lamports: None,
+                cu_consumed: None,
             }
         );
         assert_eq!(join.ambiguous(), 0);
@@ -330,5 +382,49 @@ mod tests {
             1,
             "keys older than the horizon are pruned"
         );
+    }
+
+    #[test]
+    fn a_matched_instruction_hands_its_fee_and_cu_to_the_reserve_print() {
+        let mut join = TradeJoin::new(64, 32);
+        join.note_instruction_with_meta(
+            &MINT,
+            50,
+            5,
+            [5u8; 32],
+            true,
+            Some(1),
+            Some(1_005_000),
+            Some(95_040),
+        );
+        assert_eq!(
+            join.take_identity(&MINT, 50, true),
+            JoinOutcome::Identity {
+                entity: 5,
+                pubkey: [5u8; 32],
+                fee_lamports: Some(1_005_000),
+                cu_consumed: Some(95_040),
+            }
+        );
+    }
+
+    #[test]
+    fn an_ambiguous_or_missing_match_carries_no_fee_or_cu() {
+        let mut join = TradeJoin::new(64, 32);
+        // Two same-side instructions on one (mint, slot): which transaction's fee is it? Unknown.
+        join.note_instruction_with_meta(&MINT, 60, 1, [1u8; 32], true, None, Some(9_000), Some(10));
+        join.note_instruction_with_meta(
+            &MINT,
+            60,
+            2,
+            [2u8; 32],
+            true,
+            None,
+            Some(70_000),
+            Some(20),
+        );
+        assert_eq!(join.take_identity(&MINT, 60, true), JoinOutcome::Ambiguous);
+        assert_eq!(join.take_identity(&MINT, 61, true), JoinOutcome::Unknown);
+        // Neither outcome exposes a fee/CU: there is no field to read one from.
     }
 }

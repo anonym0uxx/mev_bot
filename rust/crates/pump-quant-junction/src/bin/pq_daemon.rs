@@ -2474,13 +2474,15 @@ fn main() -> ExitCode {
                             // Only a known address is worth noting: the join exists to supply
                             // the address, so a hash-only print has nothing to contribute.
                             if let Some(pk) = trader_pubkey {
-                                trade_join.note_instruction(
+                                trade_join.note_instruction_with_meta(
                                     mint.as_bytes(),
                                     ev.slot,
                                     *buyer_entity,
                                     *pk,
                                     *signed_base > 0,
                                     *recv_unix_ms,
+                                    tx.fee_lamports,
+                                    tx.cu_consumed,
                                 );
                             }
                         }
@@ -2575,13 +2577,26 @@ fn main() -> ExitCode {
                                     _ => false,
                                 };
                                 match trade_join.take_identity(&mb, slot, side_is_buy) {
-                                    JoinOutcome::Identity { entity, pubkey } => {
+                                    JoinOutcome::Identity {
+                                        entity,
+                                        pubkey,
+                                        fee_lamports: j_fee,
+                                        cu_consumed: j_cu,
+                                    } => {
                                         if let AppEvent::MarketTrade {
                                             buyer_entity,
                                             trader_pubkey,
+                                            fee_lamports,
+                                            cu_consumed,
                                             ..
                                         } = &mut trade_pe.event
                                         {
+                                            // The reserve print has the price but not the
+                                            // transaction; the matched instruction print does.
+                                            // Stamped only on a unique (mint, slot, side) match
+                                            // -- an ambiguous or missing match leaves None.
+                                            *fee_lamports = j_fee;
+                                            *cu_consumed = j_cu;
                                             *buyer_entity = entity;
                                             // The address is what the flow reducer's
                                             // freshness / smart-wallet / co-entry rules key on;
