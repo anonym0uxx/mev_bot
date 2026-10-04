@@ -56,6 +56,7 @@ pub mod curve_authenticity;
 pub mod curve_depth;
 pub mod curve_fill;
 pub mod curve_state;
+pub mod decision_join;
 pub mod engine;
 pub mod enrichment;
 pub mod event;
