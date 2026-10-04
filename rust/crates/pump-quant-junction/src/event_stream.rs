@@ -85,6 +85,9 @@ fn parse_event_line(line: &str) -> Result<AppEvent, String> {
                 trader_pubkey: extract_string_field(line, "trader_pubkey")
                     .and_then(|s| parse_mint(&s).ok())
                     .map(|m| *m.as_bytes()),
+                slot: None,
+                fee_lamports: None,
+                cu_consumed: None,
             })
         }
         "OnchainConfirm" => {
@@ -669,6 +672,9 @@ mod tests {
             age_slots: 100,
             recv_unix_ms: None,
             trader_pubkey: None,
+            slot: None,
+            fee_lamports: None,
+            cu_consumed: None,
         };
         writer.write_event(&event, 12345).expect("write");
         writer.flush().expect("flush");
@@ -798,6 +804,9 @@ mod tests {
             age_slots: 100,
             recv_unix_ms: None,
             trader_pubkey: None,
+            slot: None,
+            fee_lamports: None,
+            cu_consumed: None,
         };
         writer.write_event(&event, 12345).expect("write");
         writer.flush().expect("flush");
@@ -850,6 +859,9 @@ mod tests {
                     age_slots: 20,
                     recv_unix_ms: None,
                     trader_pubkey: None,
+                    slot: None,
+                    fee_lamports: None,
+                    cu_consumed: None,
                 },
                 2,
             )
@@ -924,6 +936,9 @@ garbage line 2
             age_slots: 12,
             recv_unix_ms: Some(1_700_000_000_000),
             trader_pubkey: None,
+            slot: None,
+            fee_lamports: None,
+            cu_consumed: None,
         };
         let line = event_to_json(&stamped, 9);
         assert!(
@@ -948,6 +963,9 @@ garbage line 2
             age_slots: 12,
             recv_unix_ms: None,
             trader_pubkey: None,
+            slot: None,
+            fee_lamports: None,
+            cu_consumed: None,
         };
         let line = event_to_json(&unstamped, 9);
         assert!(!line.contains("recv_unix_ms"), "nothing fabricated: {line}");
@@ -974,6 +992,9 @@ garbage line 2
             age_slots: 12,
             recv_unix_ms: Some(1_700_000_000_000),
             trader_pubkey: Some(wallet),
+            slot: None,
+            fee_lamports: None,
+            cu_consumed: None,
         };
         let line = event_to_json(&stamped, 9);
         assert!(line.contains("trader_pubkey"), "{line}");
@@ -994,6 +1015,9 @@ garbage line 2
             age_slots: 12,
             recv_unix_ms: Some(1_700_000_000_000),
             trader_pubkey: None,
+            slot: None,
+            fee_lamports: None,
+            cu_consumed: None,
         };
         let line = event_to_json(&anonymous, 9);
         assert!(!line.contains("trader_pubkey"), "{line}");

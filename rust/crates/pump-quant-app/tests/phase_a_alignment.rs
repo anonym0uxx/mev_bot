@@ -73,6 +73,9 @@ fn feed_flow(eng: &mut Engine, mt: Mint, trades: u64) {
             age_slots: 12,
             recv_unix_ms: None,
             trader_pubkey: None,
+            slot: None,
+            fee_lamports: None,
+            cu_consumed: None,
         });
     }
 }
@@ -306,6 +309,9 @@ fn expectancy_is_prior_until_lane_sample_gate() {
             age_slots: 12,
             recv_unix_ms: None,
             trader_pubkey: None,
+            slot: None,
+            fee_lamports: None,
+            cu_consumed: None,
         });
     }
     for _ in 0..3 {

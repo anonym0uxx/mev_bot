@@ -130,6 +130,15 @@ pub enum AppEvent {
         /// had. The LaserStream sidecar emits it on every notification; the PumpPortal path
         /// has no such field yet, so it passes `None` and the ledger refuses to serve.
         recv_unix_ms: Option<i64>,
+        /// Solana slot of the transaction that produced this print, when the producing path knows
+        /// it. `None` is "not carried", never `0`. Orders prints on-chain; it is NOT a clock.
+        slot: Option<u64>,
+        /// TOTAL transaction fee (lamports): 5000/signature base + priority. A TRANSACTION-level
+        /// quantity repeated on every trade row of the same signature, which is how the corpus
+        /// counts it (per trade row). `None` = not carried; never defaulted to 0.
+        fee_lamports: Option<u64>,
+        /// Compute units CONSUMED (not requested). Same per-row counting. `None` = not carried.
+        cu_consumed: Option<u64>,
     },
 
     /// A narrative attention sample for a market: how many fresh mentions arrived

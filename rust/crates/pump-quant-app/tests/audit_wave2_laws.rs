@@ -82,6 +82,9 @@ fn pump(eng: &mut Engine, base_mult: i128, n: u64) {
             age_slots: 12,
             recv_unix_ms: None,
             trader_pubkey: None,
+            slot: None,
+            fee_lamports: None,
+            cu_consumed: None,
         });
     }
 }
@@ -99,6 +102,9 @@ fn crater(eng: &mut Engine, top_mult: i128, n: u64) {
             age_slots: 12,
             recv_unix_ms: None,
             trader_pubkey: None,
+            slot: None,
+            fee_lamports: None,
+            cu_consumed: None,
         });
     }
 }
@@ -296,6 +302,9 @@ fn one(eng: &mut Engine, price_mult: i128, signed_base: i64, entity: u64) {
         age_slots: 12,
         recv_unix_ms: None,
         trader_pubkey: None,
+        slot: None,
+        fee_lamports: None,
+        cu_consumed: None,
     });
 }
 
@@ -599,6 +608,9 @@ fn sell_flow(eng: &mut Engine, tag: u64, base: i128, n: u64) {
             age_slots: 12,
             recv_unix_ms: None,
             trader_pubkey: None,
+            slot: None,
+            fee_lamports: None,
+            cu_consumed: None,
         });
     }
 }
@@ -718,6 +730,9 @@ fn bar8(eng: &mut Engine, tag: u64, prices: [i128; 8], entity0: u64) {
             age_slots: 12,
             recv_unix_ms: None,
             trader_pubkey: None,
+            slot: None,
+            fee_lamports: None,
+            cu_consumed: None,
         });
     }
 }
@@ -750,6 +765,9 @@ fn drive_classifier(cfg: Config) -> (Report, Vec<u16>) {
             age_slots: 12,
             recv_unix_ms: None,
             trader_pubkey: None,
+            slot: None,
+            fee_lamports: None,
+            cu_consumed: None,
         });
     }
     eng.tick(AppEvent::OnchainConfirm {
@@ -855,6 +873,9 @@ fn drive_pullback(cfg: Config) -> Report {
         age_slots: 12,
         recv_unix_ms: None,
         trader_pubkey: None,
+        slot: None,
+        fee_lamports: None,
+        cu_consumed: None,
     });
     ticks(&mut eng, 3);
     eng.report()
@@ -1188,6 +1209,9 @@ fn pump_mf(eng: &mut Engine, n: u64) {
             age_slots: 12,
             recv_unix_ms: None,
             trader_pubkey: None,
+            slot: None,
+            fee_lamports: None,
+            cu_consumed: None,
         });
     }
 }

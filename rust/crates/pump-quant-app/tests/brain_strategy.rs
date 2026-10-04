@@ -151,6 +151,9 @@ fn drive(cfg: Config, decayed: bool) -> Engine {
                     age_slots: 10 + (m as u32 % 35),
                     recv_unix_ms: None,
                     trader_pubkey: None,
+                    slot: None,
+                    fee_lamports: None,
+                    cu_consumed: None,
                 });
             }
             if round == m % 4 {

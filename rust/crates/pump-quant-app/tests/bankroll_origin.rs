@@ -88,6 +88,9 @@ fn drive_golden_style(mut eng: Engine) -> Engine {
                     age_slots: 12 + (m as u32 % 20),
                     recv_unix_ms: None,
                     trader_pubkey: None,
+                    slot: None,
+                    fee_lamports: None,
+                    cu_consumed: None,
                 });
             }
             if round == m % 4 {

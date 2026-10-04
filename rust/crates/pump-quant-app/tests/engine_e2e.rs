@@ -71,6 +71,9 @@ fn scenario() -> Vec<AppEvent> {
             age_slots: 30,
             recv_unix_ms: None,
             trader_pubkey: None,
+            slot: None,
+            fee_lamports: None,
+            cu_consumed: None,
         });
     }
     ev.push(AppEvent::OnchainConfirm {
@@ -255,6 +258,9 @@ fn social_source_earns_quality_from_realized_outcomes() {
             age_slots: 30,
             recv_unix_ms: None,
             trader_pubkey: None,
+            slot: None,
+            fee_lamports: None,
+            cu_consumed: None,
         });
     }
     eng.tick(AppEvent::OnchainConfirm {
@@ -277,6 +283,9 @@ fn social_source_earns_quality_from_realized_outcomes() {
         age_slots: 31,
         recv_unix_ms: None,
         trader_pubkey: None,
+        slot: None,
+        fee_lamports: None,
+        cu_consumed: None,
     });
     eng.tick(AppEvent::MarketTrade {
         mint: mkt,
@@ -288,6 +297,9 @@ fn social_source_earns_quality_from_realized_outcomes() {
         age_slots: 32,
         recv_unix_ms: None,
         trader_pubkey: None,
+        slot: None,
+        fee_lamports: None,
+        cu_consumed: None,
     });
     let reflect_ticks = Config::dev_portable().reflect_every_ticks + 2;
     for _ in 0..reflect_ticks {
@@ -410,6 +422,9 @@ fn creator_distribution_fades_size_but_never_vetoes() {
                 age_slots: 30,
                 recv_unix_ms: None,
                 trader_pubkey: None,
+                slot: None,
+                fee_lamports: None,
+                cu_consumed: None,
             });
         }
         e.tick(AppEvent::OnchainConfirm {
@@ -431,6 +446,9 @@ fn creator_distribution_fades_size_but_never_vetoes() {
             age_slots: 31,
             recv_unix_ms: None,
             trader_pubkey: None,
+            slot: None,
+            fee_lamports: None,
+            cu_consumed: None,
         });
         e.tick(AppEvent::MarketTrade {
             mint: m,
@@ -442,6 +460,9 @@ fn creator_distribution_fades_size_but_never_vetoes() {
             age_slots: 32,
             recv_unix_ms: None,
             trader_pubkey: None,
+            slot: None,
+            fee_lamports: None,
+            cu_consumed: None,
         });
         e.report()
     };
@@ -494,6 +515,9 @@ fn fed_meta_path_is_live_and_deterministic() {
                         age_slots: 20,
                         recv_unix_ms: None,
                         trader_pubkey: None,
+                        slot: None,
+                        fee_lamports: None,
+                        cu_consumed: None,
                     });
                 }
                 e.tick(AppEvent::OnchainConfirm {
@@ -537,6 +561,9 @@ fn fed_meta_path_is_live_and_deterministic() {
                 age_slots: 20,
                 recv_unix_ms: None,
                 trader_pubkey: None,
+                slot: None,
+                fee_lamports: None,
+                cu_consumed: None,
             });
         }
     }
@@ -572,6 +599,9 @@ fn numeric_lane_discovers_buy_flow_not_sell_flow() {
                 age_slots: 30,
                 recv_unix_ms: None,
                 trader_pubkey: None,
+                slot: None,
+                fee_lamports: None,
+                cu_consumed: None,
             });
         }
         e.tick(AppEvent::OnchainConfirm {
@@ -616,6 +646,9 @@ fn admissible_stream(tag: u8) -> Vec<AppEvent> {
             age_slots: 30,
             recv_unix_ms: None,
             trader_pubkey: None,
+            slot: None,
+            fee_lamports: None,
+            cu_consumed: None,
         });
     }
     ev.push(AppEvent::OnchainConfirm {
@@ -649,6 +682,9 @@ fn deep_admissible_stream(tag: u8) -> Vec<AppEvent> {
             age_slots: 30,
             recv_unix_ms: None,
             trader_pubkey: None,
+            slot: None,
+            fee_lamports: None,
+            cu_consumed: None,
         });
     }
     ev.push(AppEvent::OnchainConfirm {
@@ -715,6 +751,9 @@ fn bankroll_size_is_proportional_to_deployable_capital() {
             age_slots: 31,
             recv_unix_ms: None,
             trader_pubkey: None,
+            slot: None,
+            fee_lamports: None,
+            cu_consumed: None,
         });
         e.tick(AppEvent::MarketTrade {
             mint: mint(0x92),
@@ -726,6 +765,9 @@ fn bankroll_size_is_proportional_to_deployable_capital() {
             age_slots: 32,
             recv_unix_ms: None,
             trader_pubkey: None,
+            slot: None,
+            fee_lamports: None,
+            cu_consumed: None,
         });
         let rr = e.report();
         let codes: Vec<u8> = e
@@ -819,6 +861,9 @@ fn vpin_sell_dump_vetoes_admission() {
             age_slots: 30,
             recv_unix_ms: None,
             trader_pubkey: None,
+            slot: None,
+            fee_lamports: None,
+            cu_consumed: None,
         });
     }
     // 66 tiny-quote buys with big base: the trade ring now holds ONLY buys (CVD>0,
@@ -834,6 +879,9 @@ fn vpin_sell_dump_vetoes_admission() {
             age_slots: 31,
             recv_unix_ms: None,
             trader_pubkey: None,
+            slot: None,
+            fee_lamports: None,
+            cu_consumed: None,
         });
     }
     e.tick(AppEvent::OnchainConfirm {

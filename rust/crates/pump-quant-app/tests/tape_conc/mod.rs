@@ -61,6 +61,9 @@ pub fn swap(
         age_slots,
         recv_unix_ms: None,
         trader_pubkey: None,
+        slot: None,
+        fee_lamports: None,
+        cu_consumed: None,
     });
 }
 

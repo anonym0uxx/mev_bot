@@ -85,6 +85,9 @@ fn drive_zombies(cfg: Config) -> (Report, Engine) {
                         age_slots: 200,
                         recv_unix_ms: None,
                         trader_pubkey: None,
+                        slot: None,
+                        fee_lamports: None,
+                        cu_consumed: None,
                     });
                 }
             }
@@ -186,6 +189,9 @@ fn drive_trap(cfg: Config) -> (Report, Engine) {
                 age_slots: 12,
                 recv_unix_ms: None,
                 trader_pubkey: None,
+                slot: None,
+                fee_lamports: None,
+                cu_consumed: None,
             });
         }
     }
@@ -200,6 +206,9 @@ fn drive_trap(cfg: Config) -> (Report, Engine) {
         age_slots: 12,
         recv_unix_ms: None,
         trader_pubkey: None,
+        slot: None,
+        fee_lamports: None,
+        cu_consumed: None,
     });
     eng.tick(AppEvent::OnchainConfirm {
         mint: mt,
@@ -221,6 +230,9 @@ fn drive_trap(cfg: Config) -> (Report, Engine) {
             age_slots: 12,
             recv_unix_ms: None,
             trader_pubkey: None,
+            slot: None,
+            fee_lamports: None,
+            cu_consumed: None,
         });
     }
     for _ in 0..3 {
@@ -303,6 +315,9 @@ fn drive_squatter(cfg: Config) -> (Report, Engine) {
             age_slots: 15,
             recv_unix_ms: None,
             trader_pubkey: None,
+            slot: None,
+            fee_lamports: None,
+            cu_consumed: None,
         });
     }
     eng.tick(AppEvent::OnchainConfirm {
@@ -330,6 +345,9 @@ fn drive_squatter(cfg: Config) -> (Report, Engine) {
                 age_slots: 15,
                 recv_unix_ms: None,
                 trader_pubkey: None,
+                slot: None,
+                fee_lamports: None,
+                cu_consumed: None,
             });
         }
     }

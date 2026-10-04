@@ -48,8 +48,8 @@ use pump_quant_junction::autonomous_bridge::{
 use pump_quant_junction::decode::decode_onchain_confirm_with_curve;
 use pump_quant_junction::event_stream::EventStreamWriter;
 use pump_quant_junction::laserstream::{
-    classify_pump_instructions, instructions_to_events, parse_ndjson_line, LaserStreamState,
-    LaserStreamUpdate,
+    classify_pump_instructions, instructions_to_events, instructions_to_events_with_meta,
+    parse_ndjson_line, LaserStreamState, LaserStreamUpdate,
 };
 use pump_quant_junction::memory_bank::{MemoryBank, MemoryBankConfig};
 use pump_quant_junction::pumpportal::{
@@ -2450,8 +2450,14 @@ fn main() -> ExitCode {
                     stats.ls_transactions_received += 1;
                     let classified = classify_pump_instructions(&tx);
                     stats.ls_instructions_classified += classified.len() as u64;
-                    let events =
-                        instructions_to_events(&classified, tx.slot, tx.is_live, tx.recv_unix_ms);
+                    let events = instructions_to_events_with_meta(
+                        &classified,
+                        tx.slot,
+                        tx.is_live,
+                        tx.recv_unix_ms,
+                        tx.fee_lamports,
+                        tx.cu_consumed,
+                    );
                     // The instruction print is the ONLY one that knows the wallet. Note it
                     // against (mint, slot) so the reserve-delta print — which knows the price —
                     // can claim it when it is derived.

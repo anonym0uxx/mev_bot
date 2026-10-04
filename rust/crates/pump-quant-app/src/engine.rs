@@ -1888,6 +1888,12 @@ impl Engine {
                 // a pattern that demanded `None` would silently stop matching once the wire
                 // started supplying it.
                 trader_pubkey: _,
+                // Slot / fee / CU: carried for the model-lane enrichment cache (not yet read here).
+                // Bound to `_` — a pattern demanding `None` would stop matching the moment the
+                // wire supplies them.
+                slot: _,
+                fee_lamports: _,
+                cu_consumed: _,
             } => {
                 self.numeric.observe(
                     mint,

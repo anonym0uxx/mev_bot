@@ -69,6 +69,9 @@ fn trade(e: &mut Engine, m: Mint, entity: u64, signed_base: i64) {
         age_slots: 12,
         recv_unix_ms: None,
         trader_pubkey: None,
+        slot: None,
+        fee_lamports: None,
+        cu_consumed: None,
     });
 }
 

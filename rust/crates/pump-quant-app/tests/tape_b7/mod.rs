@@ -352,6 +352,9 @@ pub fn apply_tape(
                     age_slots: 10 + (m.tag as u32 % 20),
                     recv_unix_ms: None,
                     trader_pubkey: None,
+                    slot: None,
+                    fee_lamports: None,
+                    cu_consumed: None,
                 });
             }
             if age == 0 {

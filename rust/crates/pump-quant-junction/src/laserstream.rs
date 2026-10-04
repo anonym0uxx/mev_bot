@@ -295,6 +295,20 @@ pub fn instructions_to_events(
     is_live: bool,
     recv_unix_ms: Option<i64>,
 ) -> Vec<ProvenancedEvent> {
+    instructions_to_events_with_meta(instructions, slot, is_live, recv_unix_ms, None, None)
+}
+
+/// As [`instructions_to_events`], additionally stamping the transaction's total fee and compute
+/// units consumed on EVERY trade row it yields (the corpus counts per trade row, not per
+/// signature). `None` stays `None`; the slot is always known here and is carried.
+pub fn instructions_to_events_with_meta(
+    instructions: &[PumpInstruction],
+    slot: u64,
+    is_live: bool,
+    recv_unix_ms: Option<i64>,
+    fee_lamports: Option<u64>,
+    cu_consumed: Option<u64>,
+) -> Vec<ProvenancedEvent> {
     let mut events = Vec::with_capacity(instructions.len());
 
     for ix in instructions {
@@ -316,6 +330,9 @@ pub fn instructions_to_events(
                         trader_pubkey: Some(*buyer),
                         age_slots: 0, // Not available from ix data alone
                         recv_unix_ms,
+                        slot: Some(slot),
+                        fee_lamports,
+                        cu_consumed,
                     },
                     source: ProvenanceSource::LaserStream,
                     slot,
@@ -339,6 +356,9 @@ pub fn instructions_to_events(
                         trader_pubkey: Some(*seller),
                         age_slots: 0,
                         recv_unix_ms,
+                        slot: Some(slot),
+                        fee_lamports,
+                        cu_consumed,
                     },
                     source: ProvenanceSource::LaserStream,
                     slot,
@@ -362,6 +382,9 @@ pub fn instructions_to_events(
                         trader_pubkey: Some(*buyer),
                         age_slots: 0,
                         recv_unix_ms,
+                        slot: Some(slot),
+                        fee_lamports,
+                        cu_consumed,
                     },
                     source: ProvenanceSource::LaserStream,
                     slot,
@@ -385,6 +408,9 @@ pub fn instructions_to_events(
                         trader_pubkey: Some(*seller),
                         age_slots: 0,
                         recv_unix_ms,
+                        slot: Some(slot),
+                        fee_lamports,
+                        cu_consumed,
                     },
                     source: ProvenanceSource::LaserStream,
                     slot,
@@ -1275,5 +1301,65 @@ mod tests {
             r#","meta":{"fee":"119000","compute_units_consumed":-5}"#,
         ));
         assert_eq!((t.fee_lamports, t.cu_consumed), (None, None));
+    }
+
+    #[test]
+    fn fee_cu_and_slot_are_stamped_on_every_trade_row_of_a_transaction() {
+        let ixs = vec![
+            PumpInstruction::Buy {
+                mint: [1; 32],
+                amount_lamports: 5,
+                min_tokens: 0,
+                buyer: [9; 32],
+            },
+            PumpInstruction::Sell {
+                mint: [2; 32],
+                amount_tokens: 7,
+                min_lamports: 0,
+                seller: [8; 32],
+            },
+        ];
+        let evs = instructions_to_events_with_meta(
+            &ixs,
+            4242,
+            true,
+            Some(10),
+            Some(119_000),
+            Some(57_059),
+        );
+        assert_eq!(evs.len(), 2);
+        for e in &evs {
+            match &e.event {
+                AppEvent::MarketTrade {
+                    slot,
+                    fee_lamports,
+                    cu_consumed,
+                    recv_unix_ms,
+                    ..
+                } => {
+                    assert_eq!(*slot, Some(4242));
+                    assert_eq!(*fee_lamports, Some(119_000)); // per ROW, as the corpus counts
+                    assert_eq!(*cu_consumed, Some(57_059));
+                    assert_eq!(*recv_unix_ms, Some(10));
+                }
+                other => panic!("not a trade: {other:?}"),
+            }
+        }
+        // the legacy entry point carries the slot but leaves fee/CU explicitly absent
+        let legacy = instructions_to_events(&ixs, 4242, true, Some(10));
+        match &legacy[0].event {
+            AppEvent::MarketTrade {
+                slot,
+                fee_lamports,
+                cu_consumed,
+                ..
+            } => {
+                assert_eq!(
+                    (*slot, *fee_lamports, *cu_consumed),
+                    (Some(4242), None, None)
+                );
+            }
+            other => panic!("not a trade: {other:?}"),
+        }
     }
 }

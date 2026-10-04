@@ -110,6 +110,9 @@ pub fn canonical_tx_to_market_trade(
         // one. `None` is honest: the state ledger refuses to serve a tape whose clocks it
         // cannot key, rather than windowing on a time this path invented.
         recv_unix_ms: None,
+        slot: None,
+        fee_lamports: None,
+        cu_consumed: None,
     };
 
     Some(ProvenancedEvent {
@@ -270,6 +273,9 @@ mod tests {
             age_slots,
             recv_unix_ms: None,
             trader_pubkey,
+            slot: None,
+            fee_lamports: None,
+            cu_consumed: None,
         } = result.event
         {
             // The PumpPortal path decodes the transaction, so it KNOWS the trader's address:

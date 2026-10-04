@@ -54,6 +54,9 @@ fn pump(eng: &mut Engine, tag: u64, base_mult: i128, n: u64, liq: u64) {
             age_slots: 12,
             recv_unix_ms: None,
             trader_pubkey: None,
+            slot: None,
+            fee_lamports: None,
+            cu_consumed: None,
         });
     }
 }
@@ -86,6 +89,9 @@ fn drive_positions(cfg: Config) -> Engine {
                     age_slots: 12,
                     recv_unix_ms: None,
                     trader_pubkey: None,
+                    slot: None,
+                    fee_lamports: None,
+                    cu_consumed: None,
                 });
             }
         }

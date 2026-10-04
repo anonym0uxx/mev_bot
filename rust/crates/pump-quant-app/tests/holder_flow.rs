@@ -443,6 +443,9 @@ fn trade(eng: &mut Engine, m: Mint, price_mult: i128, signed_base: i64, entity: 
         age_slots: 12,
         recv_unix_ms: None,
         trader_pubkey: None,
+        slot: None,
+        fee_lamports: None,
+        cu_consumed: None,
     });
 }
 

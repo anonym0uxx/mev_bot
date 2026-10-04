@@ -1054,6 +1054,9 @@ fn holder_flow_money_term_is_exactly_neutral_on_this_tape() {
         age_slots: 12,
         recv_unix_ms: None,
         trader_pubkey: None,
+        slot: None,
+        fee_lamports: None,
+        cu_consumed: None,
     });
     assert_eq!(
         probe
@@ -1119,6 +1122,9 @@ fn holder_concentration_is_exactly_neutral_on_this_tape() {
             age_slots: 12,
             recv_unix_ms: None,
             trader_pubkey: None,
+            slot: None,
+            fee_lamports: None,
+            cu_consumed: None,
         });
     }
     assert_eq!(
@@ -1149,6 +1155,9 @@ fn holder_concentration_is_exactly_neutral_on_this_tape() {
             age_slots: 12,
             recv_unix_ms: None,
             trader_pubkey: None,
+            slot: None,
+            fee_lamports: None,
+            cu_consumed: None,
         });
     }
     assert!(
