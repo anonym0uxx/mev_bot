@@ -15,6 +15,7 @@
 
 use std::time::Instant;
 
+mod model_admit;
 use crate::analytics::ReflectionAnalytics;
 use crate::brain::{
     burst_phase_of, discovery_lane_of, exit_reason_of, narrative_class_of, platform_of,
@@ -267,6 +268,12 @@ struct PendingEntry {
     /// (an outbound sink is installed). `None` in paper/replay, so no clock is ever
     /// read there and the tick stays reproducible.
     t_dec: Option<Instant>,
+    /// The model's own PRICE LIMIT (lamports per raw token) when the lane that built this entry
+    /// carried one; `None` for every legacy entry. Reaches the outbound record unchanged.
+    price_limit: Option<f64>,
+    /// The model chose the clip: open it WHOLE. The legacy probe -> scale-in split is a Rust sizing
+    /// law, and the model lane owns size, so it must not re-split the brain's clip.
+    full_clip: bool,
 }
 
 /// Index of an evaluator lane into the running-accumulator array.
@@ -843,8 +850,21 @@ pub struct Engine {
     paper_model_mode: bool,
     /// The model lane's decision-time cache (see `decision_join`). Fed only when armed.
     model_cache: crate::decision_join::DecisionCache,
+    /// Model-lane request discipline, worker pool, per-request bindings, pending paper orders and
+    /// the coverage report. All inert unless the lane is armed (see `engine/model_admit.rs`).
+    model_table: crate::model_lane::RequestTable,
+    model_pool: Option<crate::model_worker::InferencePool>,
+    model_meta: BTreeMap<crate::model_lane::RequestId, model_admit::ModelReqMeta>,
+    model_orders: BTreeMap<[u8; 32], model_admit::ModelOrder>,
+    model_last_ask: BTreeMap<[u8; 32], i64>,
+    model_first_cand: BTreeMap<[u8; 32], i64>,
+    model_drift: pump_quant_inference::seam::DriftLedger,
+    model_report: BTreeMap<String, u64>,
+    /// The feed's own clock (max wire receive time seen), ms. Decision age and request deadlines
+    /// are measured on THIS clock, so paper/replay stay deterministic.
+    model_clock_ms: i64,
     /// The installed model source, when the lane is armed. `None` in legacy/replay.
-    model_source: Option<Box<dyn ModelSource + Send + Sync>>,
+    model_source: Option<std::sync::Arc<dyn ModelSource + Send + Sync>>,
     now: u64,
 
     numeric: NumericLane,
@@ -1297,8 +1317,14 @@ impl Engine {
     where
         S: ModelSource + Send + Sync + 'static,
     {
+        let src: std::sync::Arc<dyn ModelSource + Send + Sync> = std::sync::Arc::new(source);
+        self.model_pool = Some(crate::model_worker::InferencePool::new(
+            std::sync::Arc::clone(&src),
+            model_admit::MODEL_WORKERS,
+            model_admit::MODEL_QUEUE,
+        ));
         self.paper_model_mode = true;
-        self.model_source = Some(Box::new(source));
+        self.model_source = Some(src);
     }
 
     /// Whether the paper-model lane is armed.
@@ -1420,6 +1446,15 @@ impl Engine {
             mode,
             paper_model_mode: false,
             model_cache: crate::decision_join::DecisionCache::new(),
+            model_table: crate::model_lane::RequestTable::default(),
+            model_pool: None,
+            model_meta: BTreeMap::new(),
+            model_orders: BTreeMap::new(),
+            model_last_ask: BTreeMap::new(),
+            model_first_cand: BTreeMap::new(),
+            model_drift: pump_quant_inference::seam::DriftLedger::new(),
+            model_report: BTreeMap::new(),
+            model_clock_ms: 0,
             model_source: None,
             now: 0,
             numeric: NumericLane::new(),
@@ -1899,6 +1934,9 @@ impl Engine {
                 // Model-lane ingest. A no-op unless the paper-model lane is armed, so every legacy
                 // and golden path is byte-identical.
                 if self.paper_model_mode {
+                    if let Some(ms) = recv_unix_ms {
+                        self.model_note_clock(ms);
+                    }
                     let venue = match venue {
                         Some(crate::event::TradeVenue::PumpFun) => {
                             crate::state_ledger::VenueLabel::Pumpfun
@@ -2422,6 +2460,7 @@ impl Engine {
                     // A reserve observation with no wire clock cannot be ordered against a decision
                     // cutoff, so it is not admitted (a local clock is a different quantity).
                     if let Some(ts_ms) = recv_unix_ms {
+                        self.model_note_clock(ts_ms);
                         self.model_cache.observe_curve(
                             *mint.as_bytes(),
                             crate::curve_annotation::CurveObservation {
@@ -2863,6 +2902,12 @@ impl Engine {
     fn evaluate(&mut self) {
         self.now = self.now.saturating_add(1);
 
+        // Model lane: collect finished verdicts / expire deadlines / try simulated fills. Non-blocking
+        // by construction, and a no-op when the lane is not armed.
+        if self.paper_model_mode {
+            self.model_poll();
+        }
+
         // §Quant-Rev-7: prune expired re-entry cooldown entries. The set is bounded
         // by the number of recently-exited mints, but without periodic pruning
         // stale entries accumulate. Removed here on tick advance so the gate's
@@ -3123,6 +3168,13 @@ impl Engine {
                 lane: cand.lane as u8,
                 rank,
             });
+            // Model lane armed: the legacy verdict and sizing law are NOT consulted. The candidate is
+            // snapshotted and sent to the (off-thread) model; any resulting order opens later, on its
+            // simulated fill. Disarmed: byte-identical legacy behaviour.
+            if self.paper_model_mode {
+                self.model_admit_candidate(cand);
+                continue;
+            }
             if let Some(pe) = self.gate_evaluate(cand) {
                 pending.push(pe);
             }
@@ -4231,6 +4283,8 @@ impl Engine {
                     } else {
                         None
                     },
+                    price_limit: None,
+                    full_clip: false,
                 })
             }
             GateDecision::Reject(reason) => {
@@ -4935,11 +4989,15 @@ impl Engine {
     fn open_pending(&mut self, e: &PendingEntry) {
         // Criterion 112 / A-6: split the target into a probe + scale-in add such that
         // EVERY emitted bite is ≥ the operator floor (see [`probe_scale_split`]).
-        let (probe, scale_add) = probe_scale_split(
-            e.size,
-            self.cfg.probe_frac_bp,
-            self.cfg.min_trade_size_lamports,
-        );
+        let (probe, scale_add) = if e.full_clip {
+            (e.size, 0)
+        } else {
+            probe_scale_split(
+                e.size,
+                self.cfg.probe_frac_bp,
+                self.cfg.min_trade_size_lamports,
+            )
+        };
         let probe_cost =
             ((u128::from(e.entry_cost) * u128::from(probe)) / u128::from(e.size.max(1))) as u64;
         let scale_cost = e.entry_cost.saturating_sub(probe_cost);
@@ -4969,7 +5027,7 @@ impl Engine {
                     // The model's price limit is not plumbed to this call site yet:
                     // when the Qwen wiring lands, the engine fills it in from the
                     // parsed decision. Until then the slippage budget protects the order.
-                    price_limit_lamports_per_raw_token: None,
+                    price_limit_lamports_per_raw_token: e.price_limit,
                 };
                 let t_call = Instant::now();
                 let outcome = sink.on_admit(&record);

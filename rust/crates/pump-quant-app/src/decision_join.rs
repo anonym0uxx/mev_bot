@@ -164,6 +164,7 @@ struct MintCache {
     identity_missing: u64,
     flow_meta_missing: u64,
     enrich_overflow: bool,
+    venue: VenueLabel,
     recent: VecDeque<(Option<u64>, [u8; 32], i64, i64)>,
 }
 
@@ -304,6 +305,7 @@ impl DecisionCache {
             mc.first_seen_ms = recv;
         }
         mc.last_recv_ms = recv;
+        mc.venue = t.venue;
         mc.n_accepted += 1;
         self.counters.accepted += 1;
 
@@ -357,6 +359,26 @@ impl DecisionCache {
             _ => mc.flow_meta_missing += 1,
         }
         Ingest::Accepted
+    }
+
+    /// The last curve reserve observation for a mint (for the paper fill), if any.
+    #[must_use]
+    pub fn curve_obs(&self, mint: &[u8; 32]) -> Option<CurveObservation> {
+        self.annotation.curve_of(mint).copied()
+    }
+
+    /// What coverage reporting needs to split by: the mint's last print venue label, its age at
+    /// `t_dec_ms` measured from the LAUNCH (None when no launch is known -- never first-seen),
+    /// and how many prints the cache has accepted for it (the warm-up depth).
+    #[must_use]
+    pub fn describe(&self, mint: &[u8; 32], t_dec_ms: i64) -> (&'static str, Option<f64>, u64) {
+        let mc = self.mints.get(mint);
+        let venue = mc.map_or("unknown", |m| m.venue.as_str());
+        let age = self
+            .launch_ms
+            .get(mint)
+            .map(|l| (t_dec_ms - *l) as f64 / 1_000.0); // LINT-ALLOW(money_float_cast): seconds, not money
+        (venue, age, mc.map_or(0, |m| m.n_accepted))
     }
 
     #[must_use]

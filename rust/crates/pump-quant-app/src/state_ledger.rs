@@ -136,13 +136,14 @@ pub const VOL_WINDOW_S: i64 = 30;
 pub const MIN_TRADES_FOR_VOL: usize = 30;
 
 /// The venue label a trade carried, as the corpus's venue column.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub enum VenueLabel {
     /// pump.fun bonding curve.
     Pumpfun,
     /// PumpSwap AMM.
     Pumpswap,
     /// Not resolvable from the source string.
+    #[default]
     Unknown,
 }
 

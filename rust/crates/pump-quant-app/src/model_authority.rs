@@ -192,7 +192,23 @@ pub fn decide_entry<S: ModelSource + ?Sized>(
     req: &EntryRequest<'_>,
     ledger: &mut DriftLedger,
 ) -> EntryAuthority {
-    let completion = match source.complete_meta(req.system_prompt, req.user_prompt) {
+    resolve_entry(
+        source.complete_meta(req.system_prompt, req.user_prompt),
+        req,
+        ledger,
+    )
+}
+
+/// Judge a completion that has ALREADY been fetched (by a worker, off the engine thread). This is
+/// the whole of [`decide_entry`] after the network call: same freshness check, same contract
+/// parse, same portfolio / payability / impact vetoes -- so the async path cannot drift from the
+/// blocking one. Takes the transport result so a failed call is the same named `ModelUnreachable`.
+pub fn resolve_entry(
+    completion: Result<Completion, InferenceError>,
+    req: &EntryRequest<'_>,
+    ledger: &mut DriftLedger,
+) -> EntryAuthority {
+    let completion = match completion {
         Ok(c) => c,
         // Unreachable model: no trade. A retry cannot help — temperature 0 returns the same
         // answer — so this is terminal for the decision, not a loop.

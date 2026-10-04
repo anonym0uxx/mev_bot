@@ -246,6 +246,12 @@ impl RequestTable {
         Ok(entry)
     }
 
+    /// Release a request that never reached a worker (the dispatch was refused). Returns true if
+    /// it was present. Unlike [`accept`](Self::accept) this counts nothing as accepted.
+    pub fn release(&mut self, id: RequestId) -> bool {
+        self.inflight.remove(&id).is_some()
+    }
+
     /// Abandon every live request whose deadline has passed. Frees the dedupe key (the mint may be
     /// asked again) but NOT the capacity slot — the worker is still occupied. Returns the ids
     /// abandoned now.
@@ -269,6 +275,20 @@ mod tests {
     const A: [u8; 32] = [1u8; 32];
     const B: [u8; 32] = [2u8; 32];
     const C: [u8; 32] = [3u8; 32];
+
+    #[test]
+    fn a_released_request_frees_its_slot_without_counting_an_acceptance() {
+        let mut t = RequestTable::new(1);
+        let id = t.submit(A, 0, 3_000).unwrap();
+        assert!(t.release(id));
+        assert!(!t.release(id), "second release is a no-op");
+        assert_eq!(t.outstanding(), 0);
+        assert_eq!(t.counters().accepted, 0);
+        assert!(
+            t.submit(A, 1, 3_001).is_ok(),
+            "the slot and the mint key are free again"
+        );
+    }
 
     #[test]
     fn a_submitted_request_is_accepted_once_in_time() {
