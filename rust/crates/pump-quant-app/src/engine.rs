@@ -34,6 +34,7 @@ use crate::measured_state::{
     brain_creator_class, brain_meta_saturation, brain_narrative_class, MeasuredState, MetaTotals,
     META_PHASE_NEUTRAL,
 };
+use crate::model_authority::ModelSource;
 use crate::position::{DerivedTargets, Exit, ExitReason, LifecycleParams, ScalpLifecycle};
 use crate::reflect::reflect_with_brain;
 use crate::screen::{
@@ -835,6 +836,13 @@ pub struct PendingTx {
 pub struct Engine {
     cfg: Config,
     mode: RunMode,
+    /// Paper-model admission: the model lane owns entry/management decisions. Default OFF —
+    /// the legacy deterministic `gate_evaluate` path is untouched unless this is set AND a
+    /// source is installed. Never a fallback order: OFF means legacy, ON-without-source means
+    /// fail closed.
+    paper_model_mode: bool,
+    /// The installed model source, when the lane is armed. `None` in legacy/replay.
+    model_source: Option<Box<dyn ModelSource + Send + Sync>>,
     now: u64,
 
     numeric: NumericLane,
@@ -1255,6 +1263,16 @@ pub struct Engine {
     reentry_cooldown: BTreeMap<[u8; 32], u64>,
 }
 
+/// Failure modes of the paper-model lane's source lookup. Named so an armed-but-unwired engine
+/// fails CLOSED with an auditable cause, never downgrades to the deterministic gate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelModeFault {
+    /// The lane is not armed; the legacy `gate_evaluate` path governs.
+    NotEnabled,
+    /// Armed but no source installed — refuse, do not fall back.
+    MissingSource,
+}
+
 impl Engine {
     /// Construct an engine under a validated config and a run mode.
     ///
@@ -1268,6 +1286,33 @@ impl Engine {
     pub fn new(cfg: Config, mode: RunMode) -> Self {
         let origin = BankrollOrigin::PaperSeed(cfg.bankroll_initial_lamports);
         Self::with_origin(cfg, mode, origin)
+    }
+
+    /// Arm the paper-model lane: entry/management decisions flow through `source`. Once armed,
+    /// a missing source is a hard fault at the admission gate — never a fallback to
+    /// `gate_evaluate`. The legacy deterministic path is unchanged while not armed.
+    pub fn enable_paper_model<S>(&mut self, source: S)
+    where
+        S: ModelSource + Send + Sync + 'static,
+    {
+        self.paper_model_mode = true;
+        self.model_source = Some(Box::new(source));
+    }
+
+    /// Whether the paper-model lane is armed.
+    pub fn paper_model_enabled(&self) -> bool {
+        self.paper_model_mode
+    }
+
+    /// Fail-closed source lookup. `NotEnabled` => the legacy gate governs; `MissingSource` is a
+    /// misconfiguration that MUST refuse (armed with no source), never silently downgrade.
+    fn model_source(&self) -> Result<&(dyn ModelSource + Send + Sync), ModelModeFault> {
+        if !self.paper_model_mode {
+            return Err(ModelModeFault::NotEnabled);
+        }
+        self.model_source
+            .as_deref()
+            .ok_or(ModelModeFault::MissingSource)
     }
 
     /// **Phase-B live entry (fail-closed).** Construct an engine whose bankroll base
@@ -1371,6 +1416,8 @@ impl Engine {
         Self {
             cfg,
             mode,
+            paper_model_mode: false,
+            model_source: None,
             now: 0,
             numeric: NumericLane::new(),
             narrative: NarrativeLane::new(),
@@ -8068,5 +8115,59 @@ mod f5a_sink_failures {
         let json = s.to_canonical_json();
         assert!(json.contains("\"sink_failures_sender\":2"), "{json}");
         assert!(json.contains("\"sink_failures_construction\":1"), "{json}");
+    }
+}
+
+#[cfg(test)]
+mod model_lane_seam {
+    //! The paper-model lane's arming + fail-closed source lookup. Pins the seam's contract:
+    //! legacy-until-armed, armed == source installed, armed-without-source == a NAMED fault
+    //! (never a fallback to `gate_evaluate`).
+
+    use super::*;
+    use crate::model_authority::ModelSource;
+    use pump_quant_inference::InferenceError;
+
+    /// A source that returns a canned completion — the deterministic stand-in for the live
+    /// llama-server client (Windows inference is not needed to prove the wiring).
+    struct Stub(&'static str);
+
+    impl ModelSource for Stub {
+        fn complete(&self, _system: &str, _user: &str) -> Result<String, InferenceError> {
+            Ok(self.0.to_string())
+        }
+    }
+
+    #[test]
+    fn a_fresh_engine_has_no_model_lane_and_goes_legacy() {
+        let eng = Engine::new(Config::dev_portable(), RunMode::Paper);
+        assert!(!eng.paper_model_enabled(), "default is legacy, never model");
+        assert!(matches!(
+            eng.model_source(),
+            Err(ModelModeFault::NotEnabled)
+        ));
+    }
+
+    #[test]
+    fn arming_the_lane_installs_the_source() {
+        let mut eng = Engine::new(Config::dev_portable(), RunMode::Paper);
+        eng.enable_paper_model(Stub("DECISION: BUY\nSIZE: FULL\n"));
+        assert!(eng.paper_model_enabled());
+        assert!(eng.model_source().is_ok());
+    }
+
+    #[test]
+    fn an_armed_lane_without_a_source_fails_closed_with_a_named_fault() {
+        // The misconfiguration the contract forbids: model mode on, but the client was never
+        // wired. The guard MUST return `MissingSource`; the admission branch reads this and
+        // refuses, never consulting `gate_evaluate`. The private flag is set directly to model
+        // that state (unreachable via the public builder, which always pairs the source).
+        let mut eng = Engine::new(Config::dev_portable(), RunMode::Paper);
+        eng.paper_model_mode = true;
+        eng.model_source = None;
+        assert!(matches!(
+            eng.model_source(),
+            Err(ModelModeFault::MissingSource)
+        ));
     }
 }
