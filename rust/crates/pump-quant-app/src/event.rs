@@ -239,6 +239,45 @@ pub enum AppEvent {
         slot: u64,
     },
 
+    /// One PumpSwap swap decoded from the pool's own event CPI, ORIENTED to the token: the token
+    /// mint (never the pool), the pool it happened in, and that pool's PRE-trade reserves as the
+    /// event reports them. Consumed ONLY by the paper-model lane (legacy numeric/gate paths never
+    /// see it), so it can discover and price an AMM market with no legacy priced print.
+    AmmSwap {
+        /// The TOKEN mint (the non-quote side).
+        mint: Mint,
+        /// The pool the swap executed in.
+        pool: [u8; 32],
+        /// `true` when this is the pool the mint's canonical pump.fun migration derives
+        /// (`pool-authority` PDA, index 0, WSOL quote). Only that pool feeds reserves.
+        pool_is_canonical: bool,
+        /// `true` when the pool's quote side is WSOL. A USDC-quoted pool is excluded by name.
+        quote_is_wsol: bool,
+        /// Pool token-side vault balance BEFORE this swap, raw token units.
+        token_reserve_pre: u64,
+        /// Pool quote-side vault balance BEFORE this swap, lamports (valid only if `quote_is_wsol`).
+        quote_reserve_pre: u64,
+        /// Total fee rate the event applied (lp + protocol + creator), basis points. `None` when
+        /// the event predates the creator-fee tail: never defaulted to 0.
+        fee_bps: Option<u32>,
+        /// `true` when the trader BOUGHT the token.
+        is_buy: bool,
+        /// Token amount the trader received (buy) or gave (sell), raw units.
+        token_amount: u64,
+        /// Quote the trader paid (buy, all fees in) or received (sell, net of fees), lamports.
+        quote_lamports: u64,
+        /// The trader.
+        trader: [u8; 32],
+        /// Transaction fee / CU consumed (per trade row), as on `MarketTrade`.
+        fee_lamports: Option<u64>,
+        /// Compute units consumed.
+        cu_consumed: Option<u64>,
+        /// Wire receive time, unix ms. `None` is refused by the cache.
+        recv_unix_ms: Option<i64>,
+        /// Slot.
+        slot: u64,
+    },
+
     /// A token launch: who created the mint and when the launch was RECEIVED. First observation
     /// of a trade is not a launch; this is the only event that establishes creator history.
     LaunchObserved {
@@ -422,6 +461,7 @@ impl AppEvent {
             | AppEvent::WalletAction { mint, .. }
             | AppEvent::OnchainConfirm { mint, .. }
             | AppEvent::CurveObserved { mint, .. }
+            | AppEvent::AmmSwap { mint, .. }
             | AppEvent::LaunchObserved { mint, .. }
             | AppEvent::TokenMetadata { mint, .. }
             | AppEvent::CreatorAction { mint, .. }

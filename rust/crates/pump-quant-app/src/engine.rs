@@ -141,7 +141,7 @@ use pump_quant_watchlist::lane_performance::{DiscoveryLanePerformance, LanePerfo
 use pump_quant_watchlist::promote::promote_top;
 use pump_quant_watchlist::rank::{LaneWeights, RankParams};
 use pump_quant_watchlist::state::WatchlistState;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// A bounded running reconciliation of realized net-SOL for one evaluator lane.
 ///
@@ -860,6 +860,15 @@ pub struct Engine {
     model_first_cand: BTreeMap<[u8; 32], i64>,
     model_drift: pump_quant_inference::seam::DriftLedger,
     model_report: BTreeMap<String, u64>,
+    /// Stream-discovered markets (curve launches/prints, canonical PumpSwap swaps): registered
+    /// BEFORE any legacy priced print or gate, and re-offered to the model only when a genuinely new
+    /// observation arrives (`model_dirty`). See `engine/model_admit.rs`.
+    model_registry: BTreeSet<[u8; 32]>,
+    model_dirty: BTreeSet<[u8; 32]>,
+    model_uniq_seen: BTreeSet<(String, [u8; 32])>,
+    model_amm_fee: BTreeMap<[u8; 32], (Option<u32>, i64)>,
+    /// Non-canonical pools seen per mint (counted, never priced from): the honest `pools_total`.
+    model_other_pools: BTreeMap<[u8; 32], BTreeSet<[u8; 32]>>,
     /// The feed's own clock (max wire receive time seen), ms. Decision age and request deadlines
     /// are measured on THIS clock, so paper/replay stay deterministic.
     model_clock_ms: i64,
@@ -1452,6 +1461,11 @@ impl Engine {
             model_orders: BTreeMap::new(),
             model_last_ask: BTreeMap::new(),
             model_first_cand: BTreeMap::new(),
+            model_registry: BTreeSet::new(),
+            model_dirty: BTreeSet::new(),
+            model_uniq_seen: BTreeSet::new(),
+            model_amm_fee: BTreeMap::new(),
+            model_other_pools: BTreeMap::new(),
             model_drift: pump_quant_inference::seam::DriftLedger::new(),
             model_report: BTreeMap::new(),
             model_clock_ms: 0,
@@ -1946,6 +1960,12 @@ impl Engine {
                         }
                         None => crate::state_ledger::VenueLabel::Unknown,
                     };
+                    // A priced CURVE print registers the market for stream-driven dispatch. A
+                    // PumpSwap instruction-half print is keyed by the POOL address upstream, so it
+                    // never registers a mint (AMM markets register via `AmmSwap`).
+                    if price_fp > 0 && matches!(venue, crate::state_ledger::VenueLabel::Pumpfun) {
+                        self.model_register(*mint.as_bytes());
+                    }
                     self.model_cache
                         .observe_trade(&crate::decision_join::TradeObs {
                             mint: *mint.as_bytes(),
@@ -2461,6 +2481,7 @@ impl Engine {
                     // cutoff, so it is not admitted (a local clock is a different quantity).
                     if let Some(ts_ms) = recv_unix_ms {
                         self.model_note_clock(ts_ms);
+                        self.model_register(*mint.as_bytes());
                         self.model_cache.observe_curve(
                             *mint.as_bytes(),
                             crate::curve_annotation::CurveObservation {
@@ -2483,6 +2504,44 @@ impl Engine {
                 if self.paper_model_mode {
                     self.model_cache
                         .observe_launch(*mint.as_bytes(), creator, launch_unix_ms);
+                    self.model_register(*mint.as_bytes());
+                }
+            }
+            AppEvent::AmmSwap {
+                mint,
+                pool,
+                pool_is_canonical,
+                quote_is_wsol,
+                token_reserve_pre,
+                quote_reserve_pre,
+                fee_bps,
+                is_buy,
+                token_amount,
+                quote_lamports,
+                trader,
+                fee_lamports,
+                cu_consumed,
+                recv_unix_ms,
+                slot,
+            } => {
+                if self.paper_model_mode {
+                    self.model_on_amm_swap(model_admit::AmmSwapIn {
+                        mint,
+                        pool,
+                        canonical: pool_is_canonical,
+                        quote_is_wsol,
+                        token_reserve_pre,
+                        quote_reserve_pre,
+                        fee_bps,
+                        is_buy,
+                        token_amount,
+                        quote_lamports,
+                        trader,
+                        fee_lamports,
+                        cu_consumed,
+                        recv_unix_ms,
+                        slot,
+                    });
                 }
             }
             AppEvent::Tick => self.evaluate(),
@@ -2906,6 +2965,7 @@ impl Engine {
         // by construction, and a no-op when the lane is not armed.
         if self.paper_model_mode {
             self.model_poll();
+            self.model_stream_schedule();
         }
 
         // §Quant-Rev-7: prune expired re-entry cooldown entries. The set is bounded

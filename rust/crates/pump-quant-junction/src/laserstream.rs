@@ -95,6 +95,153 @@ pub const PUMP_CREATE_DISCRIMINATOR: [u8; 8] = [24, 30, 200, 40, 5, 28, 7, 119];
 /// pump.fun `create_v2` instruction discriminator (`sha256("global:create_v2")[..8]`).
 pub const PUMP_CREATE_V2_DISCRIMINATOR: [u8; 8] = [214, 144, 76, 236, 95, 139, 49, 180];
 
+/// The facts of one decoded, canonical-pool PumpSwap swap. All amounts are raw on-chain units.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AmmSwapFacts {
+    /// The token mint (base side of the canonical pool).
+    pub mint: [u8; 32],
+    /// The pool the swap executed in; equals the PDA derived from `mint`.
+    pub pool: [u8; 32],
+    /// Pool base (token) vault balance BEFORE the swap.
+    pub token_reserve_pre: u64,
+    /// Pool quote (WSOL) vault balance BEFORE the swap, lamports.
+    pub quote_reserve_pre: u64,
+    /// lp + protocol + creator fee rate, basis points; `None` if the creator-fee tail is absent.
+    pub fee_bps: Option<u32>,
+    /// The trader bought the token.
+    pub is_buy: bool,
+    /// Tokens received (buy) / given (sell).
+    pub token_amount: u64,
+    /// Quote paid with all fees (buy) / received net of fees (sell), lamports.
+    pub quote_lamports: u64,
+    /// The trader wallet.
+    pub trader: [u8; 32],
+    /// `pool == canonical_pool_for(mint)` AND the quote account is WSOL. Reserve/amount fields are
+    /// token-oriented ONLY when this is true; otherwise the swap is counted, never used.
+    pub canonical: bool,
+    /// The pool's quote account (instruction account 4) is WSOL.
+    pub quote_is_wsol: bool,
+}
+
+/// WSOL mint, raw bytes.
+const WSOL_MINT_BYTES: [u8; 32] = [
+    6, 155, 136, 87, 254, 171, 129, 132, 251, 104, 127, 99, 70, 24, 192, 53, 218, 196, 57, 220, 26,
+    235, 59, 85, 152, 160, 240, 0, 0, 0, 0, 1,
+];
+
+/// The canonical pump.fun-migration PumpSwap pool for `mint`: the `pool` PDA of index 0, creator =
+/// the `pool-authority` PDA of the pump.fun program, base = `mint`, quote = WSOL. (Verified against
+/// 415 of 420 `pump`-suffix mints of the captured AMM history; the rest are other-index pools.)
+#[must_use]
+pub fn canonical_pool_for(mint: &[u8; 32]) -> [u8; 32] {
+    use solana_program::pubkey::Pubkey;
+    let pump = Pubkey::new_from_array(PUMP_FUN_PROGRAM);
+    let amm = Pubkey::new_from_array(PUMP_SWAP_PROGRAM);
+    let (authority, _) = Pubkey::find_program_address(&[b"pool-authority", mint], &pump);
+    let (pool, _) = Pubkey::find_program_address(
+        &[
+            b"pool",
+            &0u16.to_le_bytes(),
+            authority.as_ref(),
+            mint,
+            &WSOL_MINT_BYTES,
+        ],
+        &amm,
+    );
+    pool.to_bytes()
+}
+
+/// Decode every PumpSwap Buy/Sell event CPI in `tx`, resolving the mint from the pool's own swap
+/// instruction and checking it against the canonical-pool derivation. Returns the facts plus the
+/// number of events whose swap instruction was not in the transaction (unresolvable, counted).
+#[must_use]
+pub fn decode_amm_swaps(tx: &LaserStreamTx) -> (Vec<AmmSwapFacts>, u32) {
+    use pump_quant_protocol::pumpswap_event::{decode_pumpswap_event, PumpSwapEvent};
+    let mut out = Vec::new();
+    let mut excluded = 0u32;
+    for ix in &tx.instructions {
+        if ix.program_id != PUMP_SWAP_PROGRAM {
+            continue;
+        }
+        let Some(ev) = decode_pumpswap_event(&ix.data) else {
+            continue;
+        };
+        let (pool, user, buy, tok_res, quote_res, tok_amt, quote_amt, lp, prot, creator) = match ev
+        {
+            PumpSwapEvent::Buy(b) => (
+                b.pool,
+                b.user,
+                true,
+                b.pool_base_token_reserves,
+                b.pool_quote_token_reserves,
+                b.base_amount_out,
+                b.user_quote_amount_in,
+                b.lp_fee_basis_points,
+                b.protocol_fee_basis_points,
+                b.coin_creator_fee_basis_points,
+            ),
+            PumpSwapEvent::Sell(s) => (
+                s.pool,
+                s.user,
+                false,
+                s.pool_base_token_reserves,
+                s.pool_quote_token_reserves,
+                s.base_amount_in,
+                s.user_quote_amount_out,
+                s.lp_fee_basis_points,
+                s.protocol_fee_basis_points,
+                s.coin_creator_fee_basis_points,
+            ),
+            PumpSwapEvent::CreatePool(_) => continue,
+        };
+        // The swap instruction naming this pool carries the mints at accounts [3] (base) and [4]
+        // (quote). The mint is the non-WSOL one; `canonical` additionally requires the pool to be
+        // the PDA derived for that mint with WSOL as QUOTE (so reversed / USDC / other-index pools
+        // are never mistaken for the migration pool).
+        let mut found: Option<([u8; 32], bool, bool)> = None;
+        for sib in &tx.instructions {
+            if sib.program_id != PUMP_SWAP_PROGRAM
+                || sib.data.get(0..8) == Some(&[0xe4, 0x45, 0xa5, 0x2e, 0x51, 0xcb, 0x9a, 0x1d][..])
+            {
+                continue;
+            }
+            if account_key_at(sib, tx, 0) != Some(pool) {
+                continue;
+            }
+            if let (Some(base), Some(quote)) =
+                (account_key_at(sib, tx, 3), account_key_at(sib, tx, 4))
+            {
+                let token = if base != WSOL_MINT_BYTES { base } else { quote };
+                let quote_is_wsol = quote == WSOL_MINT_BYTES;
+                found = Some((
+                    token,
+                    quote_is_wsol,
+                    quote_is_wsol && canonical_pool_for(&token) == pool,
+                ));
+                break;
+            }
+        }
+        let Some((mint, quote_is_wsol, canonical)) = found else {
+            excluded += 1;
+            continue;
+        };
+        out.push(AmmSwapFacts {
+            mint,
+            pool,
+            token_reserve_pre: tok_res,
+            quote_reserve_pre: quote_res,
+            fee_bps: creator.and_then(|c| u32::try_from(lp + prot + c).ok()),
+            is_buy: buy,
+            token_amount: tok_amt,
+            quote_lamports: quote_amt,
+            trader: user,
+            canonical,
+            quote_is_wsol,
+        });
+    }
+    (out, excluded)
+}
+
 /// Classification of a pump.fun instruction found in a LaserStream transaction.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PumpInstruction {
@@ -140,6 +287,9 @@ pub enum PumpInstruction {
     CreatePool { pool: [u8; 32], base_mint: [u8; 32] },
     /// pump.fun → PumpSwap migration.
     Migrate { mint: [u8; 32] },
+    /// A PumpSwap swap decoded from the pool's event CPI, oriented to the TOKEN and bound to its
+    /// canonical pool by PDA derivation. Never constructed for a reversed, non-WSOL-quoted or
+    AmmSwap(AmmSwapFacts),
     /// pump.fun token launch (`create` / `create_v2`). `creator` is the TRANSACTION SIGNER
     /// (account key 0), verified against 29 of 30 sampled corpus launches: instruction account
     /// [1] is NOT the creator on `create_v2`.
@@ -255,6 +405,8 @@ pub fn classify_pump_instructions(tx: &LaserStreamTx) -> Vec<PumpInstruction> {
         }
     }
 
+    let (swaps, _excluded) = decode_amm_swaps(tx);
+    out.extend(swaps.into_iter().map(PumpInstruction::AmmSwap));
     out
 }
 
@@ -435,6 +587,30 @@ pub fn instructions_to_events_with_meta(
                         fee_lamports,
                         cu_consumed,
                         venue: Some(pump_quant_app::event::TradeVenue::PumpSwap),
+                    },
+                    source: ProvenanceSource::LaserStream,
+                    slot,
+                    is_live,
+                });
+            }
+            PumpInstruction::AmmSwap(f) => {
+                events.push(ProvenancedEvent {
+                    event: AppEvent::AmmSwap {
+                        mint: Mint(f.mint),
+                        pool: f.pool,
+                        pool_is_canonical: f.canonical,
+                        quote_is_wsol: f.quote_is_wsol,
+                        token_reserve_pre: f.token_reserve_pre,
+                        quote_reserve_pre: f.quote_reserve_pre,
+                        fee_bps: f.fee_bps,
+                        is_buy: f.is_buy,
+                        token_amount: f.token_amount,
+                        quote_lamports: f.quote_lamports,
+                        trader: f.trader,
+                        fee_lamports,
+                        cu_consumed,
+                        recv_unix_ms,
+                        slot,
                     },
                     source: ProvenanceSource::LaserStream,
                     slot,
@@ -737,6 +913,58 @@ fn b58_decode(s: &str) -> Option<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
+    /// REAL on-chain transactions (fetched via public RPC for corpus tape rows, then laid out as the
+    /// daemon-facing line: outer + inner instructions, `meta` fee/CU). This establishes the decoder
+    /// against genuine PumpSwap event CPIs; it does NOT establish the sidecar's own emitted line
+    /// (that capture is a named Windows acceptance item).
+    #[test]
+    fn real_pumpswap_txs_decode_to_token_oriented_facts_or_a_named_exclusion() {
+        let raw = include_str!("../tests/fixtures/pumpswap_rpc_txs.json");
+        let v: pq_stream_capture::json::Value = pq_stream_capture::json::parse(raw).unwrap();
+        let arr = v.as_array().unwrap();
+        assert_eq!(arr.len(), 3);
+        let mut canonical = 0;
+        let mut excluded_by_name = 0;
+        for item in arr {
+            let line = pq_stream_capture::json::serialize(item.get("line").unwrap());
+            let Some(LaserStreamUpdate::Transaction(tx)) = parse_ndjson_line(&line) else {
+                panic!("fixture line must parse");
+            };
+            let tape = item.get("tape").unwrap();
+            let (facts, unresolved) = decode_amm_swaps(&tx);
+            assert_eq!(unresolved, 0, "every event's swap instruction is in the tx");
+            assert_eq!(facts.len(), 1, "one swap event per fixture tx");
+            let f = &facts[0];
+            // Fee/CU come from the same tx: per trade row, and equal to the corpus tape's.
+            assert_eq!(
+                tx.fee_lamports,
+                tape.get("fee_lamports").and_then(|n| n.as_u64())
+            );
+            assert_eq!(
+                tx.cu_consumed,
+                tape.get("cu_consumed").and_then(|n| n.as_u64())
+            );
+            if f.canonical {
+                canonical += 1;
+                assert!(f.quote_is_wsol);
+                assert_eq!(canonical_pool_for(&f.mint), f.pool);
+                let want_buy = tape.get("side").and_then(|s| s.as_str()) == Some("buy");
+                assert_eq!(f.is_buy, want_buy);
+                // Token amount equals the corpus tape's token leg for the same trade.
+                assert_eq!(
+                    Some(f.token_amount),
+                    tape.get("tokens_raw").and_then(|n| n.as_u64())
+                );
+                assert!(f.token_reserve_pre > 0 && f.quote_reserve_pre > 0);
+            } else {
+                // A reversed / non-WSOL-quoted / non-canonical pool: carried flagged, never priced.
+                excluded_by_name += 1;
+            }
+        }
+        eprintln!("real-tx decode: canonical={canonical} excluded_by_name={excluded_by_name}");
+        assert_eq!(canonical + excluded_by_name, 3);
+    }
+
     use super::*;
 
     fn make_tx(slot: u64, is_live: bool) -> LaserStreamTx {

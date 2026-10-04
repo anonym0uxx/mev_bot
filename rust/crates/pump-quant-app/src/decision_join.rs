@@ -367,6 +367,12 @@ impl DecisionCache {
         self.annotation.curve_of(mint).copied()
     }
 
+    /// The last AMM reserve observation for a mint (for the paper fill), if any.
+    #[must_use]
+    pub fn amm_obs(&self, mint: &[u8; 32]) -> Option<AmmObservation> {
+        self.annotation.amm_of(mint).cloned()
+    }
+
     /// What coverage reporting needs to split by: the mint's last print venue label, its age at
     /// `t_dec_ms` measured from the LAUNCH (None when no launch is known -- never first-seen),
     /// and how many prints the cache has accepted for it (the warm-up depth).

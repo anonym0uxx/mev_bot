@@ -95,13 +95,23 @@ fn captured_history_through_the_real_engine_reports_coverage() {
                         let vsol = r[0].as_u64().expect("vsol");
                         let vtok = r[1].as_u64().expect("vtok");
                         (
-                            if vtok > 0 { (u128::from(vsol) * 1_000_000_000 / u128::from(vtok)) as i128 } else { 0 },
+                            if vtok > 0 {
+                                (u128::from(vsol) * 1_000_000_000 / u128::from(vtok)) as i128
+                            } else {
+                                0
+                            },
                             vsol,
                         )
                     }
                     None => (0, 0),
                 };
-                *by_kind.entry(if rv.is_some() { "trade_priced" } else { "trade_unpriced" }).or_default() += 1;
+                *by_kind
+                    .entry(if rv.is_some() {
+                        "trade_priced"
+                    } else {
+                        "trade_unpriced"
+                    })
+                    .or_default() += 1;
                 if let Some(r) = rv {
                     // The captured post-trade reserves ARE the curve observation at this print's clock.
                     e.tick(AppEvent::CurveObserved {
@@ -151,6 +161,13 @@ fn captured_history_through_the_real_engine_reports_coverage() {
         "model_calls": calls.load(Ordering::SeqCst),
         "lane": e.model_lane_report(),
     });
-    std::fs::write("/tmp/replay_report.json", serde_json::to_string_pretty(&report).unwrap()).unwrap();
-    eprintln!("replayed {n_events} events, {ticks} ticks, {} model calls", calls.load(Ordering::SeqCst));
+    std::fs::write(
+        "/tmp/replay_report.json",
+        serde_json::to_string_pretty(&report).unwrap(),
+    )
+    .unwrap();
+    eprintln!(
+        "replayed {n_events} events, {ticks} ticks, {} model calls",
+        calls.load(Ordering::SeqCst)
+    );
 }

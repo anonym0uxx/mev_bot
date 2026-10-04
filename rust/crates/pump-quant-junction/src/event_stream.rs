@@ -414,6 +414,7 @@ fn event_kind(event: &AppEvent) -> &'static str {
         AppEvent::WalletAction { .. } => "WalletAction",
         AppEvent::OnchainConfirm { .. } => "OnchainConfirm",
         AppEvent::CurveObserved { .. } => "CurveObserved",
+        AppEvent::AmmSwap { .. } => "AmmSwap",
         AppEvent::LaunchObserved { .. } => "LaunchObserved",
         AppEvent::TokenMetadata { .. } => "TokenMetadata",
         AppEvent::CreatorAction { .. } => "CreatorAction",
@@ -520,6 +521,26 @@ fn event_fields_json(event: &AppEvent) -> String {
             parts.push(format!(r#""v_tokens":{}"#, v_tokens));
             parts.push(format!(r#""real_sol_lamports":{}"#, real_sol_lamports));
             parts.push(format!(r#""real_tokens":{}"#, real_tokens));
+            if let Some(t) = recv_unix_ms {
+                parts.push(format!(r#""recv_unix_ms":{}"#, t));
+            }
+            parts.push(format!(r#""slot":{}"#, slot));
+        }
+        AppEvent::AmmSwap {
+            token_reserve_pre,
+            quote_reserve_pre,
+            is_buy,
+            token_amount,
+            quote_lamports,
+            recv_unix_ms,
+            slot,
+            ..
+        } => {
+            parts.push(format!(r#""token_reserve_pre":{}"#, token_reserve_pre));
+            parts.push(format!(r#""quote_reserve_pre":{}"#, quote_reserve_pre));
+            parts.push(format!(r#""is_buy":{}"#, is_buy));
+            parts.push(format!(r#""token_amount":{}"#, token_amount));
+            parts.push(format!(r#""quote_lamports":{}"#, quote_lamports));
             if let Some(t) = recv_unix_ms {
                 parts.push(format!(r#""recv_unix_ms":{}"#, t));
             }

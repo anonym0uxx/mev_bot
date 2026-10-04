@@ -49,6 +49,30 @@ const MODEL_FILL_LANDING_MS: i64 = 400;
 /// A pending order with no landing state by then expires unfilled.
 const MODEL_ORDER_TTL_MS: i64 = 5_000;
 const FIRST_CAND_CAP: usize = 100_000;
+/// Bound on stream-registered markets.
+const REGISTRY_CAP: usize = 100_000;
+/// Maximum asks started per tick: a coalescing bound, not a strategy filter.
+const SCHEDULE_PER_TICK: usize = 8;
+
+/// A canonical-pool swap handed to the engine (see `AppEvent::AmmSwap`).
+#[derive(Debug, Clone, Copy)]
+pub struct AmmSwapIn {
+    pub mint: pump_quant_domain::ids::Mint,
+    pub pool: [u8; 32],
+    pub canonical: bool,
+    pub quote_is_wsol: bool,
+    pub token_reserve_pre: u64,
+    pub quote_reserve_pre: u64,
+    pub fee_bps: Option<u32>,
+    pub is_buy: bool,
+    pub token_amount: u64,
+    pub quote_lamports: u64,
+    pub trader: [u8; 32],
+    pub fee_lamports: Option<u64>,
+    pub cu_consumed: Option<u64>,
+    pub recv_unix_ms: Option<i64>,
+    pub slot: u64,
+}
 
 /// What the engine remembers about one outstanding request: the immutable snapshot it was bound to.
 #[derive(Debug, Clone)]
@@ -68,6 +92,8 @@ pub(super) struct ModelOrder {
     pub lane: WlLane,
     pub discovery_lane: DiscoveryLane,
     pub snap_price: f64,
+    /// The AMM plane governed this decision: the fill is priced from the POOL, not the curve.
+    pub amm: bool,
 }
 
 fn age_bucket(age_s: Option<f64>) -> &'static str {
@@ -139,9 +165,157 @@ impl Engine {
         s
     }
 
-    /// The admit-site branch. Called INSTEAD of `gate_evaluate` when the lane is armed.
+    /// The legacy-promoted admit-site branch (kept as a SECOND source; the stream registry below
+    /// is the one that does not depend on legacy admission).
     pub(super) fn model_admit_candidate(&mut self, cand: Candidate) {
-        let mint = cand.mint.bytes();
+        self.model_admit_mint(cand.mint.bytes(), cand.lane, cand.discovery_lane);
+    }
+
+    /// Register a stream-discovered market. Bounded; idempotent; never consults legacy state.
+    pub(super) fn model_register(&mut self, mint: [u8; 32]) {
+        self.model_dirty.insert(mint);
+        if self.model_registry.contains(&mint) {
+            return;
+        }
+        if self.model_registry.len() >= REGISTRY_CAP {
+            self.mrep("refuse:registry_full");
+            return;
+        }
+        self.model_registry.insert(mint);
+        let clock = self.model_clock_ms;
+        if self.model_first_cand.len() < FIRST_CAND_CAP {
+            self.model_first_cand.entry(mint).or_insert(clock);
+        }
+        let (venue, _, _) = self.model_cache.describe(&mint, clock);
+        self.model_uniq("discovered", &mint, venue);
+    }
+
+    /// First time `mint` reaches `stage`: one unique-market count, split by venue.
+    fn model_uniq(&mut self, stage: &str, mint: &[u8; 32], venue: &str) {
+        if self.model_uniq_seen.insert((stage.to_string(), *mint)) {
+            self.mrep(format!("uniq_{stage}|venue={venue}"));
+        }
+    }
+
+    /// Coalesced, bounded scheduling of stream-discovered markets: at most `SCHEDULE_PER_TICK`
+    /// asks per tick, each only for a market with a NEW observation since its last ask and outside
+    /// its re-ask window. A market the model SKIPped stays registered and is re-offered when new
+    /// observations arrive; nothing is dropped for having been skipped.
+    pub(super) fn model_stream_schedule(&mut self) {
+        let clock = self.model_clock_ms;
+        let dirty: Vec<[u8; 32]> = self.model_dirty.iter().copied().collect();
+        let mut budget = SCHEDULE_PER_TICK;
+        for mint in dirty {
+            if budget == 0 {
+                self.mrep("sched_deferred_budget");
+                break;
+            }
+            if self
+                .model_last_ask
+                .get(&mint)
+                .is_some_and(|t| clock - *t < MODEL_REASK_MS)
+            {
+                continue; // stays dirty; re-offered after the window
+            }
+            self.model_dirty.remove(&mint);
+            budget -= 1;
+            self.model_admit_mint(mint, WlLane::ActiveMarketScalp, DiscoveryLane::ActiveMarket);
+        }
+    }
+
+    /// A canonical-pool PumpSwap swap, token-oriented and pool-bound by the decoder. Non-canonical
+    /// and non-WSOL pools are counted by name and never priced from.
+    pub(super) fn model_on_amm_swap(&mut self, a: AmmSwapIn) {
+        let Some(ts_ms) = a.recv_unix_ms else {
+            self.mrep("refuse:amm_swap_no_clock");
+            return;
+        };
+        self.model_note_clock(ts_ms);
+        if !a.quote_is_wsol {
+            self.mrep("amm_excluded:quote_not_wsol");
+            return;
+        }
+        if !a.canonical {
+            self.model_other_pools
+                .entry(*a.mint.as_bytes())
+                .or_default()
+                .insert(a.pool);
+            self.mrep("amm_excluded:pool_not_canonical");
+            return;
+        }
+        let mint = *a.mint.as_bytes();
+        let pool_s = a
+            .pool
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
+        self.model_cache.bind_pool(mint, &pool_s);
+        let others = self.model_other_pools.get(&mint).map_or(0, |s| s.len());
+        let applied = self.model_cache.observe_amm(
+            mint,
+            crate::curve_annotation::AmmObservation {
+                pool: pool_s,
+                base_reserves_raw: a.token_reserve_pre,
+                quote_reserves_lamports: a.quote_reserve_pre,
+                quote_is_wsol: true,
+                ts_ms,
+                slot: a.slot,
+            },
+            crate::curve_annotation::AmmAttribution {
+                wsol_pools: vec![a.pool.iter().map(|b| format!("{b:02x}")).collect()],
+                pools_total: 1 + others,
+                graduated: true,
+            },
+        );
+        // The pool's fee rate is a per-event fact. A swap that does not carry it must not erase the
+        // last observed rate (and is never defaulted): the fill uses the LAST OBSERVED rate, labelled.
+        if a.fee_bps.is_some() {
+            self.model_amm_fee.insert(mint, (a.fee_bps, ts_ms));
+        }
+        if !applied {
+            self.mrep("amm_swap_dropped_out_of_order");
+        }
+        // The swap's own execution price (quote per token incl. fees) feeds the flow/price windows
+        // as a PRICED print. It is NOT the executable state: that is the pre-trade reserve above.
+        if a.token_amount > 0 && a.quote_lamports > 0 {
+            let price_fp =
+                (i128::from(a.quote_lamports) * 1_000_000_000) / i128::from(a.token_amount);
+            let signed = i64::try_from(a.token_amount).unwrap_or(i64::MAX);
+            let entity =
+                pump_quant_wallet_graph::tracked_wallet_matcher::wallet_entity_id(&a.trader);
+            self.model_cache
+                .observe_trade(&crate::decision_join::TradeObs {
+                    mint,
+                    price_fp,
+                    quote_lamports: a.quote_lamports,
+                    signed_base: if a.is_buy { signed } else { -signed },
+                    buyer_entity: entity,
+                    trader: Some(a.trader),
+                    recv_unix_ms: Some(ts_ms),
+                    slot: Some(a.slot),
+                    fee_lamports: a.fee_lamports,
+                    cu_consumed: a.cu_consumed,
+                    venue: crate::state_ledger::VenueLabel::Pumpswap,
+                });
+            // A HELD market is marked from the pool so the existing lifecycle can monitor it. This is
+            // deliberately limited to held mints: the legacy numeric lane must not DISCOVER from it.
+            if self.open_lane.contains_key(&mint) {
+                self.numeric.observe(
+                    pump_quant_domain::ids::Mint::from_bytes(mint),
+                    price_fp,
+                    a.quote_lamports,
+                    a.quote_reserve_pre,
+                    if a.is_buy { signed } else { -signed },
+                    entity,
+                    0,
+                    self.now,
+                );
+            }
+        }
+        self.model_register(mint);
+    }
+
+    fn model_admit_mint(&mut self, mint: [u8; 32], cand_lane: WlLane, cand_dlane: DiscoveryLane) {
         if self.mode == RunMode::Live || self.outbound_sink.is_some() {
             self.mrep("refuse:live_forbidden");
             return;
@@ -191,12 +365,20 @@ impl Engine {
             }
         };
         self.mrep(format!("snapshot_ok|{dims}"));
-        if let Some(first) = self.model_first_cand.get(&mint).copied() {
-            *self
-                .model_report
-                .entry("ready_delay_ms_sum".into())
-                .or_insert(0) += (clock - first).max(0) as u64;
-            *self.model_report.entry("ready_delay_n".into()).or_insert(0) += 1;
+        // ONE observation per mint: the delay from discovery to the FIRST usable prompt. (It was
+        // previously added on every ready tick, which made n equal total asks.)
+        if !self.model_uniq_seen.contains(&("ready".to_string(), mint)) {
+            if let Some(first) = self.model_first_cand.get(&mint).copied() {
+                *self
+                    .model_report
+                    .entry("first_ready_delay_ms_sum".into())
+                    .or_insert(0) += (clock - first).max(0) as u64;
+                *self
+                    .model_report
+                    .entry("first_ready_delay_n".into())
+                    .or_insert(0) += 1;
+            }
+            self.model_uniq("ready", &mint, venue);
         }
         let id = match self
             .model_table
@@ -236,11 +418,12 @@ impl Engine {
             id,
             ModelReqMeta {
                 snap,
-                lane: cand.lane,
-                discovery_lane: cand.discovery_lane,
+                lane: cand_lane,
+                discovery_lane: cand_dlane,
                 dims,
             },
         );
+        self.model_uniq("dispatched", &mint, venue);
         self.mrep("dispatched");
     }
 
@@ -339,6 +522,7 @@ impl Engine {
                         lane: meta.lane,
                         discovery_lane: meta.discovery_lane,
                         snap_price: meta.snap.price_lamports_per_raw_token,
+                        amm: meta.snap.size_amm,
                     },
                 );
             }
@@ -369,24 +553,83 @@ impl Engine {
                 continue;
             };
             let landing = order.created_ms + MODEL_FILL_LANDING_MS;
-            let obs = self
-                .model_cache
-                .curve_obs(&mint)
-                .filter(|o| o.ts_ms >= landing && o.ts_ms <= clock);
-            let Some(obs) = obs else {
-                if clock - order.created_ms > MODEL_ORDER_TTL_MS {
-                    self.model_orders.remove(&mint);
-                    self.mrep("fill_none:no_landing_state");
-                }
-                continue;
-            };
-            self.model_orders.remove(&mint);
             let size = order.clip_lamports;
-            let Some(tokens_out) =
-                crate::curve_fill::buy_tokens_out(obs.v_sol_lamports, obs.v_tokens, size)
-            else {
-                self.mrep("fill_none:unpriceable");
-                continue;
+            // Landing state: the first reserve observation at/after landing, from the plane the
+            // DECISION used. A curve order is never priced from a pool, nor the reverse.
+            let (reserve_sol, tokens_out, entry_price, entry_fee_bps) = if order.amm {
+                let obs = self
+                    .model_cache
+                    .amm_obs(&mint)
+                    .filter(|o| o.ts_ms >= landing && o.ts_ms <= clock);
+                let Some(obs) = obs else {
+                    if clock - order.created_ms > MODEL_ORDER_TTL_MS {
+                        self.model_orders.remove(&mint);
+                        self.mrep("fill_none:no_landing_state");
+                    }
+                    continue;
+                };
+                self.model_orders.remove(&mint);
+                // The pool's own fee, as the swap event reported it (ground truth); never a default.
+                let Some(fee_bps) = self.model_amm_fee.get(&mint).and_then(|(f, _)| *f) else {
+                    self.mrep("fill_none:amm_fee_unknown");
+                    continue;
+                };
+                let Some(out) = pump_quant_protocol::curve::pumpswap_amount_out(
+                    u128::from(obs.quote_reserves_lamports),
+                    u128::from(obs.base_reserves_raw),
+                    u128::from(size),
+                    fee_bps,
+                ) else {
+                    self.mrep("fill_none:unpriceable");
+                    continue;
+                };
+                let Ok(out) = u64::try_from(out) else {
+                    self.mrep("fill_none:unpriceable");
+                    continue;
+                };
+                if out == 0 {
+                    self.mrep("fill_none:unpriceable");
+                    continue;
+                }
+                // All-in average price, lamports per raw token in PRICE_SCALE units. The pool took
+                // its fee from the INPUT, so `out` is already net of it: no separate entry fee.
+                let px = (u128::from(size) * 1_000_000_000).div_ceil(u128::from(out));
+                let Ok(px) = u64::try_from(px) else {
+                    self.mrep("fill_none:unpriceable");
+                    continue;
+                };
+                (obs.quote_reserves_lamports, out, px, 0u32)
+            } else {
+                let obs = self
+                    .model_cache
+                    .curve_obs(&mint)
+                    .filter(|o| o.ts_ms >= landing && o.ts_ms <= clock);
+                let Some(obs) = obs else {
+                    if clock - order.created_ms > MODEL_ORDER_TTL_MS {
+                        self.model_orders.remove(&mint);
+                        self.mrep("fill_none:no_landing_state");
+                    }
+                    continue;
+                };
+                self.model_orders.remove(&mint);
+                let Some(out) =
+                    crate::curve_fill::buy_tokens_out(obs.v_sol_lamports, obs.v_tokens, size)
+                else {
+                    self.mrep("fill_none:unpriceable");
+                    continue;
+                };
+                let Some(px) =
+                    crate::curve_fill::buy_avg_price_fp(obs.v_sol_lamports, obs.v_tokens, size)
+                else {
+                    self.mrep("fill_none:unpriceable");
+                    continue;
+                };
+                (
+                    obs.v_sol_lamports,
+                    out,
+                    px,
+                    crate::cost_model::venue_fee_bps_per_leg(obs.v_sol_lamports),
+                )
             };
             // THE MODEL'S OWN BOUND, converted by the same authority the live sink uses.
             if let Some(limit) = order.price_limit {
@@ -402,19 +645,11 @@ impl Engine {
                     }
                 }
             }
-            let Some(entry_price) =
-                crate::curve_fill::buy_avg_price_fp(obs.v_sol_lamports, obs.v_tokens, size)
-            else {
-                self.mrep("fill_none:unpriceable");
-                continue;
-            };
-            let Some(rt_bps) = self.unified_rt_bps(&mint, size, obs.v_sol_lamports) else {
+            let Some(rt_bps) = self.unified_rt_bps(&mint, size, reserve_sol) else {
                 self.mrep("fill_none:undecoded_quote");
                 continue;
             };
-            let entry_fee = (u128::from(size)
-                * u128::from(crate::cost_model::venue_fee_bps_per_leg(obs.v_sol_lamports))
-                / 10_000) as u64;
+            let entry_fee = (u128::from(size) * u128::from(entry_fee_bps) / 10_000) as u64;
             let needs_ata = !self.ata_open.contains(&mint);
             let entry_cost = size
                 .saturating_add(entry_fee)
@@ -446,14 +681,15 @@ impl Engine {
                 // it, and arbitration is bypassed. Zero, not a fabricated figure.
                 expected_net: 0,
                 round_trip_cost_bps: rt_bps,
-                entry_vsol: obs.v_sol_lamports,
+                entry_vsol: reserve_sol,
                 entry_obs: crate::expected_move::SignalObs::none(),
                 x_min: 0,
                 x_cost: 0,
                 x_max: 0,
                 priced_move: self.priced_move(order.lane, None),
-                // Depth was decoded from the curve account observation (basis code 2).
-                depth_basis: 2,
+                // 2 = decoded from the curve account; 3 = migrated pool, decoded from the pool's
+                // own swap-event reserves.
+                depth_basis: if order.amm { 3 } else { 2 },
                 brain: None,
                 t_dec: None,
                 price_limit: order.price_limit,
@@ -461,7 +697,11 @@ impl Engine {
             };
             self.open_pending(&pe);
             if self.open_lane.contains_key(&mint) {
-                self.mrep("fill:position_opened");
+                self.mrep(if order.amm {
+                    "fill:position_opened_amm"
+                } else {
+                    "fill:position_opened"
+                });
                 self.journal.record(Decision::Promoted {
                     mint,
                     lane: order.lane as u8,
