@@ -116,7 +116,7 @@ pub struct EntryRequest<'a> {
 }
 
 /// What the authority concluded. `Buy` is the only variant that may move capital.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum EntryAuthority {
     /// The model chose to buy; the clip is what the account can actually pay.
     Buy {
@@ -127,6 +127,11 @@ pub enum EntryAuthority {
         tier: SizeTier,
         /// Lamports to deploy, after payability capping.
         clip_lamports: u64,
+        /// The model's own worst-price bound (BUY only), lamports per raw token. `None` when the
+        /// completion carried no `PRICE LIMIT` (68% of trained BUYs — optional, not required).
+        /// Carried intact so the execution sink can honour it via
+        /// `price_anchor::resolve_min_tokens_out`; never dropped.
+        price_limit: Option<f64>,
     },
     /// The model asked to watch the mint; no capital.
     Watch,
@@ -303,6 +308,7 @@ pub fn decide_entry<S: ModelSource + ?Sized>(
                     EntryAuthority::Buy {
                         tier,
                         clip_lamports,
+                        price_limit: decision.price_limit,
                     }
                 }
                 Err(e) => EntryAuthority::NoTrade(NoTradeReason::UnpayableClip(e)),
@@ -422,7 +428,8 @@ mod tests {
             a,
             EntryAuthority::Buy {
                 tier: SizeTier::Full,
-                clip_lamports: 666_666_666
+                clip_lamports: 666_666_666,
+                price_limit: Some(0.02445740498411998),
             }
         );
         assert_eq!(l.accepted(), 1);
@@ -443,7 +450,8 @@ mod tests {
             a,
             EntryAuthority::Buy {
                 tier: SizeTier::Small,
-                clip_lamports: 416_666_666
+                clip_lamports: 416_666_666,
+                price_limit: Some(0.02),
             }
         );
         // And the fee buffer is respected: 0.30 SOL free is split three ways, so FULL gets
@@ -453,7 +461,8 @@ mod tests {
             a,
             EntryAuthority::Buy {
                 tier: SizeTier::Full,
-                clip_lamports: 100_000_000
+                clip_lamports: 100_000_000,
+                price_limit: Some(0.02445740498411998),
             }
         );
     }
@@ -543,7 +552,8 @@ price_lamports_per_raw_token=0.02445740498411998  ret_5s_bp=120  ret_30s_bp=0  v
             a,
             EntryAuthority::Buy {
                 tier: SizeTier::Small,
-                clip_lamports: 166_666_666
+                clip_lamports: 166_666_666,
+                price_limit: Some(0.02),
             },
             "SMALL must deploy SMALL even though the AMM rule would say FULL"
         );
@@ -620,7 +630,8 @@ price_lamports_per_raw_token=0.02445740498411998  ret_5s_bp=120  ret_30s_bp=0  v
             empty,
             EntryAuthority::Buy {
                 tier: SizeTier::Full,
-                clip_lamports: 666_666_666
+                clip_lamports: 666_666_666,
+                price_limit: Some(0.02445740498411998),
             }
         );
         // When cash genuinely cannot cover the slot, PAYABILITY caps the clip. That is a
@@ -631,7 +642,8 @@ price_lamports_per_raw_token=0.02445740498411998  ret_5s_bp=120  ret_30s_bp=0  v
             decide_entry(&Stub(BUY_FULL), &short, &mut l),
             EntryAuthority::Buy {
                 tier: SizeTier::Full,
-                clip_lamports: 450_000_000
+                clip_lamports: 450_000_000,
+                price_limit: Some(0.02445740498411998),
             },
             "the payable cap binds; the notional does not move"
         );
@@ -687,7 +699,8 @@ price_lamports_per_raw_token=0.02445740498411998  ret_5s_bp=120  ret_30s_bp=0  v
             a,
             EntryAuthority::Buy {
                 tier: SizeTier::Small,
-                clip_lamports: 10_833_333
+                clip_lamports: 10_833_333,
+                price_limit: Some(0.02),
             }
         );
     }
@@ -731,7 +744,8 @@ price_lamports_per_raw_token=0.02445740498411998  ret_5s_bp=120  ret_30s_bp=0  v
             a,
             EntryAuthority::Buy {
                 tier: SizeTier::Full,
-                clip_lamports: 333_333_333
+                clip_lamports: 333_333_333,
+                price_limit: Some(0.02445740498411998),
             }
         );
     }
@@ -1065,7 +1079,8 @@ mod impact_veto_tests {
             ),
             EntryAuthority::Buy {
                 tier: SizeTier::Full,
-                clip_lamports: 666_666_666
+                clip_lamports: 666_666_666,
+                price_limit: Some(0.02445740498411998),
             }
         );
         let mut l3 = DriftLedger::new();
@@ -1077,7 +1092,8 @@ mod impact_veto_tests {
             ),
             EntryAuthority::Buy {
                 tier: SizeTier::Small,
-                clip_lamports: 166_666_666
+                clip_lamports: 166_666_666,
+                price_limit: Some(0.02),
             }
         );
     }
