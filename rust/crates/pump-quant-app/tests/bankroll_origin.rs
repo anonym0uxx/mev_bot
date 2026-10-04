@@ -91,6 +91,7 @@ fn drive_golden_style(mut eng: Engine) -> Engine {
                     slot: None,
                     fee_lamports: None,
                     cu_consumed: None,
+                    venue: None,
                 });
             }
             if round == m % 4 {

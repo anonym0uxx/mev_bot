@@ -57,6 +57,7 @@ fn pump(eng: &mut Engine, tag: u64, base_mult: i128, n: u64, liq: u64) {
             slot: None,
             fee_lamports: None,
             cu_consumed: None,
+            venue: None,
         });
     }
 }
@@ -92,6 +93,7 @@ fn drive_positions(cfg: Config) -> Engine {
                     slot: None,
                     fee_lamports: None,
                     cu_consumed: None,
+                    venue: None,
                 });
             }
         }

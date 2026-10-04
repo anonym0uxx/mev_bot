@@ -355,6 +355,7 @@ pub fn apply_tape(
                     slot: None,
                     fee_lamports: None,
                     cu_consumed: None,
+                    venue: None,
                 });
             }
             if age == 0 {

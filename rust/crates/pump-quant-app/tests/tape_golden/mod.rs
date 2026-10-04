@@ -191,6 +191,7 @@ fn drive_eng_with_fill(cfg: Config, curve_exact_fill: bool) -> Engine {
                     slot: None,
                     fee_lamports: None,
                     cu_consumed: None,
+                    venue: None,
                 });
             }
             // Each market "launches" (emits its discovery evidence) in ONE staggered
@@ -260,6 +261,7 @@ fn drive_eng_with_fill(cfg: Config, curve_exact_fill: bool) -> Engine {
                         slot: None,
                         fee_lamports: None,
                         cu_consumed: None,
+                        venue: None,
                     });
                 }
             }
@@ -313,6 +315,7 @@ fn drive_eng_with_fill(cfg: Config, curve_exact_fill: bool) -> Engine {
                     slot: None,
                     fee_lamports: None,
                     cu_consumed: None,
+                    venue: None,
                 });
             }
             if round == 0 {
@@ -374,6 +377,7 @@ fn drive_eng_with_fill(cfg: Config, curve_exact_fill: bool) -> Engine {
                 slot: None,
                 fee_lamports: None,
                 cu_consumed: None,
+                venue: None,
             });
         }
         if round == 0 {
@@ -457,6 +461,7 @@ fn drive_eng_with_fill(cfg: Config, curve_exact_fill: bool) -> Engine {
                 slot: None,
                 fee_lamports: None,
                 cu_consumed: None,
+                venue: None,
             });
         }
         if round == 0 {

@@ -64,6 +64,7 @@ pub fn swap(
         slot: None,
         fee_lamports: None,
         cu_consumed: None,
+        venue: None,
     });
 }
 

@@ -841,6 +841,8 @@ pub struct Engine {
     /// source is installed. Never a fallback order: OFF means legacy, ON-without-source means
     /// fail closed.
     paper_model_mode: bool,
+    /// The model lane's decision-time cache (see `decision_join`). Fed only when armed.
+    model_cache: crate::decision_join::DecisionCache,
     /// The installed model source, when the lane is armed. `None` in legacy/replay.
     model_source: Option<Box<dyn ModelSource + Send + Sync>>,
     now: u64,
@@ -1417,6 +1419,7 @@ impl Engine {
             cfg,
             mode,
             paper_model_mode: false,
+            model_cache: crate::decision_join::DecisionCache::new(),
             model_source: None,
             now: 0,
             numeric: NumericLane::new(),
@@ -1881,20 +1884,45 @@ impl Engine {
                 // yet — it is the state ledger's key (C2), and its feed lands with the
                 // C6/C7 wiring. Bound to `_` on purpose: a silent default here would be the
                 // one place a fabricated clock could enter the causal windows.
-                recv_unix_ms: _,
-                // The trader's address, when the producing path knew it. Bound to `_` for the
-                // same reason as the clock: nothing in the engine's decision path reads it yet
-                // (the address-keyed derivations are the flow reducer's and the corpus's), and
-                // a pattern that demanded `None` would silently stop matching once the wire
-                // started supplying it.
-                trader_pubkey: _,
-                // Slot / fee / CU: carried for the model-lane enrichment cache (not yet read here).
-                // Bound to `_` — a pattern demanding `None` would stop matching the moment the
-                // wire supplies them.
-                slot: _,
-                fee_lamports: _,
-                cu_consumed: _,
+                // Wire receive time, trader, slot, fee, CU and venue are bound by name because the
+                // model lane's `DecisionCache` is fed from them. Each stays an `Option` all the way
+                // to the cache, which refuses by name when one is missing: a silent default here
+                // would be the one place a fabricated clock/trader/fee could enter the causal
+                // windows.
+                recv_unix_ms,
+                trader_pubkey,
+                slot,
+                fee_lamports,
+                cu_consumed,
+                venue,
             } => {
+                // Model-lane ingest. A no-op unless the paper-model lane is armed, so every legacy
+                // and golden path is byte-identical.
+                if self.paper_model_mode {
+                    let venue = match venue {
+                        Some(crate::event::TradeVenue::PumpFun) => {
+                            crate::state_ledger::VenueLabel::Pumpfun
+                        }
+                        Some(crate::event::TradeVenue::PumpSwap) => {
+                            crate::state_ledger::VenueLabel::Pumpswap
+                        }
+                        None => crate::state_ledger::VenueLabel::Unknown,
+                    };
+                    self.model_cache
+                        .observe_trade(&crate::decision_join::TradeObs {
+                            mint: *mint.as_bytes(),
+                            price_fp,
+                            quote_lamports,
+                            signed_base,
+                            buyer_entity,
+                            trader: trader_pubkey,
+                            recv_unix_ms,
+                            slot,
+                            fee_lamports,
+                            cu_consumed,
+                            venue,
+                        });
+                }
                 self.numeric.observe(
                     mint,
                     price_fp,

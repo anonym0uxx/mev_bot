@@ -64,6 +64,10 @@ pub enum Ingest {
     Accepted,
     /// No receive clock: the causal windows cannot be keyed, so the print is not admitted.
     NoClock,
+    /// `price_fp <= 0`: the instruction-half placeholder. The same trade arrives again as the
+    /// priced reserve print (joined to the same trader/fee/CU), so admitting both would count
+    /// every trade twice in the enrichment and flow windows.
+    NoPrice,
     /// Earlier than the mint's newest print.
     OutOfOrder,
     /// Same (slot, trader, base leg, clock) as a recent print.
@@ -175,6 +179,7 @@ struct PoolBinding {
 pub struct IngestCounters {
     pub accepted: u64,
     pub no_clock: u64,
+    pub no_price: u64,
     pub out_of_order: u64,
     pub duplicate: u64,
 }
@@ -277,6 +282,10 @@ impl DecisionCache {
             self.counters.no_clock += 1;
             return Ingest::NoClock;
         };
+        if t.price_fp <= 0 {
+            self.counters.no_price += 1;
+            return Ingest::NoPrice;
+        }
         let mc = self.mints.entry(t.mint).or_default();
         if mc.n_accepted > 0 && recv < mc.last_recv_ms {
             self.counters.out_of_order += 1;
@@ -756,5 +765,18 @@ mod tests {
         for r in &all {
             assert!(seen.insert(r.as_str()), "duplicate label {}", r.as_str());
         }
+    }
+    #[test]
+    fn the_unpriced_instruction_half_is_not_a_second_copy_of_the_trade() {
+        let mut c = DecisionCache::new();
+        let mut half = trade(0);
+        half.price_fp = 0;
+        assert_eq!(c.observe_trade(&half), Ingest::NoPrice);
+        assert_eq!(c.counters().no_price, 1);
+        assert_eq!(
+            c.counters().accepted,
+            0,
+            "it never reaches enrichment or flow"
+        );
     }
 }

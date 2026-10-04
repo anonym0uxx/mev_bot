@@ -45,6 +45,7 @@ pub fn parse_events(text: &str) -> Result<Vec<AppEvent>, String> {
                 slot: None,
                 fee_lamports: None,
                 cu_consumed: None,
+                venue: None,
             },
             "narr" if f.len() == 4 => AppEvent::NarrativeSample {
                 mint: mint(f[1])?,

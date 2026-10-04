@@ -88,6 +88,7 @@ fn drive_golden_style(mut cfg: Config) -> Engine {
                     slot: None,
                     fee_lamports: None,
                     cu_consumed: None,
+                    venue: None,
                 });
             }
             if round == m % 4 {
@@ -267,6 +268,7 @@ fn too_thin_market_refuses_rather_than_sizing_below_floor() {
                     slot: None,
                     fee_lamports: None,
                     cu_consumed: None,
+                    venue: None,
                 });
             }
             if round == 0 {

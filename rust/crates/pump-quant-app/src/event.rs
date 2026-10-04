@@ -84,6 +84,16 @@ pub enum CreatorActionKind {
     },
 }
 
+/// Which venue a print executed on, as the PRODUCER knows it (the instruction's program id).
+/// Never inferred from reserve size: the corpus's `venue=` is the tape's own label.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TradeVenue {
+    /// pump.fun bonding curve.
+    PumpFun,
+    /// PumpSwap AMM.
+    PumpSwap,
+}
+
 /// One unit of input to the engine.
 ///
 /// `Copy` and small so a journal of millions of events replays without allocation
@@ -139,6 +149,9 @@ pub enum AppEvent {
         fee_lamports: Option<u64>,
         /// Compute units CONSUMED (not requested). Same per-row counting. `None` = not carried.
         cu_consumed: Option<u64>,
+        /// The venue the print executed on, when the producer knew it. `None` is unknown, never a
+        /// default: the state ledger then labels the print `unknown` and the join refuses it.
+        venue: Option<TradeVenue>,
     },
 
     /// A narrative attention sample for a market: how many fresh mentions arrived

@@ -154,6 +154,7 @@ fn drive(cfg: Config, decayed: bool) -> Engine {
                     slot: None,
                     fee_lamports: None,
                     cu_consumed: None,
+                    venue: None,
                 });
             }
             if round == m % 4 {

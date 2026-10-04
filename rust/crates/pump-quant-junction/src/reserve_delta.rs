@@ -148,6 +148,8 @@ pub fn derive_market_trade_from_delta(
         slot: Some(slot),
         fee_lamports: None,
         cu_consumed: None,
+        // Decoded from a pump.fun `BondingCurve` account, so the venue is the curve by construction.
+        venue: Some(pump_quant_app::event::TradeVenue::PumpFun),
     };
 
     Some(ProvenancedEvent {
