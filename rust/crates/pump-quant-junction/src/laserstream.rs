@@ -81,6 +81,13 @@ pub struct LaserStreamTx {
     /// are keyed on. It is carried, never re-derived: a local clock would be a different
     /// quantity, and the engine's logical tick is not a wall clock at all.
     pub recv_unix_ms: Option<i64>,
+    /// TOTAL transaction fee in lamports (`meta.fee`: 5000/signature base + priority fee), a
+    /// TRANSACTION-level quantity. `None` when the wire line does not carry it — never `0`, which
+    /// would be a fabricated "free transaction". Same quantity as the corpus tape `fee_lamports`.
+    pub fee_lamports: Option<u64>,
+    /// Compute units CONSUMED (`meta.compute_units_consumed`), not requested/limit. `None` when
+    /// absent. Same quantity as the corpus tape `cu_consumed`.
+    pub cu_consumed: Option<u64>,
 }
 
 /// Classification of a pump.fun instruction found in a LaserStream transaction.
@@ -573,11 +580,24 @@ pub fn parse_ndjson_line(line: &str) -> Option<LaserStreamUpdate> {
                 })
                 .unwrap_or_default();
 
+            // fee / CU: the raw-recorder form nests them under `meta`; accept a flat form too. A
+            // missing or non-integer value is `None` — never defaulted.
+            let meta_u64 = |key_meta: &str, key_flat: &str| -> Option<u64> {
+                v.get("meta")
+                    .and_then(|m| m.get(key_meta))
+                    .and_then(|n| n.as_u64())
+                    .or_else(|| v.get(key_flat).and_then(|n| n.as_u64()))
+            };
+            let fee_lamports = meta_u64("fee", "fee_lamports");
+            let cu_consumed = meta_u64("compute_units_consumed", "cu_consumed");
+
             Some(LaserStreamUpdate::Transaction(LaserStreamTx {
                 slot,
                 signature,
                 account_keys,
                 instructions,
+                fee_lamports,
+                cu_consumed,
                 is_live: true, // gRPC stream is always live (§65)
                 // Straight off the wire, into the event: this is the clock the corpus's
                 // causal windows are keyed on, and it is never re-derived.
@@ -661,6 +681,8 @@ mod tests {
             instructions: vec![],
             is_live,
             recv_unix_ms: None,
+            fee_lamports: None,
+            cu_consumed: None,
         }
     }
 
@@ -1210,5 +1232,48 @@ mod tests {
             LaserStreamUpdate::Transaction(tx) => assert_eq!(tx.recv_unix_ms, None),
             other => panic!("wrong variant: {other:?}"),
         }
+    }
+
+    fn tx_line(extra: &str) -> String {
+        format!(
+            r#"{{"kind":"transaction","slot":77,"recv_unix_ms":1788975568457,"signature_b58":"{}","account_keys":[],"instructions":[]{}}}"#,
+            "1".repeat(88),
+            extra
+        )
+    }
+
+    fn parsed(line: &str) -> LaserStreamTx {
+        match parse_ndjson_line(line) {
+            Some(LaserStreamUpdate::Transaction(t)) => t,
+            other => panic!("expected a transaction, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fee_and_cu_are_read_from_nested_meta() {
+        let t = parsed(&tx_line(
+            r#","meta":{"fee":119000,"compute_units_consumed":57059}"#,
+        ));
+        assert_eq!(t.fee_lamports, Some(119_000));
+        assert_eq!(t.cu_consumed, Some(57_059));
+    }
+
+    #[test]
+    fn fee_and_cu_are_read_from_the_flat_tape_form() {
+        let t = parsed(&tx_line(r#","fee_lamports":45000,"cu_consumed":136861"#));
+        assert_eq!(
+            (t.fee_lamports, t.cu_consumed),
+            (Some(45_000), Some(136_861))
+        );
+    }
+
+    #[test]
+    fn absent_or_malformed_fee_and_cu_are_none_never_zero() {
+        let t = parsed(&tx_line(""));
+        assert_eq!((t.fee_lamports, t.cu_consumed), (None, None));
+        let t = parsed(&tx_line(
+            r#","meta":{"fee":"119000","compute_units_consumed":-5}"#,
+        ));
+        assert_eq!((t.fee_lamports, t.cu_consumed), (None, None));
     }
 }
