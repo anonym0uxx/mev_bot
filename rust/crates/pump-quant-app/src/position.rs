@@ -200,7 +200,10 @@ impl ExitReason {
     /// Whether this exit closes the whole remaining position (vs a partial tranche).
     #[must_use]
     pub const fn is_terminal(self) -> bool {
-        !matches!(self, ExitReason::TakeProfitLadder | ExitReason::ModelManaged)
+        !matches!(
+            self,
+            ExitReason::TakeProfitLadder | ExitReason::ModelManaged
+        )
     }
 
     /// A stable small code for the decision journal.
@@ -687,7 +690,6 @@ impl ScalpLifecycle {
             .collect()
     }
 
-
     /// Record the tokens a reconciled FILL actually delivered. Only a fill may call this.
     pub fn set_inventory_tokens(&mut self, mint: &[u8; 32], tokens: u64) -> bool {
         match self.open.get_mut(mint) {
@@ -744,7 +746,9 @@ impl ScalpLifecycle {
     /// (peak, trough) price in fixed point since the open: the causal extremes behind MFE/MAE.
     #[must_use]
     pub fn price_extremes(&self, mint: &[u8; 32]) -> Option<(u64, u64)> {
-        self.open.get(mint).map(|p| (p.peak_price_fp, p.trough_price_fp))
+        self.open
+            .get(mint)
+            .map(|p| (p.peak_price_fp, p.trough_price_fp))
     }
 
     /// Every held position as a durable record (inventory stays `None` until a fill established it).
@@ -784,7 +788,13 @@ impl ScalpLifecycle {
     /// through the management lane. The ladder state is never armed: a restored position is model-managed
     /// or is held with ONLY the hard safeguards.
     pub fn restore_held(&mut self, x: &HeldExport, tick: u64) -> bool {
-        if !self.open(x.mint, x.entry_price_fp, x.size_lamports, x.cost_lamports, tick) {
+        if !self.open(
+            x.mint,
+            x.entry_price_fp,
+            x.size_lamports,
+            x.cost_lamports,
+            tick,
+        ) {
             return false;
         }
         if let Some(p) = self.open.get_mut(&x.mint) {
@@ -1981,7 +1991,10 @@ mod tests {
     fn exit_reason_code_is_append_only() {
         assert_eq!(ExitReason::IntoStrength.code(), 9);
         assert_eq!(ExitReason::ModelManaged.code(), 10);
-        assert!(!ExitReason::ModelManaged.is_terminal(), "a model REDUCE is partial");
+        assert!(
+            !ExitReason::ModelManaged.is_terminal(),
+            "a model REDUCE is partial"
+        );
     }
 
     #[test]
@@ -2050,11 +2063,18 @@ mod tests {
         // the whole basis, never more.
         let mut lc = held_with_fill(1_000_000);
         let basis0 = lc.remaining_cost_basis(&[1u8; 32]).unwrap();
-        lc.sell_tokens(&[1u8; 32], 500_000, PX, ExitReason::ModelManaged).unwrap();
+        lc.sell_tokens(&[1u8; 32], 500_000, PX, ExitReason::ModelManaged)
+            .unwrap();
         let basis1 = lc.remaining_cost_basis(&[1u8; 32]).unwrap();
-        assert!(basis1 <= basis0 / 2 + 1 && basis1 + 1 >= basis0 / 2, "{basis0} -> {basis1}");
-        lc.sell_tokens(&[1u8; 32], 250_000, PX, ExitReason::ModelManaged).unwrap();
-        let last = lc.sell_tokens(&[1u8; 32], 250_000, PX, ExitReason::ModelManaged).unwrap();
+        assert!(
+            basis1 <= basis0 / 2 + 1 && basis1 + 1 >= basis0 / 2,
+            "{basis0} -> {basis1}"
+        );
+        lc.sell_tokens(&[1u8; 32], 250_000, PX, ExitReason::ModelManaged)
+            .unwrap();
+        let last = lc
+            .sell_tokens(&[1u8; 32], 250_000, PX, ExitReason::ModelManaged)
+            .unwrap();
         assert!(last.closed && !lc.has(&[1u8; 32]));
     }
 
@@ -2064,12 +2084,25 @@ mod tests {
         // Ladder TP1 (+10%) and trail must NOT fire; hard stop and rug precursor still do.
         let mut lc = held_with_fill(1_000_000);
         assert!(lc.set_model_managed(&mint));
-        assert!(lc.on_trade(&mint, 1_300_000_000, 1, 1, 30_000_000_000).is_none(), "TP rung");
-        assert!(lc.on_trade(&mint, 1_100_000_000, 1, 2, 30_000_000_000).is_none(), "trail off peak");
-        assert!(lc.on_tick(1_000_000, &|_| Some(1_100_000_000)).is_empty(), "time stop");
+        assert!(
+            lc.on_trade(&mint, 1_300_000_000, 1, 1, 30_000_000_000)
+                .is_none(),
+            "TP rung"
+        );
+        assert!(
+            lc.on_trade(&mint, 1_100_000_000, 1, 2, 30_000_000_000)
+                .is_none(),
+            "trail off peak"
+        );
+        assert!(
+            lc.on_tick(1_000_000, &|_| Some(1_100_000_000)).is_empty(),
+            "time stop"
+        );
         assert!(lc.has(&mint));
         // rug precursor: a >=30% single-print fall closes it
-        let ex = lc.on_trade(&mint, 700_000_000, -1, 3, 30_000_000_000).expect("rug precursor");
+        let ex = lc
+            .on_trade(&mint, 700_000_000, -1, 3, 30_000_000_000)
+            .expect("rug precursor");
         assert_eq!(ex.reason, ExitReason::RugPrecursor);
 
         // hard stop still binds a slow bleed
@@ -2098,22 +2131,37 @@ mod tests {
         let mut lc = held_with_fill(1_000_000);
         let cost = 1_000_000 + P.fixed_lamports_per_leg;
         let px = PX / 10 * 12; // 1.2x
-        let ex = lc.sell_tokens(&[1u8; 32], 500_000, px, ExitReason::ModelManaged).unwrap();
+        let ex = lc
+            .sell_tokens(&[1u8; 32], 500_000, px, ExitReason::ModelManaged)
+            .unwrap();
         let gross: u128 = 500_000 * 12_000 / 10_000; // 600_000
         let fee = gross * u128::from(P.fee_bps) / 10_000;
         let pro_cost = u128::from(cost) * 5_000 / 10_000;
-        let expect = gross as i128 - fee as i128 - pro_cost as i128 - i128::from(P.fixed_lamports_per_leg);
-        assert_eq!(ex.net_lamports, expect, "gross {gross} fee {fee} pro-rata cost {pro_cost}");
+        let expect =
+            gross as i128 - fee as i128 - pro_cost as i128 - i128::from(P.fixed_lamports_per_leg);
+        assert_eq!(
+            ex.net_lamports, expect,
+            "gross {gross} fee {fee} pro-rata cost {pro_cost}"
+        );
         assert!(!ex.closed);
         assert_eq!(ex.token_amount, 500_000);
         assert_eq!(lc.inventory_tokens(&[1u8; 32]), Some(500_000));
-        assert_eq!(lc.remaining_cost_basis(&[1u8; 32]), Some(cost / 2), "half the cost basis stays attached");
+        assert_eq!(
+            lc.remaining_cost_basis(&[1u8; 32]),
+            Some(cost / 2),
+            "half the cost basis stays attached"
+        );
         // The remainder at the same price realizes the same again; the two nets add up to the whole trade.
-        let ex2 = lc.sell_tokens(&[1u8; 32], 500_000, px, ExitReason::ModelManaged).unwrap();
+        let ex2 = lc
+            .sell_tokens(&[1u8; 32], 500_000, px, ExitReason::ModelManaged)
+            .unwrap();
         assert!(ex2.closed);
         assert_eq!(ex.net_lamports + ex2.net_lamports, 2 * expect);
         // Whole-trade check from first principles: 1.2M gross - fees - 1.01M cost - 2 fixed legs.
-        let whole = 1_200_000i128 - 2 * fee as i128 - i128::from(cost) - 2 * i128::from(P.fixed_lamports_per_leg);
+        let whole = 1_200_000i128
+            - 2 * fee as i128
+            - i128::from(cost)
+            - 2 * i128::from(P.fixed_lamports_per_leg);
         assert_eq!(ex.net_lamports + ex2.net_lamports, whole);
     }
 
@@ -2123,30 +2171,55 @@ mod tests {
         let mut lc = held_with_fill(1_000_000);
         let cost0 = 1_000_000 + P.fixed_lamports_per_leg;
         // Trim half first so the lot ledger is genuinely partial (remaining 5_000 bp).
-        lc.sell_tokens(&m, 500_000, PX, ExitReason::ModelManaged).unwrap();
+        lc.sell_tokens(&m, 500_000, PX, ExitReason::ModelManaged)
+            .unwrap();
         // ADD: 250_000 tokens delivered for 300_000 notional (1.2 lamports/token), all-in cost carries fee+fixed.
         let add_n = 300_000u64;
         let fee = add_n * u64::from(P.fee_bps) / 10_000;
         let add_cost = add_n + fee + P.fixed_lamports_per_leg;
         let fill_px = add_n * 1_000_000_000 / 250_000; // 1_200_000_000
-        lc.add_filled(&m, 250_000, add_n, add_cost, fill_px).unwrap();
-        assert_eq!(lc.inventory_tokens(&m), Some(750_000), "500_000 held + 250_000 delivered");
+        lc.add_filled(&m, 250_000, add_n, add_cost, fill_px)
+            .unwrap();
+        assert_eq!(
+            lc.inventory_tokens(&m),
+            Some(750_000),
+            "500_000 held + 250_000 delivered"
+        );
         // Harmonic basis: (s1+s2)*p1*p2/(s1*p2+s2*p1) = 800_000*1e9*1.2e9/(500_000*1.2e9+300_000*1e9) rounded up.
-        let (s1, s2, p1, p2) = (500_000u128, 300_000u128, 1_000_000_000u128, 1_200_000_000u128);
+        let (s1, s2, p1, p2) = (
+            500_000u128,
+            300_000u128,
+            1_000_000_000u128,
+            1_200_000_000u128,
+        );
         let blended = ((s1 + s2) * p1 * p2).div_ceil(s1 * p2 + s2 * p1);
-        assert_eq!(blended, 1_066_666_667, "800_000 lamports / 750_000 tokens, rounded UP (never in our favour)");
+        assert_eq!(
+            blended, 1_066_666_667,
+            "800_000 lamports / 750_000 tokens, rounded UP (never in our favour)"
+        );
         assert_eq!(lc.entry_price_fp(&m), Some(blended as u64));
         // Cost basis = remaining pro-rata original cost + the all-in ADD cost, nothing else.
         assert_eq!(lc.remaining_cost_basis(&m), Some(cost0 / 2 + add_cost));
         // Selling everything at 1.2x: realized uses the BLENDED basis, so no phantom profit appears.
-        let ex = lc.sell_tokens(&m, 750_000, 1_200_000_000, ExitReason::ModelManaged).unwrap();
+        let ex = lc
+            .sell_tokens(&m, 750_000, 1_200_000_000, ExitReason::ModelManaged)
+            .unwrap();
         assert!(ex.closed);
         let mult = 1_200_000_000u128 * 10_000 / blended; // floor
         let gross = 800_000u128 * mult / 10_000;
-        assert!(gross <= 900_000, "never more than 750_000 tokens x 1.2: {gross}");
-        assert!(gross >= 900_000 - 100, "at most ~1bp of conservative quantization: {gross}");
+        assert!(
+            gross <= 900_000,
+            "never more than 750_000 tokens x 1.2: {gross}"
+        );
+        assert!(
+            gross >= 900_000 - 100,
+            "at most ~1bp of conservative quantization: {gross}"
+        );
         let fee2 = gross * u128::from(P.fee_bps) / 10_000;
-        let expect = gross as i128 - fee2 as i128 - (cost0 / 2 + add_cost) as i128 - i128::from(P.fixed_lamports_per_leg);
+        let expect = gross as i128
+            - fee2 as i128
+            - (cost0 / 2 + add_cost) as i128
+            - i128::from(P.fixed_lamports_per_leg);
         assert_eq!(ex.net_lamports, expect);
     }
 
@@ -2154,14 +2227,33 @@ mod tests {
     fn add_filled_refuses_by_name_and_changes_nothing() {
         let m = [1u8; 32];
         let mut lc = open_one(1_000_000, PX); // inventory never established by a fill
-        assert_eq!(lc.add_filled(&m, 10, 10, 10, PX), Err(AddRefusal::InventoryUnknown));
+        assert_eq!(
+            lc.add_filled(&m, 10, 10, 10, PX),
+            Err(AddRefusal::InventoryUnknown)
+        );
         let mut lc = held_with_fill(1_000);
-        assert_eq!(lc.add_filled(&m, 0, 10, 10, PX), Err(AddRefusal::ZeroQuantity));
-        assert_eq!(lc.add_filled(&m, 10, 0, 10, PX), Err(AddRefusal::ZeroQuantity));
+        assert_eq!(
+            lc.add_filled(&m, 0, 10, 10, PX),
+            Err(AddRefusal::ZeroQuantity)
+        );
+        assert_eq!(
+            lc.add_filled(&m, 10, 0, 10, PX),
+            Err(AddRefusal::ZeroQuantity)
+        );
         assert_eq!(lc.add_filled(&m, 10, 10, 10, 0), Err(AddRefusal::NoPrice));
-        assert_eq!(lc.add_filled(&[9u8; 32], 10, 10, 10, PX), Err(AddRefusal::NotHeld));
-        assert_eq!(lc.add_filled(&m, u64::MAX, 10, 10, PX), Err(AddRefusal::Overflow));
-        assert_eq!(lc.inventory_tokens(&m), Some(1_000), "refusals leave the position untouched");
+        assert_eq!(
+            lc.add_filled(&[9u8; 32], 10, 10, 10, PX),
+            Err(AddRefusal::NotHeld)
+        );
+        assert_eq!(
+            lc.add_filled(&m, u64::MAX, 10, 10, PX),
+            Err(AddRefusal::Overflow)
+        );
+        assert_eq!(
+            lc.inventory_tokens(&m),
+            Some(1_000),
+            "refusals leave the position untouched"
+        );
         assert_eq!(lc.entry_price_fp(&m), Some(PX));
     }
 
@@ -2173,11 +2265,21 @@ mod tests {
         // Control: an unmanaged probe may scale in once (the legacy contract is unchanged).
         let mut ctl = ScalpLifecycle::new(LifecycleParams::standard(), 4);
         assert!(ctl.open([8u8; 32], 45_085, 1_000, 1_001, 0));
-        assert!(ctl.scale_in(&[8u8; 32], 500, 501, 50_000), "control: legacy scale-in still works unmanaged");
+        assert!(
+            ctl.scale_in(&[8u8; 32], 500, 501, 50_000),
+            "control: legacy scale-in still works unmanaged"
+        );
         // Model-managed: refused, nothing changes.
         assert!(lc.set_model_managed(&mint));
         let before = lc.export_held();
-        assert!(!lc.scale_in(&mint, 500, 501, 50_000), "model-managed positions are never legacy-scaled");
-        assert_eq!(lc.export_held(), before, "a refused scale-in leaves the position untouched");
+        assert!(
+            !lc.scale_in(&mint, 500, 501, 50_000),
+            "model-managed positions are never legacy-scaled"
+        );
+        assert_eq!(
+            lc.export_held(),
+            before,
+            "a refused scale-in leaves the position untouched"
+        );
     }
 }

@@ -15,10 +15,10 @@ use std::path::{Path, PathBuf};
 
 use super::model_manage::{MgmtKind, MgmtOrder, MgmtPos};
 use super::{Engine, OpenAttribution};
+use crate::expected_move::SignalObs;
 use crate::held_state::{
     HeldEntry, HeldLedger, HeldPending, LedgerReadError, RestoreRefusal, RestoreReport,
 };
-use crate::expected_move::SignalObs;
 use pump_quant_watchlist::candidate::{DiscoveryLane, Lane as WlLane};
 
 /// Minimum interval between unchanged-state rewrites (wire-clock ms); a change writes immediately.
@@ -291,7 +291,9 @@ impl Engine {
         for p in &l.pending {
             match p.kind.as_str() {
                 "entry" => {
-                    if wl_lane(p.lane_index).is_none() || disc_lane(p.discovery_lane_index).is_none() {
+                    if wl_lane(p.lane_index).is_none()
+                        || disc_lane(p.discovery_lane_index).is_none()
+                    {
                         return Err(RestoreRefusal::UnknownLane);
                     }
                 }
@@ -447,7 +449,10 @@ impl Engine {
         }
         self.model_held.last_digest = Self::model_held_digest(l);
         self.mrep_add("held_state:restored_positions", rep.positions as u64);
-        self.mrep_add("held_state:restored_pending_uncertain", rep.pending_uncertain as u64);
+        self.mrep_add(
+            "held_state:restored_pending_uncertain",
+            rep.pending_uncertain as u64,
+        );
         rep
     }
 }

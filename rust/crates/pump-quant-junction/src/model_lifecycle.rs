@@ -131,7 +131,10 @@ pub fn validate_ack(
         return Err(AckRejection::ExposureMismatch);
     }
     let recipient = get("recipient").map(str::trim).unwrap_or("");
-    let accepted = v.get("accepted_protective_responsibility").and_then(|x| x.as_bool()) == Some(true);
+    let accepted = v
+        .get("accepted_protective_responsibility")
+        .and_then(|x| x.as_bool())
+        == Some(true);
     if recipient.is_empty() || !accepted {
         return Err(AckRejection::NoAcceptedRecipient);
     }
@@ -227,7 +230,12 @@ pub fn handle_stop_request(
 /// summary. Pure formatting over the engine's measured status so the daemon and tests print the same thing.
 #[must_use]
 pub fn held_data_report(engine: &Engine) -> (String, bool) {
-    let hex = |m: &[u8; 32]| m.iter().take(4).map(|b| format!("{b:02x}")).collect::<String>();
+    let hex = |m: &[u8; 32]| {
+        m.iter()
+            .take(4)
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    };
     let status = engine.model_held_data_status();
     let mut lines = Vec::new();
     let mut degraded = false;
@@ -262,7 +270,11 @@ pub fn held_data_report(engine: &Engine) -> (String, bool) {
 pub fn free_bytes(path: &Path) -> Option<u64> {
     use std::ffi::CString;
     use std::os::unix::ffi::OsStrExt;
-    let dir = if path.is_dir() { path } else { path.parent().unwrap_or(Path::new(".")) };
+    let dir = if path.is_dir() {
+        path
+    } else {
+        path.parent().unwrap_or(Path::new("."))
+    };
     let c = CString::new(dir.as_os_str().as_bytes()).ok()?;
     let mut s: libc::statvfs = unsafe { std::mem::zeroed() };
     // SAFETY: `c` is a valid NUL-terminated path and `s` is a properly sized, zeroed statvfs.
@@ -358,7 +370,12 @@ const PRINT_SILENT_MS: i64 = pump_quant_app::curve_annotation::PRICING_BUDGET_MS
 impl StaleCallout {
     /// Evaluate the engine's measured status at wire clock `now_ms`.
     pub fn evaluate(&mut self, engine: &Engine, now_ms: i64, remind_ms: i64) -> Vec<CalloutLine> {
-        let hex = |m: &[u8; 32]| m.iter().take(4).map(|b| format!("{b:02x}")).collect::<String>();
+        let hex = |m: &[u8; 32]| {
+            m.iter()
+                .take(4)
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
+        };
         let mut out = Vec::new();
         let status = engine.model_held_data_status();
         let live: std::collections::BTreeSet<[u8; 32]> = status.iter().map(|s| s.mint).collect();
@@ -366,7 +383,10 @@ impl StaleCallout {
             let silent = s.last_print_age_ms.is_none_or(|a| a > PRINT_SILENT_MS);
             match &s.management_ready {
                 Err(why) => {
-                    let e = self.state.entry(s.mint).or_insert((now_ms, i64::MIN / 2, false));
+                    let e = self
+                        .state
+                        .entry(s.mint)
+                        .or_insert((now_ms, i64::MIN / 2, false));
                     let first = e.1 == i64::MIN / 2;
                     if first || now_ms - e.1 >= remind_ms {
                         e.1 = now_ms;

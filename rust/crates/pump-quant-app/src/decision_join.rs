@@ -18,13 +18,13 @@
 
 use std::collections::{BTreeMap, VecDeque};
 
+use crate::bundle_assemble::py_round;
 use pump_quant_market_state::flow_reducer::{FlowOutcome, FlowReducer};
 use pump_quant_proposal::bundle_gate::BundlePolicy;
 use pump_quant_proposal::decision::{AmmState, CurveState};
 use pump_quant_proposal::render_decision;
-use pump_quant_proposal::PyNum;
-use crate::bundle_assemble::py_round;
 use pump_quant_proposal::system::{system_prompt, PromptFamily};
+use pump_quant_proposal::PyNum;
 
 use crate::bundle_assemble::{assemble, AssemblyRefusal, BundleInputs};
 use crate::creator_history::CreatorHistory;
@@ -138,7 +138,9 @@ impl JoinRefusal {
             JoinRefusal::AmmPoolAmbiguous => "join_amm_pool_ambiguous",
             JoinRefusal::Assembly(a) => a.as_str(),
             JoinRefusal::DepthUnknown => "join_depth_unknown",
-            JoinRefusal::ReserveStale { component: "curve", .. } => "join_curve_reserve_stale",
+            JoinRefusal::ReserveStale {
+                component: "curve", ..
+            } => "join_curve_reserve_stale",
             JoinRefusal::ReserveStale { .. } => "join_amm_reserve_stale",
         }
     }
@@ -168,7 +170,6 @@ pub struct StateMarker {
     pub last_recv_ms: i64,
     pub n_accepted: u64,
 }
-
 
 /// Everything `prepare` read from the producers, shared by the entry and management snapshots.
 struct Prepared {
@@ -570,8 +571,16 @@ impl DecisionCache {
     }
 
     pub fn snapshot(&self, mint: &[u8; 32], t_dec_ms: i64) -> Result<PromptSnapshot, JoinRefusal> {
-        let Prepared { state, enriched, flow, view, dev, venue, last_recv_ms, n_accepted } =
-            self.prepare(mint, t_dec_ms)?;
+        let Prepared {
+            state,
+            enriched,
+            flow,
+            view,
+            dev,
+            venue,
+            last_recv_ms,
+            n_accepted,
+        } = self.prepare(mint, t_dec_ms)?;
         let mc_last_recv_ms = last_recv_ms;
         let mc_n_accepted = n_accepted;
         let inputs = BundleInputs {
@@ -624,20 +633,44 @@ impl DecisionCache {
         t_dec_ms: i64,
         pos: &MgmtPositionInputs,
     ) -> Result<MgmtSnapshot, JoinRefusal> {
-        let Prepared { state, enriched, flow, view, dev, venue, last_recv_ms, n_accepted } =
-            self.prepare(mint, t_dec_ms)?;
+        let Prepared {
+            state,
+            enriched,
+            flow,
+            view,
+            dev,
+            venue,
+            last_recv_ms,
+            n_accepted,
+        } = self.prepare(mint, t_dec_ms)?;
         // FRESHNESS PER COMPONENT (management only). The entry corpus renders a stale reserve with
         // pricing_eligible=false and lets the model weigh it; a HELD position is marked and sized
         // from these reserves, so a stale one is refused here. Bound = the existing
         // `PRICING_BUDGET_MS` (the annotation's own "may be priced against" contract), not a new number.
         if venue == "pumpfun" || venue == "mixed" {
-            if let CurveState::Present { staleness_ms, pricing_eligible: false, .. } = &view.curve {
-                return Err(JoinRefusal::ReserveStale { component: "curve", staleness_ms: *staleness_ms });
+            if let CurveState::Present {
+                staleness_ms,
+                pricing_eligible: false,
+                ..
+            } = &view.curve
+            {
+                return Err(JoinRefusal::ReserveStale {
+                    component: "curve",
+                    staleness_ms: *staleness_ms,
+                });
             }
         }
         if venue == "pumpswap" || venue == "mixed" {
-            if let AmmState::Present { staleness_ms, pricing_eligible: false, .. } = &view.amm {
-                return Err(JoinRefusal::ReserveStale { component: "amm", staleness_ms: *staleness_ms });
+            if let AmmState::Present {
+                staleness_ms,
+                pricing_eligible: false,
+                ..
+            } = &view.amm
+            {
+                return Err(JoinRefusal::ReserveStale {
+                    component: "amm",
+                    staleness_ms: *staleness_ms,
+                });
             }
         }
         let depth_sol = view
@@ -648,7 +681,11 @@ impl DecisionCache {
         if !(mark.is_finite() && mark > 0.0) {
             return Err(JoinRefusal::DepthUnknown);
         }
-        let market = if venue == "pumpswap" { "graduated_amm" } else { "bonding_curve" };
+        let market = if venue == "pumpswap" {
+            "graduated_amm"
+        } else {
+            "bonding_curve"
+        };
         let known = dev.creator_known == 1;
         let r6 = |v: f64| PyNum::Float(py_round(v, 6));
         let bundle = pump_quant_proposal::ManagementBundle {
@@ -696,10 +733,12 @@ impl DecisionCache {
             venue,
             size_amm: view.size_amm,
             mark_price_lamports_per_raw_token: mark,
-            marker: StateMarker { last_recv_ms, n_accepted },
+            marker: StateMarker {
+                last_recv_ms,
+                n_accepted,
+            },
         })
     }
-
 }
 
 #[cfg(test)]
@@ -938,8 +977,14 @@ mod tests {
         let c = ready(80);
         let t = t_dec(80);
         match c.management_snapshot(&MINT, t, &mgmt_inputs()) {
-            Err(JoinRefusal::ReserveStale { component: "curve", staleness_ms }) => {
-                assert!(staleness_ms > crate::curve_annotation::PRICING_BUDGET_MS, "{staleness_ms}")
+            Err(JoinRefusal::ReserveStale {
+                component: "curve",
+                staleness_ms,
+            }) => {
+                assert!(
+                    staleness_ms > crate::curve_annotation::PRICING_BUDGET_MS,
+                    "{staleness_ms}"
+                )
             }
             other => panic!("a fresh trade must not launder a stale reserve: {other:?}"),
         }

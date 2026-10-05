@@ -245,7 +245,6 @@ impl Rig {
     }
 }
 
-
 fn tmp(name: &str) -> std::path::PathBuf {
     let d = std::env::temp_dir().join(format!("pq_safety_e2e_{name}_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
@@ -277,13 +276,20 @@ fn a_persisted_block_survives_restart_and_only_an_explicit_rearm_lifts_it() {
     // RESTART: a new process with the same file. It must come back BLOCKED and must not ask.
     let (mut e2, calls2) = fresh_engine(|_| HOLD);
     let load = e2.model_safety_attach(&p);
-    assert!(matches!(load, pump_quant_app::safety_off::SafetyLoad::Blocked { .. }));
+    assert!(matches!(
+        load,
+        pump_quant_app::safety_off::SafetyLoad::Blocked { .. }
+    ));
     assert!(e2.model_safety_blocked(), "restart must not re-arm");
     for ev in events(40) {
         e2.tick(ev);
     }
     ticks(&mut e2, 8);
-    assert_eq!(calls2.load(Ordering::SeqCst), 0, "no model asks while blocked");
+    assert_eq!(
+        calls2.load(Ordering::SeqCst),
+        0,
+        "no model asks while blocked"
+    );
     assert_eq!(e2.model_pending_orders(), 0);
 
     // Re-arm needs a named operator and is durable.
@@ -295,7 +301,10 @@ fn a_persisted_block_survives_restart_and_only_an_explicit_rearm_lifts_it() {
     drop(e2);
     let (mut e3, _c3) = fresh_engine(|_| HOLD);
     let load3 = e3.model_safety_attach(&p);
-    assert!(matches!(load3, pump_quant_app::safety_off::SafetyLoad::Armed { .. }));
+    assert!(matches!(
+        load3,
+        pump_quant_app::safety_off::SafetyLoad::Armed { .. }
+    ));
     assert!(!e3.model_safety_blocked());
 }
 
@@ -306,7 +315,10 @@ fn an_unreadable_state_file_blocks_rather_than_arms() {
     let (mut e, calls) = fresh_engine(|_| HOLD);
     e.model_safety_attach(&p);
     assert!(e.model_safety_blocked());
-    assert_eq!(e.model_safety_reason(), pump_quant_app::safety_off::REASON_UNREADABLE);
+    assert_eq!(
+        e.model_safety_reason(),
+        pump_quant_app::safety_off::REASON_UNREADABLE
+    );
     for ev in events(40) {
         e.tick(ev);
     }
@@ -339,7 +351,10 @@ fn a_hung_endpoint_trips_safety_off_without_stalling_the_engine() {
         "the engine kept ticking while the endpoint hung"
     );
     assert!(e.model_safety_blocked(), "{:?}", e.model_lane_report());
-    assert_eq!(e.model_safety_reason(), pump_quant_app::safety_off::REASON_ENDPOINT_HUNG);
+    assert_eq!(
+        e.model_safety_reason(),
+        pump_quant_app::safety_off::REASON_ENDPOINT_HUNG
+    );
     // Durable: a fresh engine on the same file starts blocked.
     let (mut e2, _c) = fresh_engine(|_| HOLD);
     e2.model_safety_attach(&p);
@@ -363,12 +378,21 @@ fn timeout_during_an_outstanding_order_keeps_an_uncertain_order_and_invalidates_
         e.tick(ev);
     }
     ticks(&mut e, 8);
-    let (oid, _attempt, _clip) = e.model_pending_order(&MINT).expect("an entry order is pending");
+    let (oid, _attempt, _clip) = e
+        .model_pending_order(&MINT)
+        .expect("an entry order is pending");
     assert!(e.model_mark_ack_uncertain(oid));
     // Timeout / trip while the order's acknowledgement is unknown.
     let invalidated = e.model_safety_trip("model_endpoint_hung");
-    assert_eq!(invalidated, 0, "an uncertain order may already have landed: it is NOT invalidated");
-    assert_eq!(e.model_pending_orders(), 1, "pending reconciliation is preserved");
+    assert_eq!(
+        invalidated, 0,
+        "an uncertain order may already have landed: it is NOT invalidated"
+    );
+    assert_eq!(
+        e.model_pending_orders(),
+        1,
+        "pending reconciliation is preserved"
+    );
     // Re-arm is refused while that order is unreconciled.
     assert_eq!(
         e.model_safety_rearm("alon"),
@@ -391,9 +415,16 @@ fn a_queued_certain_entry_order_is_invalidated_by_the_block() {
     ticks(&mut e, 8);
     assert_eq!(e.model_pending_orders(), 1, "{:?}", e.model_lane_report());
     assert_eq!(e.model_safety_trip_operator(), 1);
-    assert_eq!(e.model_pending_orders(), 0, "a queued risk-increasing intent must not fill later");
+    assert_eq!(
+        e.model_pending_orders(),
+        0,
+        "a queued risk-increasing intent must not fill later"
+    );
     curve(&mut e, T0 + 1_000 + 40 * 2_000 + 1_500, 2_100, 200_000_000);
-    assert!(!e.model_position_open(&MINT), "no position opens after the block");
+    assert!(
+        !e.model_position_open(&MINT),
+        "no position opens after the block"
+    );
 }
 
 #[test]
@@ -402,7 +433,9 @@ fn controlled_shutdown_holds_positions_keeps_orders_pending_and_management_keeps
     let mut r = rig(|step| if step == 0 { REDUCE } else { HOLD });
     r.e.model_safety_attach(&p);
     r.advance_to_order(120_000);
-    let (_id, _, intended, _) = r.e.model_mgmt_pending(&MINT).expect("a REDUCE order is pending");
+    let (_id, _, intended, _) =
+        r.e.model_mgmt_pending(&MINT)
+            .expect("a REDUCE order is pending");
     let rep = r.e.model_controlled_shutdown();
     assert_eq!(rep.held, 1, "shutdown never flattens a held position");
     assert_eq!(rep.mgmt_orders_pending, 1);

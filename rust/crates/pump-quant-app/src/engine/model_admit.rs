@@ -1020,11 +1020,10 @@ impl Engine {
             }
             self.model_position_order.insert(mint, order.id);
             // The fill is the ONLY source of inventory: tokens delivered at the fill price.
-            let tokens = u64::try_from(
-                u128::from(size) * 1_000_000_000 / u128::from(entry_price.max(1)),
-            )
-            .ok()
-            .filter(|t| *t > 0);
+            let tokens =
+                u64::try_from(u128::from(size) * 1_000_000_000 / u128::from(entry_price.max(1)))
+                    .ok()
+                    .filter(|t| *t > 0);
             self.model_mgmt_on_fill(mint, tokens, entry_price, order.id);
             self.model_fills.push(ModelFillRecord {
                 order_id: order.id,

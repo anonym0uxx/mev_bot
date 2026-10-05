@@ -27,7 +27,6 @@
 
 use std::collections::BTreeMap;
 
-
 use super::model_admit::{MODEL_FILL_LANDING_MS, MODEL_ORDER_TTL_MS};
 use super::*;
 use crate::decision_join::MgmtPositionInputs;
@@ -212,7 +211,11 @@ impl Engine {
         mp.trough_fp = mp.trough_fp.min(p);
     }
 
-    fn model_mgmt_inputs(&self, mint: &[u8; 32], clock: i64) -> Result<MgmtPositionInputs, &'static str> {
+    fn model_mgmt_inputs(
+        &self,
+        mint: &[u8; 32],
+        clock: i64,
+    ) -> Result<MgmtPositionInputs, &'static str> {
         let mp = self.model_mgmt.pos.get(mint).ok_or("no_mgmt_state")?;
         let inv = self
             .positions
@@ -350,8 +353,12 @@ impl Engine {
             Ok(e) => e,
             Err(e) => {
                 self.mrep(match e {
-                    crate::model_lane::AcceptRefusal::Unknown => "mgmt:discard:unknown_or_duplicate",
-                    crate::model_lane::AcceptRefusal::DeadlineExceeded { .. } => "mgmt:discard:late",
+                    crate::model_lane::AcceptRefusal::Unknown => {
+                        "mgmt:discard:unknown_or_duplicate"
+                    }
+                    crate::model_lane::AcceptRefusal::DeadlineExceeded { .. } => {
+                        "mgmt:discard:late"
+                    }
                     crate::model_lane::AcceptRefusal::Abandoned => "mgmt:discard:abandoned",
                     crate::model_lane::AcceptRefusal::EntriesBlocked => "mgmt:discard:blocked",
                 });
@@ -363,8 +370,10 @@ impl Engine {
             self.mrep("mgmt:discard:no_binding");
             return;
         };
-        let (Some(mp), true) = (self.model_mgmt.pos.get(&mint).copied(), self.positions.has(&mint))
-        else {
+        let (Some(mp), true) = (
+            self.model_mgmt.pos.get(&mint).copied(),
+            self.positions.has(&mint),
+        ) else {
             self.mrep("mgmt:discard:position_gone");
             return;
         };
@@ -514,7 +523,9 @@ impl Engine {
                         u128::from(vq?),
                         u128::from(tokens),
                     )?;
-                    let px = gross.checked_mul(1_000_000_000)?.checked_div(u128::from(tokens))?;
+                    let px = gross
+                        .checked_mul(1_000_000_000)?
+                        .checked_div(u128::from(tokens))?;
                     Some((u64::try_from(px).ok()?, "mgmt:fill_amm_sell_fee_unverified"))
                 })
             } else {
@@ -686,7 +697,11 @@ impl Engine {
     /// new-opportunity discovery and of eviction pressure from it.
     #[must_use]
     pub fn model_held_mints(&self) -> Vec<[u8; 32]> {
-        self.positions.held_records().iter().map(|h| h.mint).collect()
+        self.positions
+            .held_records()
+            .iter()
+            .map(|h| h.mint)
+            .collect()
     }
 
     /// Measure, per held position, whether the data a management decision needs is actually fresh. This is
@@ -706,9 +721,12 @@ impl Engine {
                     self.model_cache.curve_obs(&h.mint).map(|o| o.ts_ms)
                 };
                 let reserve_age_ms = reserve_ts.map(|t| clock - t);
-                let last_print_age_ms = self.model_cache.marker(&h.mint).map(|m| clock - m.last_recv_ms);
-                let reserve_fresh = reserve_age_ms
-                    .is_some_and(|a| a <= crate::curve_annotation::PRICING_BUDGET_MS);
+                let last_print_age_ms = self
+                    .model_cache
+                    .marker(&h.mint)
+                    .map(|m| clock - m.last_recv_ms);
+                let reserve_fresh =
+                    reserve_age_ms.is_some_and(|a| a <= crate::curve_annotation::PRICING_BUDGET_MS);
                 let management_ready = match self.model_mgmt_inputs(&h.mint, clock) {
                     Err(r) => Err(r.to_string()),
                     Ok(inputs) => self
@@ -816,8 +834,18 @@ pub struct ModelAccountingView {
 /// Executable state an ADD is planned against.
 #[derive(Debug, Clone, Copy)]
 enum AddState {
-    Curve { vsol: u64, vtok: u64 },
-    Amm { base: u64, quote: u64, vq: u64, lp: u32, pr: u32, cr: u32 },
+    Curve {
+        vsol: u64,
+        vtok: u64,
+    },
+    Amm {
+        base: u64,
+        quote: u64,
+        vq: u64,
+        lp: u32,
+        pr: u32,
+        cr: u32,
+    },
 }
 
 /// A feasible ADD: the minimal notional that delivers the target, and the spend ceiling.
@@ -846,7 +874,14 @@ impl AddState {
     fn tokens_for(self, n: u64) -> Option<u64> {
         match self {
             AddState::Curve { vsol, vtok } => crate::curve_fill::buy_tokens_out(vsol, vtok, n),
-            AddState::Amm { base, quote, vq, lp, pr, cr } => {
+            AddState::Amm {
+                base,
+                quote,
+                vq,
+                lp,
+                pr,
+                cr,
+            } => {
                 let f = pump_quant_protocol::pumpswap_event::buy_exact_quote_in(
                     u128::from(base),
                     u128::from(quote),
@@ -893,7 +928,12 @@ impl Engine {
             })
     }
 
-    fn model_mgmt_add_state(&self, mint: &[u8; 32], amm: bool, landing: Option<(i64, i64, u64)>) -> Result<AddState, &'static str> {
+    fn model_mgmt_add_state(
+        &self,
+        mint: &[u8; 32],
+        amm: bool,
+        landing: Option<(i64, i64, u64)>,
+    ) -> Result<AddState, &'static str> {
         if amm {
             let obs = self.model_cache.amm_obs(mint).filter(|o| match landing {
                 Some((lo, hi, slot)) => {
@@ -907,7 +947,8 @@ impl Engine {
             let Some(o) = obs else {
                 return Err("mgmt:refuse:add_no_executable_state");
             };
-            let Some((Some((lp, pr, cr)), Some(vq), t)) = self.model_amm_econ.get(mint).copied() else {
+            let Some((Some((lp, pr, cr)), Some(vq), t)) = self.model_amm_econ.get(mint).copied()
+            else {
                 return Err("mgmt:refuse:add_amm_economics_missing");
             };
             if landing.is_some() && t != o.ts_ms {
@@ -929,7 +970,10 @@ impl Engine {
             let Some(o) = obs else {
                 return Err("mgmt:refuse:add_no_executable_state");
             };
-            Ok(AddState::Curve { vsol: o.v_sol_lamports, vtok: o.v_tokens })
+            Ok(AddState::Curve {
+                vsol: o.v_sol_lamports,
+                vtok: o.v_tokens,
+            })
         }
     }
 
@@ -966,10 +1010,8 @@ impl Engine {
         let hi_cash = if avail <= fixed {
             0
         } else {
-            u64::try_from(
-                u128::from(avail - fixed) * 10_000 / (10_000 + u128::from(fee_bps)),
-            )
-            .unwrap_or(0)
+            u64::try_from(u128::from(avail - fixed) * 10_000 / (10_000 + u128::from(fee_bps)))
+                .unwrap_or(0)
         };
         let depth = state.depth();
         let hi_impact = largest_ok(depth, |n| {
@@ -1003,7 +1045,12 @@ impl Engine {
             }
         }
         let tokens = state.tokens_for(lo).ok_or("mgmt:refuse:add_unpriceable")?;
-        Ok(AddPlan { n: lo, tokens, hi, fee_bps })
+        Ok(AddPlan {
+            n: lo,
+            tokens,
+            hi,
+            fee_bps,
+        })
     }
 
     /// Plan against the latest observed state (order placement).
@@ -1054,7 +1101,8 @@ impl Engine {
                 } else {
                     "mgmt:fill_curve_buy"
                 });
-                let px = (u128::from(plan.n) * 1_000_000_000).div_ceil(u128::from(plan.tokens.max(1)));
+                let px =
+                    (u128::from(plan.n) * 1_000_000_000).div_ceil(u128::from(plan.tokens.max(1)));
                 let px = u64::try_from(px).unwrap_or(u64::MAX);
                 self.model_mgmt_book_add(mint, order, plan.tokens, plan.n, px, plan.fee_bps);
             }
@@ -1180,7 +1228,11 @@ impl Engine {
     }
 
     /// Operator/chain evidence that an uncertain order did NOT execute: it is removed, nothing booked.
-    pub fn model_mgmt_resolve_uncertain_not_executed(&mut self, mint: &[u8; 32], order_id: u64) -> bool {
+    pub fn model_mgmt_resolve_uncertain_not_executed(
+        &mut self,
+        mint: &[u8; 32],
+        order_id: u64,
+    ) -> bool {
         if self
             .model_mgmt
             .orders
@@ -1233,7 +1285,10 @@ mod add_planner_tests {
     const M: [u8; 32] = [7; 32];
     // A deep, realistic curve: vsol 37.9 SOL, vtok 849e12.
     fn curve(vsol: u64) -> AddState {
-        AddState::Curve { vsol, vtok: 849_000_000_000_000 }
+        AddState::Curve {
+            vsol,
+            vtok: 849_000_000_000_000,
+        }
     }
 
     #[test]
@@ -1241,7 +1296,9 @@ mod add_planner_tests {
         let e = engine(2_000_000_000);
         let st = curve(37_900_000_000);
         let need = 5_000_000_000_000; // ~0.22 SOL on this book, inside the 90 bp impact limit
-        let p = e.model_mgmt_add_plan_at(&M, need, st, None).expect("feasible");
+        let p = e
+            .model_mgmt_add_plan_at(&M, need, st, None)
+            .expect("feasible");
         assert!(p.tokens >= need);
         // minimal: one lamport less does NOT reach the target
         assert!(st.tokens_for(p.n - 1).map_or(true, |t| t < need));
@@ -1283,17 +1340,36 @@ mod add_planner_tests {
         let mut e = engine(1_000_000_000);
         let deep = curve(10_000_000_000_000);
         let need = 42_000_000_000; // ~0.5 SOL on the 10,000 SOL book: one fits in 0.75 SOL, two do not
-        let first = e.model_mgmt_add_plan_at(&M, need, deep, None).expect("fits alone");
+        let first = e
+            .model_mgmt_add_plan_at(&M, need, deep, None)
+            .expect("fits alone");
         e.model_mgmt.orders.insert(
             M,
             MgmtOrder {
-                id: 1, kind: MgmtKind::Add, intended: need, filled: 0, created_ms: 0, created_slot: 0,
-                version: 1, amm: false, max_spend: first.hi, spent: 0, fee_bps: first.fee_bps, uncertain: false,
+                id: 1,
+                kind: MgmtKind::Add,
+                intended: need,
+                filled: 0,
+                created_ms: 0,
+                created_slot: 0,
+                version: 1,
+                amm: false,
+                max_spend: first.hi,
+                spent: 0,
+                fee_bps: first.fee_bps,
+                uncertain: false,
             },
         );
-        assert!(e.model_mgmt_reserved(None) >= first.hi, "the reservation is held back");
+        assert!(
+            e.model_mgmt_reserved(None) >= first.hi,
+            "the reservation is held back"
+        );
         let other = [8u8; 32];
         let r = e.model_mgmt_add_plan_at(&other, need, deep, None);
-        assert_eq!(r.unwrap_err(), "mgmt:refuse:add_insufficient_funds", "second order sees the reservation");
+        assert_eq!(
+            r.unwrap_err(),
+            "mgmt:refuse:add_insufficient_funds",
+            "second order sees the reservation"
+        );
     }
 }

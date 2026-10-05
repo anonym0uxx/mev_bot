@@ -20,7 +20,10 @@ use pump_quant_inference::InferenceClient;
 
 fn arg(name: &str) -> Option<String> {
     let a: Vec<String> = std::env::args().collect();
-    a.iter().position(|x| x == name).and_then(|i| a.get(i + 1)).cloned()
+    a.iter()
+        .position(|x| x == name)
+        .and_then(|i| a.get(i + 1))
+        .cloned()
 }
 
 fn pct(v: &[f64], p: f64) -> f64 {
@@ -34,7 +37,9 @@ fn pct(v: &[f64], p: f64) -> f64 {
 }
 
 fn load(path: &std::path::Path) -> Vec<String> {
-    let Ok(text) = std::fs::read_to_string(path) else { return Vec::new() };
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
     text.lines()
         .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
         .filter_map(|v| v["expected"].as_str().map(str::to_string))
@@ -48,7 +53,10 @@ fn main() -> ExitCode {
     };
     let fixtures = std::path::PathBuf::from(arg("--fixtures").unwrap_or_else(|| ".".into()));
     let n: usize = arg("--n").and_then(|v| v.parse().ok()).unwrap_or(100);
-    let conc: usize = arg("--concurrency").and_then(|v| v.parse().ok()).unwrap_or(1).max(1);
+    let conc: usize = arg("--concurrency")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1)
+        .max(1);
     // Generous measurement timeout: we want the TRUE latency, not a censored one.
     let client = Arc::new(InferenceClient::new(&endpoint, Duration::from_secs(120)));
     let mgmt = load(&fixtures.join("management.jsonl"));
@@ -69,16 +77,20 @@ fn main() -> ExitCode {
         })
         .collect();
     let jobs = Arc::new(Mutex::new(jobs.into_iter().enumerate().collect::<Vec<_>>()));
-    let results: Arc<Mutex<Vec<(&'static str, f64, &'static str)>>> = Arc::new(Mutex::new(Vec::new()));
+    let results: Arc<Mutex<Vec<(&'static str, f64, &'static str)>>> =
+        Arc::new(Mutex::new(Vec::new()));
     // Warm-up is excluded from the statistics and reported separately (first-request cost is real but different).
     let t_warm = Instant::now();
     let warm = client.warmup().is_ok();
     let warm_s = t_warm.elapsed().as_secs_f64();
     let mut hs = Vec::new();
     for _ in 0..conc {
-        let (client, jobs, results) = (Arc::clone(&client), Arc::clone(&jobs), Arc::clone(&results));
+        let (client, jobs, results) =
+            (Arc::clone(&client), Arc::clone(&jobs), Arc::clone(&results));
         hs.push(std::thread::spawn(move || loop {
-            let Some((_, (kind, sys, user))) = jobs.lock().unwrap().pop() else { return };
+            let Some((_, (kind, sys, user))) = jobs.lock().unwrap().pop() else {
+                return;
+            };
             let t = Instant::now();
             let r = client.complete_with_meta(sys, &user);
             let dt = t.elapsed().as_secs_f64();
@@ -103,7 +115,10 @@ fn main() -> ExitCode {
         "note": "time = full non-streaming completion, valid only; invalid/truncated/errored requests are counted, never timed as success",
     });
     for kind in ["management", "entry", "all"] {
-        let sel: Vec<_> = res.iter().filter(|r| kind == "all" || r.0 == kind).collect();
+        let sel: Vec<_> = res
+            .iter()
+            .filter(|r| kind == "all" || r.0 == kind)
+            .collect();
         let valid: Vec<f64> = sel.iter().filter(|r| r.2 == "valid").map(|r| r.1).collect();
         let count = |o: &str| sel.iter().filter(|r| r.2 == o).count();
         let over = |b: f64| valid.iter().filter(|t| **t > b).count();

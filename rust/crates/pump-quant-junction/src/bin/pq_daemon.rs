@@ -1803,8 +1803,9 @@ fn main() -> ExitCode {
     if !args.live_mode {
         if let Ok(endpoint) = std::env::var("PQ_MODEL_ENDPOINT") {
             if !endpoint.is_empty() {
-                let safety = std::env::var("PQ_MODEL_SAFETY_FILE")
-                    .unwrap_or_else(|_| pump_quant_junction::model_lifecycle::DEFAULT_SAFETY_FILE.to_string());
+                let safety = std::env::var("PQ_MODEL_SAFETY_FILE").unwrap_or_else(|_| {
+                    pump_quant_junction::model_lifecycle::DEFAULT_SAFETY_FILE.to_string()
+                });
                 let armed = pump_quant_junction::model_lifecycle::arm_paper_model(
                     &mut engine,
                     &endpoint,
@@ -1819,8 +1820,9 @@ fn main() -> ExitCode {
         }
     }
     if model_armed {
-        let held_file = std::env::var("PQ_MODEL_HELD_FILE")
-            .unwrap_or_else(|_| pump_quant_junction::model_lifecycle::DEFAULT_HELD_FILE.to_string());
+        let held_file = std::env::var("PQ_MODEL_HELD_FILE").unwrap_or_else(|_| {
+            pump_quant_junction::model_lifecycle::DEFAULT_HELD_FILE.to_string()
+        });
         match pump_quant_junction::model_lifecycle::restore_held_state(
             &mut engine,
             std::path::Path::new(&held_file),
@@ -1846,8 +1848,9 @@ fn main() -> ExitCode {
         }
     }
     if model_armed {
-        let sf = std::env::var("PQ_MODEL_SAFETY_FILE")
-            .unwrap_or_else(|_| pump_quant_junction::model_lifecycle::DEFAULT_SAFETY_FILE.to_string());
+        let sf = std::env::var("PQ_MODEL_SAFETY_FILE").unwrap_or_else(|_| {
+            pump_quant_junction::model_lifecycle::DEFAULT_SAFETY_FILE.to_string()
+        });
         let h = pump_quant_junction::model_lifecycle::check_headroom(
             std::path::Path::new(&sf),
             pump_quant_junction::model_lifecycle::MIN_FREE_BYTES,
@@ -2027,7 +2030,9 @@ fn main() -> ExitCode {
                 match pp_conn.send_text(&sub_msg) {
                     Ok(()) => {
                         stats.pp_trade_subs_sent += 1;
-                        eprintln!("[pq-daemon] restored held mint {mint_b58}: trade feed subscribed");
+                        eprintln!(
+                            "[pq-daemon] restored held mint {mint_b58}: trade feed subscribed"
+                        );
                     }
                     Err(e) => {
                         eprintln!("[pq-daemon] ALERT: restored held mint {mint_b58}: trade subscribe FAILED: {e}");
@@ -2038,7 +2043,11 @@ fn main() -> ExitCode {
             if !ls_active {
                 let req_id = next_req_id;
                 next_req_id += 1;
-                let req = helius_ws::account_subscribe_request(req_id, &pda.to_string(), &args.commitment);
+                let req = helius_ws::account_subscribe_request(
+                    req_id,
+                    &pda.to_string(),
+                    &args.commitment,
+                );
                 if helius_conn.send_text(&req).is_ok() {
                     sub_tracker.record_request(req_id, mint_bytes);
                 }
@@ -2389,7 +2398,8 @@ fn main() -> ExitCode {
             // acknowledged protective handoff; otherwise stay up, blocked, and alert.
             if model_armed {
                 use pump_quant_junction::model_lifecycle::{
-                    handle_stop_request, StopGate, HANDOFF_REQUEST_FILE, PROTECTIVE_HANDOFF_ACK_FILE,
+                    handle_stop_request, StopGate, HANDOFF_REQUEST_FILE,
+                    PROTECTIVE_HANDOFF_ACK_FILE,
                 };
                 match handle_stop_request(
                     &mut engine,
@@ -2407,7 +2417,12 @@ fn main() -> ExitCode {
                         clean_stop_sentinel();
                         break;
                     }
-                    StopGate::Incomplete { assessment: a, rejection, request_id, exposure_digest } => {
+                    StopGate::Incomplete {
+                        assessment: a,
+                        rejection,
+                        request_id,
+                        exposure_digest,
+                    } => {
                         if model_stop_last_alert.elapsed() >= Duration::from_secs(30) {
                             eprintln!(
                                 "[pq-daemon] ALERT: INCOMPLETE SHUTDOWN - held={} pending_orders={} uncertain={}; entries BLOCKED, protection continues, process NOT terminated. \
@@ -3128,11 +3143,12 @@ fn main() -> ExitCode {
 
                                 if sub_tracker.len() >= MAX_ACCOUNT_SUBS {
                                     // Held positions keep their reserve feed regardless of discovery pressure.
-                                    let protected: std::collections::HashSet<[u8; 32]> = if model_armed {
-                                        engine.model_held_mints().into_iter().collect()
-                                    } else {
-                                        std::collections::HashSet::new()
-                                    };
+                                    let protected: std::collections::HashSet<[u8; 32]> =
+                                        if model_armed {
+                                            engine.model_held_mints().into_iter().collect()
+                                        } else {
+                                            std::collections::HashSet::new()
+                                        };
                                     if let Some((evicted_req, evicted_mint, evicted_server_sub)) =
                                         sub_tracker.evict_oldest_protecting(&protected)
                                     {
@@ -4103,8 +4119,9 @@ fn main() -> ExitCode {
             // Durable state must never fail silently: check headroom on the safety file's filesystem and say
             // so loudly before a write can fail. (A failed persist is already fail-closed in the engine.)
             if model_armed && tick_counter % 6000 == 0 {
-                let sf = std::env::var("PQ_MODEL_SAFETY_FILE")
-                    .unwrap_or_else(|_| pump_quant_junction::model_lifecycle::DEFAULT_SAFETY_FILE.to_string());
+                let sf = std::env::var("PQ_MODEL_SAFETY_FILE").unwrap_or_else(|_| {
+                    pump_quant_junction::model_lifecycle::DEFAULT_SAFETY_FILE.to_string()
+                });
                 match pump_quant_junction::model_lifecycle::check_headroom(
                     std::path::Path::new(&sf),
                     pump_quant_junction::model_lifecycle::MIN_FREE_BYTES,
@@ -4123,10 +4140,15 @@ fn main() -> ExitCode {
             if model_armed && tick_counter % 20 == 0 {
                 let now_ms = engine.model_clock_ms_now();
                 for l in stale_callout.evaluate(&engine, now_ms, 60_000) {
-                    eprintln!("[pq-daemon] {}HELD-DATA {}", if l.alert { "ALERT: " } else { "" }, l.text);
+                    eprintln!(
+                        "[pq-daemon] {}HELD-DATA {}",
+                        if l.alert { "ALERT: " } else { "" },
+                        l.text
+                    );
                 }
                 if tick_counter % args.status_every_ticks.max(1) == 0 {
-                    let (report, _) = pump_quant_junction::model_lifecycle::held_data_report(&engine);
+                    let (report, _) =
+                        pump_quant_junction::model_lifecycle::held_data_report(&engine);
                     if !report.is_empty() {
                         eprintln!("[pq-daemon] HELD-DATA status\n{report}");
                     }
@@ -4803,8 +4825,14 @@ mod held_feed_tests {
             t.record_request(id, m(i));
         }
         let protected: std::collections::HashSet<[u8; 32]> = [m(1)].into_iter().collect();
-        let (_, evicted, _) = t.evict_oldest_protecting(&protected).expect("an unprotected one exists");
-        assert_eq!(evicted, m(2), "the oldest UNPROTECTED subscription goes; the held one stays");
+        let (_, evicted, _) = t
+            .evict_oldest_protecting(&protected)
+            .expect("an unprotected one exists");
+        assert_eq!(
+            evicted,
+            m(2),
+            "the oldest UNPROTECTED subscription goes; the held one stays"
+        );
         assert!(t.active_mints().iter().any(|(_, mm)| *mm == m(1)));
         // Control: the legacy path would have evicted the held one (oldest).
         let mut t2 = SubTracker::new();

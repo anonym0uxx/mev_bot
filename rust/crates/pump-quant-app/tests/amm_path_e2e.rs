@@ -455,7 +455,6 @@ fn amm_fixture_funnel_pools_discovered_ready_dispatched() {
     // uses the registry funnel.
 }
 
-
 // ---- AMM MANAGEMENT plumbing (labelled: ROUTING/ACCOUNTING only, never profitability evidence).
 // AMM sell-side fee economics are UNVERIFIED, so every fill here stays `assessable == false` and no PnL
 // from it may be cited. What is exercised: identity/state from the captured pool plane, order intent,
@@ -490,7 +489,9 @@ fn amm_management_reduce_then_exit_runs_through_the_real_engine_with_unassessed_
     cfg.bankroll_initial_lamports = 2_000_000_000;
     let asks = Arc::new(AtomicUsize::new(0));
     let mut e = Engine::new(cfg, RunMode::Paper);
-    e.enable_paper_model(MgmtStub { asks: Arc::clone(&asks) });
+    e.enable_paper_model(MgmtStub {
+        asks: Arc::clone(&asks),
+    });
     let mut last_tick = 0i64;
     for line in FIXTURE.lines() {
         let v: serde_json::Value = serde_json::from_str(line).unwrap();
@@ -513,7 +514,10 @@ fn amm_management_reduce_then_exit_runs_through_the_real_engine_with_unassessed_
     assert!(e.model_assessable_fills().is_empty());
     assert!(e.model_all_fills().iter().all(|f| f.amm));
     // Management asked at least once on the AMM position and the answers came back as valid verdicts.
-    assert!(rep(&e, "mgmt:dispatched") >= 1, "management was never asked on the AMM position: {r:?}");
+    assert!(
+        rep(&e, "mgmt:dispatched") >= 1,
+        "management was never asked on the AMM position: {r:?}"
+    );
     // REDUCE then EXIT each created ONE order and were each booked from a reconciled fill; the position closed
     // only on the EXIT fill. The replay is time-compressed, so some answers land late and are DISCARDED
     // (counted) - they never execute.

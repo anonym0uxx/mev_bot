@@ -215,7 +215,9 @@ impl HeldLedger {
         let u = |x: &Value, k: &'static str| x[k].as_u64().ok_or(bad(k));
         let i = |x: &Value, k: &'static str| x[k].as_i64().ok_or(bad(k));
         let big = |x: &Value, k: &'static str| {
-            x[k].as_str().and_then(|s| s.parse::<i128>().ok()).ok_or(bad(k))
+            x[k].as_str()
+                .and_then(|s| s.parse::<i128>().ok())
+                .ok_or(bad(k))
         };
         let mut held = Vec::new();
         for h in v["held"].as_array().ok_or(bad("held"))? {
@@ -224,7 +226,8 @@ impl HeldLedger {
                 entry_price_fp: u(h, "entry_price_fp")?,
                 size_lamports: u(h, "size_lamports")?,
                 cost_lamports: u(h, "cost_lamports")?,
-                remaining_bps: u32::try_from(u(h, "remaining_bps")?).map_err(|_| bad("remaining_bps"))?,
+                remaining_bps: u32::try_from(u(h, "remaining_bps")?)
+                    .map_err(|_| bad("remaining_bps"))?,
                 inventory_tokens: match &h["inventory_tokens"] {
                     Value::Null => None,
                     x => Some(x.as_u64().ok_or(bad("inventory_tokens"))?),
@@ -249,7 +252,10 @@ impl HeldLedger {
             pending.push(HeldPending {
                 kind: p["kind"].as_str().ok_or(bad("pending.kind"))?.to_string(),
                 id: u(p, "id")?,
-                mint: p["mint"].as_str().and_then(unhex).ok_or(bad("pending.mint"))?,
+                mint: p["mint"]
+                    .as_str()
+                    .and_then(unhex)
+                    .ok_or(bad("pending.mint"))?,
                 intended: u(p, "intended")?,
                 filled: u(p, "filled")?,
                 max_spend: u(p, "max_spend")?,
@@ -289,10 +295,13 @@ impl HeldLedger {
     pub fn read(path: &Path) -> Result<Self, LedgerReadError> {
         let raw = match fs::read_to_string(path) {
             Ok(r) => r,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(LedgerReadError::Absent),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(LedgerReadError::Absent)
+            }
             Err(_) => return Err(LedgerReadError::Untrusted("io")),
         };
-        let v: Value = serde_json::from_str(&raw).map_err(|_| LedgerReadError::Untrusted("json"))?;
+        let v: Value =
+            serde_json::from_str(&raw).map_err(|_| LedgerReadError::Untrusted("json"))?;
         Self::from_json(&v)
     }
 
@@ -432,7 +441,10 @@ mod tests {
         assert!(back.written_wall_ms > 0);
         back.written_wall_ms = 0;
         assert_eq!(back, l);
-        assert_eq!(back.held[0].inventory_tokens, None, "unknown stays unknown, never 0");
+        assert_eq!(
+            back.held[0].inventory_tokens, None,
+            "unknown stays unknown, never 0"
+        );
     }
 
     #[test]
@@ -443,14 +455,23 @@ mod tests {
         let p = d.join("h.json");
         assert_eq!(HeldLedger::read(&p), Err(LedgerReadError::Absent));
         fs::write(&p, "not json").unwrap();
-        assert!(matches!(HeldLedger::read(&p), Err(LedgerReadError::Untrusted(_))));
+        assert!(matches!(
+            HeldLedger::read(&p),
+            Err(LedgerReadError::Untrusted(_))
+        ));
         let mut v = sample().to_json();
         v["schema"] = json!(2);
         fs::write(&p, v.to_string()).unwrap();
-        assert!(matches!(HeldLedger::read(&p), Err(LedgerReadError::Untrusted("schema"))));
+        assert!(matches!(
+            HeldLedger::read(&p),
+            Err(LedgerReadError::Untrusted("schema"))
+        ));
         let mut v = sample().to_json();
         v["held"][0]["peak_fp"] = json!("x");
         fs::write(&p, v.to_string()).unwrap();
-        assert!(matches!(HeldLedger::read(&p), Err(LedgerReadError::Untrusted("peak_fp"))));
+        assert!(matches!(
+            HeldLedger::read(&p),
+            Err(LedgerReadError::Untrusted("peak_fp"))
+        ));
     }
 }

@@ -17,8 +17,8 @@ use pump_quant_app::engine::{Engine, RunMode};
 use pump_quant_app::event::{AppEvent, TradeVenue};
 use pump_quant_domain::ids::Mint as DomainMint;
 use pump_quant_junction::model_lifecycle::{
-    arm_paper_model, handle_stop_request, StaleCallout, restore_held_state, validate_ack, AckRejection, StartupRestore,
-    StopGate, StopSession,
+    arm_paper_model, handle_stop_request, restore_held_state, validate_ack, AckRejection,
+    StaleCallout, StartupRestore, StopGate, StopSession,
 };
 
 const T0: i64 = 1_800_000_000_000;
@@ -107,7 +107,6 @@ fn curve(e: &mut Engine, ts: i64, slot: u64, dsol: u64) {
     ticks(e, 6);
 }
 
-
 /// A curve observation at the feed clock, without extra ticks: the account subscription keeps the
 /// reserves fresh in production, and management now refuses reserves older than PRICING_BUDGET_MS.
 fn curve_quiet(e: &mut Engine, ts: i64, slot: u64) {
@@ -143,7 +142,6 @@ fn print(e: &mut Engine, i: u32, ts: i64, slot: u64) {
     });
 }
 
-
 const BUY: &str =
     "DECISION: BUY\nSIZE: SMALL\nPRICE LIMIT: 0.5\nINVALIDATION: none\nEVIDENCE: flow sustained";
 const HOLD: &str = "DECISION: HOLD\nINVALIDATION: none\nEVIDENCE: x";
@@ -176,7 +174,11 @@ fn read_request(s: &mut TcpStream) -> Option<String> {
         if let Some(h) = text.find("\r\n\r\n") {
             let len = text[..h]
                 .lines()
-                .find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap_or(0)))
+                .find_map(|l| {
+                    l.to_ascii_lowercase()
+                        .strip_prefix("content-length:")
+                        .map(|v| v.trim().parse::<usize>().unwrap_or(0))
+                })
                 .unwrap_or(0);
             if buf.len() >= h + 4 + len {
                 return Some(text[h + 4..h + 4 + len].to_string());
@@ -207,18 +209,30 @@ impl Endpoint {
         std::thread::spawn(move || {
             for conn in l.incoming() {
                 let Ok(mut s) = conn else { continue };
-                let (ans, hang, cnt, bodies) = (Arc::clone(&ans), Arc::clone(&hang), Arc::clone(&cnt), Arc::clone(&bodies));
+                let (ans, hang, cnt, bodies) = (
+                    Arc::clone(&ans),
+                    Arc::clone(&hang),
+                    Arc::clone(&cnt),
+                    Arc::clone(&bodies),
+                );
                 let delay = Arc::clone(&delay);
                 std::thread::spawn(move || {
-                    let Some(body) = read_request(&mut s) else { return };
+                    let Some(body) = read_request(&mut s) else {
+                        return;
+                    };
                     let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
-                    let user = v["messages"][1]["content"].as_str().unwrap_or("").to_string();
+                    let user = v["messages"][1]["content"]
+                        .as_str()
+                        .unwrap_or("")
+                        .to_string();
                     bodies.lock().unwrap().push(body.clone());
                     if hang.load(Ordering::SeqCst) {
                         std::thread::sleep(Duration::from_secs(12));
                         return;
                     }
-                    let text = if user.starts_with("Decide the next action for a position you already hold") {
+                    let text = if user
+                        .starts_with("Decide the next action for a position you already hold")
+                    {
                         cnt.fetch_add(1, Ordering::SeqCst);
                         let d = delay.load(Ordering::SeqCst);
                         if d > 0 {
@@ -281,8 +295,18 @@ fn rig(ep: &Endpoint, name: &str) -> Rig {
         ticks(&mut e, 2);
         curve(&mut e, t_last + 1_500, 2_100, 200_000_000);
     }
-    assert!(e.model_position_open(&MINT), "entry must fill: {:?}", e.model_lane_report());
-    Rig { e, clock: t_last + 1_500, slot: 2_100, n: 41, dir }
+    assert!(
+        e.model_position_open(&MINT),
+        "entry must fill: {:?}",
+        e.model_lane_report()
+    );
+    Rig {
+        e,
+        clock: t_last + 1_500,
+        slot: 2_100,
+        n: 41,
+        dir,
+    }
 }
 
 impl Rig {
@@ -314,7 +338,12 @@ impl Rig {
         curve(&mut self.e, self.clock, self.slot, dsol);
     }
     fn rep(&self, k: &str) -> u64 {
-        self.e.model_lane_report().iter().filter(|(key, _)| key.starts_with(k)).map(|(_, v)| *v).sum()
+        self.e
+            .model_lane_report()
+            .iter()
+            .filter(|(key, _)| key.starts_with(k))
+            .map(|(_, v)| *v)
+            .sum()
     }
 }
 
@@ -327,31 +356,52 @@ fn hold_reduce_exit_travel_over_the_production_client_and_only_fills_change_stat
         _ => EXIT,
     });
     let mut r = rig(&ep, "hre");
-    let inv0 = r.e.model_inventory_tokens(&MINT).expect("fill set inventory");
+    let inv0 =
+        r.e.model_inventory_tokens(&MINT)
+            .expect("fill set inventory");
     let cash0 = r.e.model_free_cash_lamports();
     // Past the 60 s hold: step 0 -> HOLD. HOLD is a valid decision: no order, no endpoint failure.
     r.advance(75_000);
-    assert!(r.rep("mgmt:verdict:hold") >= 1, "{:?}", r.e.model_lane_report());
+    assert!(
+        r.rep("mgmt:verdict:hold") >= 1,
+        "{:?}",
+        r.e.model_lane_report()
+    );
     assert!(r.e.model_mgmt_pending(&MINT).is_none());
     assert_eq!(r.e.model_inventory_tokens(&MINT), Some(inv0));
-    assert_eq!(r.rep("endpoint:"), 0, "a valid HOLD is not endpoint failure");
+    assert_eq!(
+        r.rep("endpoint:"),
+        0,
+        "a valid HOLD is not endpoint failure"
+    );
     assert!(!r.e.model_safety_blocked());
     // Step 1 -> REDUCE: an order INTENT first.
     r.advance_to_order(60_000);
     let (id, _, intended, filled) = r.e.model_mgmt_pending(&MINT).expect("REDUCE order pending");
     assert_eq!(filled, 0);
     assert_eq!(intended, inv0 / 2, "half of current inventory, floored");
-    assert_eq!(r.e.model_inventory_tokens(&MINT), Some(inv0), "intent is not a fill");
+    assert_eq!(
+        r.e.model_inventory_tokens(&MINT),
+        Some(inv0),
+        "intent is not a fill"
+    );
     // PARTIAL fill: only the filled quantity changes.
     let part = intended / 3;
-    r.e.model_mgmt_apply_reconciled_fill(MINT, id, part, 22_000).unwrap();
+    r.e.model_mgmt_apply_reconciled_fill(MINT, id, part, 22_000)
+        .unwrap();
     assert_eq!(r.e.model_inventory_tokens(&MINT), Some(inv0 - part));
-    let (_, _, i2, f2) = r.e.model_mgmt_pending(&MINT).expect("remainder stays pending");
+    let (_, _, i2, f2) =
+        r.e.model_mgmt_pending(&MINT)
+            .expect("remainder stays pending");
     assert_eq!((i2, f2), (intended, part));
     // Duplicate/over-sized report: refused, nothing moves.
-    assert!(r.e.model_mgmt_apply_reconciled_fill(MINT, id, intended, 22_000).is_err());
+    assert!(r
+        .e
+        .model_mgmt_apply_reconciled_fill(MINT, id, intended, 22_000)
+        .is_err());
     assert_eq!(r.e.model_inventory_tokens(&MINT), Some(inv0 - part));
-    r.e.model_mgmt_apply_reconciled_fill(MINT, id, intended - part, 22_000).unwrap();
+    r.e.model_mgmt_apply_reconciled_fill(MINT, id, intended - part, 22_000)
+        .unwrap();
     assert_eq!(r.e.model_inventory_tokens(&MINT), Some(inv0 - inv0 / 2));
     assert!(r.e.model_position_open(&MINT));
     // Cash rose by the sale proceeds and by nothing else; the book and the position agree.
@@ -362,12 +412,23 @@ fn hold_reduce_exit_travel_over_the_production_client_and_only_fills_change_stat
     let (id2, k, intended2, _) = r.e.model_mgmt_pending(&MINT).expect("EXIT order pending");
     assert_eq!(format!("{k:?}"), "Exit");
     assert_eq!(Some(intended2), r.e.model_inventory_tokens(&MINT));
-    r.e.model_mgmt_apply_reconciled_fill(MINT, id2, intended2, 22_000).unwrap();
-    assert!(!r.e.model_position_open(&MINT), "closed only by the reconciled fill");
+    r.e.model_mgmt_apply_reconciled_fill(MINT, id2, intended2, 22_000)
+        .unwrap();
+    assert!(
+        !r.e.model_position_open(&MINT),
+        "closed only by the reconciled fill"
+    );
     assert_eq!(r.e.model_inventory_tokens(&MINT), None);
     // Late duplicate of the closing fill: refused.
-    assert!(r.e.model_mgmt_apply_reconciled_fill(MINT, id2, 1, 22_000).is_err());
-    assert_eq!(r.e.model_mgmt_fills().len(), 3, "partial + remainder + exit, once each");
+    assert!(r
+        .e
+        .model_mgmt_apply_reconciled_fill(MINT, id2, 1, 22_000)
+        .is_err());
+    assert_eq!(
+        r.e.model_mgmt_fills().len(),
+        3,
+        "partial + remainder + exit, once each"
+    );
     assert!(ep.mgmt_requests.load(Ordering::SeqCst) >= 3);
 }
 
@@ -378,9 +439,17 @@ fn add_over_the_wire_targets_half_inventory_and_is_not_endpoint_failure() {
     let inv0 = r.e.model_inventory_tokens(&MINT).unwrap();
     r.advance_to_order(120_000);
     let (_, _, intended, _) = r.e.model_mgmt_pending(&MINT).expect("ADD order pending");
-    assert_eq!(intended, inv0 / 2, "inventory-based target, never account capital");
+    assert_eq!(
+        intended,
+        inv0 / 2,
+        "inventory-based target, never account capital"
+    );
     assert_eq!(r.rep("mgmt:add_unsupported"), 0);
-    assert_eq!(r.rep("endpoint:"), 0, "a valid ADD is a valid decision, not endpoint failure");
+    assert_eq!(
+        r.rep("endpoint:"),
+        0,
+        "a valid ADD is a valid decision, not endpoint failure"
+    );
 }
 
 #[test]
@@ -388,25 +457,46 @@ fn a_malformed_or_hung_endpoint_trips_safety_off_but_keeps_management_and_protec
     let ep = Endpoint::start(|_| "this is not the trained grammar");
     let mut r = rig(&ep, "bad");
     r.advance(200_000);
-    assert!(r.rep("endpoint:malformed") >= 3, "{:?}", r.e.model_lane_report());
-    assert!(r.e.model_safety_blocked(), "three consecutive malformed answers trip the latch");
-    assert!(r.e.model_position_open(&MINT), "tripping never closes or abandons a position");
+    assert!(
+        r.rep("endpoint:malformed") >= 3,
+        "{:?}",
+        r.e.model_lane_report()
+    );
+    assert!(
+        r.e.model_safety_blocked(),
+        "three consecutive malformed answers trip the latch"
+    );
+    assert!(
+        r.e.model_position_open(&MINT),
+        "tripping never closes or abandons a position"
+    );
     // The latch is on disk.
-    assert!(std::fs::read_to_string(r.dir.join("safety.json")).unwrap().contains("\"blocked\": true")
-        || std::fs::read_to_string(r.dir.join("safety.json")).unwrap().contains("\"blocked\":true"));
+    assert!(
+        std::fs::read_to_string(r.dir.join("safety.json"))
+            .unwrap()
+            .contains("\"blocked\": true")
+            || std::fs::read_to_string(r.dir.join("safety.json"))
+                .unwrap()
+                .contains("\"blocked\":true")
+    );
     // Hung endpoint: every ask has a bounded deadline (engine abandons at 3 s).
     let ep2 = Endpoint::start(|_| HOLD);
     let mut r2 = rig(&ep2, "hang");
     ep2.hang.store(true, Ordering::SeqCst);
     r2.advance(200_000);
-    assert!(r2.rep("mgmt:request_abandoned_deadline") >= 1, "{:?}", r2.e.model_lane_report());
+    assert!(
+        r2.rep("mgmt:request_abandoned_deadline") >= 1,
+        "{:?}",
+        r2.e.model_lane_report()
+    );
     assert!(r2.e.model_safety_blocked());
     assert!(r2.e.model_position_open(&MINT));
 }
 
 /// Read the published request, then write an acknowledgement with the given overrides.
 fn write_ack(ack: &std::path::Path, req: &std::path::Path, edit: impl Fn(&mut serde_json::Value)) {
-    let r: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(req).unwrap()).unwrap();
+    let r: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(req).unwrap()).unwrap();
     let mut a = serde_json::json!({
         "session_id": r["session_id"], "request_id": r["request_id"],
         "exposure_digest": r["exposure_digest"],
@@ -431,22 +521,42 @@ fn a_stop_request_does_not_terminate_the_sole_protector_of_open_exposure() {
     // A PRE-EXISTING acknowledgement (garbage, or a plausible-looking file) exists before any request.
     std::fs::write(&ack, b"operator handoff").unwrap();
     let mut st = StopSession::new();
-    assert_eq!(incomplete_reason(handle_stop_request(&mut r.e, &mut st, &req, &ack)), AckRejection::Unreadable,
-        "a pre-existing file authorizes nothing");
+    assert_eq!(
+        incomplete_reason(handle_stop_request(&mut r.e, &mut st, &req, &ack)),
+        AckRejection::Unreadable,
+        "a pre-existing file authorizes nothing"
+    );
     assert!(r.e.model_safety_blocked(), "stop request blocks entries");
     assert!(r.e.model_position_open(&MINT), "stop never liquidates");
     // A well-formed ack from a DIFFERENT session / stale request is rejected.
     write_ack(&ack, &req, |a| a["session_id"] = "pq-other-session".into());
-    assert_eq!(incomplete_reason(handle_stop_request(&mut r.e, &mut st, &req, &ack)), AckRejection::SessionMismatch);
+    assert_eq!(
+        incomplete_reason(handle_stop_request(&mut r.e, &mut st, &req, &ack)),
+        AckRejection::SessionMismatch
+    );
     write_ack(&ack, &req, |a| a["request_id"] = "old-request".into());
-    assert_eq!(incomplete_reason(handle_stop_request(&mut r.e, &mut st, &req, &ack)), AckRejection::RequestMismatch);
+    assert_eq!(
+        incomplete_reason(handle_stop_request(&mut r.e, &mut st, &req, &ack)),
+        AckRejection::RequestMismatch
+    );
     write_ack(&ack, &req, |a| a["exposure_digest"] = "deadbeef".into());
-    assert_eq!(incomplete_reason(handle_stop_request(&mut r.e, &mut st, &req, &ack)), AckRejection::ExposureMismatch);
+    assert_eq!(
+        incomplete_reason(handle_stop_request(&mut r.e, &mut st, &req, &ack)),
+        AckRejection::ExposureMismatch
+    );
     // No identified recipient / did not accept responsibility.
     write_ack(&ack, &req, |a| a["recipient"] = "".into());
-    assert_eq!(incomplete_reason(handle_stop_request(&mut r.e, &mut st, &req, &ack)), AckRejection::NoAcceptedRecipient);
-    write_ack(&ack, &req, |a| a["accepted_protective_responsibility"] = false.into());
-    assert_eq!(incomplete_reason(handle_stop_request(&mut r.e, &mut st, &req, &ack)), AckRejection::NoAcceptedRecipient);
+    assert_eq!(
+        incomplete_reason(handle_stop_request(&mut r.e, &mut st, &req, &ack)),
+        AckRejection::NoAcceptedRecipient
+    );
+    write_ack(&ack, &req, |a| {
+        a["accepted_protective_responsibility"] = false.into()
+    });
+    assert_eq!(
+        incomplete_reason(handle_stop_request(&mut r.e, &mut st, &req, &ack)),
+        AckRejection::NoAcceptedRecipient
+    );
     assert!(r.e.model_position_open(&MINT));
     // The valid acknowledgement: this session, this request, this exposure, an identified recipient.
     write_ack(&ack, &req, |_| {});
@@ -465,25 +575,41 @@ fn an_acknowledgement_for_an_earlier_exposure_snapshot_does_not_survive_a_change
     let (ack, req) = (r.dir.join("ACK.json"), r.dir.join("REQ.json"));
     let mut st = StopSession::new();
     let first = handle_stop_request(&mut r.e, &mut st, &req, &ack);
-    let req1: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&req).unwrap()).unwrap();
+    let req1: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&req).unwrap()).unwrap();
     assert!(matches!(first, StopGate::Incomplete { .. }));
     write_ack(&ack, &req, |_| {}); // a recipient accepts THIS snapshot (held, no pending order)
-    // Exposure changes: a pending EXIT order now exists.
+                                   // Exposure changes: a pending EXIT order now exists.
     r.advance_to_order(120_000);
-    assert!(r.e.model_mgmt_pending(&MINT).is_some(), "setup: an order appeared");
+    assert!(
+        r.e.model_mgmt_pending(&MINT).is_some(),
+        "setup: an order appeared"
+    );
     match handle_stop_request(&mut r.e, &mut st, &req, &ack) {
         StopGate::Incomplete { rejection, .. } => assert!(
-            matches!(rejection, AckRejection::RequestMismatch | AckRejection::ExposureMismatch),
+            matches!(
+                rejection,
+                AckRejection::RequestMismatch | AckRejection::ExposureMismatch
+            ),
             "{rejection:?}"
         ),
-        other => panic!("the earlier acknowledgement must NOT authorize the changed exposure: {other:?}"),
+        other => {
+            panic!("the earlier acknowledgement must NOT authorize the changed exposure: {other:?}")
+        }
     }
-    let req2: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&req).unwrap()).unwrap();
-    assert_ne!(req1["request_id"], req2["request_id"], "a new request id is published for the new snapshot");
+    let req2: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&req).unwrap()).unwrap();
+    assert_ne!(
+        req1["request_id"], req2["request_id"],
+        "a new request id is published for the new snapshot"
+    );
     assert_ne!(req1["exposure_digest"], req2["exposure_digest"]);
     // Re-acknowledging the NEW snapshot is what authorizes it.
     write_ack(&ack, &req, |_| {});
-    assert!(matches!(handle_stop_request(&mut r.e, &mut st, &req, &ack), StopGate::CompleteHandedOff { .. }));
+    assert!(matches!(
+        handle_stop_request(&mut r.e, &mut st, &req, &ack),
+        StopGate::CompleteHandedOff { .. }
+    ));
 }
 
 #[test]
@@ -497,7 +623,12 @@ fn live_plus_model_endpoint_fails_clearly_and_never_starts_legacy_live() {
         .env("HOME", std::env::temp_dir())
         .output()
         .expect("run pq-daemon");
-    assert_eq!(out.status.code(), Some(98), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(
+        out.status.code(),
+        Some(98),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("incompatible with PQ_MODEL_ENDPOINT"), "{err}");
 }
@@ -518,7 +649,10 @@ fn the_latch_survives_process_recreation_and_rearm_is_refused_with_unresolved_ex
     assert!(e2.model_safety_blocked());
     // The file still records the held position that the new process cannot yet restore.
     let held = pump_quant_app::safety_off::SafetyOff::read_held(&path);
-    assert!(!held.is_empty(), "unfinished positions stay on record, never erased");
+    assert!(
+        !held.is_empty(),
+        "unfinished positions stay on record, never erased"
+    );
     // Explicit re-arm with an unresolved record is refused or succeeds only by named operator.
     let res = e2.model_safety_rearm("");
     assert!(res.is_err(), "an unnamed re-arm is refused");
@@ -537,7 +671,8 @@ fn ticks_and_prints(r: &mut Rig, n: usize) {
 }
 
 #[test]
-fn an_abandoned_ask_whose_http_worker_is_still_busy_never_executes_late_and_the_pool_is_not_exhausted() {
+fn an_abandoned_ask_whose_http_worker_is_still_busy_never_executes_late_and_the_pool_is_not_exhausted(
+) {
     // The endpoint answers with a VALID EXIT, but only after 5 s: past the engine's 3 s deadline, within
     // the 8 s socket timeout. The engine abandons each ask; the worker stays occupied until the (valid,
     // complete) answer finally arrives. That late answer must NOT execute, and repeated timeouts must not
@@ -560,20 +695,37 @@ fn an_abandoned_ask_whose_http_worker_is_still_busy_never_executes_late_and_the_
     std::thread::sleep(Duration::from_millis(7_500));
     ticks_and_prints(&mut r, 6);
     let discarded = r.rep("mgmt:discard:");
-    assert!(discarded >= 1, "the late answers must be DISCARDED BY NAME when they land: {:?}", r.e.model_lane_report());
+    assert!(
+        discarded >= 1,
+        "the late answers must be DISCARDED BY NAME when they land: {:?}",
+        r.e.model_lane_report()
+    );
     assert_eq!(r.rep("mgmt:verdict:exit"), 0);
     assert_eq!(r.rep("mgmt:order:"), 0, "no late response created an order");
-    assert!(r.e.model_position_open(&MINT), "a late answer must never close the position");
-    assert!(r.e.model_mgmt_fills().is_empty(), "no late response may place or fill an order");
+    assert!(
+        r.e.model_position_open(&MINT),
+        "a late answer must never close the position"
+    );
+    assert!(
+        r.e.model_mgmt_fills().is_empty(),
+        "no late response may place or fill an order"
+    );
     assert!(r.e.model_mgmt_pending(&MINT).is_none());
     // Repeated timeouts trip SAFETY_OFF after the tested threshold (3 consecutive), never earlier.
-    assert!(r.e.model_safety_blocked(), "three consecutive abandoned asks trip the latch");
+    assert!(
+        r.e.model_safety_blocked(),
+        "three consecutive abandoned asks trip the latch"
+    );
     // And once the endpoint is fast again the lane recovers its worker slots (nothing leaked forever).
     ep.delay_ms.store(0, Ordering::SeqCst);
     std::thread::sleep(Duration::from_millis(6_000));
     r.advance(60_000);
     let after = r.rep("mgmt:dispatched");
-    assert!(after > dispatched, "worker slots were released after the blocked requests returned: {:?}", r.e.model_lane_report());
+    assert!(
+        after > dispatched,
+        "worker slots were released after the blocked requests returned: {:?}",
+        r.e.model_lane_report()
+    );
 }
 
 #[test]
@@ -585,10 +737,14 @@ fn a_late_valid_answer_after_the_position_changed_is_discarded_by_version_not_ex
     r.advance_to_order(120_000);
     let (id, _, intended, _) = r.e.model_mgmt_pending(&MINT).expect("REDUCE pending");
     // Fill the order completely: the position version moves on and the order is gone.
-    r.e.model_mgmt_apply_reconciled_fill(MINT, id, intended, 22_000).unwrap();
+    r.e.model_mgmt_apply_reconciled_fill(MINT, id, intended, 22_000)
+        .unwrap();
     let fills = r.e.model_mgmt_fills().len();
     // Replaying the same reconciled report cannot repeat the reduction.
-    assert!(r.e.model_mgmt_apply_reconciled_fill(MINT, id, intended, 22_000).is_err());
+    assert!(r
+        .e
+        .model_mgmt_apply_reconciled_fill(MINT, id, intended, 22_000)
+        .is_err());
     assert_eq!(r.e.model_mgmt_fills().len(), fills);
 }
 
@@ -603,17 +759,34 @@ fn a_safety_state_that_cannot_be_persisted_fails_closed_everywhere() {
     let _ = arm_paper_model(&mut e, &ep.url, &bad);
     // Whatever the attach decided, a trip must be reported as UNPERSISTED, stay blocked in memory, and count.
     e.model_safety_trip_operator();
-    assert!(e.model_safety_blocked(), "an unpersistable trip still blocks in memory");
+    assert!(
+        e.model_safety_blocked(),
+        "an unpersistable trip still blocks in memory"
+    );
     assert!(e.model_safety_persist_failures() >= 1);
-    assert!(e.model_lane_report().get("safety:persist_failed").copied().unwrap_or(0) >= 1);
+    assert!(
+        e.model_lane_report()
+            .get("safety:persist_failed")
+            .copied()
+            .unwrap_or(0)
+            >= 1
+    );
     // Re-arm must be REFUSED when it cannot be made durable (never a volatile re-arm that a restart forgets).
     assert!(e.model_safety_rearm("alon").is_err());
-    assert!(e.model_safety_blocked(), "still blocked after the refused re-arm");
+    assert!(
+        e.model_safety_blocked(),
+        "still blocked after the refused re-arm"
+    );
     // Shutdown cannot claim completion on an unrecorded exposure.
     let report = e.model_controlled_shutdown();
     assert!(!report.persisted);
     let mut st = StopSession::new();
-    let g = handle_stop_request(&mut e, &mut st, &dir.join("REQ.json"), &dir.join("ACK.json"));
+    let g = handle_stop_request(
+        &mut e,
+        &mut st,
+        &dir.join("REQ.json"),
+        &dir.join("ACK.json"),
+    );
     // Flat engine + unpersisted state: must NOT be CompleteFlat.
     assert!(matches!(g, StopGate::Incomplete { .. }), "{g:?}");
 }
@@ -625,12 +798,19 @@ fn headroom_check_reports_ok_low_and_unknown_distinctly() {
     let free = free_bytes(&d).expect("measurable");
     assert!(free > 0);
     assert!(matches!(check_headroom(&d, 1), Headroom::Ok { .. }));
-    assert!(matches!(check_headroom(&d, u64::MAX), Headroom::Low { .. }), "a floor above free is LOW");
-    assert_eq!(check_headroom(std::path::Path::new("/definitely/not/a/real/path/x"), 1), Headroom::Unknown);
+    assert!(
+        matches!(check_headroom(&d, u64::MAX), Headroom::Low { .. }),
+        "a floor above free is LOW"
+    );
+    assert_eq!(
+        check_headroom(std::path::Path::new("/definitely/not/a/real/path/x"), 1),
+        Headroom::Unknown
+    );
 }
 
 #[test]
-fn a_crash_mid_reduce_restarts_through_the_daemons_restore_path_and_resolves_only_by_reconciled_report() {
+fn a_crash_mid_reduce_restarts_through_the_daemons_restore_path_and_resolves_only_by_reconciled_report(
+) {
     // The production client over HTTP; the engine persists held state as it changes (NOT only at a trip
     // or shutdown), then the process "crashes": no handoff, no shutdown call, engine just dropped.
     let ep = Endpoint::start(|step| if step == 0 { REDUCE } else { HOLD });
@@ -639,7 +819,10 @@ fn a_crash_mid_reduce_restarts_through_the_daemons_restore_path_and_resolves_onl
     let mut e = Engine::new(cfg(), RunMode::Paper);
     let armed = arm_paper_model(&mut e, &ep.url, &dir.join("safety.json"));
     assert!(!armed.blocked_at_start);
-    assert!(matches!(restore_held_state(&mut e, &held), StartupRestore::Clean), "first start is clean");
+    assert!(
+        matches!(restore_held_state(&mut e, &held), StartupRestore::Clean),
+        "first start is clean"
+    );
     for ev in events(40) {
         e.tick(ev);
     }
@@ -653,7 +836,13 @@ fn a_crash_mid_reduce_restarts_through_the_daemons_restore_path_and_resolves_onl
         ticks(&mut e, 2);
         curve(&mut e, t_last + 1_500, 2_100, 200_000_000);
     }
-    let mut r = Rig { e, clock: t_last + 1_500, slot: 2_100, n: 41, dir: dir.clone() };
+    let mut r = Rig {
+        e,
+        clock: t_last + 1_500,
+        slot: 2_100,
+        n: 41,
+        dir: dir.clone(),
+    };
     r.advance_to_order(120_000);
     let (id, kind, intended, _) = r.e.model_mgmt_pending(&MINT).expect("REDUCE in flight");
     assert_eq!(format!("{kind:?}"), "Reduce");
@@ -661,7 +850,10 @@ fn a_crash_mid_reduce_restarts_through_the_daemons_restore_path_and_resolves_onl
     ticks(&mut r.e, 2);
     let inv_before = r.e.model_inventory_tokens(&MINT).unwrap();
     let basis = r.e.model_accounting_view(&MINT).remaining_cost_basis;
-    assert!(held.exists(), "the ledger was written by the running engine, not by a shutdown hook");
+    assert!(
+        held.exists(),
+        "the ledger was written by the running engine, not by a shutdown hook"
+    );
     drop(r.e); // crash
 
     let mut e2 = Engine::new(cfg(), RunMode::Paper);
@@ -673,18 +865,35 @@ fn a_crash_mid_reduce_restarts_through_the_daemons_restore_path_and_resolves_onl
         }
         other => panic!("expected a restore, got {other:?}"),
     }
-    assert_eq!(e2.model_inventory_tokens(&MINT), Some(inv_before), "the unfilled REDUCE changed nothing");
+    assert_eq!(
+        e2.model_inventory_tokens(&MINT),
+        Some(inv_before),
+        "the unfilled REDUCE changed nothing"
+    );
     assert_eq!(e2.model_accounting_view(&MINT).remaining_cost_basis, basis);
     let (id2, _, int2, _) = e2.model_mgmt_pending(&MINT).unwrap();
     assert_eq!((id2, int2), (id, intended));
-    assert_eq!(pump_quant_junction::model_lifecycle::mints_needing_feeds(&e2), vec![MINT], "its feeds are re-established independent of discovery");
+    assert_eq!(
+        pump_quant_junction::model_lifecycle::mints_needing_feeds(&e2),
+        vec![MINT],
+        "its feeds are re-established independent of discovery"
+    );
     // The stop gate sees unresolved exposure: a restart is not a handoff.
     let mut st = StopSession::new();
-    let g = handle_stop_request(&mut e2, &mut st, &dir.join("req.json"), &dir.join("ack.json"));
+    let g = handle_stop_request(
+        &mut e2,
+        &mut st,
+        &dir.join("req.json"),
+        &dir.join("ack.json"),
+    );
     assert!(matches!(g, StopGate::Incomplete { .. }), "{g:?}");
     // Only a reconciled report resolves it: exactly the filled quantity.
-    e2.model_mgmt_apply_reconciled_fill(MINT, id, intended, 22_000).unwrap();
-    assert_eq!(e2.model_inventory_tokens(&MINT), Some(inv_before - intended));
+    e2.model_mgmt_apply_reconciled_fill(MINT, id, intended, 22_000)
+        .unwrap();
+    assert_eq!(
+        e2.model_inventory_tokens(&MINT),
+        Some(inv_before - intended)
+    );
     assert!(e2.model_mgmt_pending(&MINT).is_none());
 }
 
@@ -708,7 +917,11 @@ fn a_ledger_that_cannot_be_applied_refuses_startup_and_is_left_untouched() {
         other => panic!("must refuse: {other:?}"),
     }
     assert!(!e2.model_position_open(&MINT), "nothing applied");
-    assert_eq!(std::fs::read(&held).unwrap(), before, "the ledger is untouched for the operator");
+    assert_eq!(
+        std::fs::read(&held).unwrap(),
+        before,
+        "the ledger is untouched for the operator"
+    );
 }
 
 #[test]
@@ -719,7 +932,10 @@ fn the_stale_callout_is_edge_triggered_names_the_loss_of_protection_and_recovers
     // Healthy: fresh reserve + prints => silence.
     r.advance(20_000);
     let now = r.e.model_clock_ms_now();
-    assert!(c.evaluate(&r.e, now, 60_000).is_empty(), "no callout while management data is fresh");
+    assert!(
+        c.evaluate(&r.e, now, 60_000).is_empty(),
+        "no callout while management data is fresh"
+    );
     // Feed goes quiet: ONLY the clock moves (a heartbeat tick with no reserve/print), as a dead feed does.
     r.e.tick(AppEvent::Tick);
     let quiet_from = now;
@@ -747,13 +963,25 @@ fn the_stale_callout_is_edge_triggered_names_the_loss_of_protection_and_recovers
     let t1 = r.e.model_clock_ms_now();
     assert!(t1 - quiet_from >= 100_000);
     let lines = c.evaluate(&r.e, t1, 60_000);
-    assert!(lines.iter().any(|l| l.alert && l.text.starts_with("ONSET")), "{lines:?}");
-    assert!(lines.iter().any(|l| l.text.contains("UNPROTECTED")), "prints for the held mint are silent too: {lines:?}");
+    assert!(
+        lines.iter().any(|l| l.alert && l.text.starts_with("ONSET")),
+        "{lines:?}"
+    );
+    assert!(
+        lines.iter().any(|l| l.text.contains("UNPROTECTED")),
+        "prints for the held mint are silent too: {lines:?}"
+    );
     assert_eq!(c.degraded_count(), 1);
     // Edge-triggered: the same instant again says nothing; a reminder only after the interval.
-    assert!(c.evaluate(&r.e, t1, 60_000).is_empty(), "no repeat inside the reminder interval");
+    assert!(
+        c.evaluate(&r.e, t1, 60_000).is_empty(),
+        "no repeat inside the reminder interval"
+    );
     let rem = c.evaluate(&r.e, t1 + 61_000, 60_000);
-    assert!(rem.iter().any(|l| l.text.starts_with("REMINDER")), "{rem:?}");
+    assert!(
+        rem.iter().any(|l| l.text.starts_with("REMINDER")),
+        "{rem:?}"
+    );
     // The 60 s bound was not loosened to make it go away: management still refuses.
     assert!(r.e.model_held_degraded().len() == 1);
     // A fresh reserve + print for the HELD mint recovers it, and the outage length is reported.
@@ -769,6 +997,11 @@ fn the_stale_callout_is_edge_triggered_names_the_loss_of_protection_and_recovers
     print(&mut r.e, r.n + 2, r.clock, r.slot);
     ticks(&mut r.e, 3);
     let rec = c.evaluate(&r.e, r.clock, 60_000);
-    assert!(rec.iter().any(|l| !l.alert && l.text.starts_with("RECOVERED")), "{rec:?} {:?}", r.e.model_held_degraded());
+    assert!(
+        rec.iter()
+            .any(|l| !l.alert && l.text.starts_with("RECOVERED")),
+        "{rec:?} {:?}",
+        r.e.model_held_degraded()
+    );
     assert_eq!(c.degraded_count(), 0);
 }
