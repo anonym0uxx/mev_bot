@@ -175,3 +175,39 @@ Replacements (each mutant-checked where marked):
 - 154 failures on LF checkout reproduced (classification in ns/*.json: junit-based, by exception text). Not established as defect-free. 51 failures remain with the pinned file CRLF and yt-dlp installed: 38 Windows-only publication (requires Windows), 3 D: path, 10 unexplained (6 "EXACT_PATH: sample unavailable" expected from a D:-backed sample, 4 test_publication_is_complete_or_absent_and_retryable assertions with unknown cause). Those 10 are UNRESOLVED.
 - The grpc-server-only crate was built and its 7 b58 tests were run in the actual crate/build configuration using the documented local OpenSSL tree (handoff 0019: apt-get download libssl-dev + dpkg -x into /tmp, OPENSSL_STATIC/LIB_DIR/INCLUDE_DIR): 7 passed. The binary was not run against LaserStream.
 - Branch remains unmerged.
+
+---
+
+## Addendum 4 - consolidation completion (head `63a80511` + docs)
+
+### Automatic evaluator/refiner promotion loop - RETIRED (63a80511)
+- Closes the Addendum-3 finding "pq-daemon still ... spawns pq-refiner ... removing it is the next separable slice and is not done".
+- Removed: the daemon's periodic `pq-refiner` spawn (`RefinerSpawner`) and the `last_refiner_spawn_tick` state. `--refiner-every-ticks` is accepted and ignored; the startup banner logs `automatic refiner promotion RETIRED (operator-gated)`.
+- Kept: defense-in-depth (cliff veto / circuit breaker / kill switch), the config hot-reload + auto-revert safety path, tape export, memory bank, replay, accounting, execution, enrichment. Promotion is now operator-gated: a `data/CONFIG_PROMOTION.json` must be placed deliberately; nothing in the daemon generates one.
+
+### Lint track A - junction money-path ledger (reconciled, measured)
+- At `9c69b33e`: **186 diagnostics = 186 unique sites** (126 `arithmetic_side_effects`, 53 `cast_possible_truncation`, 7 `unnecessary_fallible_conversions`).
+- **Measured split:** stripping the 76 `LINT-ALLOW`-paired attributes and re-running clippy re-exposes **146** diagnostics; therefore **40** no longer warn. 40 + 146 = 186.
+  - 40 resolved by code change, per file: `event_stream` 13, `translate` 8, `pq_daemon` 6 (infallible `Pubkey::from`), `laserstream` 4, `reserve_delta` 3, `model_lifecycle` 3, `autonomous_bridge` 1, `narrative_lexicon` 1, `paper_session` 1 (infallible).
+  - Earlier report said "25 + 7 + 149"; that summed to 181 and was wrong. The corrections are: 4 sites already resolved by code change were mis-bucketed as allowances (`laserstream` ×3, `narrative_lexicon` ×1), and the allowance count was 150 not 149 → my 5-unit gap. During the corrections a further 4 sites moved allowance→code (`model_lifecycle` ×3 timestamp, `autonomous_bridge` ×1 drawdown).
+- **Separate from the 186:** 26 sign-loss conversions closed (the enabled lint set does not flag `i64→u64`/`u64→i64`): `event_stream` `as u64` → `u64_field` (25) and `reserve_delta` Buy-arm `u64→i64` (1). Negative-input test added.
+- Allowances are scoped (`LINT-ALLOW(<lint>): <bound>` + paired `#[allow]`). Bounds are labelled type/guard-enforced vs **practical domain bound** (counters are process-lifetime assumptions, not type proofs).
+
+### Reserve domain - corrected end to end (`58742c7d`)
+- `reserve_delta` computes the delta in `i128` and checked-converts only the *result* to `i64`, so two reserves each `> i64::MAX` with a small delta are preserved (tests: large+small positive delta, large+small negative delta, genuinely unrepresentable delta).
+- An interim `note_stream_reserves` guard rejecting reserves `> i64::MAX` was **removed as unnecessary over-exclusion**: `LiveCurveState`/`live_state` carry `u64` reserves and the derivation supports the full `u64` range. Replaced by a producer→cache test asserting a reserve `> i64::MAX` **is** published and reaches the hot path.
+
+### Rejection diagnostics - precise (`58742c7d`)
+- `delta_no_trade` remains "all `None` from the reserve-delta derivation" (unchanged meaning); a **subset** counter `delta_out_of_range` is added (added to both `pq_daemon` and `paper_session` stats, printed in `daemon_health.json` and the paper report). So malformed/out-of-range is separable from ordinary no-trade.
+- Flow-window completeness is a **separate** mechanism, not reserve age: `decision_join::JoinRefusal::FlowMetaMissing` (a print lacking fee/CU/slot/trader) and `FlowAggregatesIncomplete` **refuse** the prompt; reserve staleness is its own refusal (`ReserveStale`). Test `missing_fee_cu_or_slot_poison_the_flow_block_instead_of_reading_as_quiet` pins the poison behaviour. **Gap (honest):** a print dropped *upstream* of the reducer is invisible to that completeness check; it is only counted (`delta_no_trade`/`delta_out_of_range`/`pp_trades_received` vs `pp_trades_enqueued`). Reserve age does not establish flow completeness.
+
+### Toolchain / MSRV
+- Tested toolchain on the final head: `rustc`/`cargo` **1.99.0** (stable-x86_64-unknown-linux-gnu).
+- MSRV **1.85 remains pre-existing unsupported** (deps need ≥1.86 `idna_adapter`; `pump-quant-core/src/reducer.rs` uses `is_multiple_of`=1.87). Declared MSRV not raised; deps not downgraded.
+
+### Acceptance on the final code head `63a80511`
+- **Local CI-equivalent (Linux, 1.99.0):** `fmt --check` clean; `clippy --workspace --all-targets -- -D warnings` exit 0; `build --workspace` exit 0; `test --workspace` exit 0, 0 failed.
+- **Hosted GitHub:** workflow `rust-ci` run `37382000618` → **success**, steps Format check / Clippy (deny warnings) / Build / Tests all green. (Prior runs on earlier heads failed at Format check.)
+
+### Current entry document
+- `docs/ENTRY.md` is now the single current operating entry (runtime, pipelines, Qwen interface vs tooling, configuration, Windows handoff, ops, historical-alternatives index). Dated `docs/*` files are marked historical there.
