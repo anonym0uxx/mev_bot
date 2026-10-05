@@ -2305,7 +2305,11 @@ impl Engine {
                             // §32 thesis evaluation: deterministic invalidation forces the
                             // exit; no score may override it.
                             // Rev-31: gate on on-chain confirmation in live mode.
-                            let thesis_exit = self.thesis_forces_exit(mint.as_bytes())
+                            // A model-managed position's discretionary thesis/VPIN exits stand down;
+                            // the model is shown the same flow state and decides.
+                            let model_owned = self.positions.is_model_managed(mint.as_bytes());
+                            let thesis_exit = !model_owned
+                                && self.thesis_forces_exit(mint.as_bytes())
                                 && !(self.mode == RunMode::Live
                                     && !self.positions.is_onchain_confirmed(mint.as_bytes()));
                             if thesis_exit {
@@ -2321,8 +2325,9 @@ impl Engine {
                                 // distributed multi-swap dump the single-print rug-precursor
                                 // cannot see — force the thesis-invalidation exit (§21.7/§32).
                                 // Rev-31: gate on on-chain confirmation in live mode.
-                                let vpin_ok = !(self.mode == RunMode::Live
-                                    && !self.positions.is_onchain_confirmed(mint.as_bytes()));
+                                let vpin_ok = !model_owned
+                                    && !(self.mode == RunMode::Live
+                                        && !self.positions.is_onchain_confirmed(mint.as_bytes()));
                                 if vpin_ok {
                                     let vp = self.vpin_params();
                                     let reading = self

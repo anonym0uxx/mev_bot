@@ -340,6 +340,10 @@ struct HeldPosition {
     inventory_tokens: u64,
     /// Whether `inventory_tokens` came from a fill (true) or the open-time derivation (false).
     inventory_from_fill: bool,
+    /// True when the model owns discretionary management of this position. Then ONLY the agreed
+    /// hard safeguards (rug precursor, hard stop) may close it from the store; the ladder, trail,
+    /// into-strength, thesis/stall, moon bag and time-stop stand down.
+    model_managed: bool,
     cvd: i128,
     cvd_peak: i128,
     entry_tick: u64,
@@ -662,6 +666,23 @@ impl ScalpLifecycle {
         }
     }
 
+    /// Hand discretionary management of a held position to the model (idempotent).
+    pub fn set_model_managed(&mut self, mint: &[u8; 32]) -> bool {
+        match self.open.get_mut(mint) {
+            Some(p) => {
+                p.model_managed = true;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Whether the model owns discretionary management of `mint`.
+    #[must_use]
+    pub fn is_model_managed(&self, mint: &[u8; 32]) -> bool {
+        self.open.get(mint).is_some_and(|p| p.model_managed)
+    }
+
     /// Authoritative inventory, or `None` when it was never established by a fill (unknown is not zero).
     #[must_use]
     pub fn inventory_tokens(&self, mint: &[u8; 32]) -> Option<u64> {
@@ -820,6 +841,7 @@ impl ScalpLifecycle {
                 remaining_bps: 10_000,
                 inventory_tokens: exit_token_amount(size_lamports, 10_000, entry_price_fp),
                 inventory_from_fill: false,
+                model_managed: false,
                 cvd: 0,
                 cvd_peak: 0,
                 entry_tick: tick,
@@ -1028,6 +1050,16 @@ impl ScalpLifecycle {
         // §24 LAW 6: the trail/hard-stop widths are volatility-scaled inside the
         // envelope (identity when `vol_stop_enable` is off).
         let (trail, hard_sl) = pos.protection_widths(&p);
+        if pos.model_managed {
+            // MODEL MODE: the hard stop is a safeguard the model cannot be asked to keep; the
+            // trailing stop and every other discretionary trigger below stand down.
+            let hard_level =
+                protection_level_fp(pos.entry_price_fp, pos.entry_price_fp, 0, hard_sl);
+            if price_fp <= hard_level {
+                return Some(self.close(mint, mult, ExitReason::HardStop));
+            }
+            return None;
+        }
         let protect = protection_level_fp(pos.peak_price_fp, pos.entry_price_fp, trail, hard_sl);
         if price_fp <= protect {
             // Distinguish the hard stop (at/below entry−hard_sl) from the trail.
@@ -1208,6 +1240,11 @@ impl ScalpLifecycle {
         let mut fired = std::mem::take(&mut self.fired_buf);
         fired.clear();
         for (mint, pos) in self.open.iter() {
+            // A model-managed position has no legacy time-stop: holding is the model's call, and
+            // the 8-minute training boundary is not a deployment horizon.
+            if pos.model_managed {
+                continue;
+            }
             // §Quant-Rev-16: when stall_ticks is set to 99_999 (fat-tail mode),
             // the stall condition is intentionally disabled for thesis-invalidation
             // but must NOT block the time stop. Use a reasonable stall window for
@@ -1261,6 +1298,10 @@ impl ScalpLifecycle {
         for (mint, pos) in self.open.iter() {
             // Rev-31: in live mode, skip unconfirmed positions.
             if live_mode && !pos.onchain_confirmed {
+                continue;
+            }
+            // Model-managed: no legacy time-stop (see `on_tick`).
+            if pos.model_managed {
                 continue;
             }
             let effective_stall = if p.stall_ticks >= 99_999 {
@@ -1858,5 +1899,37 @@ mod tests {
         lc.sell_tokens(&[1u8; 32], 250_000, PX, ExitReason::ModelManaged).unwrap();
         let last = lc.sell_tokens(&[1u8; 32], 250_000, PX, ExitReason::ModelManaged).unwrap();
         assert!(last.closed && !lc.has(&[1u8; 32]));
+    }
+
+    #[test]
+    fn model_managed_positions_stand_down_every_discretionary_legacy_trigger() {
+        let mint = [1u8; 32];
+        // Ladder TP1 (+10%) and trail must NOT fire; hard stop and rug precursor still do.
+        let mut lc = held_with_fill(1_000_000);
+        assert!(lc.set_model_managed(&mint));
+        assert!(lc.on_trade(&mint, 1_300_000_000, 1, 1, 30_000_000_000).is_none(), "TP rung");
+        assert!(lc.on_trade(&mint, 1_100_000_000, 1, 2, 30_000_000_000).is_none(), "trail off peak");
+        assert!(lc.on_tick(1_000_000, &|_| Some(1_100_000_000)).is_empty(), "time stop");
+        assert!(lc.has(&mint));
+        // rug precursor: a >=30% single-print fall closes it
+        let ex = lc.on_trade(&mint, 700_000_000, -1, 3, 30_000_000_000).expect("rug precursor");
+        assert_eq!(ex.reason, ExitReason::RugPrecursor);
+
+        // hard stop still binds a slow bleed
+        let mut lc = held_with_fill(1_000_000);
+        lc.set_model_managed(&mint);
+        let mut hit = None;
+        for (i, px) in (1..=40u64).map(|k| (k, 1_000_000_000 - k * 20_000_000)) {
+            if let Some(e) = lc.on_trade(&mint, px, -1, i, 30_000_000_000) {
+                hit = Some(e);
+                break;
+            }
+        }
+        assert_eq!(hit.expect("hard stop").reason, ExitReason::HardStop);
+
+        // the same tape on a LEGACY position does take a ladder/trail exit (control)
+        let mut lc = held_with_fill(1_000_000);
+        let first = lc.on_trade(&mint, 1_300_000_000, 1, 1, 30_000_000_000);
+        assert!(first.is_some(), "legacy ladder fires on the same print");
     }
 }
