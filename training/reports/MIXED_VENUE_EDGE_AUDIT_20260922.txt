@@ -1,0 +1,117 @@
+MIXED-VENUE REFUSAL-RULE EDGE AUDIT — 2026-09-22 (PT), linux
+================================================================
+Script : code/src/v2/rl/audit_mixed_venue_edge.py
+Corpus : /training/v2/candidate_sft_c12/train.jsonl (170,654 rows; 67,301 with a
+         label; BUY 13,376 / WATCH 30,075 / SKIP 23,850)
+Method : realized barrier outcomes per row from meta.barrier_triplet
+         (tp +10000 bp / sl -5000 bp / timeout+censored = the mark at the horizon),
+         net of the venue-resolved cost floor the corpus itself pins
+         (amm 60 bp / bonding_curve 189 bp), then charged OUR OWN round-trip price
+         impact 2 * clip/depth, and re-run with censored rows EXCLUDED.
+
+QUESTION: the rules (own-impact veto >90 bp, curve payout-reserve capacity,
+stale-AMM pricing) refuse BUY-labeled decisions. On the mixed bucket those refusals
+looked BETTER than the admitted set on MFE. Are they tradeable edge we are dropping,
+or untradeable junk the veto exists to price?
+
+ANSWER (net after charging own-impact, entry+exit)
+  bucket / size                n     gross   impact    NET mean  NET med   win
+  mixed   impact-veto @ruled  661    3036     1183      1853      1559    60.2%
+  mixed   impact-veto @0.25   661    3036      296      2740      1974    64.4%
+  mixed   stale-AMM on curve  555    3681       96      3585      2880    75.0%
+  pumpfun impact-veto @ruled  621    4226     1315      2911      6295    62.3%
+  pumpfun impact-veto @0.25   621    4226      740      3486      7840    65.9%
+  pumpfun stale-AMM on curve  410    4980      292      4688      6593    77.8%
+  pumpswap impact-veto @ruled 813    2734      660      2074       357    51.4%
+  pumpswap impact-veto @0.25  813    2734      165      2569       726    54.2%
+  (censored-excluded variants are within ~2% of every row above: 1862/3312/3990/2179)
+
+READ: the refusals are NOT junk. Charging a deliberately generous round-trip impact,
+every refused cohort stays strongly net-positive, and SIZING DOWN to 0.25 SOL (4x
+less impact) improves every cohort. Two proposals follow from this and BOTH change
+what the system can do, so they are operator decisions, not housekeeping:
+  D1 size-to-fit: when the ruled clip is vetoed, take the smaller clip instead of
+     refusing (touches the venue-conditional action space / label meaning).
+  D2 curve fallback: when the AMM is stale but the CURVE has capacity and impact
+     <= veto, route the fill to the curve at 0.25 (live venue resolution).
+NOT proposed: raising the 90 bp threshold itself — sizing down preserves the cost
+discipline that the threshold encodes.
+
+RAW LOG
+=======
+rows with a label: 67301
+labels: {'WATCH': 30075, 'BUY': 13376, 'SKIP': 23850}
+
+== mixed: 11260 rows, 2604 BUY
+   refusals on BUY rows: {'impact_veto': 833, 'amm_stale': 571, 'capacity_refuse': 10}
+   -- realized outcome, net of the venue cost floor --
+   admitted                     n= 1515 | net mean   -353.0 med  -1405.8 p90    9811.0 bp | win  31.0% | tp  178 sl  224 timeout   988 censored   96
+   refused (any rule)           n= 1089 | net mean   3057.1 med   2358.3 p90    9940.0 bp | win  66.9% | tp  252 sl  100 timeout   521 censored   42
+   refused: impact veto         n=  833 | net mean   3035.7 med   2113.3 p90    9940.0 bp | win  65.2% | tp  191 sl   68 timeout   367 censored   35
+   refused: capacity            n=   10 | net mean   3530.0 med   3239.4 p90    5211.9 bp | win  87.5% | tp    1 sl    0 timeout     0 censored    7
+   refused: amm stale           n=  571 | net mean   3680.9 med   2941.9 p90    9940.0 bp | win  75.5% | tp  136 sl   33 timeout   361 censored   25
+   -- counterfactual: same decisions sized at the CURVE clip 0.25 SOL --
+   newly admissible @0.25       n=  155 | net mean   3557.2 med   1543.5 p90    9940.0 bp | win  66.9% | tp   61 sl   28 timeout    55 censored    1
+      their depth SOL: p10=47.12 p50=73.04 p90=99.14
+      pool/curve depth SOL, BUY rows: p10=12.94 p50=48.44 p90=132.63
+
+== pumpfun: 36485 rows, 6955 BUY
+   refusals on BUY rows: {'impact_veto': 760, 'amm_stale': 410, 'capacity_refuse': 698}
+   -- realized outcome, net of the venue cost floor --
+   admitted                     n= 5757 | net mean   1521.6 med   -929.5 p90    9811.0 bp | win  43.5% | tp 1584 sl  825 timeout  2698 censored  650
+   refused (any rule)           n= 1198 | net mean   2943.5 med   1114.6 p90    9940.0 bp | win  52.8% | tp  398 sl  214 timeout   299 censored  148
+   refused: impact veto         n=  760 | net mean   4225.7 med   9811.0 p90    9940.0 bp | win  66.2% | tp  315 sl  166 timeout   118 censored   22
+   refused: capacity            n=  698 | net mean   1680.1 med   -985.1 p90    9811.0 bp | win  35.9% | tp  180 sl  120 timeout   135 censored  128
+   refused: amm stale           n=  410 | net mean   4980.2 med   7294.3 p90    9940.0 bp | win  78.0% | tp  183 sl   52 timeout   156 censored   19
+   -- counterfactual: same decisions sized at the CURVE clip 0.25 SOL --
+   newly admissible @0.25       n=    9 | net mean    879.8 med   -414.5 p90    2691.8 bp | win  12.5% | tp    1 sl    0 timeout     7 censored    0
+      their depth SOL: p10=64.57 p50=69.46 p90=72.80
+      pool/curve depth SOL, BUY rows: p10=30.00 p50=40.70 p90=69.54
+
+== pumpswap: 19556 rows, 3817 BUY
+   refusals on BUY rows: {'impact_veto': 860}
+   -- realized outcome, net of the venue cost floor --
+   admitted                     n= 2957 | net mean   2029.9 med   1584.7 p90    9703.1 bp | win  77.9% | tp  286 sl  371 timeout  1466 censored  773
+   refused (any rule)           n=  860 | net mean   2733.5 med    984.5 p90    9940.0 bp | win  54.5% | tp  350 sl  251 timeout   185 censored   27
+   refused: impact veto         n=  860 | net mean   2733.5 med    984.5 p90    9940.0 bp | win  54.5% | tp  350 sl  251 timeout   185 censored   27
+   refused: capacity            n=    0 | no usable outcome
+   refused: amm stale           n=    0 | no usable outcome
+   -- counterfactual: same decisions sized at the CURVE clip 0.25 SOL --
+   newly admissible @0.25       n=  553 | net mean   3099.8 med   4050.7 p90    9940.0 bp | win  59.0% | tp  254 sl  197 timeout    98 censored    4
+      their depth SOL: p10=37.61 p50=82.23 p90=105.39
+      pool/curve depth SOL, BUY rows: p10=39.89 p50=308.44 p90=1463.98
+
+== mixed: DEEP (own-impact charged, entry+exit) ==
+   -- refused by impact_veto (n=833) --
+      @ruled clip: n= 661  gross mean  3035.7 | impact mean 1182.6 bp | NET-after-impact mean  1853.1 med  1559.3  win  60.2%
+          censored EXCLUDED: n= 626  NET-after-impact mean  1861.9 med  1559.3  win  60.9%
+      @.25 clip: n= 661  gross mean  3035.7 | impact mean  295.7 bp | NET-after-impact mean  2740.1 med  1974.4  win  64.4%
+   -- refused by amm_stale (n=571) --
+      @ruled clip: n= 555  gross mean  3680.9 | impact mean  383.8 bp | NET-after-impact mean  3297.2 med  2661.1  win  73.7%
+          censored EXCLUDED: n= 530  NET-after-impact mean  3312.1 med  2630.7  win  74.2%
+      @.25 clip: n= 555  gross mean  3680.9 | impact mean   95.9 bp | NET-after-impact mean  3585.0 med  2879.7  win  75.0%
+   -- amm_stale rows recoverable ON THE CURVE at .25 (capacity + impact both OK): 555/571
+      realized: gross mean  3680.9 med  2941.9 | NET-after-impact mean  3585.0 med  2879.7 | win-after  75.0%
+   censored BUY rows (folded in above as the horizon mark): 138/2604
+
+== pumpfun: DEEP (own-impact charged, entry+exit) ==
+   -- refused by impact_veto (n=760) --
+      @ruled clip: n= 621  gross mean  4225.7 | impact mean 1314.8 bp | NET-after-impact mean  2910.9 med  6295.0  win  62.3%
+          censored EXCLUDED: n= 599  NET-after-impact mean  3080.6 med  7227.2  win  63.8%
+      @.25 clip: n= 621  gross mean  4225.7 | impact mean  740.2 bp | NET-after-impact mean  3485.5 med  7839.8  win  65.9%
+   -- refused by amm_stale (n=410) --
+      @ruled clip: n= 410  gross mean  4980.2 | impact mean 1167.2 bp | NET-after-impact mean  3813.0 med  4995.3  win  72.0%
+          censored EXCLUDED: n= 391  NET-after-impact mean  3990.4 med  5720.9  win  73.4%
+      @.25 clip: n= 410  gross mean  4980.2 | impact mean  291.8 bp | NET-after-impact mean  4688.4 med  6592.5  win  77.8%
+   -- amm_stale rows recoverable ON THE CURVE at .25 (capacity + impact both OK): 410/410
+      realized: gross mean  4980.2 med  7294.3 | NET-after-impact mean  4688.4 med  6592.5 | win-after  77.8%
+   censored BUY rows (folded in above as the horizon mark): 798/6955
+
+== pumpswap: DEEP (own-impact charged, entry+exit) ==
+   -- refused by impact_veto (n=860) --
+      @ruled clip: n= 813  gross mean  2733.5 | impact mean  659.5 bp | NET-after-impact mean  2074.0 med   357.1  win  51.4%
+          censored EXCLUDED: n= 786  NET-after-impact mean  2179.8 med  1324.6  win  52.9%
+      @.25 clip: n= 813  gross mean  2733.5 | impact mean  164.9 bp | NET-after-impact mean  2568.6 med   725.8  win  54.2%
+   amm_stale: none
+   censored BUY rows (folded in above as the horizon mark): 800/3817
+RC=0

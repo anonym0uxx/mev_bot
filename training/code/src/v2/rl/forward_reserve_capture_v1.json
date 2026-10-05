@@ -1,0 +1,161 @@
+{
+  "schema": "laserstream_forward_reserve_capture_v1",
+  "purpose": "Record decision-time RESERVE state for BOTH pump.fun regimes so the mechanics engine can price a fill forward with no historical backfill. Replaces the historical pumpswap backfill we deliberately did not buy.",
+  "binding_operator_decision": "mechanics-first, not tape-accurate: the reward engine encodes market mechanics and must be fed observable reserves; we are not buying historical pumpswap reserves.",
+  "generated_for": "/training/v2/code/src/v2/rl/regime_pricing.py (BONDING_CURVE, AMM) + reward_engine.py",
+  "commitment": "confirmed",
+  "programs": {
+    "pumpfun": "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",
+    "pumpswap_amm": "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA"
+  },
+  "subscribe": {
+    "transactions": {
+      "pump_broad_reserves": {
+        "vote": false,
+        "failed": true,
+        "account_include": [
+          "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",
+          "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA"
+        ],
+        "why": "Both programs emit Anchor events that CARRY the reserves. This one subscription is therefore sufficient to recover decision-time reserves for both regimes; it is already the existing filter, so no widening of traffic is required.",
+        "failed_txs": "keep failed=true: a reverted swap still tells us the pre-state, and our own failed orders must be priced too."
+      }
+    },
+    "accounts": {
+      "pumpfun_curve_accounts": {
+        "owner": ["6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"],
+        "why": "Fallback when an event is missed; ALREADY subscribed. Offsets are NOT asserted here - validate against xval_accounts.py before reading reserves from account bytes (our verified reserve source is the decoded event, not the account blob)."
+      },
+      "pumpswap_pool_accounts": {
+        "owner": ["pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA"],
+        "why": "gives pool -> {base_mint, quote_mint, pool_base_token_account, pool_quote_token_account} for the CREATE_POOL discovery path. ALREADY subscribed.",
+        "CAVEAT": "the Pool account itself does NOT store reserves - reserves live in the two vault TOKEN accounts."
+      },
+      "pumpswap_pool_vaults": {
+        "account_include": [],
+        "owner_note": "SPL token accounts are owned by Tokenkeg/Tokenz, so they CANNOT be selected by owner - they must be selected by ADDRESS. The list is empty at start and is filled by the vault resolver below.",
+        "why": "the ONLY source that works if a swap's Anchor event is missed or if we need pool state between swaps."
+      }
+    }
+  },
+  "decoded_event_sources": {
+    "pumpfun_TradeEvent": {
+      "source": "Anchor event CPI log (Program data: <borsh>), decoded offline with the same pattern as v2/reserves/build_reserves.py",
+      "borsh_discriminator_hex": "bddb7fd34ee661ee",
+      "verified_offsets_in_our_decoder": "v2/reserves/build_reserves.py: post-event reserves at byte 97 as (virtual_sol, virtual_token, real_sol, real_token); sol_amount/token_amount at byte 40; timestamp at byte 89",
+      "carries": [
+        "mint", "sol_amount_lamports", "token_amount_raw", "is_buy",
+        "virtual_sol_reserves_lamports", "virtual_token_reserves_raw",
+        "real_sol_reserves_lamports", "real_token_reserves_raw", "timestamp"
+      ],
+      "field_map_to_engine": {
+        "x": "virtual_sol_reserves_lamports",
+        "y": "virtual_token_reserves_raw",
+        "note": "token_amount_raw is WHOLE TOKENS in this event family - multiply by 1e6 for raw base units (measured trap, already handled in build_reserves.py)"
+      },
+      "regime": "bonding_curve"
+    },
+    "pumpswap_BuyEvent_and_SellEvent": {
+      "source": "Anchor event CPI log from pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA",
+      "carries": [
+        "user_base_token_account", "user_quote_token_account", "pool",
+        "base_amount_in|base_amount_out", "quote_amount_in|quote_amount_out",
+        "pool_base_token_reserves", "pool_quote_token_reserves",
+        "user_base_token_reserves", "user_quote_token_reserves",
+        "lp_fee", "protocol_fee", "coin_creator_fee", "timestamp"
+      ],
+      "field_map_to_engine": {
+        "x": "pool_quote_token_reserves (lamports; the SOL side)",
+        "y": "pool_base_token_reserves (raw base units)",
+        "fee_ground_truth": ["lp_fee", "protocol_fee", "coin_creator_fee"]
+      },
+      "regime": "amm",
+      "IMPORTANT": "pool_quote_token_reserves / pool_base_token_reserves are POST-swap reserves in the event; the decision-time (pre) state of the NEXT decision is the POST state of the last event, which is exactly what DictReserveOracle.reserve_for(mint, regime, t_dec) returns."
+    },
+    "instruction_discriminators_in_our_own_normalizer": {
+      "file": "/training/v2/code/capture-rs-patched/src/normalizer.rs",
+      "pumpfun_buy": [102, 6, 61, 18, 1, 218, 235, 234],
+      "pumpfun_sell": [51, 230, 133, 164, 1, 127, 131, 173],
+      "pumpfun_buy_v2": [184, 23, 238, 97, 103, 197, 211, 61],
+      "pumpfun_sell_v2": [93, 246, 130, 60, 231, 233, 64, 178],
+      "pumpswap_buy": [102, 6, 61, 18, 1, 218, 235, 234],
+      "pumpswap_sell": [51, 230, 133, 164, 1, 127, 131, 173],
+      "pumpswap_create_pool": [233, 146, 209, 142, 207, 104, 64, 188],
+      "pumpswap_deposit": [242, 35, 198, 137, 82, 225, 242, 182],
+      "pumpswap_withdraw": [183, 18, 70, 156, 148, 109, 161, 34],
+      "note": "pump.fun and PumpSwap share buy/sell discriminators, so routing MUST be by program ID first - the existing normalizer already does this."
+    }
+  },
+  "artifacts_to_write": {
+    "curve_reserves": {
+      "path": "/training/v2/reserves/forward/curve_reserves_v1_<SESSION>_partNNNN.parquet",
+      "columns": [
+        "mint", "event_time_unix_ms", "slot", "signature", "venue",
+        "virtual_sol_reserves_lamports", "virtual_token_reserves_raw",
+        "real_sol_reserves_lamports", "real_token_reserves_raw",
+        "is_graduated", "source"
+      ],
+      "source_col": "event_cpi_log"
+    },
+    "pool_reserves": {
+      "path": "/training/v2/reserves/forward/pool_reserves_v1_<SESSION>_partNNNN.parquet",
+      "columns": [
+        "mint", "pool", "event_time_unix_ms", "pool_sol_lamports",
+        "pool_token_reserves_raw", "venue", "slot", "signature",
+        "lp_fee_lamports", "protocol_fee_lamports", "coin_creator_fee_lamports", "source"
+      ],
+      "consumer": "regime_pricing.pool_reserve_oracle(path_glob) - the AMM oracle. Drop the first file this capture writes and the AMM path is live with no code change.",
+      "is_post_swap_state": true
+    },
+    "write_cadence": "flush every 5 s or 20,000 rows; emit event_time_unix_ms from the block time (or recv time if block time absent) so decision-time ordering is exact."
+  },
+  "vault_resolver": {
+    "why": "SPL vault accounts cannot be owner-filtered; a missed pumpswap event must still be recoverable.",
+    "rule": "on every pumpswap create_pool (and on the first swap seen for a pool), read the Pool account, store (mint -> pool, pool_base_token_account, pool_quote_token_account), and add the two vault addresses to the account-subscription address list.",
+    "refresh": "re-send the subscribe request (or the additive update the client supports) every 60 s with the grown address list; cap at 100k addresses and LRU-evict pools with no swap in 7 days.",
+    "alternative_if_client_cannot_update_live": "restart the stream every 60 s with the refreshed list, keeping the same session id prefix so files concatenate."
+  },
+  "what_must_change_in_the_existing_capture": [
+    {
+      "file": "/training/v2/code/capture-rs-patched/src/normalizer.rs",
+      "lines": "PumpEventV1 line ~85-88 (base_reserve, quote_reserve) and ~416-417 (both set to None)",
+      "problem": "base_reserve / quote_reserve (and the curve reserve fields) are DECLARED but never assigned, so the events artifact carries NO reserves today. Rendering: every reserve field in the events ndjson is null.",
+      "change": "decode the Anchor event payload from the transaction log_messages (disc bddb7fd34ee661ee for pump.fun TradeEvent; pump-amm Buy/Sell events for the pool) and assign base_reserve/quote_reserve + the virtual/real curve fields. The raw recorder already stores log_messages and inner-instruction data losslessly, so this is a decode addition, not a capture change."
+    },
+    {
+      "file": "/training/v2/code/capture-rs-patched/src/events_writer.rs",
+      "change": "add the two reserve artifacts above as first-class outputs (new writer, same zstd/part rotation policy as raw_recorder.rs)."
+    },
+    {
+      "file": "/training/v2/code/capture-rs-patched/src/capture.rs",
+      "lines": "~111-117",
+      "problem": "accounts filter is owner=[pump.fun, pumpswap] only; the pumpswap vault TOKEN accounts (owner=Tokenkeg) are never captured, and the Pool account does not contain reserves.",
+      "change": "add an accounts filter with account_include = dynamic vault address list (see vault_resolver). Owner-based filters stay as they are."
+    },
+    {
+      "file": "new: /training/v2/code/src/v2/reserves/build_forward_reserves.py",
+      "change": "offline step that reuses the anchors from v2/reserves/build_reserves.py to emit BOTH artifacts from the raw capture, so the two paths (inline writer, offline rebuild) can be cross-checked. If the inline writer is not implemented first, this offline step alone is sufficient to make the AMM path live: point pool_reserve_oracle at its output."
+    }
+  ],
+  "verification_plan": [
+    "1. Run the capture for 15 min with --training-capture; confirm pool_reserves_* parquet is non-empty and that pool_sol_lamports == quote_reserve and pool_token_reserves_raw == base_reserve for the sampled event.",
+    "2. Assert k-growth: for consecutive events of one pool, k_post/k_pre == 1 + lp_fee/pool_quote (fee-inclusive constant product invariant). A mismatch means the fee split or the reserve orientation is wrong.",
+    "3. Feed the artifact to pool_reserve_oracle and re-price a recorded pumpswap fill with fill_from_token_leg; the predicted SOL leg must be within the fee of the recorded one.",
+    "4. Confirm the AMM path changes prices correctly: run --regime amm on the new window and check that fills_priced_from_pool_reserves > 0 and corr_recorded_vs_sim is materially above the tape baseline (0.055350).",
+    "5. Causality: every emitted reserve row must satisfy event_time_unix_ms <= the decision time of any order priced from it; test_causality_discipline.py clause 5 asserts this on real data."
+  ],
+  "staleness_budget": {
+    "DECISION_D3": "wall-clock age is a CAPTURE-GAP proxy, not state validity: reserves only change when the mint trades and every trade emits the new state, so the newest state at or before t_dec IS the exact state at t_dec however long the mint has been quiet.",
+    "offline_data_builds_default_ms": 86400000,
+    "live_forward_trading_default_ms": 120000,
+    "measured": "on the c4 corpus a 60 s cap discarded 34 points of train coverage (65.1% -> 99.5% matched) while staleness p50 was only 20.7 s",
+    "per_regime_override": "none needed - the budget is about capture completeness, not venue."
+  },
+  "vault_subscription_decision_D5": {
+    "status": "DISABLED_BY_DEFAULT",
+    "why": "Anchor events already carry the reserves; the vault stream is a redundant second copy while event decoding is healthy (k-drift p50 1.7e-5 over 83,495 consecutive pool events). Credits are metered, so we do not pay for redundancy.",
+    "enable_when": "event-decode gaps exceed 1% of swaps",
+    "scale_guard": "cap 50k addresses, LRU-drop pools quiet for 7 days",
+    "credit_budget": "100,000,000 credits available"
+  }
+}

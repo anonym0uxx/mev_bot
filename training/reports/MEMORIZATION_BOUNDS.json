@@ -1,0 +1,22 @@
+{
+ "schema": "memorization-instrument/1",
+ "registered_at": "2026-09-20",
+ "registered_by": "operator ruling 2026-09-20: 'the most robust production system' — a checkpoint that cannot be distinguished from its training set may not be selected",
+ "question": "Can the policy's CHOICES be told apart from its evidence? (policy-side memorization; near-duplicate prompt detection is a separate, data-side guard)",
+ "statistics": {
+  "choice_discrimination": "total-variation distance between the empirical action distribution on in-sample prompts and on unseen prompts",
+  "outcome_gap_bp": "mean(realized net bp | unseen) - mean(realized net bp | in-sample)",
+  "dose_response": "Spearman rho between realized net bp and the number of times the prompt appeared in training (optional; requires repeat_count)"
+ },
+ "null": "permutation: the in_sample labels are shuffled (N_PERM=400, seed=7) and each statistic is recomputed; the bound is the (1-ALPHA)=0.99 quantile",
+ "alpha": 0.01,
+ "n_perm": 400,
+ "seed": 7,
+ "min_rows_per_group": 30,
+ "min_rows_for_gap": 10,
+ "decision_rule": "SUSPECTED if ANY statistic exceeds its permutation bound; SUSPECTED or insufficient_groups ⇒ the checkpoint is NOT selectable, and no fallback may substitute for the verdict",
+ "interpretation": "A suspected run is reported and re-trained, never averaged in. A clean run is not proof of generalisation — it is the absence of a detectable exposure effect, which is the only thing this instrument can assert.",
+ "fail_closed": "python memorization_detector.py --score ... returns rc=1 when the verdict is SUSPECTED, when the groups are too thin, or when no preregistered instrument is present; grpo_loop.run_gate refuses selection on any of those",
+ "records_producer": "the RL evaluation step must score matched in-sample and unseen prompts through the SAME policy and write reports/MEMORIZATION_RECORDS.jsonl with {prompt_sha256, in_sample, chosen, realized_net_bp, repeat_count}",
+ "scope_note": "the wall gate remains the primary selection signal: this instrument can only VETO, never promote"
+}

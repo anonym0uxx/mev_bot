@@ -1,0 +1,111 @@
+{
+  "schema": "forward_reserve_capture_v1",
+  "purpose": "Make decision-time reserves available for BOTH regimes on every future fill, replacing historical backfill. Consumed by the capture binary and by regime_pricing.pool_reserve_oracle / .build_curve_oracle.",
+  "writer": "code/capture-rs-patched (Helius LaserStream gRPC client)",
+  "commitment": "confirmed",
+  "programs": {
+    "pumpfun": "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",
+    "pump_amm": "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA",
+    "token_program": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+    "token_2022_program": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
+  },
+  "discriminators": {
+    "_derivation": "first 8 bytes of sha256('event:<Name>') / sha256('account:<Name>'); method verified against the real capture: it reproduces pumpfun TradeEvent = bddb7fd34ee661ee and BondingCurve account = 17b7f83760d8ac60",
+    "pumpfun_event_TradeEvent": "bddb7fd34ee661ee",
+    "pumpfun_account_BondingCurve": "17b7f83760d8ac60",
+    "pump_amm_event_BuyEvent": "67f4521f2cf57777",
+    "pump_amm_event_SellEvent": "3e2f370aa503dc2a",
+    "pump_amm_event_CreatePoolEvent": "b1310cd2a076a774",
+    "pump_amm_event_DepositEvent": "78f83d531f8e6b90",
+    "pump_amm_event_WithdrawEvent": "1609851aa02c47c0"
+  },
+  "subscriptions": {
+    "transactions": {
+      "pump_broad": {
+        "vote": false,
+        "failed": null,
+        "_failed_note": "leave unset - losing transactions are training signal",
+        "account_include": [
+          "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",
+          "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA"
+        ],
+        "_why": "Anchor events ride in tx meta.log_messages as base64 'Program data:' payloads. Both regimes' reserves are IN the events: pump.fun TradeEvent carries virtual/real reserves; pump-amm BuyEvent/SellEvent carry pool_base_token_reserves/pool_quote_token_reserves. This filter already catches them - nothing to add."
+      }
+    },
+    "accounts": {
+      "pump_accounts": {
+        "owner": [
+          "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",
+          "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA"
+        ],
+        "_why": "pump.fun BondingCurve accounts are owned by the pump.fun program and DO carry all four reserves in the account struct (disc 17b7f83760d8ac60, then <QQQQ at offset 8 = virtual_token, virtual_sol, real_token, real_sol - verified in xval_accounts.py against event data). pump-amm Pool accounts (disc f19a6d0411b16dbc) are owned by the pump-amm program and DO NOT hold reserves; they are how we discover the two pool vault addresses.",
+        "_verified_present": "14,436 pool account records observed in two 2026-08-24 capture parts"
+      },
+      "pumpswap_pool_vaults": {
+        "owner": [],
+        "account_include": [
+          "__DYNAMIC__"
+        ],
+        "_why": "pumpswap reserves live in the pool's SPL token vaults (pool_base_token_account / pool_quote_token_account), whose owner is the TOKEN PROGRAM, so an owner filter cannot reach them. They must be subscribed by ADDRESS.",
+        "_address_source": "decode each Pool account update from pump_accounts: disc f19a6d0411b16dbc, then base_mint(32) quote_mint(32) lp_mint(32) base_vault(32) quote_vault(32); refresh this account_include list (send an updated SubscribeRequest on the live stream) every 30 s",
+        "refresh_seconds": 30,
+        "max_addresses_per_filter": 50000,
+        "_validation_rule": "at ingest, a vault update is accepted only if the vault's SPL token account mint (bytes 0..32 of the account data) equals the pool's base_mint/quote_mint; otherwise it is dropped and counted, never guessed."
+      }
+    },
+    "slots": {"slots": {}},
+    "blocks_meta": {"blocks_meta": {}},
+    "accounts_for_curve_events_only": {
+      "_why": "OPTIONAL, belt-and-braces: if event decoding ever lags, the BondingCurve account stream alone reproduces curve reserves, since the account is the post-state of the same transaction.",
+      "owner": ["6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"]
+    }
+  },
+  "artifacts_to_write": {
+    "curve_reserves": {
+      "path": "<CAPTURE_DIR>/pumpfun_curve_reserves_v1_<SESSION>_partXXXX.parquet",
+      "schema": {
+        "mint": "string",
+        "curve_account": "string",
+        "event_time_unix_ms": "int64",
+        "slot": "int64",
+        "tx_signature": "string",
+        "seq": "int64",
+        "venue": "string (pumpfun_bonding)",
+        "virtual_sol_reserves_lamports": "int64",
+        "virtual_token_reserves_raw": "int64",
+        "real_sol_reserves_lamports": "int64",
+        "real_token_reserves_raw": "int64",
+        "is_graduated": "bool",
+        "is_mayhem": "bool",
+        "source": "string: event|account"
+      },
+      "_consumer": "regime_pricing.build_curve_oracle / slinky_curve_oracle (Regime.BONDING_CURVE)"
+    },
+    "pool_reserves": {
+      "path": "<CAPTURE_DIR>/pumpswap_pool_reserves_v1_<SESSION>_partXXXX.parquet",
+      "schema": {
+        "mint": "string (the pump.fun token, = pool base_mint)",
+        "pool": "string (Pool account pubkey)",
+        "event_time_unix_ms": "int64",
+        "slot": "int64",
+        "tx_signature": "string",
+        "venue": "string (pumpswap)",
+        "pool_sol_lamports": "int64 (quote vault SPL amount)",
+        "pool_token_reserves_raw": "int64 (base vault SPL amount)",
+        "lp_supply": "int64",
+        "source": "string: event|vault_account"
+      },
+      "_consumer": "regime_pricing.pool_reserve_oracle -> Regime.AMM (this is the only thing standing between us and the first forward AMM fill)",
+      "_both_sources": "write a row from the BuyEvent/SellEvent reserves AND from the vault-account update; the two must agree (assert |event - vault| / vault <= 1e-6) or the row is flagged source='disagree' and never used"
+    }
+  },
+  "engine_side_expectations": {
+    "max_reserve_stale_ms": 60000,
+    "note": "the engine refuses a join whose reserve is older than max_reserve_stale_ms or stamped after its decision; the capture must therefore flush the reserve parquet continuously (not at session end) so the forward trader reads a state that is seconds, not hours, old."
+  },
+  "what_is_missing_today": [
+    "normalizer.rs initialises virtual_sol/virtual_token/real_sol/real_token/curve_complete/mayhem and pool_account_b58/base_reserve/quote_reserve/lp_supply and then NEVER assigns them - it only decodes instruction data, never the Anchor events or account bodies.",
+    "no curve/pool reserve parquet is written: the reserves used so far were reconstructed offline from raw ndjson by build_reserves.py / build_slinky_reserves.py.",
+    "the account filter covers only the two program owners, so SPL token vaults (pumpswap reserves) are never streamed."
+  ]
+}
