@@ -308,3 +308,185 @@ impl DecisionJournal {
         self.hash
     }
 }
+
+#[cfg(test)]
+mod serialization_pins {
+    //! Journal serialization is a COMPATIBILITY surface: recorded journals and their digests must keep
+    //! meaning what they meant. These pins were computed by an INDEPENDENT implementation of the
+    //! documented layout (length-prefixed bytes, little-endian integers, two's-complement i128, rolling
+    //! FNV-1a) in `consolidation/journal_pin.py`, not by running this code, so an edit to `encode`, a
+    //! tag, or the hash fails here. They replace the retired golden-digest test's journal assertion
+    //! without pinning any strategy behaviour.
+    use super::*;
+
+    const MINT: [u8; 32] = [
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
+        25, 26, 27, 28, 29, 30, 31,
+    ];
+
+    fn records() -> [(&'static str, Decision, usize, u64); 8] {
+        [
+            (
+                "promoted",
+                Decision::Promoted {
+                    mint: MINT,
+                    lane: 3,
+                    rank: 7,
+                },
+                50,
+                0x7db6_4f63_c910_d3fa,
+            ),
+            (
+                "admitted",
+                Decision::Admitted {
+                    mint: MINT,
+                    size_lamports: 300_000_000,
+                    x_min: 0,
+                    x_cost: 0,
+                    x_max: 0,
+                    fail_rate_bps: 50,
+                    rt_cost_bps: 180,
+                    move_bps: -42,
+                    move_source: 1,
+                    depth_basis: 2,
+                },
+                115,
+                0xc846_3ba6_76a8_2bfa,
+            ),
+            (
+                "rejected",
+                Decision::Rejected {
+                    mint: MINT,
+                    reason: 29,
+                },
+                42,
+                0x04d5_4084_79af_4d5d,
+            ),
+            (
+                "filled",
+                Decision::Filled {
+                    mint: MINT,
+                    net_pnl_lamports: -1_234_567,
+                    reason: 10,
+                },
+                66,
+                0x4274_204d_22ba_3259,
+            ),
+            (
+                "reweighted",
+                Decision::Reweighted {
+                    lane: 2,
+                    before_bp: 1000,
+                    after_bp: 1100,
+                },
+                18,
+                0x1baa_a20f_66d5_5893,
+            ),
+            (
+                "probe",
+                Decision::Probe {
+                    mint: MINT,
+                    cost_lamports: 5_000_000,
+                    measurement_id: 9,
+                },
+                57,
+                0xd354_1323_e644_e9d5,
+            ),
+            (
+                "routing_exit",
+                Decision::RoutingExit {
+                    mint: MINT,
+                    net_pnl_lamports: 777,
+                    reason: 8,
+                    status: 1,
+                },
+                67,
+                0xf295_531a_6bd1_8f75,
+            ),
+            (
+                "recon_fault",
+                Decision::ReconFault {
+                    mint: MINT,
+                    order_id: 99,
+                    closed: 1,
+                },
+                50,
+                0x15a1_8c94_b39f_c22f,
+            ),
+        ]
+    }
+
+    #[test]
+    fn every_variant_encodes_to_the_pinned_layout_and_hash() {
+        for (name, d, len, digest) in records() {
+            let mut buf = Vec::new();
+            d.encode(&mut buf);
+            assert_eq!(buf.len(), len, "{name}: encoded length changed");
+            let mut j = DecisionJournal::new();
+            j.record(d);
+            assert_eq!(
+                j.digest(),
+                digest,
+                "{name}: digest changed - a journal compatibility break"
+            );
+        }
+    }
+
+    #[test]
+    fn the_variant_tags_are_frozen() {
+        let tags: Vec<u8> = records().iter().map(|(_, d, _, _)| d.tag()).collect();
+        assert_eq!(
+            tags,
+            vec![1, 2, 3, 4, 5, 6, 7, 8],
+            "serialized tags must never be renumbered"
+        );
+    }
+
+    #[test]
+    fn the_whole_sequence_digest_is_pinned_and_order_sensitive() {
+        let mut j = DecisionJournal::new();
+        for (_, d, _, _) in records() {
+            j.record(d);
+        }
+        assert_eq!(j.digest(), 0xf15b_f9e2_6486_9b97, "sequence digest changed");
+        let mut swapped = DecisionJournal::new();
+        let recs = records();
+        for i in [1usize, 0, 2, 3, 4, 5, 6, 7] {
+            swapped.record(recs[i].1);
+        }
+        assert_ne!(
+            swapped.digest(),
+            j.digest(),
+            "the digest must depend on decision order"
+        );
+    }
+
+    #[test]
+    fn a_signed_pnl_survives_encoding_exactly_for_both_signs() {
+        let enc = |v: i128| {
+            let mut b = Vec::new();
+            Decision::Filled {
+                mint: MINT,
+                net_pnl_lamports: v,
+                reason: 0,
+            }
+            .encode(&mut b);
+            b
+        };
+        assert_ne!(enc(-1), enc(1), "sign must be preserved");
+        assert_eq!(
+            enc(i128::MIN).len(),
+            enc(0).len(),
+            "fixed-width two's complement"
+        );
+    }
+
+    #[test]
+    fn the_seed_separates_configs_before_any_decision() {
+        let (mut a, mut b) = (DecisionJournal::new(), DecisionJournal::new());
+        a.seed(1);
+        b.seed(2);
+        assert_ne!(a.digest(), b.digest());
+        assert_eq!(DecisionJournal::new().digest(), FNV_OFFSET_BASIS);
+    }
+}

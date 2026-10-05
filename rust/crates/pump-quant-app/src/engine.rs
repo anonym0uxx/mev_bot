@@ -2948,6 +2948,13 @@ impl Engine {
         applied
     }
 
+    /// Whether this market has a RECORDED on-chain confirmation. A reserve pair that the decoder-health
+    /// check refuses (see [`Self::confirm`]) is never recorded, so this stays false for it.
+    #[must_use]
+    pub fn is_market_confirmed(&self, mint: &[u8; 32]) -> bool {
+        self.confirmed.contains_key(mint)
+    }
+
     /// Record one decoded bonding-curve snapshot as this market's on-chain proof.
     ///
     /// **DECODER HEALTH IS CHECKED HERE, AT THE BOUNDARY.** The pair is run through
@@ -3275,7 +3282,13 @@ impl Engine {
             if self.paper_model_mode {
                 self.model_admit_candidate(cand);
             } else {
+                // Every refusal is counted AND journalled (as every retired gate rejection was), so a
+                // no-authority refusal is replayable and `sum(reject_counts) == rejected` has a record.
                 self.reject(REJECT_NO_ENTRY_AUTHORITY);
+                self.journal.record(Decision::Rejected {
+                    mint: cand.mint.bytes(),
+                    reason: REJECT_NO_ENTRY_AUTHORITY,
+                });
             }
         }
         // Restore reused scratch (O2) for next tick — allocation retained, contents
