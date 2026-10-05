@@ -1763,6 +1763,31 @@ fn main() -> ExitCode {
         Engine::new(cfg, RunMode::Paper)
     };
 
+    // ── Paper model lane (opt-in, paper only) ────────────────────────────
+    // PQ_MODEL_ENDPOINT=http://host:port arms Qwen entry+management through the PRODUCTION
+    // InferenceClient; the durable SAFETY_OFF latch is restored from PQ_MODEL_SAFETY_FILE. Absent the
+    // variable the legacy path is byte-for-byte unchanged. Never armed in --live.
+    let mut model_armed = false;
+    if !args.live_mode {
+        if let Ok(endpoint) = std::env::var("PQ_MODEL_ENDPOINT") {
+            if !endpoint.is_empty() {
+                let safety = std::env::var("PQ_MODEL_SAFETY_FILE")
+                    .unwrap_or_else(|_| pump_quant_junction::model_lifecycle::DEFAULT_SAFETY_FILE.to_string());
+                let armed = pump_quant_junction::model_lifecycle::arm_paper_model(
+                    &mut engine,
+                    &endpoint,
+                    std::path::Path::new(&safety),
+                );
+                model_armed = true;
+                eprintln!(
+                    "[pq-daemon] paper model lane ARMED endpoint={endpoint} safety_file={safety} load={:?} blocked_at_start={}",
+                    armed.load, armed.blocked_at_start
+                );
+            }
+        }
+    }
+    let mut model_stop_last_alert = Instant::now() - Duration::from_secs(3600);
+
     // Run-mode tag for tape/journal exports — derived from the ENGINE's actual
     // RunMode, NOT the --live CLI flag. This prevents paper-mode fallback from
     // being mislabeled as "live" in the tape. When construct_live_engine()
@@ -2254,9 +2279,36 @@ fn main() -> ExitCode {
 
         // ── Graceful shutdown check (every iteration) ────────────────────
         if daemon_stop_requested() {
-            eprintln!("[pq-daemon] DAEMON_STOP detected — initiating graceful shutdown");
-            clean_stop_sentinel();
-            break;
+            // A model-armed engine is the SOLE protector of whatever it holds or has outstanding: a stop
+            // file alone never terminates it. Complete only when flat+reconciled or after an
+            // acknowledged protective handoff; otherwise stay up, blocked, and alert.
+            if model_armed {
+                use pump_quant_junction::model_lifecycle::{
+                    handle_stop_request, StopGate, PROTECTIVE_HANDOFF_ACK_FILE,
+                };
+                match handle_stop_request(&mut engine, std::path::Path::new(PROTECTIVE_HANDOFF_ACK_FILE)) {
+                    StopGate::CompleteFlat | StopGate::CompleteHandedOff => {
+                        eprintln!("[pq-daemon] DAEMON_STOP accepted (flat/reconciled or acknowledged handoff)");
+                        clean_stop_sentinel();
+                        break;
+                    }
+                    StopGate::Incomplete(a) => {
+                        if model_stop_last_alert.elapsed() >= Duration::from_secs(30) {
+                            eprintln!(
+                                "[pq-daemon] ALERT: INCOMPLETE SHUTDOWN — held={} pending_orders={} uncertain={}; \
+                                 entries BLOCKED, protection continues, process NOT terminated (no acknowledged handoff at {})",
+                                a.held, a.pending_orders, a.uncertain_orders,
+                                pump_quant_junction::model_lifecycle::PROTECTIVE_HANDOFF_ACK_FILE
+                            );
+                            model_stop_last_alert = Instant::now();
+                        }
+                    }
+                }
+            } else {
+                eprintln!("[pq-daemon] DAEMON_STOP detected — initiating graceful shutdown");
+                clean_stop_sentinel();
+                break;
+            }
         }
 
         let mut did_work = false;

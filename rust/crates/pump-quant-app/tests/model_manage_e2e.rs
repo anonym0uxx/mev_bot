@@ -132,6 +132,21 @@ fn curve(e: &mut Engine, ts: i64, slot: u64, dsol: u64) {
     ticks(e, 6);
 }
 
+
+/// A curve observation at the feed clock, without extra ticks: the account subscription keeps the
+/// reserves fresh in production, and management now refuses reserves older than PRICING_BUDGET_MS.
+fn curve_quiet(e: &mut Engine, ts: i64, slot: u64) {
+    e.tick(AppEvent::CurveObserved {
+        mint: mint(),
+        v_sol_lamports: VSOL + 200_000_000,
+        v_tokens: VTOK - 4_000_000_000_000,
+        real_sol_lamports: 8_100_000_000,
+        real_tokens: 565_000_000_000_000,
+        recv_unix_ms: Some(ts),
+        slot,
+    });
+}
+
 /// A trade print on the held mint at the feed clock `ts` (keeps decision state fresh and the clock moving).
 fn print(e: &mut Engine, i: u32, ts: i64, slot: u64) {
     e.tick(AppEvent::MarketTrade {
@@ -201,6 +216,7 @@ impl Rig {
             self.clock += 5_000;
             self.slot += 1;
             self.n += 1;
+            curve_quiet(&mut self.e, self.clock, self.slot);
             print(&mut self.e, self.n, self.clock, self.slot);
             ticks(&mut self.e, 2);
         }
@@ -214,6 +230,7 @@ impl Rig {
             self.clock += 1_000;
             self.slot += 1;
             self.n += 1;
+            curve_quiet(&mut self.e, self.clock, self.slot);
             print(&mut self.e, self.n, self.clock, self.slot);
             ticks(&mut self.e, 2);
         }

@@ -30,6 +30,25 @@ pub struct ShutdownReport {
     pub persisted: bool,
 }
 
+/// Exposure the engine is still responsible for at a stop request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StopAssessment {
+    /// Held positions.
+    pub held: usize,
+    /// Pending entry or management orders (certain or not).
+    pub pending_orders: usize,
+    /// Orders whose acknowledgement is unresolved.
+    pub uncertain_orders: usize,
+}
+
+impl StopAssessment {
+    /// True only when nothing is held and no order is outstanding.
+    #[must_use]
+    pub fn is_flat_and_reconciled(&self) -> bool {
+        self.held == 0 && self.pending_orders == 0 && self.uncertain_orders == 0
+    }
+}
+
 impl Engine {
     /// Attach the durable file and adopt what it says. A blocked file BLOCKS this engine: a restart
     /// does not re-arm.
@@ -171,6 +190,19 @@ impl Engine {
             uncertain_preserved: pending.iter().filter(|p| p.uncertain).count(),
             mgmt_orders_pending: pending.iter().filter(|p| p.kind != "entry").count(),
             persisted,
+        }
+    }
+
+    /// What a shutdown request would leave behind, WITHOUT changing anything. The daemon completes a
+    /// stop only when this is [`StopAssessment::is_flat_and_reconciled`] (or an operator-acknowledged
+    /// protective handoff exists): the engine is the sole protector of whatever this reports.
+    #[must_use]
+    pub fn model_stop_assessment(&self) -> StopAssessment {
+        let (held, pending) = self.model_safety_records();
+        StopAssessment {
+            held: held.len(),
+            pending_orders: pending.len(),
+            uncertain_orders: pending.iter().filter(|p| p.uncertain).count(),
         }
     }
 

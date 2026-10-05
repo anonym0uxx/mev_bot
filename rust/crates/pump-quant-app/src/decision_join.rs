@@ -110,6 +110,13 @@ pub enum JoinRefusal {
     Assembly(AssemblyRefusal),
     /// The pool depth or mark could not be priced, so the management prompt's cost line cannot be stated.
     DepthUnknown,
+    /// A reserve component the management prompt prices against is present but older than the
+    /// existing pricing budget. A recent TRADE does not refresh it: each dynamic component carries
+    /// its own receipt time.
+    ReserveStale {
+        component: &'static str,
+        staleness_ms: i64,
+    },
 }
 
 impl JoinRefusal {
@@ -131,6 +138,8 @@ impl JoinRefusal {
             JoinRefusal::AmmPoolAmbiguous => "join_amm_pool_ambiguous",
             JoinRefusal::Assembly(a) => a.as_str(),
             JoinRefusal::DepthUnknown => "join_depth_unknown",
+            JoinRefusal::ReserveStale { component: "curve", .. } => "join_curve_reserve_stale",
+            JoinRefusal::ReserveStale { .. } => "join_amm_reserve_stale",
         }
     }
 }
@@ -617,6 +626,20 @@ impl DecisionCache {
     ) -> Result<MgmtSnapshot, JoinRefusal> {
         let Prepared { state, enriched, flow, view, dev, venue, last_recv_ms, n_accepted } =
             self.prepare(mint, t_dec_ms)?;
+        // FRESHNESS PER COMPONENT (management only). The entry corpus renders a stale reserve with
+        // pricing_eligible=false and lets the model weigh it; a HELD position is marked and sized
+        // from these reserves, so a stale one is refused here. Bound = the existing
+        // `PRICING_BUDGET_MS` (the annotation's own "may be priced against" contract), not a new number.
+        if venue == "pumpfun" || venue == "mixed" {
+            if let CurveState::Present { staleness_ms, pricing_eligible: false, .. } = &view.curve {
+                return Err(JoinRefusal::ReserveStale { component: "curve", staleness_ms: *staleness_ms });
+            }
+        }
+        if venue == "pumpswap" || venue == "mixed" {
+            if let AmmState::Present { staleness_ms, pricing_eligible: false, .. } = &view.amm {
+                return Err(JoinRefusal::ReserveStale { component: "amm", staleness_ms: *staleness_ms });
+            }
+        }
         let depth_sol = view
             .size_depth_sol
             .filter(|d| d.is_finite() && *d > 0.0)
@@ -894,6 +917,43 @@ mod tests {
             JoinRefusal::CurveAbsent(r) => assert_eq!(r, "mint_absent"),
             other => panic!("wrong refusal: {other:?}"),
         }
+    }
+
+    fn mgmt_inputs() -> MgmtPositionInputs {
+        MgmtPositionInputs {
+            step: 1,
+            entry_px: 44.0,
+            qty_scaled: 0.0057,
+            cash_sol: 0.75,
+            held_s: 90.0,
+            mfe_bp: 10.0,
+            mae_bp: -5.0,
+        }
+    }
+
+    #[test]
+    fn management_refuses_a_stale_reserve_even_when_the_latest_trade_is_fresh() {
+        // 80 prints => the newest trade is 1 s before the decision clock (fresh by the ledger's own
+        // idle bound), while the only curve observation is ~100 s old (> PRICING_BUDGET_MS).
+        let c = ready(80);
+        let t = t_dec(80);
+        match c.management_snapshot(&MINT, t, &mgmt_inputs()) {
+            Err(JoinRefusal::ReserveStale { component: "curve", staleness_ms }) => {
+                assert!(staleness_ms > crate::curve_annotation::PRICING_BUDGET_MS, "{staleness_ms}")
+            }
+            other => panic!("a fresh trade must not launder a stale reserve: {other:?}"),
+        }
+        // CONTROL: the same cache with a curve observation inside the budget is NOT refused for
+        // freshness, so the check can fail.
+        let mut c2 = ready(80);
+        let mut fresh = curve();
+        fresh.ts_ms = t - 5_000;
+        fresh.slot = 2_000;
+        assert!(c2.observe_curve(MINT, fresh));
+        assert!(!matches!(
+            c2.management_snapshot(&MINT, t, &mgmt_inputs()),
+            Err(JoinRefusal::ReserveStale { .. })
+        ));
     }
 
     #[test]

@@ -1040,6 +1040,7 @@ dependencies = [
  "pump-quant-proposal",
  "pump-quant-protocol",
  "pump-quant-wallet-graph",
+ "serde_json",
  "solana-program",
 ]
 
