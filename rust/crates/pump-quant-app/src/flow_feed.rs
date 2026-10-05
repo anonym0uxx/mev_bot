@@ -45,6 +45,7 @@ use pump_quant_proposal::FlowState;
 ///   `trade_join`'s next step, because today only the hash leaves the decode site.
 /// * **zero quote or zero base** — not a swap, so it cannot be volume.
 #[must_use]
+#[allow(clippy::too_many_arguments)] // boundary constructor: one param per wire field, grouping would hide the mapping
 pub fn flow_event_from_market_trade(
     mint: &[u8; 32],
     slot: u64,

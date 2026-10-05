@@ -18,6 +18,8 @@
 //! For a veto/forced-exit law the axis is loss AVOIDED (§52 spirit): the armed
 //! arm must keep strictly more lamports than the arm that ignores the dump.
 
+#![allow(dead_code)] // test scaffolding: helper/fixture chains not every #[test] exercises (consolidation N2)
+
 use pump_quant_app::config::Config;
 use pump_quant_app::engine::{Engine, Report, RunMode};
 use pump_quant_app::event::{AppEvent, CreatorActionKind};

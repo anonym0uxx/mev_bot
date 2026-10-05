@@ -132,6 +132,7 @@ pub(super) struct MgmtMeta {
     pub snap: crate::decision_join::MgmtSnapshot,
     pub version: u64,
     pub position_order: u64,
+    #[allow(dead_code)] // decision step index; carried for provenance, not yet read
     pub step: i64,
 }
 
@@ -1301,7 +1302,7 @@ mod add_planner_tests {
             .expect("feasible");
         assert!(p.tokens >= need);
         // minimal: one lamport less does NOT reach the target
-        assert!(st.tokens_for(p.n - 1).map_or(true, |t| t < need));
+        assert!(st.tokens_for(p.n - 1).is_none_or(|t| t < need));
         // no entry price is an input at all: same state, same result
         let q = e.model_mgmt_add_plan_at(&M, need, st, None).unwrap();
         assert_eq!((p.n, p.tokens), (q.n, q.tokens));
@@ -1313,7 +1314,7 @@ mod add_planner_tests {
         // very deep book (impact not binding) must REFUSE, not shrink to what cash allows.
         let e = engine(1_000_000_000);
         let deep = curve(10_000_000_000_000);
-        let need = 800_000_000_000_000_u64.min(849_000_000_000_000 / 2);
+        let need = 849_000_000_000_000 / 2;
         let r = e.model_mgmt_add_plan_at(&M, need, deep, None);
         assert_eq!(r.unwrap_err(), "mgmt:refuse:add_insufficient_funds");
     }

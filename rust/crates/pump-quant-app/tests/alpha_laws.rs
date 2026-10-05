@@ -18,13 +18,14 @@
 //!   * D5 per-room net-SOL attribution — two rooms, one leading winners and one
 //!     leading losers, accrue distinct realized net in the §29.8 outcome ledger.
 
+#![allow(dead_code)] // test scaffolding: helper/fixture chains not every #[test] exercises (consolidation N2)
+
 use pump_quant_app::config::Config;
 use pump_quant_app::engine::{Engine, Report, RunMode};
 use pump_quant_app::event::AppEvent;
 use pump_quant_app::journal_log::Decision;
 use pump_quant_domain::ids::Mint;
 use pump_quant_ingest::social_source::{MockSocialSource, RawSocialPayload};
-use pump_quant_social::types::{SourceKind, SourceRef};
 
 /// **DEPTH REALISM (re-pin #26).** The gate's price-impact model is now DERIVED from
 /// the market's own SOL-side reserve (`cost_model::impact_den_for`), so a fixture's

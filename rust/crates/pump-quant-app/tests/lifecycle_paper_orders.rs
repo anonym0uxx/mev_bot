@@ -398,6 +398,7 @@ fn lifecycle_o_closed_position_conflict_stays_blocked_with_durable_evidence() {
         cu_consumed: Some(95_000),
         venue: Some(pump_quant_app::event::TradeVenue::PumpFun),
     });
+    #[allow(clippy::explicit_counter_loop)] // `slot` advances with the loop but is passed into each event; range-as-slot would change the sequence
     for _ in 0..200 {
         e.tick(AppEvent::CurveObserved {
             mint: mint(),
@@ -507,6 +508,7 @@ fn lifecycle_l_held_position_is_monitored_while_new_exposure_on_the_mint_is_bloc
         cu_consumed: Some(95_000),
         venue: Some(pump_quant_app::event::TradeVenue::PumpFun),
     });
+    #[allow(clippy::explicit_counter_loop)] // `slot` advances with the loop but is passed into each event; range-as-slot would change the sequence
     for _ in 0..200 {
         e.tick(AppEvent::CurveObserved {
             mint: mint(),
@@ -685,6 +687,7 @@ fn lifecycle_j_operational_reconciliation_and_protection_are_not_skipped_for_rou
         cu_consumed: Some(95_000),
         venue: Some(pump_quant_app::event::TradeVenue::PumpFun),
     });
+    #[allow(clippy::explicit_counter_loop)] // `slot` advances with the loop but is passed into each event; range-as-slot would change the sequence
     for _ in 0..200 {
         e.tick(AppEvent::CurveObserved {
             mint: mint(),

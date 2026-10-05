@@ -14,6 +14,8 @@
 //! its evidence floor (so the wiring did not replace a fabricated zero with a
 //! fabricated estimate).
 
+#![allow(dead_code)] // test scaffolding: helper/fixture chains not every #[test] exercises (consolidation N2)
+
 use pump_quant_app::config::Config;
 use pump_quant_app::engine::{Engine, RunMode};
 use pump_quant_app::event::{AppEvent, CreatorActionKind};

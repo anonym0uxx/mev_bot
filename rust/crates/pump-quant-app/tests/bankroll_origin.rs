@@ -17,6 +17,8 @@
 //!   risk budget, AND the actual admitted order sizes track 7 SOL — proving the
 //!   config seed has zero influence on live sizing.
 
+#![allow(dead_code)] // test scaffolding: helper/fixture chains not every #[test] exercises (consolidation N2)
+
 use pump_quant_app::config::Config;
 use pump_quant_app::engine::{BankrollOrigin, BankrollOriginError, Engine, RunMode};
 use pump_quant_app::event::AppEvent;

@@ -208,7 +208,7 @@ fn rig_cfg(
     });
     let evs = events(40);
     for ev in &evs {
-        e.tick(ev.clone());
+        e.tick(*ev);
     }
     ticks(&mut e, 8);
     let t_last = T0 + 1_000 + 40 * 2_000;
@@ -376,7 +376,7 @@ fn add_targets_half_the_reconciled_inventory_and_only_the_fill_changes_state() {
     let inv0 = r.e.model_inventory_tokens(&MINT).unwrap();
     let cash0 = r.e.model_free_cash_lamports();
     r.advance_to_order(120_000);
-    let (id, kind, intended, filled) = r.e.model_mgmt_pending(&MINT).expect("ADD order pending");
+    let (_id, kind, intended, filled) = r.e.model_mgmt_pending(&MINT).expect("ADD order pending");
     assert_eq!(format!("{kind:?}"), "Add");
     assert_eq!(
         intended,
@@ -736,9 +736,7 @@ fn wallet_cash_inventory_basis_and_realized_tie_out_through_add_reduce_and_exit(
     }
     let red =
         r.e.model_mgmt_fills()
-            .iter()
-            .filter(|f| !f.is_add)
-            .next()
+            .iter().find(|f| !f.is_add)
             .copied();
     assert!(
         red.is_some(),
@@ -1027,7 +1025,7 @@ fn a_restored_position_is_still_managed_by_the_model_and_still_closes_only_throu
     // History recovery: replay the captured launch + flow for the held mint (the same feed a restart
     // re-reads), then the live curve resumes.
     for ev in &events(40) {
-        e2.tick(ev.clone());
+        e2.tick(*ev);
     }
     for _ in 0..8 {
         e2.tick(AppEvent::Tick);

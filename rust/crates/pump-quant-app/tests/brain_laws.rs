@@ -20,12 +20,14 @@
 //! * **B5** — recall verdicts are byte-identical after persist → "restart" →
 //!   restore.
 
-use pump_quant_app::brain::{AppBlobStore, BRAIN_MIN_SAMPLE_DEFAULT};
+#![allow(dead_code)] // test scaffolding: helper/fixture chains not every #[test] exercises (consolidation N2)
+
+use pump_quant_app::brain::AppBlobStore;
 use pump_quant_app::config::Config;
 use pump_quant_app::engine::{Engine, Report, RunMode};
 use pump_quant_app::event::AppEvent;
 use pump_quant_app::journal_log::Decision;
-use pump_quant_brain::fingerprint::{SetupFingerprint, FIELD_COUNT};
+use pump_quant_brain::fingerprint::SetupFingerprint;
 use pump_quant_brain::persist::MemBlobStore;
 use pump_quant_domain::ids::Mint;
 use pump_quant_ingest::social_source::{MockSocialSource, RawSocialPayload};

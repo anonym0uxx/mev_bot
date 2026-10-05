@@ -100,7 +100,7 @@ fn events(confirm_virtual: u64, confirm_real: u64) -> Vec<AppEvent> {
 
 fn drive(e: &mut Engine, evs: &[AppEvent]) {
     for ev in evs {
-        e.tick(ev.clone());
+        e.tick(*ev);
     }
     for _ in 0..8 {
         e.tick(AppEvent::Tick);

@@ -14,6 +14,8 @@
 //!
 //! Run with `--nocapture` to read the ledger.
 
+#![allow(dead_code)] // test scaffolding: helper/fixture chains not every #[test] exercises (consolidation N2)
+
 mod tape_golden;
 
 use pump_quant_app::config::Config;

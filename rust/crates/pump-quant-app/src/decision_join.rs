@@ -757,7 +757,7 @@ mod tests {
     }
 
     fn trade(i: u32) -> TradeObs {
-        let buy = i % 3 != 0;
+        let buy = !i.is_multiple_of(3);
         TradeObs {
             mint: MINT,
             price_fp: 22_000 + i128::from(i),

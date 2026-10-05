@@ -119,6 +119,8 @@
 //! LAW B3's own numbers are, if anything, stronger than before: +414_992_045 on its
 //! hazard tape, a worst hazard-tape delta of exactly 0, and golden neutrality intact.
 
+#![allow(dead_code)] // test scaffolding: helper/fixture chains not every #[test] exercises (consolidation N2)
+
 mod tape_b3;
 mod tape_b7;
 mod tape_conc;

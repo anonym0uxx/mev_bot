@@ -12,7 +12,7 @@
 
 #![warn(
     clippy::all,
-    clippy::integer_arithmetic,
+    clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation
 )]
 

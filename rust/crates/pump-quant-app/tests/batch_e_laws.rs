@@ -8,6 +8,8 @@
 //! rate 10_000 = identity) — and asserts the armed run keeps strictly more
 //! lamports. Determinism (§22) makes the comparison exact, not statistical.
 
+#![allow(dead_code)] // test scaffolding: helper/fixture chains not every #[test] exercises (consolidation N2)
+
 use pump_quant_app::config::Config;
 use pump_quant_app::engine::{Engine, Report, RunMode};
 use pump_quant_app::event::AppEvent;

@@ -29,9 +29,10 @@
 //! drifted into three implementations. Any future fix in this class should make the
 //! provenance a type, not a convention.
 
+#![allow(dead_code)] // test scaffolding: helper/fixture chains not every #[test] exercises (consolidation N2)
+
 mod tape_golden;
 
-use pump_quant_app::config::Config;
 use pump_quant_app::{cost_model, curve_state};
 
 /// The golden reference net at re-pin #26.

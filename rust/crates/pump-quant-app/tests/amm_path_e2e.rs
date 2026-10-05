@@ -411,7 +411,7 @@ fn amm_fixture_funnel_pools_discovered_ready_dispatched() {
         .lines()
         .filter_map(|l| {
             let v: serde_json::Value = serde_json::from_str(l).ok()?;
-            (v["k"] == "A").then(|| ())?;
+            (v["k"] == "A").then_some(())?;
             Some("pool")
         })
         .collect();

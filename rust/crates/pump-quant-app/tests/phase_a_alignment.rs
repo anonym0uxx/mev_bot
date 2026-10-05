@@ -3,6 +3,8 @@
 //! optimistic evidence cannot satisfy promotion. Each test drives the REAL
 //! engine through its public surface — no mocks, no private access.
 
+#![allow(dead_code)] // test scaffolding: helper/fixture chains not every #[test] exercises (consolidation N2)
+
 use pump_quant_app::config::{Config, FillModeCfg};
 use pump_quant_app::engine::{Engine, RunMode};
 use pump_quant_app::event::AppEvent;

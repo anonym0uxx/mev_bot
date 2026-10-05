@@ -2012,7 +2012,7 @@ impl Config {
             "wangr_symbol_len_filter_enable" => self.wangr_symbol_len_filter_enable = value != 0,
             "wangr_symbol_len_min" => self.wangr_symbol_len_min = bp(value)? as u8,
             "wangr_symbol_len_max" => self.wangr_symbol_len_max = bp(value)? as u8,
-            "wangr_creator_min_launches" => self.wangr_creator_min_launches = bp(value)? as u32,
+            "wangr_creator_min_launches" => self.wangr_creator_min_launches = bp(value)?,
             "wangr_liq_zone_filter_enable" => self.wangr_liq_zone_filter_enable = value != 0,
             "wangr_liq_zone_lo_lamports" => {
                 let v = nonneg(value)?;
@@ -2048,7 +2048,7 @@ impl Config {
         let _ = writeln!(
             s,
             "arb_min_expected_net_lamports = {}",
-            self.arb_min_expected_net_lamports as i64
+            { self.arb_min_expected_net_lamports }
         );
         let _ = writeln!(
             s,
@@ -2059,7 +2059,7 @@ impl Config {
         let _ = writeln!(
             s,
             "baseline_margin_lamports = {}",
-            self.baseline_margin_lamports as i64
+            { self.baseline_margin_lamports }
         );
         let _ = writeln!(
             s,
@@ -2291,7 +2291,7 @@ impl Config {
         let _ = writeln!(
             s,
             "meta_accel_threshold = {}",
-            self.meta_accel_threshold as i64
+            { self.meta_accel_threshold }
         );
         let _ = writeln!(
             s,
@@ -2409,8 +2409,8 @@ impl Config {
             "revert_size_mult_bp = {}",
             self.revert_size_mult_bp as i64
         );
-        let _ = writeln!(s, "roll_revert_bp = {}", self.roll_revert_bp as i64);
-        let _ = writeln!(s, "roll_trend_bp = {}", self.roll_trend_bp as i64);
+        let _ = writeln!(s, "roll_revert_bp = {}", { self.roll_revert_bp });
+        let _ = writeln!(s, "roll_trend_bp = {}", { self.roll_trend_bp });
         let _ = writeln!(
             s,
             "scale_confirm_auth_min_bp = {}",

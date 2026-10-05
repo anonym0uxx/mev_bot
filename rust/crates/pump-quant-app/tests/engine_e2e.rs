@@ -1,6 +1,8 @@
 //! End-to-end nervous-system contract: union discovery, corroboration-gated entry,
 //! byte-deterministic replay, and config-driven behavior (the no-hardcode guarantee).
 
+#![allow(dead_code)] // test scaffolding: helper/fixture chains not every #[test] exercises (consolidation N2)
+
 use pump_quant_app::config::Config;
 use pump_quant_app::engine::{Engine, RunMode};
 use pump_quant_app::event::{AppEvent, CreatorActionKind};

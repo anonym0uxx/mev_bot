@@ -21,7 +21,7 @@
 
 #![forbid(unsafe_code)]
 
-use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
+use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
@@ -144,10 +144,7 @@ impl InferencePool {
     /// thread each tick.
     #[must_use]
     pub fn try_recv(&self) -> Option<Verdict> {
-        match self.rx.try_recv() {
-            Ok(v) => Some(v),
-            Err(TryRecvError::Empty | TryRecvError::Disconnected) => None,
-        }
+        self.rx.try_recv().ok()
     }
 
     /// The fixed number of worker threads. This, not the request count, bounds hung calls.

@@ -14,6 +14,8 @@
 //!
 //! Determinism (§22) makes every comparison exact.
 
+#![allow(dead_code)] // test scaffolding: helper/fixture chains not every #[test] exercises (consolidation N2)
+
 use pump_quant_app::config::{Config, MIN_TRADE_SIZE_LAMPORTS_DEFAULT};
 use pump_quant_app::engine::{probe_scale_split, Engine, RunMode};
 use pump_quant_app::event::AppEvent;

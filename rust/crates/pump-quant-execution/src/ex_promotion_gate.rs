@@ -393,6 +393,7 @@ pub fn derive_envelope(e: &PaperEnvelopeEvidence) -> LiveEnvelope {
         .saturating_mul(3)
         .max(max_position_lamports);
     let max_open_positions = e.peak_concurrent_open.clamp(1, 3);
+    #[allow(clippy::manual_checked_ops)] // the explicit `== 0` arm IS the divide-by-zero guard; checked_div would obscure it
     let max_entries_per_hour = if e.session_duration_secs == 0 {
         10
     } else {

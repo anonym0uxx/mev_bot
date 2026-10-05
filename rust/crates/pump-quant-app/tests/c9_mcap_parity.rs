@@ -127,8 +127,8 @@ fn reserve_view_matches_the_corpus_market_cap_and_domain_plane() {
 
         // Depth: exact for a pool row, four-significant-digit precision for a curve row.
         if let Some(exact) = c["expected_depth_exact"].as_f64() {
-            assert_eq!(
-                v.size_amm, true,
+            assert!(
+                v.size_amm,
                 "case {i}: an AMM row must size on the pool"
             );
             let got = v.size_depth_sol.expect("depth");

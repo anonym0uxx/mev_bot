@@ -155,10 +155,11 @@
 
 // Plain modulo, not `is_multiple_of`, to honour the workspace MSRV 1.85 (the
 // helper stabilised in 1.87) — the same choice `engine.rs` documents.
+#![allow(dead_code)] // test scaffolding: helper/fixture chains not every #[test] exercises (consolidation N2)
+
 #![allow(clippy::manual_is_multiple_of)]
 
 use pump_quant_app::config::Config;
-use pump_quant_watchlist::candidate::Lane;
 
 /// Pre-registered materiality bar for leg (a): one `min_trade_size_lamports`
 /// (0.1 SOL, criterion 112 / Amendment A-6). A net gain smaller than a single

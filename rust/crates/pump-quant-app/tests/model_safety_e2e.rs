@@ -5,6 +5,8 @@
 //! -> updated position. Synthetic events: this proves execution integration and failure handling. It is
 //! NOT evidence that management is profitable.
 
+#![allow(dead_code)] // test scaffolding: helper/fixture chains not every #[test] exercises (consolidation N2)
+
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -183,7 +185,7 @@ fn rig(answer: fn(i64) -> &'static str) -> Rig {
     });
     let evs = events(40);
     for ev in &evs {
-        e.tick(ev.clone());
+        e.tick(*ev);
     }
     ticks(&mut e, 8);
     let t_last = T0 + 1_000 + 40 * 2_000;
@@ -364,7 +366,7 @@ fn a_hung_endpoint_trips_safety_off_without_stalling_the_engine() {
 #[test]
 fn timeout_during_an_outstanding_order_keeps_an_uncertain_order_and_invalidates_a_certain_one() {
     let p = tmp("outstanding");
-    let (mut e, _c) = fresh_engine(|_| HOLD);
+    let (_e, _c) = fresh_engine(|_| HOLD);
     // Entry verdict: use the BUY stub so an order is pending (no landing state yet).
     let prompts = Arc::new(Mutex::new(Vec::new()));
     let mut e = Engine::new(cfg(), RunMode::Paper);

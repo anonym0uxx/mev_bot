@@ -139,7 +139,7 @@ fn events(f: Feed) -> Vec<AppEvent> {
 /// Drive the engine, giving the off-thread worker real time to answer between ticks.
 fn drive(e: &mut Engine, evs: &[AppEvent], ticks: usize) {
     for ev in evs {
-        e.tick(ev.clone());
+        e.tick(*ev);
     }
     for _ in 0..ticks {
         e.tick(AppEvent::Tick);

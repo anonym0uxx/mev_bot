@@ -5,6 +5,8 @@
 //! with their code (authority.rs, feature_admit.rs, ablation_replay.rs,
 //! live_status.rs). Determinism (§22) makes every comparison exact.
 
+#![allow(dead_code)] // test scaffolding: helper/fixture chains not every #[test] exercises (consolidation N2)
+
 use pump_quant_app::config::Config;
 use pump_quant_app::engine::{Engine, RunMode};
 use pump_quant_app::event::AppEvent;

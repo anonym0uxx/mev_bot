@@ -170,6 +170,7 @@ mod tests {
     /// strictly under the cost floor it is derived from, or an entry leg can be vetoed at a size
     /// that still costs more than the entire round trip it is aiming to clear.
     #[test]
+    #[allow(clippy::assertions_on_constants)] // two intentional compile-time invariants between consts
     fn the_champions_limit_stays_under_the_cost_floor_it_is_derived_from() {
         assert!(
             CHAMPION_MAX_OWN_IMPACT_BPS < CORPUS_ROUND_TRIP_COST_FLOOR_BP,

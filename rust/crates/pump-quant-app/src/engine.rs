@@ -210,6 +210,7 @@ struct PendingEntry {
     size: u64,
     entry_cost: u64,
     /// Conditional expected net SOL for the slot (size × priced move − cost load).
+    #[allow(dead_code)] // documented slot diagnostic; retained for provenance, not yet read
     expected_net: i128,
     /// §24 LAW 2: the measured round-trip cost (bps) at this size, computed at
     /// admit and threaded to the held position so its take-profit ladder is
@@ -792,6 +793,7 @@ struct InflightOutbound {
     entry_cost: u64,
     price_fp: u64,
     /// The tick the record was handed off on (eviction order + diagnostics).
+    #[allow(dead_code)] // eviction-order diagnostic; retained for provenance, not yet read
     submit_tick: u64,
 }
 
@@ -865,6 +867,7 @@ pub struct Engine {
     model_excluded_exits: Vec<model_admit::ExcludedExit>,
     model_recon_faults: BTreeMap<u64, model_admit::ReconFault>,
     /// Per-mint (fee parts, virtual quote, swap time) of the latest swap: executable economics.
+    #[allow(clippy::type_complexity)] // per-mint latest-swap economics tuple; a type alias would scatter the shape
     model_amm_econ: BTreeMap<[u8; 32], (Option<(u32, u32, u32)>, Option<u64>, i64)>,
     /// Non-canonical pools seen per mint (counted, never priced from): the honest `pools_total`.
     model_other_pools: BTreeMap<[u8; 32], BTreeSet<[u8; 32]>>,
@@ -1254,6 +1257,7 @@ pub struct Engine {
     /// Stratified per-candidate expected-move table. EMPTY in the shipped state, so
     /// every estimate refuses and the gate prices on `gate_expected_move_bps`.
     expected_move: crate::expected_move::MoveTable,
+    #[allow(dead_code)] // reused per-tick candidate scratch buffer; not read across ticks
     cands_buf: Vec<EntryCandidate>,
 
     /// LAWs B1–B5: the episodic recall memory plane. Bounded (§99) and, unless
@@ -1617,6 +1621,11 @@ impl Engine {
         }
     }
 
+    /// Recent journal decisions (inspection; the digest covers all).
+    pub fn journal_recent(&self) -> impl Iterator<Item = &Decision> {
+        self.journal.recent()
+    }
+
     /// The current realized balance, lamports: `base + Σ realized`, floored at zero
     /// (§33 realized-only accounting; marks never count). The `base` is the bankroll
     /// ORIGIN's seed — `cfg.bankroll_initial_lamports` for a Paper/Replay
@@ -1625,11 +1634,6 @@ impl Engine {
     /// (not the config directly) is what makes a live path structurally unable to
     /// size off the paper seed.
     #[must_use]
-    /// Recent journal decisions (inspection; the digest covers all).
-    pub fn journal_recent(&self) -> impl Iterator<Item = &Decision> {
-        self.journal.recent()
-    }
-
     pub fn bankroll_balance(&self) -> u64 {
         let b = i128::from(self.bankroll_origin.seed_lamports()) + self.bankroll_realized;
         b.clamp(0, i128::from(u64::MAX)) as u64
@@ -1686,17 +1690,16 @@ impl Engine {
         self.now
     }
 
-    /// Snapshot of all open positions for report-plane consumption (item 2c).
-    /// Call BEFORE `report()` which force-closes positions.
-    #[must_use]
     /// Phase 2: total episodes recorded into the expected-move model. Zero means
     /// no trade has closed since the engine was created — the learning loop is
     /// not accumulating samples.
-
+    #[must_use]
     pub fn expected_move_sample_count(&self) -> u32 {
         self.expected_move.total_n()
     }
 
+    /// Snapshot of all open positions for report-plane consumption (item 2c).
+    /// Call BEFORE `report()` which force-closes positions.
     pub fn open_positions_snapshot(&self) -> Vec<crate::live_status::OpenPositionSnapshot> {
         self.positions.open_positions_snapshot(self.now)
     }

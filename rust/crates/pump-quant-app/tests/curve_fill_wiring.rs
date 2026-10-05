@@ -54,7 +54,6 @@ mod tape_b3;
 mod tape_conc;
 mod tape_golden;
 
-use pump_quant_app::config::Config;
 use pump_quant_app::curve_fill;
 
 /// The operator's minimum clip (`min_trade_size_lamports`).

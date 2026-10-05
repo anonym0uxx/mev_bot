@@ -5,6 +5,8 @@
 //! recency pruning, promotion, gating/scalping, and the reflection cadence — the full
 //! `evaluate()` surface — over many ticks, then pins the byte-exact outcome.
 
+#![allow(dead_code)] // test scaffolding: helper/fixture chains not every #[test] exercises (consolidation N2)
+
 use pump_quant_app::config::Config;
 use pump_quant_app::engine::{Engine, RunMode};
 use pump_quant_app::event::AppEvent;
