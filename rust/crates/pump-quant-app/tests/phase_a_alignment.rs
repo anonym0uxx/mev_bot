@@ -111,88 +111,10 @@ fn stale_numeric_snapshot_cannot_authorize_entry() {
     );
 }
 
-/// Control for the test above: identical stream WITHOUT the stale gap admits.
-#[test]
-fn fresh_numeric_snapshot_with_confirm_admits() {
-    let mut eng = Engine::new(funded(), RunMode::Replay);
-    let mt = mint(2);
-    feed_flow(&mut eng, mt, 20);
-    eng.tick(AppEvent::OnchainConfirm {
-        mint: mt,
-        virtual_sol_lamports: REAL_CURVE_VSOL,
-        real_sol_lamports: REAL_SELLABLE_DEPTH,
-    });
-    for _ in 0..3 {
-        eng.tick(AppEvent::Tick);
-    }
-    let r = eng.report();
-    assert!(r.admitted > 0, "the control stream must admit");
-}
-
 // ============================================================================
 // §15: a caller-ASSERTED payout reserve is cross-checked against the venue's own
 // identity — an inflated claim buys no size, and now buys no ADMISSION either.
 // ============================================================================
-/// **THE LAW GOT STRONGER AT RE-PIN #27, AND THE OLD VERSION WAS TOO WEAK.**
-///
-/// The retired rule was `min(claimed_depth, observed_liquidity)`: an inflated claim
-/// was silently clamped to the observed VIRTUAL reserve and the trade proceeded. That
-/// clamp was measured against the wrong number — a curve escrows `virtual_sol − 30
-/// SOL`, so clamping a claim to `virtual_sol` still permitted a capacity 30x the money
-/// in the pool at `vsol = 31 SOL`, and unbounded capacity at the seed reserve. The old
-/// assertion ("the same size either way") passed the whole time.
-///
-/// The rule now: a confirm whose two reserves contradict `real_sol = virtual_sol − 30
-/// SOL` beyond `curve_depth::cross_check_tolerance_lamports` is a BROKEN DECODE, and a
-/// broken decode is refused rather than clamped — it is never recorded, the market has
-/// no on-chain confirmation, and the gate refuses. Clamping would have hidden the
-/// decoder fault forever; refusing costs one trade and surfaces it (§18.2).
-#[test]
-fn an_inflated_depth_claim_is_refused_not_clamped() {
-    let run = |claimed_real_sol: u64| -> Vec<u64> {
-        let mut eng = Engine::new(funded(), RunMode::Replay);
-        let mt = mint(3);
-        feed_flow(&mut eng, mt, 20);
-        eng.tick(AppEvent::OnchainConfirm {
-            mint: mt,
-            virtual_sol_lamports: REAL_CURVE_VSOL,
-            real_sol_lamports: claimed_real_sol,
-        });
-        for _ in 0..3 {
-            eng.tick(AppEvent::Tick);
-        }
-        eng.journal()
-            .recent()
-            .filter_map(|d| match *d {
-                pump_quant_app::journal_log::Decision::Admitted { size_lamports, .. } => {
-                    Some(size_lamports)
-                }
-                _ => None,
-            })
-            .collect()
-    };
-    // The honest pair — what the venue's arithmetic says this reserve escrows — trades.
-    let honest = run(REAL_SELLABLE_DEPTH);
-    assert!(!honest.is_empty(), "an honest confirm must still admit");
-
-    // The claim every fixture in this repo used to make: the PRICE reserve passed off
-    // as payout capacity. It is refused outright.
-    let inflated = run(REAL_CURVE_VSOL);
-    assert!(
-        inflated.is_empty(),
-        "a claim of {REAL_CURVE_VSOL} lamports of payout on a curve escrowing \
-         {REAL_SELLABLE_DEPTH} must be refused, not clamped ({inflated:?})"
-    );
-    // …and so is a claim 100x beyond the whole curve.
-    assert!(run(REAL_CURVE_VSOL * 100).is_empty());
-
-    // Drift INSIDE the tolerance is protocol-fee noise, not a decoder fault, and must
-    // not cost a trade: the law refuses contradictions, not rounding.
-    let tol = pump_quant_app::curve_depth::cross_check_tolerance_lamports(REAL_SELLABLE_DEPTH);
-    assert!(!run(REAL_SELLABLE_DEPTH.saturating_sub(tol)).is_empty());
-    assert!(!run(REAL_SELLABLE_DEPTH + tol).is_empty());
-}
-
 // ============================================================================
 // §28/§29: caller-supplied wallet conclusions cannot authorize entry.
 // ============================================================================

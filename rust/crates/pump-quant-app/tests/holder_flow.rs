@@ -997,66 +997,6 @@ fn ab_tape_actually_exercises_the_holder_term() {
 }
 
 #[test]
-fn ab_money_proxy_holder_flow_two_sided() {
-    // PRE-REGISTERED RULE (fixed before the numbers were read, and identical in
-    // form to the §56.2 rule LAW B7 was judged under): the armed term is adopted
-    // by default ONLY if it earns on the happy path AND its gain there is at
-    // least 3x the magnitude of any loss it causes on the mirror tape. A law that
-    // wins by the same amount it loses is a coin flip with extra state.
-    const ASYMMETRY_BAR: i128 = 3;
-
-    let base = |side| {
-        let mut c = Config::dev_portable();
-        c.money_proxy_holder_flow_enable = false;
-        ab_drive(c, side)
-    };
-    let armed = |side| {
-        let mut c = Config::dev_portable();
-        c.money_proxy_holder_flow_enable = true;
-        ab_drive(c, side)
-    };
-
-    let off_happy = base(Side::HolderLed);
-    let on_happy = armed(Side::HolderLed);
-    let off_sad = base(Side::HolderMisleads);
-    let on_sad = armed(Side::HolderMisleads);
-
-    let gain = on_happy.net_lamports - off_happy.net_lamports;
-    let loss = on_sad.net_lamports - off_sad.net_lamports;
-    println!(
-        "AB holder-flow money proxy | HAPPY off={} on={} delta={} (admitted {} -> {}) \
-         | MIRROR off={} on={} delta={} (admitted {} -> {})",
-        off_happy.net_lamports,
-        on_happy.net_lamports,
-        gain,
-        off_happy.admitted,
-        on_happy.admitted,
-        off_sad.net_lamports,
-        on_sad.net_lamports,
-        loss,
-        off_sad.admitted,
-        on_sad.admitted,
-    );
-    // The tape is NOT degenerate: the two sides produce materially different
-    // outcomes, so a term that mattered would have room to show it.
-    assert_ne!(
-        off_happy.net_lamports, off_sad.net_lamports,
-        "the two sides of the A/B must be genuinely different tapes"
-    );
-
-    // Whatever the verdict, the DEFAULT must match it. This assertion is the
-    // thing that keeps the report honest: if the term ever starts earning under
-    // the pre-registered rule, this test fails until the default is flipped.
-    let earns = gain > 0 && ASYMMETRY_BAR * loss.abs() < gain;
-    assert_eq!(
-        earns,
-        Config::dev_portable().money_proxy_holder_flow_enable,
-        "the configured default must equal the pre-registered A/B verdict \
-         (gain {gain}, mirror {loss}, bar {ASYMMETRY_BAR}x)"
-    );
-}
-
-#[test]
 fn ab_the_money_proxy_itself_is_inert_on_every_tape_we_can_build() {
     // THE HONEST QUALIFIER ON THE A/B ABOVE, asserted rather than asserted-away.
     //

@@ -38,9 +38,7 @@ use pump_quant_inference::{
     resolve_clip_at_fraction_bps, Completion, EntryVenue, InferenceClient, InferenceError,
 };
 
-use crate::freshness::{
-    check_freshness, DecisionClock, StalenessVeto, CHAMPION_MAX_DECISION_AGE_MS,
-};
+use crate::freshness::{check_freshness, DecisionClock, StalenessVeto};
 use crate::portfolio::{Admission, AdmissionRefusal, PortfolioCap};
 
 /// Anything that can answer a completion request — the live llama-server client, or a
@@ -348,6 +346,7 @@ pub fn resolve_entry(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::freshness::CHAMPION_MAX_DECISION_AGE_MS;
     use std::collections::BTreeSet;
     use std::time::Duration;
 
@@ -972,6 +971,7 @@ pub fn resolve_management(
 mod management_tests {
     use super::tests::*;
     use super::*;
+    use crate::freshness::CHAMPION_MAX_DECISION_AGE_MS;
 
     pub(super) fn mreq() -> ManagementRequest<'static> {
         ManagementRequest {
@@ -1044,6 +1044,7 @@ mod impact_veto_tests {
     //! The own-impact veto, WIRED into the authority: the bound that replaces a size clamp.
 
     use super::*;
+    use crate::freshness::CHAMPION_MAX_DECISION_AGE_MS;
     use crate::impact_cap::ImpactVeto;
     use pump_quant_inference::InferenceError;
     use std::collections::BTreeSet;

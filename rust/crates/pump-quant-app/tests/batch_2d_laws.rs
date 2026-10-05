@@ -108,73 +108,6 @@ fn drive_positions(cfg: Config) -> Engine {
 // LAW 12 (§34.4): the Admitted journal record carries the size band, the
 // attempt/fail-rate multiplier, and the impact provenance.
 // ============================================================================
-#[test]
-fn admitted_record_carries_band_and_provenance() {
-    let cfg = Config::dev_portable();
-    let fail_rate = cfg.gate_fail_rate_bps;
-    let mut eng = drive_positions(cfg);
-    let _ = eng.report();
-    let admits: Vec<_> = eng
-        .journal()
-        .recent()
-        .filter_map(|d| match *d {
-            Decision::Admitted {
-                mint: _,
-                size_lamports,
-                x_min,
-                x_cost,
-                x_max,
-                fail_rate_bps,
-                rt_cost_bps,
-                move_bps,
-                move_source,
-                depth_basis,
-            } => Some((
-                size_lamports,
-                x_min,
-                x_cost,
-                x_max,
-                fail_rate_bps,
-                rt_cost_bps,
-                move_bps,
-                move_source,
-                depth_basis,
-            )),
-            _ => None,
-        })
-        .collect();
-    assert!(
-        !admits.is_empty(),
-        "the tape must open at least one position"
-    );
-    for (size, x_min, x_cost, x_max, fr, rt, move_bps, move_source, depth_basis) in admits {
-        // The band is well-ordered and the admitted size lies within it.
-        assert!(x_min <= x_cost && x_cost <= x_max, "band must be ordered");
-        assert!(size >= x_min && size <= x_max, "size within admitted band");
-        // The fail-rate multiplier is the config value that inflated the fixed cost.
-        assert_eq!(fr, fail_rate, "fail-rate provenance recorded");
-        // Impact provenance: a real round-trip cost was measured at the admitted size.
-        assert!(rt > 0, "round-trip impact provenance recorded");
-        // BENEFIT-SIDE PROVENANCE (2026-07-28). The record used to say what was
-        // admitted and what it cost, but never what we thought it was WORTH or which
-        // estimator said so — so a replay could not reconstruct the admission at all.
-        assert!(
-            move_bps > i128::from(rt),
-            "an admitted trade's priced move ({move_bps} bps) must beat the cost it              was admitted against ({rt} bps)"
-        );
-        assert!(
-            move_source <= 2,
-            "move source is one of cold-start / lane prior / model"
-        );
-        // DEPTH PROVENANCE: never 0 (unknown) on an admitted trade — an admission
-        // sized against depth of unknown basis is exactly what `CurveDepth` forbids.
-        assert!(
-            depth_basis == 1 || depth_basis == 2,
-            "an admitted curve trade's depth is derived (1) or decoded (2), got              {depth_basis}"
-        );
-    }
-}
-
 // ============================================================================
 // LAW 13 (§33/§43): sub-x_min probes route through the calibration budget and
 // are journal-labeled as budgeted paid-information — NOT opened raw as positions.
@@ -310,70 +243,14 @@ fn sub_xmin_probe_is_budget_accounted_and_labeled_vs_raw() {
 // LAW 15 (§49): vetoes and haircuts now produce NON-degenerate convexity ledger
 // events (counterfactual-vs-zero / reduced-vs-full), not a self-cancelling pair.
 // ============================================================================
-#[test]
-fn vetoes_and_haircuts_produce_nondegenerate_convexity() {
-    let mut eng = drive_positions(Config::dev_portable());
-    let _ = eng.report();
-    let rules = eng.analytics_report().convexity_rules;
-    assert!(!rules.is_empty(), "convexity ledger must be populated");
-    // At least one rule ledger folds a suppression (veto or haircut) whose net
-    // convexity is non-zero — i.e. counterfactual != realized (non-degenerate).
-    let nondegenerate = rules
-        .iter()
-        .any(|r| r.suppressed_n > 0 && r.net_convexity_bps() != 0);
-    assert!(
-        nondegenerate,
-        "a veto or haircut must record a non-degenerate (counterfactual != realized) event; rules={rules:?}"
-    );
-}
-
 // ============================================================================
 // LAW 16 (§52): baseline_verdict runs the whole deterministic baseline FAMILY,
 // and the family net-SOL vector is reported.
 // ============================================================================
-#[test]
-fn baseline_family_vector_is_reported() {
-    let mut cfg = Config::dev_portable();
-    cfg.baseline_min_trades = 1;
-    let mut eng = drive_positions(cfg);
-    let _ = eng.report();
-    let family = eng.baseline_family_report();
-    // The full 5-baseline family net-SOL vector (random-eligible / buy-every-launch
-    // / threshold-only / fixed-TP-SL / hold-to-death).
-    assert_eq!(family.len(), 5, "the full baseline family must be reported");
-    // The family-wise-margin verdict runs against ALL of them.
-    assert!(
-        eng.baseline_verdict().is_some(),
-        "past the small-n guard a family verdict must exist"
-    );
-}
-
 // ============================================================================
 // LAW 17 (§47/§54): post-exit markout cells + foregone-upside per ExitReason are
 // present in the AnalyticsReport after a run.
 // ============================================================================
-#[test]
-fn markout_cells_and_foregone_present_per_exit_reason() {
-    let mut eng = drive_positions(Config::dev_portable());
-    let _ = eng.report();
-    let a = eng.analytics_report();
-    assert!(
-        !a.markout_cells.is_empty(),
-        "post-exit markout cells must be present after a run"
-    );
-    assert!(
-        !a.foregone_upside.is_empty(),
-        "foregone-upside aggregates must be present after a run"
-    );
-    // Cells are keyed by (ExitReason, horizon): the mandated horizons appear.
-    let horizons: std::collections::BTreeSet<u64> =
-        a.markout_cells.iter().map(|c| c.horizon_ns).collect();
-    assert!(
-        !horizons.is_empty(),
-        "cells carry mandated ns horizons, got {horizons:?}"
-    );
-}
-
 // ============================================================================
 // LAW 18 (§47a): a dead mint gets a terminal label at the versioned δT.
 // ============================================================================

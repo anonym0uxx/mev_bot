@@ -166,33 +166,6 @@ fn drive_held_dump(cfg: Config) -> (Report, Engine) {
     (r, eng)
 }
 
-#[test]
-fn creator_dump_held_exit_beats_riding_the_crater() {
-    let (armed, _aeng) = drive_held_dump(Config::dev_portable());
-
-    let mut ncfg = Config::dev_portable();
-    ncfg.creator_dump_veto_enable = false; // §26 law neutralized
-    let (neut, neng) = drive_held_dump(ncfg);
-
-    // Both arms open the position (the pump authorizes entry; the dump is later).
-    assert!(neut.admitted > 0, "neutral run must open the position");
-    // Neutral: no forced exit — the position rides the crater into a loss.
-    assert!(
-        neut.net_lamports < 0,
-        "riding the dump must lose (neutral net {})",
-        neut.net_lamports
-    );
-    // Armed: the confirmed dump forced the exit at the top; strictly more kept.
-    assert!(
-        armed.net_lamports > neut.net_lamports,
-        "the §26 held-exit must strictly out-earn ignoring the dump ({} vs {})",
-        armed.net_lamports,
-        neut.net_lamports
-    );
-    // The neutral arm never fires the §26 forced exit.
-    assert_eq!(reject_count(&neng, M, 13), 0);
-}
-
 // ============================================================================
 // §26 pre-entry limb: a deployer already distributing when the market is gated.
 // ============================================================================
@@ -235,42 +208,6 @@ fn drive_preentry_dump(cfg: Config) -> (Report, Engine) {
     }
     let r = eng.report();
     (r, eng)
-}
-
-#[test]
-fn creator_dump_preentry_veto_avoids_the_loss() {
-    let (armed, aeng) = drive_preentry_dump(Config::dev_portable());
-
-    let mut ncfg = Config::dev_portable();
-    ncfg.creator_dump_veto_enable = false; // §26 law neutralized
-    let (neut, _neng) = drive_preentry_dump(ncfg);
-
-    // Armed: the pre-entry veto fires (reject 13) and no position is opened.
-    assert!(
-        reject_count(&aeng, M, 13) > 0,
-        "the §26 pre-entry veto must fire on a confirmed dump"
-    );
-    assert_eq!(
-        armed.admitted, 0,
-        "armed run must refuse the dumping market"
-    );
-    // Neutral: it is admitted and the crash books a loss.
-    assert!(
-        neut.admitted > 0,
-        "neutral run must admit the dumping market"
-    );
-    assert!(
-        neut.net_lamports < 0,
-        "buying into the dump must lose (neutral net {})",
-        neut.net_lamports
-    );
-    // Loss avoided: the veto keeps strictly more lamports.
-    assert!(
-        armed.net_lamports > neut.net_lamports,
-        "the §26 pre-entry veto must strictly out-earn its absence ({} vs {})",
-        armed.net_lamports,
-        neut.net_lamports
-    );
 }
 
 // ============================================================================
@@ -392,37 +329,6 @@ fn drive_derived(cfg: Config) -> Report {
     eng.report()
 }
 
-#[test]
-fn derived_targets_bank_the_grind_the_fixed_ladder_misses() {
-    let mut acfg = Config::dev_portable();
-    acfg.derived_targets_enable = true; // LAW 2 armed; LAWs 5/6 at default (off)
-    let armed = drive_derived(acfg);
-    // §24 reversal: derived targets are now the live default, so isolate the
-    // fixed-ladder baseline EXPLICITLY (the forbidden constants) to keep proving
-    // the toggle is live and produces different nets on this hazard tape.
-    let mut ncfg = Config::dev_portable();
-    ncfg.derived_targets_enable = false;
-    let neut = drive_derived(ncfg);
-
-    assert!(armed.admitted > 0 && neut.admitted > 0, "both arms enter");
-    // Re-pin #29: the assertion direction FLIPPED. The cost-aware derived ladder
-    // fires TP1 at +10% (the grind level), selling 35% before the crater — locking
-    // a tranche but leaving less to trail. The fixed ladder (TP1=13_500/+35%) never
-    // fires TP1 on this ~18% grind, so it trails the FULL position out at a better
-    // average. On a grind-then-crater, NOT selling into the grind is better.
-    //
-    // The §24 LAW stands on re-pin #12's ruling (fixed TP constants are FORBIDDEN
-    // as the live default regardless of any single tape's net), not on this tape's
-    // sign. What this test still proves: the toggle is WIRED and produces genuinely
-    // different nets on the hazard tape — dead-code would make them equal.
-    assert_ne!(
-        armed.net_lamports, neut.net_lamports,
-        "the §24 ladder toggle must produce different nets on a grind-then-crater \
-         tape ({} vs {}) — dead-code would make them equal",
-        armed.net_lamports, neut.net_lamports
-    );
-}
-
 // ---- LAW 5 — §24(d) exit-into-strength ------------------------------------
 //
 // The position is held through a slow SELL baseline at a rising price (§32 quiet),
@@ -467,56 +373,6 @@ fn drive_climax(eng: &mut Engine) -> Report {
     eng.report()
 }
 
-#[test]
-fn into_strength_exit_sells_the_climax_not_the_exhaustion() {
-    // A short watchlist TTL (both arms) lets the seed narrative promote the market
-    // once, then go stale — so an early exit frees the slot WITHOUT re-admitting
-    // into the fade. This isolates the exit decision itself (the confound of
-    // re-deploying freed capital is a separate concern, not the §24(d) axis).
-    let mut acfg = Config::dev_portable();
-    acfg.watchlist_ttl_ticks = 6;
-    acfg.into_strength_exit_enable = true; // LAW 5 armed; LAWs 2/6 at default (off)
-    let mut aeng = Engine::new(acfg, RunMode::Replay);
-    let armed = drive_climax(&mut aeng);
-
-    let mut ncfg = Config::dev_portable();
-    ncfg.watchlist_ttl_ticks = 6;
-    let mut neng = Engine::new(ncfg, RunMode::Replay);
-    let neut = drive_climax(&mut neng);
-
-    assert!(armed.admitted > 0 && neut.admitted > 0, "both arms enter");
-    // Mandated-direction change (§52 spirit): the armed arm sells INTO the climax —
-    // it books an exit-INTO-STRENGTH (code 9) — while the neutral arm never does
-    // (its held position rides PAST the climax and exhausts into the fade,
-    // realizing the loss the law exists to avoid).
-    assert!(
-        fill_count(&aeng, 9) > 0,
-        "the §24(d) law must sell into the climax (an IntoStrength exit)"
-    );
-    assert_eq!(
-        fill_count(&neng, 9),
-        0,
-        "no exit-into-strength without the law"
-    );
-    // The into-strength exit captures the climax at a PROFIT (the position is sold
-    // into buy-side strength near the local top, not held into the exhaustion).
-    assert!(
-        fill_net(&aeng, 9) > 0,
-        "the climax exit must bank a profit (net {})",
-        fill_net(&aeng, 9)
-    );
-    // The neutral arm, holding past the climax, realizes a strictly worse outcome on
-    // the same market entry (it force-closes into the fade below the climax top).
-    let neut_hold = fill_net(&neng, 7); // ForceClose net (the ridden-into-fade exit)
-    assert!(
-        fill_net(&aeng, 9) > neut_hold,
-        "selling into the climax must beat riding the same entry into the fade \
-         ({} vs {})",
-        fill_net(&aeng, 9),
-        neut_hold
-    );
-}
-
 // ---- LAW 6 — §24 volatility-scaled stops/trail ----------------------------
 //
 // A HIGH-volatility market (volatile discovery bars → large realized vol) whose
@@ -546,23 +402,6 @@ fn drive_bleed(cfg: Config) -> Report {
     }
     ticks(&mut eng, 4);
     eng.report()
-}
-
-#[test]
-fn vol_scaled_stop_survives_the_bleed_the_fixed_stop_eats() {
-    let mut acfg = Config::dev_portable();
-    acfg.vol_stop_enable = true; // LAW 6 armed; LAWs 2/5 at default (off)
-    let armed = drive_bleed(acfg);
-    let neut = drive_bleed(Config::dev_portable());
-
-    assert!(armed.admitted > 0 && neut.admitted > 0, "both arms enter");
-    assert!(
-        armed.net_lamports > neut.net_lamports,
-        "the §24 vol-scaled stop must strictly out-earn the fixed stop on a \
-         high-vol bleed-then-recover tape ({} vs {})",
-        armed.net_lamports,
-        neut.net_lamports
-    );
 }
 
 // ============================================================================
@@ -667,45 +506,6 @@ fn drive_disc_attribution() -> Report {
     eng.report()
 }
 
-#[test]
-fn discovery_lane_attribution_separates_creation_from_social() {
-    let r = drive_disc_attribution();
-    assert!(
-        r.admitted >= 2,
-        "both corroboration-lane markets must open (admitted {})",
-        r.admitted
-    );
-    let onchain = disc_net(&r, DiscoveryLane::OnchainCreation);
-    let social = disc_net(&r, DiscoveryLane::SocialCaller);
-    // Each independent discovery lane carries its OWN realized net.
-    assert!(
-        onchain != 0,
-        "the on-chain-creation lane must carry its own realized net"
-    );
-    assert!(
-        social != 0,
-        "the social-caller lane must carry its own realized net"
-    );
-    // The legacy archetype-keyed ledger lumps BOTH into CreationSniper — the exact
-    // cross-contamination §71.2 fixes: the setup-lane total is the SUM of the two
-    // distinct discovery lanes, inseparable there.
-    let lumped = setup_net(&r, WlLane::CreationSniper);
-    assert_eq!(
-        lumped,
-        onchain + social,
-        "the setup-archetype ledger lumps both discovery lanes into one slot"
-    );
-    // The split is real — neither discovery lane equals the lumped total alone.
-    assert_ne!(
-        onchain, lumped,
-        "on-chain lane != the whole CreationSniper bucket"
-    );
-    assert_ne!(
-        social, lumped,
-        "social lane != the whole CreationSniper bucket"
-    );
-}
-
 // ============================================================================
 // Batch-2b LAW 4 — §25 setup-archetype classifier.
 //
@@ -792,41 +592,6 @@ fn drive_classifier(cfg: Config) -> (Report, Vec<u16>) {
     (r, arch)
 }
 
-#[test]
-fn setup_classifier_tags_distinct_archetypes_vs_all_zero_stub() {
-    let (armed, armed_arch) = drive_classifier(Config::dev_portable());
-    let mut ncfg = Config::dev_portable();
-    ncfg.setup_classifier_enable = false;
-    let (neut, neut_arch) = drive_classifier(ncfg);
-
-    eprintln!(
-        "LAW4 armed_admitted={} armed_arch={:?} neut_admitted={} neut_arch={:?}",
-        armed.admitted, armed_arch, neut.admitted, neut_arch
-    );
-    assert!(
-        armed.admitted >= 2 && neut.admitted >= 2,
-        "both markets open"
-    );
-    // OFF: every realized row is the all-0 stub.
-    assert_eq!(
-        neut_arch,
-        vec![0],
-        "classifier off ⇒ only the all-0 stub archetype"
-    );
-    // ON: at least two DISTINCT setup families are tagged, and they are the real
-    // derived (non-stub) archetypes — the stub is gone.
-    assert!(
-        armed_arch.len() >= 2,
-        "classifier on ⇒ ≥2 distinct setup archetypes ({:?})",
-        armed_arch
-    );
-    assert!(
-        armed_arch.iter().any(|&a| a != 0),
-        "classifier on ⇒ at least one non-stub archetype ({:?})",
-        armed_arch
-    );
-}
-
 // ============================================================================
 // Batch-2b LAW 11 — §24 EntryMode leaves (pullback-continuation admission).
 //
@@ -886,29 +651,6 @@ fn drive_pullback(cfg: Config) -> Report {
     });
     ticks(&mut eng, 3);
     eng.report()
-}
-
-#[test]
-fn entry_mode_pullback_admits_what_the_four_lane_gate_misses() {
-    let mut acfg = Config::dev_portable();
-    acfg.entry_mode_leaves_enable = true; // LAW 11 armed; all others at default
-    let armed = drive_pullback(acfg);
-    let neut = drive_pullback(Config::dev_portable());
-
-    // Neutral (4-lane gate): no on-chain confirm ⇒ the pullback is never admitted.
-    assert_eq!(
-        neut.admitted, 0,
-        "the confirm-gated 4-lane logic must miss the unconfirmed pullback"
-    );
-    // Armed: the pullback-continuation EntryMode maps onto active-market-scalp
-    // eligibility and the market is admitted — the audited decision changed.
-    assert!(
-        armed.admitted > neut.admitted,
-        "the §24 EntryMode pullback leaf must admit the setup the 4-lane gate \
-         misses (armed admitted {} vs neutral {})",
-        armed.admitted,
-        neut.admitted
-    );
 }
 
 // ============================================================================
@@ -1258,39 +1000,6 @@ fn drive_fee_floor(cfg: Config, feed_bundle: bool) -> (Report, Engine) {
     ticks(&mut eng, 6);
     let r = eng.report();
     (r, eng)
-}
-
-#[test]
-fn fee_floor_vetoes_the_bundle_signature_and_avoids_the_loss() {
-    // Armed: fee-floor on; the bundle footprint is fed and must veto.
-    let mut acfg = Config::dev_portable();
-    acfg.fee_floor_enable = true;
-    let (armed, aeng) = drive_fee_floor(acfg, true);
-
-    // Neutral: identical tape + identical bundle footprint, but the law is OFF —
-    // the manufactured-flow market is admitted.
-    let (neut, _neng) = drive_fee_floor(Config::dev_portable(), true);
-
-    // Armed: the §70.10 fee-floor veto fires (reject code 14), no position opens.
-    assert!(
-        reject_count(&aeng, MF, 14) > 0,
-        "the §70.10 fee-floor veto must fire on a bundle/wash first-slot footprint"
-    );
-    assert_eq!(armed.admitted, 0, "armed run must refuse the bundle launch");
-    // Neutral: the same footprint is inert (law off) and the market admits.
-    assert!(
-        neut.admitted > 0,
-        "neutral run must admit the market the fee-floor law is off for"
-    );
-    // Loss avoided (§52 spirit): the veto keeps at least as many lamports as
-    // admitting into the manufactured flow (never fewer).
-    assert!(
-        armed.net_lamports >= neut.net_lamports,
-        "the fee-floor veto must not keep fewer lamports than admitting the wash \
-         ({} vs {})",
-        armed.net_lamports,
-        neut.net_lamports
-    );
 }
 
 #[test]

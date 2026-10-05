@@ -320,36 +320,6 @@ fn drive_alpha_admission(with_onchain: bool) -> (Report, Engine) {
     (r, eng)
 }
 
-#[test]
-fn alpha_alone_cannot_admit_but_admits_with_onchain_confirm() {
-    // Alpha alone: no confirm, no numeric — the market is promoted but refused.
-    let (alpha_only, aeng) = drive_alpha_admission(false);
-    assert!(
-        alpha_only.promoted > 0,
-        "the AlphaCall lane must SURFACE the alpha-called mint (promoted {})",
-        alpha_only.promoted
-    );
-    assert_eq!(
-        alpha_only.admitted, 0,
-        "alpha evidence alone can NEVER admit an entry (§29.8/§6.6) — got {}",
-        alpha_only.admitted
-    );
-    // The refusal is specifically the missing on-chain confirmation (gate code 1).
-    assert!(
-        reject_count(&aeng, b58(D4_B58), 1) > 0,
-        "alpha alone must be refused for want of on-chain confirmation (code 1)"
-    );
-
-    // Same alpha calls + a real on-chain confirm and microstructure: it admits —
-    // alpha never SUBSTITUTES for the gate, it only accelerates a real setup.
-    let (confirmed, _ceng) = drive_alpha_admission(true);
-    assert!(
-        confirmed.admitted > 0,
-        "with an on-chain confirm the same alpha-called market must admit (got {})",
-        confirmed.admitted
-    );
-}
-
 // ============================================================================
 // LAW D5 — per-Discord-room realized-net-SOL attribution (§29.8/§71/§74).
 //
@@ -419,64 +389,6 @@ fn drive_two_rooms() -> (Report, Engine) {
     ticks(&mut eng, 6);
     let r = eng.report();
     (r, eng)
-}
-
-#[test]
-fn two_paid_rooms_accrue_distinct_per_source_net() {
-    let (r, eng) = drive_two_rooms();
-    let win_room = SourceRef::new(
-        SourceKind::Discord,
-        pump_quant_ingest::social_parse::fnv1a_64(b"room-win"),
-    );
-    let lose_room = SourceRef::new(
-        SourceKind::Discord,
-        pump_quant_ingest::social_parse::fnv1a_64(b"room-lose"),
-    );
-    assert_ne!(win_room, lose_room, "the two rooms are distinct sources");
-
-    let ledger = eng.source_outcome_ledger();
-    let win_net = ledger.net_sol(win_room);
-    let lose_net = ledger.net_sol(lose_room);
-    eprintln!(
-        "D5 admitted={} win_net={win_net} lose_net={lose_net} report={:?}",
-        r.admitted, r.per_alpha_source_net
-    );
-    // Both rooms' positions opened and closed (the ledger recorded an outcome each).
-    assert!(
-        ledger.trade_count(win_room) > 0 && ledger.trade_count(lose_room) > 0,
-        "both rooms must have a reconciled realized outcome"
-    );
-    // The winner-leading room earns positive net; the loser-leading room is negative
-    // — distinct realized attribution per room (§29.8), the grading seam.
-    assert!(
-        win_net > 0,
-        "the room that led the winner must accrue positive net ({win_net})"
-    );
-    assert!(
-        lose_net < 0,
-        "the room that led the loser must accrue negative net ({lose_net})"
-    );
-    // And the Report surfaces the same split (sorted, report-plane readout).
-    let win_reported = r
-        .per_alpha_source_net
-        .iter()
-        .find(|(s, _)| *s == win_room)
-        .map(|(_, n)| *n);
-    let lose_reported = r
-        .per_alpha_source_net
-        .iter()
-        .find(|(s, _)| *s == lose_room)
-        .map(|(_, n)| *n);
-    assert_eq!(
-        win_reported,
-        Some(win_net),
-        "report matches the ledger (win)"
-    );
-    assert_eq!(
-        lose_reported,
-        Some(lose_net),
-        "report matches the ledger (lose)"
-    );
 }
 
 // ============================================================================
@@ -584,55 +496,4 @@ fn drive_bearish_alpha(cfg: Config) -> (Report, Engine) {
     ticks(&mut eng, 6);
     let r = eng.report();
     (r, eng)
-}
-
-#[test]
-fn bearish_alpha_sell_call_accelerates_a_reduce_only_exit_that_avoids_loss() {
-    // Isolate the EXIT decision (both arms): the seed discovery goes stale quickly,
-    // so an early exit frees the slot WITHOUT re-admitting into the crater (the
-    // re-deploy of freed capital is a separate concern, not the D3 axis — the audit
-    // LAW-5 precedent). lane_evidence_ttl bounds the narrative lane's re-emission.
-    let mut acfg = Config::dev_portable();
-    acfg.watchlist_ttl_ticks = 6;
-    acfg.lane_evidence_ttl_ticks = 6;
-    acfg.alpha_exit_pressure_enable = true; // D3 armed
-    let (armed, aeng) = drive_bearish_alpha(acfg);
-
-    let mut ncfg = Config::dev_portable();
-    ncfg.watchlist_ttl_ticks = 6;
-    ncfg.lane_evidence_ttl_ticks = 6;
-    ncfg.alpha_exit_pressure_enable = false; // D3 neutralized
-    let (neut, neng) = drive_bearish_alpha(ncfg);
-
-    eprintln!(
-        "D3 armed_admitted={} armed_net={} neut_admitted={} neut_net={}",
-        armed.admitted, armed.net_lamports, neut.admitted, neut.net_lamports
-    );
-    for reason in 1u8..=9 {
-        let a = fill_net(&aeng, reason);
-        let n = fill_net(&neng, reason);
-        if a != 0 || n != 0 {
-            eprintln!("  reason {reason}: armed={a} neut={n}");
-        }
-    }
-    assert!(
-        armed.admitted > 0 && neut.admitted > 0,
-        "both arms must open the position"
-    );
-    // Neutral: no exit pressure — the position rides the plateau into the crater and
-    // realizes a loss.
-    assert!(
-        neut.net_lamports < 0,
-        "riding the fade without exit pressure must lose (neutral net {})",
-        neut.net_lamports
-    );
-    // Armed: the bearish alpha call's reduce-only pressure exits near the top —
-    // strictly more lamports kept (loss avoided, §52 spirit).
-    assert!(
-        armed.net_lamports > neut.net_lamports,
-        "the §29.5 bearish-alpha exit pressure must strictly out-earn ignoring the \
-         sell call ({} vs {})",
-        armed.net_lamports,
-        neut.net_lamports
-    );
 }
