@@ -265,7 +265,6 @@ impl Engine {
     }
 
     /// The model lane's coverage / refusal / lifecycle counters (candidate-ticks, not unique mints).
-    #[must_use]
     /// Ingest accounting for the decision cache: every market event the engine received that the
     /// cache saw, split by what became of it. Scheduling coalesces ASK requests only; this proves
     /// whether any trade was dropped from the flow/feature history before that.
