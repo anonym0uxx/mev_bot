@@ -160,6 +160,8 @@ fn captured_history_through_the_real_engine_reports_coverage() {
         "kinds": by_kind,
         "model_calls": calls.load(Ordering::SeqCst),
         "lane": e.model_lane_report(),
+        "funnel": e.model_funnel(),
+        "admission_comparison": e.model_admission_comparison(),
     });
     std::fs::write(
         "/tmp/replay_report.json",

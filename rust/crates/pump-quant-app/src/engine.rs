@@ -865,6 +865,8 @@ pub struct Engine {
     /// observation arrives (`model_dirty`). See `engine/model_admit.rs`.
     model_registry: BTreeSet<[u8; 32]>,
     model_dirty: BTreeSet<[u8; 32]>,
+    /// When each currently-dirty market first became dirty (clock ms): queue-age measurement.
+    model_dirty_since: BTreeMap<[u8; 32], i64>,
     model_uniq_seen: BTreeSet<(String, [u8; 32])>,
     model_amm_fee: BTreeMap<[u8; 32], (Option<u32>, i64)>,
     /// First terminal execution report per mint (evidence kept), and mints blocked by a conflicting one.
@@ -1481,6 +1483,7 @@ impl Engine {
             model_first_cand: BTreeMap::new(),
             model_registry: BTreeSet::new(),
             model_dirty: BTreeSet::new(),
+            model_dirty_since: BTreeMap::new(),
             model_uniq_seen: BTreeSet::new(),
             model_amm_fee: BTreeMap::new(),
             model_terminal: BTreeMap::new(),

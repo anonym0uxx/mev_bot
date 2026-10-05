@@ -180,6 +180,10 @@ impl Engine {
         *self.model_report.entry(key.into()).or_insert(0) += 1;
     }
 
+    fn mrep_add(&mut self, key: impl Into<String>, n: u64) {
+        *self.model_report.entry(key.into()).or_insert(0) += n;
+    }
+
     /// Block or release NEW model entries (an emergency / SAFETY_OFF supervisor hook). Held-position
     /// handling, the feed and every tick are untouched; only new asks stop, and in-flight answers
     /// are discarded rather than acted on.
@@ -235,12 +239,23 @@ impl Engine {
     /// The legacy-promoted admit-site branch (kept as a SECOND source; the stream registry below
     /// is the one that does not depend on legacy admission).
     pub(super) fn model_admit_candidate(&mut self, cand: Candidate) {
+        // Admission-SOURCE evidence for the old-vs-new comparison: this market reached the model
+        // through the legacy priced-print promotion path.
+        let clock = self.model_clock_ms;
+        let cm = cand.mint.bytes();
+        let (venue, _, _) = self.model_cache.describe(&cm, clock);
+        self.model_uniq("legacy_promoted", &cm, venue);
         self.model_admit_mint(cand.mint.bytes(), cand.lane, cand.discovery_lane);
     }
 
     /// Register a stream-discovered market. Bounded; idempotent; never consults legacy state.
     pub(super) fn model_register(&mut self, mint: [u8; 32]) {
-        self.model_dirty.insert(mint);
+        if self.model_dirty.insert(mint) {
+            self.model_dirty_since.insert(mint, self.model_clock_ms);
+        } else {
+            // A further observation folded into an already-queued market: coalesced, not lost.
+            self.mrep("queue:coalesced_update");
+        }
         if self.model_registry.contains(&mint) {
             return;
         }
@@ -287,6 +302,21 @@ impl Engine {
                 continue; // stays dirty; re-offered after the window
             }
             self.model_dirty.remove(&mint);
+            if let Some(since) = self.model_dirty_since.remove(&mint) {
+                // Queue age at dispatch (ms), bucketed, split by venue so starvation is visible.
+                let age = (clock - since).max(0);
+                let (v, _, _) = self.model_cache.describe(&mint, clock);
+                let b = match age {
+                    0..=999 => "lt1s",
+                    1_000..=4_999 => "1to5s",
+                    5_000..=29_999 => "5to30s",
+                    30_000..=299_999 => "30sto5m",
+                    _ => "ge5m",
+                };
+                self.mrep(format!("queue_age|{b}|venue={v}"));
+                self.mrep("queue_age_n");
+                self.mrep_add("queue_age_ms_sum", age as u64);
+            }
             budget -= 1;
             self.model_admit_mint(mint, WlLane::ActiveMarketScalp, DiscoveryLane::ActiveMarket);
         }
@@ -1032,6 +1062,39 @@ impl Engine {
                 }
             }
         }
+    }
+
+    /// OLD-vs-NEW admission, measured on whatever stream the engine has seen: unique markets reaching
+    /// the model through the legacy priced-print promotion (`legacy_promoted`), through stream
+    /// discovery (`discovered`), or both, split by venue. Computed from recorded sets, not inferred.
+    #[must_use]
+    pub fn model_admission_comparison(&self) -> BTreeMap<String, u64> {
+        let clock = self.model_clock_ms;
+        let mut out: BTreeMap<String, u64> = BTreeMap::new();
+        let mut all: BTreeSet<[u8; 32]> = BTreeSet::new();
+        for (stage, m) in &self.model_uniq_seen {
+            if stage == "legacy_promoted" || stage == "discovered" {
+                all.insert(*m);
+            }
+        }
+        for m in all {
+            let old = self
+                .model_uniq_seen
+                .contains(&("legacy_promoted".to_string(), m));
+            let new = self
+                .model_uniq_seen
+                .contains(&("discovered".to_string(), m));
+            let (venue, _, _) = self.model_cache.describe(&m, clock);
+            let k = match (old, new) {
+                (true, true) => "both",
+                (true, false) => "legacy_only",
+                (false, true) => "stream_only",
+                (false, false) => continue,
+            };
+            *out.entry(format!("{k}|venue={venue}")).or_insert(0) += 1;
+            *out.entry(k.to_string()).or_insert(0) += 1;
+        }
+        out
     }
 
     /// The opportunity funnel by venue, in UNIQUE markets, including those that never became
