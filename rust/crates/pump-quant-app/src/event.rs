@@ -260,6 +260,11 @@ pub enum AppEvent {
         /// Total fee rate the event applied (lp + protocol + creator), basis points. `None` when
         /// the event predates the creator-fee tail: never defaulted to 0.
         fee_bps: Option<u32>,
+        /// (lp, protocol, creator) bps as the event reported them, for per-component ceil rounding.
+        fee_parts: Option<(u32, u32, u32)>,
+        /// `Pool::virtual_quote_reserves` from the event (verified layouts only); `None` => the
+        /// executable quote is unsupported. Never defaulted to 0.
+        virtual_quote: Option<u64>,
         /// `true` when the trader BOUGHT the token.
         is_buy: bool,
         /// Token amount the trader received (buy) or gave (sell), raw units.

@@ -65,6 +65,8 @@ pub struct AmmSwapIn {
     pub token_reserve_pre: u64,
     pub quote_reserve_pre: u64,
     pub fee_bps: Option<u32>,
+    pub fee_parts: Option<(u32, u32, u32)>,
+    pub virtual_quote: Option<u64>,
     pub is_buy: bool,
     pub token_amount: u64,
     pub quote_lamports: u64,
@@ -80,6 +82,20 @@ pub struct AmmSwapIn {
 pub struct FillReport {
     pub entry_price_fp: u64,
     pub reserve_sol_lamports: u64,
+}
+
+/// One paper-model fill and what is (not) established about it. Assessment, evaluation and
+/// promotion consumers MUST read [`Engine::model_assessable_fills`], never positions directly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ModelFillRecord {
+    pub mint: [u8; 32],
+    pub amm: bool,
+    /// Quote arithmetic validated for this instruction/fee case (protocol vectors).
+    pub quote_validated: bool,
+    /// Landing/ordering realism validated (Track A). Always false until demonstrated.
+    pub landing_validated: bool,
+    /// Came from `model_reconcile` (execution truth) rather than the paper simulator.
+    pub from_reconcile: bool,
 }
 
 /// How an uncertain acknowledgement was resolved.
@@ -304,6 +320,8 @@ impl Engine {
         // The pool's fee rate is a per-event fact. A swap that does not carry it must not erase the
         // last observed rate (and is never defaulted): the fill uses the LAST OBSERVED rate, labelled.
         self.model_amm_fee.insert(mint, (a.fee_bps, ts_ms));
+        self.model_amm_econ
+            .insert(mint, (a.fee_parts, a.virtual_quote, ts_ms));
         if !applied {
             self.mrep("amm_swap_dropped_out_of_order");
         }
@@ -369,6 +387,10 @@ impl Engine {
         let clock = self.model_clock_ms;
         if clock == 0 {
             self.mrep("refuse:no_feed_clock");
+            return;
+        }
+        if self.model_recon_faults.contains_key(&mint) {
+            self.mrep("refuse:recon_fault_blocks_exposure");
             return;
         }
         if self.open_lane.contains_key(&mint)
@@ -635,32 +657,36 @@ impl Engine {
                 // The fee is the rate the LANDING-STATE swap's own event reported (lp + protocol +
                 // creator, charged on the input). It is NEVER carried forward from an earlier swap:
                 // PumpSwap fees are dynamic, so a stale rate would price a different pool state.
-                let Some(fee_bps) = self
-                    .model_amm_fee
+                // Executable economics come from the LANDING-STATE swap's own event: the fee parts and
+                // the pool's virtual quote reserve at that instant. Either missing => the quote is
+                // unsupported and the order is refused (never a carried-forward or defaulted value).
+                let Some((Some((lp, pr, cr)), Some(vq), _)) = self
+                    .model_amm_econ
                     .get(&mint)
-                    .filter(|(_, t)| *t == obs.ts_ms)
-                    .and_then(|(f, _)| *f)
+                    .copied()
+                    .filter(|(_, _, t)| *t == obs.ts_ms)
                 else {
-                    self.mrep("fill_none:amm_fee_not_on_landing_event");
+                    self.mrep("fill_none:amm_economics_not_on_landing_event");
                     continue;
                 };
-                let Some(out) = pump_quant_protocol::curve::pumpswap_amount_out(
-                    u128::from(obs.quote_reserves_lamports),
+                // Verified `buy_exact_quote_in` arithmetic (see protocol::pumpswap_event): effective
+                // quote = vault + virtual reserve; fees ceil-rounded per component on the net input.
+                let Some(fill) = pump_quant_protocol::pumpswap_event::buy_exact_quote_in(
                     u128::from(obs.base_reserves_raw),
+                    u128::from(obs.quote_reserves_lamports),
+                    u128::from(vq),
                     u128::from(size),
-                    fee_bps,
+                    u128::from(lp),
+                    u128::from(pr),
+                    u128::from(cr),
                 ) else {
                     self.mrep("fill_none:unpriceable");
                     continue;
                 };
-                let Ok(out) = u64::try_from(out) else {
+                let Ok(out) = u64::try_from(fill.base_out) else {
                     self.mrep("fill_none:unpriceable");
                     continue;
                 };
-                if out == 0 {
-                    self.mrep("fill_none:unpriceable");
-                    continue;
-                }
                 // All-in average price, lamports per raw token in PRICE_SCALE units. The pool took
                 // its fee from the INPUT, so `out` is already net of it: no separate entry fee.
                 let px = (u128::from(size) * 1_000_000_000).div_ceil(u128::from(out));
@@ -782,6 +808,13 @@ impl Engine {
         };
         self.open_pending(&pe);
         if self.open_lane.contains_key(&mint) {
+            self.model_fills.push(ModelFillRecord {
+                mint,
+                amm: order.amm,
+                quote_validated: order.amm,
+                landing_validated: false,
+                from_reconcile: order.confirmed.is_some(),
+            });
             self.mrep(if order.amm {
                 "fill:position_opened_amm|quote=unvalidated"
             } else {
@@ -828,6 +861,21 @@ impl Engine {
     /// applies the reported fill exactly once. With no pending order (already applied / cleared /
     /// never existed) it is ignored and counted: a duplicate report cannot create a second position.
     pub fn model_reconcile(&mut self, mint: &[u8; 32], outcome: ReconcileOutcome) -> bool {
+        // A report that CONFLICTS with the first terminal one is never ignored and never applied:
+        // the evidence is kept, a named fault is raised and the mint is blocked from new exposure
+        // until a human/authority resolves it (`model_resolve_recon_fault`).
+        if let Some(first) = self.model_terminal.get(mint).copied() {
+            if first == outcome {
+                self.mrep("reconcile:duplicate_same_terminal");
+            } else {
+                self.model_recon_faults
+                    .entry(*mint)
+                    .or_default()
+                    .push(outcome);
+                self.mrep("reconcile:FAULT_conflicting_terminal");
+            }
+            return false;
+        }
         let Some(o) = self.model_orders.get_mut(mint) else {
             self.mrep("reconcile:no_pending_order");
             return false;
@@ -835,15 +883,51 @@ impl Engine {
         match outcome {
             ReconcileOutcome::NotFilled => {
                 self.model_orders.remove(mint);
+                self.model_terminal.insert(*mint, outcome);
                 self.mrep("reconcile:not_filled_cleared");
             }
             ReconcileOutcome::Filled(fr) => {
                 o.confirmed = Some(fr);
+                self.model_terminal.insert(*mint, outcome);
                 let c = self.model_clock_ms;
                 self.model_try_fills(c);
             }
         }
         true
+    }
+
+    /// Fills usable for assessing trading skill: quote AND landing validated. While the landing
+    /// assumption is unvalidated (Track A) this is EMPTY by construction, so routing-test fills
+    /// cannot enter PnL, evaluation or promotion reports.
+    #[must_use]
+    pub fn model_assessable_fills(&self) -> Vec<ModelFillRecord> {
+        self.model_fills
+            .iter()
+            .filter(|f| f.quote_validated && f.landing_validated)
+            .copied()
+            .collect()
+    }
+
+    /// Every model fill with its validation flags (routing simulation included, labelled).
+    #[must_use]
+    pub fn model_all_fills(&self) -> &[ModelFillRecord] {
+        &self.model_fills
+    }
+
+    /// Mints with an unresolved reconciliation fault, with the conflicting evidence preserved.
+    #[must_use]
+    pub fn model_recon_faults(&self) -> &BTreeMap<[u8; 32], Vec<ReconcileOutcome>> {
+        &self.model_recon_faults
+    }
+
+    /// Explicit, auditable resolution of a fault (authority decision); counted.
+    pub fn model_resolve_recon_fault(&mut self, mint: &[u8; 32]) -> bool {
+        let had = self.model_recon_faults.remove(mint).is_some();
+        if had {
+            self.model_terminal.remove(mint);
+            self.mrep("reconcile:fault_resolved_by_authority");
+        }
+        had
     }
 
     /// The opportunity funnel by venue, in UNIQUE markets, including those that never became

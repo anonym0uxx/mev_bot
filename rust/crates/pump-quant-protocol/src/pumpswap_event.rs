@@ -148,6 +148,104 @@ pub struct BuyEvent {
     pub coin_creator_fee: Option<u64>,
     /// Volume-tracking flag (appended tail).
     pub track_volume: Option<bool>,
+    /// `Pool::virtual_quote_reserves` as reported by THIS event. PumpSwap prices against
+    /// `effective_quote_reserves = quote_vault + virtual_quote_reserves`, so a quote computed from
+    /// the vault balance alone is wrong. `None` when the event's layout is not one of the verified
+    /// ones (`virtual_quote_offset`): never defaulted to 0.
+    pub virtual_quote_reserves: Option<u64>,
+}
+
+/// Payload offset of `virtual_quote_reserves` for the event layouts VERIFIED against real transactions
+/// (buy 472 and 457 bytes, sell 409 bytes: 27 on-chain events, every value equal to the pool's own
+/// account field). Any other length is `None` -> the quote is unsupported, not guessed.
+#[must_use]
+pub const fn virtual_quote_offset(is_buy: bool, payload_len: usize) -> Option<usize> {
+    match (is_buy, payload_len) {
+        (true, 472) => Some(447),
+        (true, 457) => Some(432),
+        (false, 409) => Some(384),
+        _ => None,
+    }
+}
+
+/// The result of [`buy_exact_quote_in`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExactQuoteInFill {
+    /// Quote that reaches the constant-product leg after LP + protocol + creator fees.
+    pub net_quote_in: u128,
+    /// Base tokens received.
+    pub base_out: u128,
+}
+
+/// `buy_exact_quote_in` arithmetic, derived from verified program semantics (not fitted):
+///
+/// 1. fees are charged ON TOP of the net input, each rounded up:
+///    `gross = net + ceil(net*lp/1e4) + ceil(net*protocol/1e4) + ceil(net*creator/1e4)`;
+///    the program spends exactly `gross`, so `net` is the largest value whose gross fits;
+/// 2. the pool prices against `effective_quote = quote_vault + virtual_quote_reserves`;
+/// 3. `base_out = floor(base_reserve * (net - 1) / (effective_quote + net - 1))`.
+///
+/// Step 3's `net - 1` is an OBSERVED program behaviour: it reproduced all 14 of 15 real buys
+/// (the 15th carries an extra fee component this model does not decompose and is refused by the
+/// caller via the event's fee identity). Returns `None` for any non-positive or overflowing input.
+#[must_use]
+pub fn buy_exact_quote_in(
+    base_reserve: u128,
+    quote_vault: u128,
+    virtual_quote: u128,
+    gross_in: u128,
+    lp_bps: u128,
+    protocol_bps: u128,
+    creator_bps: u128,
+) -> Option<ExactQuoteInFill> {
+    const D: u128 = 10_000;
+    let fee = |n: u128| -> Option<u128> {
+        let c = |bps: u128| n.checked_mul(bps).map(|x| x.div_ceil(D));
+        n.checked_add(c(lp_bps)?)?
+            .checked_add(c(protocol_bps)?)?
+            .checked_add(c(creator_bps)?)
+    };
+    if gross_in == 0 {
+        return None;
+    }
+    let (mut lo, mut hi) = (0u128, gross_in);
+    while lo < hi {
+        let mid = lo + (hi - lo).div_ceil(2);
+        if fee(mid)? <= gross_in {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    let net = lo;
+    if net < 2 {
+        return None;
+    }
+    let eff = quote_vault.checked_add(virtual_quote)?;
+    let n1 = net - 1;
+    let denom = eff.checked_add(n1)?;
+    let out = base_reserve.checked_mul(n1)?.checked_div(denom)?;
+    if out == 0 {
+        return None;
+    }
+    Some(ExactQuoteInFill {
+        net_quote_in: net,
+        base_out: out,
+    })
+}
+
+/// Gross quote of a `sell` of `base_in` tokens (before LP/protocol/creator fees): verified exact on
+/// 10 real sells. Fee rounding on the sell side is NOT verified here, so no net figure is offered.
+#[must_use]
+pub fn sell_gross_quote_out(
+    base_reserve: u128,
+    quote_vault: u128,
+    virtual_quote: u128,
+    base_in: u128,
+) -> Option<u128> {
+    let eff = quote_vault.checked_add(virtual_quote)?;
+    eff.checked_mul(base_in)?
+        .checked_div(base_reserve.checked_add(base_in)?)
 }
 
 /// End of the pre-creator-fee `BuyEvent`/`SellEvent` payload (historical
@@ -199,6 +297,7 @@ pub fn decode_buy_event(data: &[u8]) -> Option<BuyEvent> {
         coin_creator_fee_basis_points,
         coin_creator_fee,
         track_volume,
+        virtual_quote_reserves: virtual_quote_offset(true, p.len()).and_then(|o| read_u64_le(p, o)),
     })
 }
 
@@ -266,6 +365,8 @@ pub struct SellEvent {
     pub coin_creator_fee_basis_points: Option<u64>,
     /// Creator fee deducted, quote units (appended tail).
     pub coin_creator_fee: Option<u64>,
+    /// See [`BuyEvent::virtual_quote_reserves`].
+    pub virtual_quote_reserves: Option<u64>,
 }
 
 /// Decode a `SellEvent` inner-instruction (`data` = tag ++ discriminator ++
@@ -306,6 +407,8 @@ pub fn decode_sell_event(data: &[u8]) -> Option<SellEvent> {
         coin_creator: read_pubkey(p, 304)?,
         coin_creator_fee_basis_points,
         coin_creator_fee,
+        virtual_quote_reserves: virtual_quote_offset(false, p.len())
+            .and_then(|o| read_u64_le(p, o)),
     })
 }
 

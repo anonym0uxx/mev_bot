@@ -867,6 +867,13 @@ pub struct Engine {
     model_dirty: BTreeSet<[u8; 32]>,
     model_uniq_seen: BTreeSet<(String, [u8; 32])>,
     model_amm_fee: BTreeMap<[u8; 32], (Option<u32>, i64)>,
+    /// First terminal execution report per mint (evidence kept), and mints blocked by a conflicting one.
+    model_terminal: BTreeMap<[u8; 32], model_admit::ReconcileOutcome>,
+    /// Every paper-model fill with its validation status (routing simulation vs assessable).
+    model_fills: Vec<model_admit::ModelFillRecord>,
+    model_recon_faults: BTreeMap<[u8; 32], Vec<model_admit::ReconcileOutcome>>,
+    /// Per-mint (fee parts, virtual quote, swap time) of the latest swap: executable economics.
+    model_amm_econ: BTreeMap<[u8; 32], (Option<(u32, u32, u32)>, Option<u64>, i64)>,
     /// Non-canonical pools seen per mint (counted, never priced from): the honest `pools_total`.
     model_other_pools: BTreeMap<[u8; 32], BTreeSet<[u8; 32]>>,
     /// The feed's own clock (max wire receive time seen), ms. Decision age and request deadlines
@@ -1471,6 +1478,10 @@ impl Engine {
             model_dirty: BTreeSet::new(),
             model_uniq_seen: BTreeSet::new(),
             model_amm_fee: BTreeMap::new(),
+            model_terminal: BTreeMap::new(),
+            model_fills: Vec::new(),
+            model_recon_faults: BTreeMap::new(),
+            model_amm_econ: BTreeMap::new(),
             model_other_pools: BTreeMap::new(),
             model_drift: pump_quant_inference::seam::DriftLedger::new(),
             model_report: BTreeMap::new(),
@@ -2528,6 +2539,8 @@ impl Engine {
                 token_reserve_pre,
                 quote_reserve_pre,
                 fee_bps,
+                fee_parts,
+                virtual_quote,
                 is_buy,
                 token_amount,
                 quote_lamports,
@@ -2539,6 +2552,8 @@ impl Engine {
             } => {
                 if self.paper_model_mode {
                     self.model_on_amm_swap(model_admit::AmmSwapIn {
+                        fee_parts,
+                        virtual_quote,
                         mint,
                         pool,
                         canonical: pool_is_canonical,

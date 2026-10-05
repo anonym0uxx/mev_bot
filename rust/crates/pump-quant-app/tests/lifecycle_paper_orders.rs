@@ -211,10 +211,44 @@ fn lifecycle_d_a_reconciled_fill_is_applied_exactly_once() {
     let bal = e.bankroll_balance();
     // Duplicate confirmation, and a conflicting NotFilled: neither changes inventory or balance.
     assert!(!e.model_reconcile(&MINT, ReconcileOutcome::Filled(fr)));
+    assert_eq!(rep(&e, "reconcile:duplicate_same_terminal"), 1);
+    // A CONFLICTING terminal report is not silent and not applied: named fault, evidence kept.
     assert!(!e.model_reconcile(&MINT, ReconcileOutcome::NotFilled));
+    assert_eq!(rep(&e, "reconcile:FAULT_conflicting_terminal"), 1);
+    assert_eq!(e.model_recon_faults().get(&MINT).map(Vec::len), Some(1));
     assert_eq!(rep(&e, "fill:position_opened"), 1);
     assert_eq!(e.bankroll_balance(), bal);
     assert!(e.model_position_open(&MINT));
+}
+
+#[test]
+fn lifecycle_g_not_filled_then_credible_filled_is_a_fault_that_blocks_exposure_until_resolved() {
+    let (mut e, _c) = with_pending();
+    e.model_mark_ack_uncertain(&MINT);
+    assert!(e.model_reconcile(&MINT, ReconcileOutcome::NotFilled));
+    assert_eq!(e.model_pending_orders(), 0);
+    let bal = e.bankroll_balance();
+    let fr = FillReport {
+        entry_price_fp: 30_000,
+        reserve_sol_lamports: VSOL,
+    };
+    // Credible Filled evidence after a NotFilled: not applied, not discarded, raised.
+    assert!(!e.model_reconcile(&MINT, ReconcileOutcome::Filled(fr)));
+    assert_eq!(rep(&e, "reconcile:FAULT_conflicting_terminal"), 1);
+    assert_eq!(e.model_recon_faults().get(&MINT).map(Vec::len), Some(1));
+    assert!(!e.model_position_open(&MINT), "no silent inventory");
+    assert_eq!(e.bankroll_balance(), bal, "no debit");
+    // New exposure for the affected mint is blocked while the fault stands.
+    let asks = rep(&e, "dispatched");
+    for _ in 0..40 {
+        e.tick(AppEvent::Tick);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(rep(&e, "dispatched"), asks);
+    // Explicit, counted resolution.
+    assert!(e.model_resolve_recon_fault(&MINT));
+    assert_eq!(rep(&e, "reconcile:fault_resolved_by_authority"), 1);
+    assert!(e.model_recon_faults().is_empty());
 }
 
 #[test]
@@ -269,4 +303,17 @@ fn lifecycle_f_funnel_counts_unique_markets_including_never_ready() {
         "a market with too little history is counted as never-ready, with its reason: {f2:?}"
     );
     assert!(f2.keys().any(|k| k.contains("last=")), "{f2:?}");
+}
+
+#[test]
+fn lifecycle_h_routing_fills_are_recorded_but_never_assessable() {
+    let (mut e, _c) = with_pending();
+    landing(&mut e, T0 + 1_000 + 40 * 2_000 + 1_500, 2_100);
+    assert!(e.model_position_open(&MINT));
+    assert_eq!(e.model_all_fills().len(), 1);
+    assert!(!e.model_all_fills()[0].landing_validated);
+    assert!(
+        e.model_assessable_fills().is_empty(),
+        "an unvalidated-landing fill must not be assessable"
+    );
 }

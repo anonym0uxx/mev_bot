@@ -108,6 +108,10 @@ pub struct AmmSwapFacts {
     pub quote_reserve_pre: u64,
     /// lp + protocol + creator fee rate, basis points; `None` if the creator-fee tail is absent.
     pub fee_bps: Option<u32>,
+    /// (lp, protocol, creator) bps separately.
+    pub fee_parts: Option<(u32, u32, u32)>,
+    /// `Pool::virtual_quote_reserves` from the event; `None` when the layout is unverified.
+    pub virtual_quote: Option<u64>,
     /// The trader bought the token.
     pub is_buy: bool,
     /// Tokens received (buy) / given (sell).
@@ -166,34 +170,36 @@ pub fn decode_amm_swaps(tx: &LaserStreamTx) -> (Vec<AmmSwapFacts>, u32) {
         let Some(ev) = decode_pumpswap_event(&ix.data) else {
             continue;
         };
-        let (pool, user, buy, tok_res, quote_res, tok_amt, quote_amt, lp, prot, creator) = match ev
-        {
-            PumpSwapEvent::Buy(b) => (
-                b.pool,
-                b.user,
-                true,
-                b.pool_base_token_reserves,
-                b.pool_quote_token_reserves,
-                b.base_amount_out,
-                b.user_quote_amount_in,
-                b.lp_fee_basis_points,
-                b.protocol_fee_basis_points,
-                b.coin_creator_fee_basis_points,
-            ),
-            PumpSwapEvent::Sell(s) => (
-                s.pool,
-                s.user,
-                false,
-                s.pool_base_token_reserves,
-                s.pool_quote_token_reserves,
-                s.base_amount_in,
-                s.user_quote_amount_out,
-                s.lp_fee_basis_points,
-                s.protocol_fee_basis_points,
-                s.coin_creator_fee_basis_points,
-            ),
-            PumpSwapEvent::CreatePool(_) => continue,
-        };
+        let (pool, user, buy, tok_res, quote_res, tok_amt, quote_amt, lp, prot, creator, vq) =
+            match ev {
+                PumpSwapEvent::Buy(b) => (
+                    b.pool,
+                    b.user,
+                    true,
+                    b.pool_base_token_reserves,
+                    b.pool_quote_token_reserves,
+                    b.base_amount_out,
+                    b.user_quote_amount_in,
+                    b.lp_fee_basis_points,
+                    b.protocol_fee_basis_points,
+                    b.coin_creator_fee_basis_points,
+                    b.virtual_quote_reserves,
+                ),
+                PumpSwapEvent::Sell(s) => (
+                    s.pool,
+                    s.user,
+                    false,
+                    s.pool_base_token_reserves,
+                    s.pool_quote_token_reserves,
+                    s.base_amount_in,
+                    s.user_quote_amount_out,
+                    s.lp_fee_basis_points,
+                    s.protocol_fee_basis_points,
+                    s.coin_creator_fee_basis_points,
+                    s.virtual_quote_reserves,
+                ),
+                PumpSwapEvent::CreatePool(_) => continue,
+            };
         // The swap instruction naming this pool carries the mints at accounts [3] (base) and [4]
         // (quote). The mint is the non-WSOL one; `canonical` additionally requires the pool to be
         // the PDA derived for that mint with WSOL as QUOTE (so reversed / USDC / other-index pools
@@ -231,6 +237,14 @@ pub fn decode_amm_swaps(tx: &LaserStreamTx) -> (Vec<AmmSwapFacts>, u32) {
             token_reserve_pre: tok_res,
             quote_reserve_pre: quote_res,
             fee_bps: creator.and_then(|c| u32::try_from(lp + prot + c).ok()),
+            fee_parts: creator.and_then(|c| {
+                Some((
+                    u32::try_from(lp).ok()?,
+                    u32::try_from(prot).ok()?,
+                    u32::try_from(c).ok()?,
+                ))
+            }),
+            virtual_quote: vq,
             is_buy: buy,
             token_amount: tok_amt,
             quote_lamports: quote_amt,
@@ -603,6 +617,8 @@ pub fn instructions_to_events_with_meta(
                         token_reserve_pre: f.token_reserve_pre,
                         quote_reserve_pre: f.quote_reserve_pre,
                         fee_bps: f.fee_bps,
+                        fee_parts: f.fee_parts,
+                        virtual_quote: f.virtual_quote,
                         is_buy: f.is_buy,
                         token_amount: f.token_amount,
                         quote_lamports: f.quote_lamports,

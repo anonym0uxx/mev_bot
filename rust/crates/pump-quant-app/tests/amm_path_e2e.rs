@@ -143,6 +143,8 @@ fn replay(stop_before_first_amm: bool) -> Run {
                     token_reserve_pre: v["bres"].as_u64().unwrap(),
                     quote_reserve_pre: v["qres"].as_u64().unwrap(),
                     fee_bps: v["fee_bps"].as_u64().map(|x| x as u32),
+                    fee_parts: None,
+                    virtual_quote: None,
                     is_buy: v["buy"].as_bool().unwrap(),
                     token_amount: v["tok"].as_u64().unwrap(),
                     quote_lamports: v["sol"].as_u64().unwrap(),
@@ -218,7 +220,7 @@ fn an_amm_market_is_discovered_from_stream_events_and_bought_through_the_real_en
     // most landing states are refused BY NAME instead of being priced with a stale 125 bp. The
     // position-opening assertion returns with the full per-event-fee fixture (chain fetch pending).
     assert!(
-        rep(&r.e, "fill_none:amm_fee_not_on_landing_event") >= 1,
+        rep(&r.e, "fill_none:amm_economics_not_on_landing_event") >= 1,
         "the strict-fee refusal must fire on this fixture: {rpt:?}"
     );
     assert_eq!(
