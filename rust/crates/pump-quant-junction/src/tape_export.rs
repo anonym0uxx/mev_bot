@@ -44,7 +44,11 @@
 //! evaluator's own replay, not by the tape exporter. The tape exporter focuses
 //! on the `trade` records which carry the realized evidence.
 
-use crate::trade_journal::{RunMode, TradeOutcome, TradeRecord, TradeSide};
+use crate::trade_journal::{TradeOutcome, TradeRecord};
+// `RunMode`/`TradeSide` are consumed only by the `#[cfg(test)]` module via
+// `use super::*`; the glob re-export does not count as a use for this import.
+#[allow(unused_imports)]
+use crate::trade_journal::{RunMode, TradeSide};
 
 /// The lane a trade belongs to, matching the evaluator's `Lane` enum.
 /// The evaluator only supports "scalp" and "early".

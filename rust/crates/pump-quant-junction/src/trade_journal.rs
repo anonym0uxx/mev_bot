@@ -115,10 +115,7 @@ impl TradeOutcome {
 
     /// True if the outcome is a terminal state (no further update expected).
     pub fn is_terminal(&self) -> bool {
-        match self {
-            TradeOutcome::Pending => false,
-            _ => true,
-        }
+        !matches!(self, TradeOutcome::Pending)
     }
 }
 

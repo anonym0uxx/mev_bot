@@ -70,8 +70,7 @@ fn parse_event_line(line: &str) -> Result<AppEvent, String> {
                 liquidity_lamports: extract_int_field(line, "liquidity_lamports")
                     .ok_or("missing liquidity_lamports")?
                     as u64,
-                signed_base: extract_int_field(line, "signed_base").ok_or("missing signed_base")?
-                    as i64,
+                signed_base: extract_int_field(line, "signed_base").ok_or("missing signed_base")?,
                 buyer_entity: extract_int_field(line, "buyer_entity")
                     .ok_or("missing buyer_entity")? as u64,
                 age_slots: extract_int_field(line, "age_slots").ok_or("missing age_slots")? as u32,
@@ -977,12 +976,11 @@ mod tests {
         let tmp = std::env::temp_dir().join("pq_event_stream_malformed_test.jsonl");
         let _ = fs::remove_file(&tmp);
         // One valid Tick line + two garbage lines + one valid Tick line.
-        let content = format!(
-            r#"{{"slot":1,"kind":"Tick"}}
+        let content = r#"{"slot":1,"kind":"Tick"}
 garbage line 1
 garbage line 2
-{{"slot":2,"kind":"Tick"}}"#,
-        );
+{"slot":2,"kind":"Tick"}"#
+            .to_string();
         fs::write(&tmp, &content).expect("write");
         let (events, skipped) = read_event_stream(&tmp).expect("read");
         assert_eq!(events.len(), 2, "two valid Tick events");

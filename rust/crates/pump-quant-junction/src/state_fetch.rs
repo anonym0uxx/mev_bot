@@ -392,7 +392,7 @@ fn decode_base64(s: &str) -> Option<Vec<u8>> {
                 bits += 6;
                 if bits >= 8 {
                     bits -= 8;
-                    out.push((buf >> bits) as u8 & 0xFF);
+                    out.push((buf >> bits) as u8);
                 }
             }
         }
@@ -408,7 +408,7 @@ fn decode_base58(s: &str) -> Option<[u8; 32]> {
     let bytes = s.as_bytes();
     let mut out = [0u8; 32];
     // Simple base58 decode: works for 32-byte pubkeys.
-    let mut num = vec![0u8; 40];
+    let mut num = [0u8; 40];
     for &c in bytes {
         let idx = BS58_ALPHABET.iter().position(|&a| a == c)?;
         let mut carry = idx as u32;

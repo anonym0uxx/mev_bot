@@ -59,9 +59,7 @@ pub fn load_tracked_wallets_from_json(
     let text = std::fs::read_to_string(path)
         .map_err(|e| LoadError::FileRead(path.to_string(), e.to_string()))?;
 
-    parse_tracked_wallets_json(&text)
-        .map_err(|e| LoadError::JsonParse(e.to_string()))
-        .map(|(matcher, stats)| (matcher, stats))
+    parse_tracked_wallets_json(&text).map_err(|e| LoadError::JsonParse(e.to_string()))
 }
 
 /// Parse the tracked-wallet JSON text and construct a `TrackedWalletMatcher`.

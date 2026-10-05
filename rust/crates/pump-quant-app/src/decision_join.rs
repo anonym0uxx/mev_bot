@@ -757,7 +757,8 @@ mod tests {
     }
 
     fn trade(i: u32) -> TradeObs {
-        let buy = !i.is_multiple_of(3);
+        #[allow(clippy::manual_is_multiple_of)] // MSRV 1.85: is_multiple_of stabilised in 1.87
+        let buy = i % 3 != 0;
         TradeObs {
             mint: MINT,
             price_fp: 22_000 + i128::from(i),

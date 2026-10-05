@@ -40,13 +40,15 @@ use pump_quant_execution::ex_live_io_traits::{
 };
 use pump_quant_execution::ex_tip_compute::TipMarket;
 
-use pq_stream_capture::rpc::{Reply, Transport, UreqTransport};
-use pq_stream_capture::sender::{Accepted, SenderClient, SenderEndpoint, SenderError};
-use pq_stream_capture::signer::{SignerError, WalletSigner, SIGNATURE_BYTES};
+use pq_stream_capture::rpc::{Transport, UreqTransport};
+use pq_stream_capture::sender::{SenderClient, SenderEndpoint, SenderError};
+use pq_stream_capture::signer::{SignerError, WalletSigner};
 
 use base64::Engine as _;
 
 use crate::state_fetch::{RpcStateFetch, StateFetch, StateFetchError as JunctionStateFetchError};
+// `PumpCurveCtx` is referenced only by the `#[cfg(test)]` module via `use super::*`.
+#[allow(unused_imports)]
 use pump_quant_protocol::venue_accounts::PumpCurveCtx;
 
 // ---------------------------------------------------------------------------
@@ -172,7 +174,7 @@ impl HeliusSenderSubmitter {
 }
 
 impl LiveSubmitter for HeliusSenderSubmitter {
-    fn submit(&self, wire_tx: &[u8], is_buy: bool) -> Result<[u8; 64], SubmitError> {
+    fn submit(&self, wire_tx: &[u8], _is_buy: bool) -> Result<[u8; 64], SubmitError> {
         // 1. Base64-encode the wire bytes.
         let tx_b64 = base64::engine::general_purpose::STANDARD.encode(wire_tx);
 
@@ -608,7 +610,7 @@ impl RpcLiveStateFetcher {
         let reply = self
             .transport
             .post_json(&url, body)
-            .map_err(|e| StateFetchError::RpcError(e))?;
+            .map_err(StateFetchError::RpcError)?;
 
         // Parse the blockhash from the JSON response.
         let blockhash_str =
@@ -736,7 +738,7 @@ impl LiveStateFetcher for RpcLiveStateFetcher {
         let reply = self
             .transport
             .post_json(&self.rpc_url, &body)
-            .map_err(|e| StateFetchError::RpcError(e))?;
+            .map_err(StateFetchError::RpcError)?;
 
         // Parse the response. If value is null, the ATA doesn't exist → balance 0.
         let balance = extract_ata_balance(&reply.body)
@@ -793,10 +795,7 @@ fn decode_base58_32(s: &str) -> Option<[u8; 32]> {
     let mut written = 0;
 
     for &c in &bytes[zeros..] {
-        let mut carry = match ALPHABET.iter().position(|&a| a == c) {
-            Some(idx) => idx as u32,
-            None => return None,
-        };
+        let mut carry = ALPHABET.iter().position(|&a| a == c)? as u32;
 
         let mut i = 0;
         while i < written || carry != 0 {
@@ -989,7 +988,7 @@ fn decode_base64_std(s: &str) -> Option<Vec<u8>> {
                 bits += 6;
                 if bits >= 8 {
                     bits -= 8;
-                    out.push((buf >> bits) as u8 & 0xFF);
+                    out.push((buf >> bits) as u8);
                 }
             }
         }

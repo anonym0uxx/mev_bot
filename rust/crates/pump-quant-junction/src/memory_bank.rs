@@ -492,7 +492,7 @@ impl MemoryBank {
     pub fn top_mints(&self, n: usize) -> Vec<(&str, &MintSummary)> {
         let mut all: Vec<(&str, &MintSummary)> =
             self.mints.iter().map(|(k, v)| (k.as_str(), v)).collect();
-        all.sort_by(|a, b| b.1.net_lamports.cmp(&a.1.net_lamports));
+        all.sort_by_key(|x| std::cmp::Reverse(x.1.net_lamports));
         all.into_iter().take(n).collect()
     }
 

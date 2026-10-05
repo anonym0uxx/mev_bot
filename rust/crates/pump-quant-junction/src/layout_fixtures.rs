@@ -40,11 +40,14 @@
 //! before those trades work; the gate will refuse rather than mis-build.
 
 use pump_quant_protocol::layout::{
-    is_plausible_signature, LayoutError, LayoutKey, LayoutRegistry, Side, Variant, Venue,
-    VerifiedLayout,
+    LayoutError, LayoutKey, LayoutRegistry, Side, Variant, Venue, VerifiedLayout,
 };
+// `is_plausible_signature` is used only by the `#[cfg(test)]` module via `use super::*`.
+#[allow(unused_imports)]
+use pump_quant_protocol::layout::is_plausible_signature;
 
 /// (is_buy, cashback, token_2022, account_count, verifying_slot, verifying_signature)
+#[allow(clippy::type_complexity)] // fixture tuple mirrors observed on-chain row shape; an alias would obscure it
 const PUMPFUN_OBSERVED: &[(bool, bool, bool, usize, u64, [u8; 64])] = &[
     // buy, 18 accts — slot 448249388
     (

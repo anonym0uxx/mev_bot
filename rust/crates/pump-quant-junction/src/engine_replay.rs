@@ -201,7 +201,7 @@ mod tests {
         ];
         let tape_path = candidates
             .iter()
-            .map(|p| std::path::Path::new(p))
+            .map(std::path::Path::new)
             .find(|p| p.exists());
 
         let tape_path = match tape_path {
@@ -281,14 +281,6 @@ mod tests {
     #[test]
     fn tick_injection_adds_ticks_to_empty_stream() {
         let mint = Mint([99u8; 32]);
-        let events = vec![
-            AppEvent::OnchainConfirm {
-                mint,
-                virtual_sol_lamports: 100_000_000_000,
-                real_sol_lamports: 30_000_000_000,
-            },
-            AppEvent::Tick,
-        ];
         // The injected stream must have more events (at least one injected Tick).
         let injected = inject_missing_ticks(vec![AppEvent::OnchainConfirm {
             mint,
@@ -363,7 +355,7 @@ mod tests {
         ];
         let cfg = Config::dev_portable();
 
-        let r1 = replay_events(&events, cfg.clone());
+        let r1 = replay_events(&events, cfg);
         let r2 = replay_events(&events, cfg);
 
         assert_eq!(r1.report.admitted, r2.report.admitted);

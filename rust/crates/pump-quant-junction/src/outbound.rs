@@ -25,7 +25,6 @@
 //! account identity before trusting fields. §22 — integer-only, no floats.
 //! §36 — every failure is classified into one of six classes.
 
-use pq_stream_capture::rpc::Transport as _;
 use pq_stream_capture::sender::{Accepted, SenderClient, SenderError};
 use pq_stream_capture::signer::WalletSigner;
 use pump_quant_protocol::layout::LayoutRegistry;
@@ -35,7 +34,10 @@ use pump_quant_protocol::tx_build::{
 use pump_quant_protocol::venue_accounts::FeeTail;
 use pump_quant_protocol::{ix::BuyParams, ix::SellParams, message::assemble_transaction};
 
-use crate::state_fetch::{FetchedState, StateFetch, StateFetchError};
+use crate::state_fetch::{StateFetch, StateFetchError};
+// `FetchedState` is referenced only by the `#[cfg(test)]` mock via `use super::*`.
+#[allow(unused_imports)]
+use crate::state_fetch::FetchedState;
 
 // ─── Outbound error ──────────────────────────────────────────────────────
 
@@ -221,7 +223,7 @@ impl<'a> OutboundJunction<'a> {
 /// Used for the Sender submission format.
 fn encode_base64(data: &[u8]) -> String {
     const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity((data.len() + 2) / 3 * 4);
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
     let chunks = data.chunks(3);
     for chunk in chunks {
         let b0 = chunk[0];
@@ -254,11 +256,12 @@ fn encode_base64(data: &[u8]) -> String {
 mod tests {
     use super::*;
     use pq_stream_capture::rpc::{Reply, Transport};
-    use pq_stream_capture::signer::{encode_base58, SignerError, SIGNATURE_BYTES};
+    use pq_stream_capture::signer::{SignerError, SIGNATURE_BYTES};
 
     // ─── Mock transport ───────────────────────────────────────────────────
 
     /// A mock transport that returns canned responses for specific methods.
+    #[allow(dead_code)] // retained test scaffolding; not all tests construct it
     struct MockTransport {
         responses: std::collections::HashMap<String, String>,
     }
@@ -305,9 +308,11 @@ mod tests {
     // ─── Mock signer ──────────────────────────────────────────────────────
 
     /// A mock signer that returns a fixed signature.
+    #[allow(dead_code)] // retained test scaffolding; not all tests construct it
     struct MockSigner;
 
     impl MockSigner {
+        #[allow(dead_code)] // retained test scaffolding; not all tests call it
         fn sign(&self, _message: &[u8]) -> Result<[u8; SIGNATURE_BYTES], SignerError> {
             Ok([0xAA; SIGNATURE_BYTES])
         }

@@ -282,6 +282,9 @@ pub fn free_bytes(path: &Path) -> Option<u64> {
     if rc != 0 {
         return None;
     }
+    // `u64::from` is a no-op on 64-bit targets (where libc statvfs fields are u64)
+    // but is required on 32-bit targets where they are u32; keep it for portability.
+    #[allow(clippy::useless_conversion)]
     Some(u64::from(s.f_bavail).saturating_mul(u64::from(s.f_frsize)))
 }
 

@@ -24,7 +24,7 @@
 
 #![warn(
     clippy::all,
-    clippy::integer_arithmetic,
+    clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation
 )]
 
@@ -938,7 +938,7 @@ fn b58_decode(s: &str) -> Option<Vec<u8>> {
 
     // Handle leading '1' → leading zero bytes
     let zeros = s.bytes().take_while(|&c| c == b'1').count();
-    result.extend(std::iter::repeat(0u8).take(zeros));
+    result.extend(std::iter::repeat_n(0u8, zeros));
     result.reverse();
     Some(result)
 }
@@ -1000,6 +1000,8 @@ mod tests {
     }
 
     use super::*;
+    use base64::engine::general_purpose::STANDARD as B64;
+    use base64::Engine as _;
 
     fn make_tx(slot: u64, is_live: bool) -> LaserStreamTx {
         LaserStreamTx {
@@ -1412,7 +1414,7 @@ mod tests {
         let user_b58 = "11111111111111111111111111111112";
         // BUY discriminator (8) + amount (8) + min_tokens (8) = 24 bytes.
         // Uses the REAL pump.fun BUY discriminator from pump-protocol ix.rs.
-        let ix_data = base64::encode(&{
+        let ix_data = B64.encode({
             let mut d = vec![0x66, 0x06, 0x3d, 0x12, 0x01, 0xda, 0xeb, 0xea]; // BUY_DISCRIMINATOR
             d.extend_from_slice(&0x05u64.to_le_bytes());
             d.extend_from_slice(&0x01u64.to_le_bytes());
@@ -1508,7 +1510,7 @@ mod tests {
         let mint_b58 = "11111111111111111111111111111111";
         // BUY discriminator (8) + amount (8) + min_tokens (8) = 24 bytes.
         // Uses the REAL pump.fun BUY discriminator from pump-protocol ix.rs.
-        let ix_data = base64::encode(&{
+        let ix_data = B64.encode({
             let mut d = vec![0x66, 0x06, 0x3d, 0x12, 0x01, 0xda, 0xeb, 0xea]; // BUY_DISCRIMINATOR
             d.extend_from_slice(&0x05u64.to_le_bytes()); // amount
             d.extend_from_slice(&0x01u64.to_le_bytes()); // min_tokens

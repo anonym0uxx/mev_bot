@@ -124,7 +124,7 @@ pub fn derive_market_trade_from_delta(
     };
 
     // Quote volume: |delta_vsol| in lamports.
-    let quote_lamports: u64 = delta_vsol.unsigned_abs() as u64;
+    let quote_lamports: u64 = delta_vsol.unsigned_abs();
 
     // Liquidity: post-trade virtual SOL reserves.
     let liquidity_lamports: u64 = current.virtual_sol;
