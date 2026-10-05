@@ -872,6 +872,8 @@ pub struct Engine {
     /// The feed's own clock (max wire receive time seen), ms. Decision age and request deadlines
     /// are measured on THIS clock, so paper/replay stay deterministic.
     model_clock_ms: i64,
+    /// Highest on-chain slot observed on the model feed (orders record it at creation).
+    model_slot: u64,
     /// The installed model source, when the lane is armed. `None` in legacy/replay.
     model_source: Option<std::sync::Arc<dyn ModelSource + Send + Sync>>,
     now: u64,
@@ -1469,6 +1471,7 @@ impl Engine {
             model_drift: pump_quant_inference::seam::DriftLedger::new(),
             model_report: BTreeMap::new(),
             model_clock_ms: 0,
+            model_slot: 0,
             model_source: None,
             now: 0,
             numeric: NumericLane::new(),
@@ -2481,6 +2484,7 @@ impl Engine {
                     // cutoff, so it is not admitted (a local clock is a different quantity).
                     if let Some(ts_ms) = recv_unix_ms {
                         self.model_note_clock(ts_ms);
+                        self.model_note_slot(slot);
                         self.model_register(*mint.as_bytes());
                         self.model_cache.observe_curve(
                             *mint.as_bytes(),
@@ -2493,6 +2497,9 @@ impl Engine {
                                 slot,
                             },
                         );
+                        // Event-driven: the first eligible landing state fills the order.
+                        let c = self.model_clock_ms;
+                        self.model_try_fills(c);
                     }
                 }
             }

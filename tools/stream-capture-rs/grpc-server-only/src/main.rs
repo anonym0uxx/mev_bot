@@ -45,9 +45,15 @@ async fn run_production(config: LaserstreamConfig) -> Result<(), Box<dyn std::er
     let mut filter = SubscribeRequestFilterTransactions::default();
     filter.vote = Some(false);
     filter.failed = Some(false);
-    filter.account_include = vec![
-        "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P".to_string(),
-    ];
+    // pump.fun curve, plus PumpSwap when opted in (AMM swap events arrive as CPIs inside PumpSwap transactions).
+    // OPT-IN via `PQ_LS_INCLUDE_PUMPSWAP=1`: PumpSwap volume is billed (docs/HELIUS_BUDGET_2026-07-29.md),
+    // so the production subscription is unchanged unless the operator asks for AMM discovery.
+    filter.account_include = vec!["6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P".to_string()];
+    if env::var("PQ_LS_INCLUDE_PUMPSWAP").map(|v| v == "1").unwrap_or(false) {
+        filter
+            .account_include
+            .push("pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA".to_string());
+    }
     request.transactions = HashMap::from([("pumpfun".to_string(), filter)]);
     request.commitment = Some(CommitmentLevel::Processed as i32);
 
@@ -59,9 +65,9 @@ async fn run_production(config: LaserstreamConfig) -> Result<(), Box<dyn std::er
             Ok(update) => {
                 if let Some(helius_laserstream::grpc::subscribe_update::UpdateOneof::Transaction(tx_update)) = update.update_oneof {
                     if let Some(tx_info) = tx_update.transaction {
-                        let sig = encoding::b58_encode(&tx_info.signature);
-                        let slot = tx_update.slot;
-                        eprintln!("tx slot={slot} sig={sig}");
+                        // The daemon's line contract (`parse_ndjson_line`). Emitted on STDOUT only;
+                        // diagnostics stay on stderr so they can never corrupt the NDJSON stream.
+                        println!("{}", daemon_tx_line(tx_update.slot, &tx_info));
                     }
                 }
             }
@@ -71,6 +77,67 @@ async fn run_production(config: LaserstreamConfig) -> Result<(), Box<dyn std::er
         }
     }
     Ok(())
+}
+
+
+/// One daemon-facing transaction line. Carries what the engine's decoders need and the old emitter
+/// dropped: INNER (CPI) instructions (PumpSwap swap events live there), loaded ALT addresses (so
+/// instruction account indices resolve), and `meta.fee` / `meta.compute_units_consumed`.
+/// `recv_unix_ms` is the sidecar's own receive clock, stamped here and never re-derived downstream.
+/// Account-key order is the protocol's: static keys, then loaded-writable, then loaded-readonly.
+fn daemon_tx_line(
+    slot: u64,
+    tx_info: &helius_laserstream::grpc::SubscribeUpdateTransactionInfo,
+) -> String {
+    let recv_unix_ms = encoding::now_unix_ms();
+    let msg = tx_info.transaction.as_ref().and_then(|t| t.message.as_ref());
+    let meta = tx_info.meta.as_ref();
+    let mut keys: Vec<String> = msg
+        .map(|m| m.account_keys.iter().map(|k| encoding::b58_encode(k)).collect())
+        .unwrap_or_default();
+    if let Some(m) = meta {
+        keys.extend(m.loaded_writable_addresses.iter().map(|k| encoding::b58_encode(k)));
+        keys.extend(m.loaded_readonly_addresses.iter().map(|k| encoding::b58_encode(k)));
+    }
+    let ix_json = |program_id_index: u32, data: &[u8], accounts: &[u8]| -> Option<serde_json::Value> {
+        let prog = keys.get(program_id_index as usize)?;
+        Some(serde_json::json!({
+            "program_b58": prog,
+            "data_b64": encoding::b64_encode(data),
+            "accounts": accounts.iter().map(|a| *a as u32).collect::<Vec<u32>>(),
+        }))
+    };
+    let mut instructions: Vec<serde_json::Value> = Vec::new();
+    if let Some(m) = msg {
+        for ix in &m.instructions {
+            if let Some(v) = ix_json(ix.program_id_index, &ix.data, &ix.accounts) {
+                instructions.push(v);
+            }
+        }
+    }
+    if let Some(m) = meta {
+        for group in &m.inner_instructions {
+            for ii in &group.instructions {
+                if let Some(v) = ix_json(ii.program_id_index, &ii.data, &ii.accounts) {
+                    instructions.push(v);
+                }
+            }
+        }
+    }
+    serde_json::json!({
+        "lane": "laserstream",
+        "kind": "transaction",
+        "slot": slot,
+        "recv_unix_ms": recv_unix_ms,
+        "signature_b58": encoding::b58_encode(&tx_info.signature),
+        "account_keys": keys,
+        "instructions": instructions,
+        "meta": {
+            "fee": meta.map(|m| m.fee),
+            "compute_units_consumed": meta.and_then(|m| m.compute_units_consumed),
+        },
+    })
+    .to_string()
 }
 
 #[tokio::main]

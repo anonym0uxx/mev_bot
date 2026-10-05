@@ -28,6 +28,7 @@ solana-program = "2.1"
 base64 = "0.22"
 
 [dev-dependencies]
+pump-quant-inference = { path = "../pump-quant-inference" }
 
 
 [lib]

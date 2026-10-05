@@ -89,6 +89,9 @@ pub(super) struct ModelOrder {
     pub clip_lamports: u64,
     pub price_limit: Option<f64>,
     pub created_ms: i64,
+    /// Highest ON-CHAIN slot the feed had shown when the order was created. A fill state must come
+    /// from a STRICTLY later slot: a swap observed late but executed earlier is not a landing state.
+    pub created_slot: u64,
     pub lane: WlLane,
     pub discovery_lane: DiscoveryLane,
     pub snap_price: f64,
@@ -153,6 +156,12 @@ impl Engine {
     }
 
     /// Advance the lane's clock from a wire receive time. Monotone: an older stamp never rewinds it.
+    pub(super) fn model_note_slot(&mut self, slot: u64) {
+        if slot > self.model_slot {
+            self.model_slot = slot;
+        }
+    }
+
     pub(super) fn model_note_clock(&mut self, ms: i64) {
         if ms > self.model_clock_ms {
             self.model_clock_ms = ms;
@@ -231,6 +240,7 @@ impl Engine {
             return;
         };
         self.model_note_clock(ts_ms);
+        self.model_note_slot(a.slot);
         if !a.quote_is_wsol {
             self.mrep("amm_excluded:quote_not_wsol");
             return;
@@ -269,9 +279,7 @@ impl Engine {
         );
         // The pool's fee rate is a per-event fact. A swap that does not carry it must not erase the
         // last observed rate (and is never defaulted): the fill uses the LAST OBSERVED rate, labelled.
-        if a.fee_bps.is_some() {
-            self.model_amm_fee.insert(mint, (a.fee_bps, ts_ms));
-        }
+        self.model_amm_fee.insert(mint, (a.fee_bps, ts_ms));
         if !applied {
             self.mrep("amm_swap_dropped_out_of_order");
         }
@@ -313,6 +321,10 @@ impl Engine {
             }
         }
         self.model_register(mint);
+        // Event-driven: the FIRST eligible landing state fills the order, not whatever is newest at
+        // the next tick.
+        let c = self.model_clock_ms;
+        self.model_try_fills(c);
     }
 
     fn model_admit_mint(&mut self, mint: [u8; 32], cand_lane: WlLane, cand_dlane: DiscoveryLane) {
@@ -519,6 +531,7 @@ impl Engine {
                         clip_lamports,
                         price_limit,
                         created_ms: clock,
+                        created_slot: self.model_slot,
                         lane: meta.lane,
                         discovery_lane: meta.discovery_lane,
                         snap_price: meta.snap.price_lamports_per_raw_token,
@@ -546,7 +559,7 @@ impl Engine {
 
     /// Simulated fills. The position is opened HERE and only here, from the reserves observed at or
     /// after the landing time -- never from the state the prompt saw, never at order creation.
-    fn model_try_fills(&mut self, clock: i64) {
+    pub(super) fn model_try_fills(&mut self, clock: i64) {
         let mints: Vec<[u8; 32]> = self.model_orders.keys().copied().collect();
         for mint in mints {
             let Some(order) = self.model_orders.get(&mint).copied() else {
@@ -557,10 +570,9 @@ impl Engine {
             // Landing state: the first reserve observation at/after landing, from the plane the
             // DECISION used. A curve order is never priced from a pool, nor the reverse.
             let (reserve_sol, tokens_out, entry_price, entry_fee_bps) = if order.amm {
-                let obs = self
-                    .model_cache
-                    .amm_obs(&mint)
-                    .filter(|o| o.ts_ms >= landing && o.ts_ms <= clock);
+                let obs = self.model_cache.amm_obs(&mint).filter(|o| {
+                    o.ts_ms >= landing && o.ts_ms <= clock && o.slot > order.created_slot
+                });
                 let Some(obs) = obs else {
                     if clock - order.created_ms > MODEL_ORDER_TTL_MS {
                         self.model_orders.remove(&mint);
@@ -569,9 +581,16 @@ impl Engine {
                     continue;
                 };
                 self.model_orders.remove(&mint);
-                // The pool's own fee, as the swap event reported it (ground truth); never a default.
-                let Some(fee_bps) = self.model_amm_fee.get(&mint).and_then(|(f, _)| *f) else {
-                    self.mrep("fill_none:amm_fee_unknown");
+                // The fee is the rate the LANDING-STATE swap's own event reported (lp + protocol +
+                // creator, charged on the input). It is NEVER carried forward from an earlier swap:
+                // PumpSwap fees are dynamic, so a stale rate would price a different pool state.
+                let Some(fee_bps) = self
+                    .model_amm_fee
+                    .get(&mint)
+                    .filter(|(_, t)| *t == obs.ts_ms)
+                    .and_then(|(f, _)| *f)
+                else {
+                    self.mrep("fill_none:amm_fee_not_on_landing_event");
                     continue;
                 };
                 let Some(out) = pump_quant_protocol::curve::pumpswap_amount_out(
@@ -600,10 +619,9 @@ impl Engine {
                 };
                 (obs.quote_reserves_lamports, out, px, 0u32)
             } else {
-                let obs = self
-                    .model_cache
-                    .curve_obs(&mint)
-                    .filter(|o| o.ts_ms >= landing && o.ts_ms <= clock);
+                let obs = self.model_cache.curve_obs(&mint).filter(|o| {
+                    o.ts_ms >= landing && o.ts_ms <= clock && o.slot > order.created_slot
+                });
                 let Some(obs) = obs else {
                     if clock - order.created_ms > MODEL_ORDER_TTL_MS {
                         self.model_orders.remove(&mint);

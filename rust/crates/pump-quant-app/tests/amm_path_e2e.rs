@@ -212,8 +212,18 @@ fn an_amm_market_is_discovered_from_stream_events_and_bought_through_the_real_en
         0,
         "the stub never buys the curve: {rpt:?}"
     );
+    // TIMING/FEE CORRECTION (post 7b245eb7): a fill needs (a) a reserve state from a STRICTLY later
+    // chain slot than the order's creation, and (b) the fee rate reported by THAT landing swap's own
+    // event (never carried forward). This fixture carries a per-event fee on only 20 of its swaps, so
+    // most landing states are refused BY NAME instead of being priced with a stale 125 bp. The
+    // position-opening assertion returns with the full per-event-fee fixture (chain fetch pending).
     assert!(
-        rep(&r.e, "fill:position_opened_amm") >= 1,
-        "no POOL-priced position: {rpt:?}"
+        rep(&r.e, "fill_none:amm_fee_not_on_landing_event") >= 1,
+        "the strict-fee refusal must fire on this fixture: {rpt:?}"
+    );
+    assert_eq!(
+        rep(&r.e, "fill:position_opened_amm"),
+        0,
+        "no pool fill may be priced from a carried-forward fee: {rpt:?}"
     );
 }
