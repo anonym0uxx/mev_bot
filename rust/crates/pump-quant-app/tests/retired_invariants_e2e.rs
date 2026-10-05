@@ -329,3 +329,71 @@ fn a_model_entry_with_no_deployable_capital_is_refused_by_name_and_the_wallet_is
         "balance is the seed either way until a realized exit"
     );
 }
+
+// ---- (5) legacy fee/tip config fields cannot reach a model entry --------------------------------------
+// Replaces one_authority_laws::the_retired_fee_fields_cannot_reach_a_decision. The four legacy fields
+// survive only so an old operator config still parses; the venue fee is a function of the market.
+
+fn entry_record_with(tweak: fn(&mut Config)) -> (Decision, u64) {
+    let mut c = cfg();
+    tweak(&mut c);
+    let mut e = Engine::new(c, RunMode::Paper);
+    e.enable_paper_model(Stub {
+        text: BUY,
+        calls: Arc::new(AtomicUsize::new(0)),
+    });
+    drive(&mut e, &events(VSOL, 7_900_000_000));
+    landing(&mut e);
+    assert!(e.model_position_open(&MINT), "{:?}", e.model_lane_report());
+    (admitted_records(&e)[0], e.bankroll_balance())
+}
+
+#[test]
+fn absurd_legacy_fee_and_tip_fields_do_not_change_a_model_entry() {
+    let base = entry_record_with(|_| {});
+    let absurd = entry_record_with(|c| {
+        c.entry_fee_bps = 9_999;
+        c.exit_fee_bps = 9_999;
+        c.entry_tip_lamports = 500_000_000;
+        c.exit_tip_lamports = 500_000_000;
+    });
+    assert_eq!(
+        base, absurd,
+        "a retired fee/tip field reached the model entry (size, cost, or cash moved)"
+    );
+}
+
+// ---- (6) no config state restores legacy entry authority ---------------------------------------------
+// With NO model armed, no combination of legacy knobs may open a position: the gate is deleted, so the only
+// outcome is the named refusal (code 29). Extreme values are used on purpose.
+
+#[test]
+fn no_legacy_config_state_can_open_a_position_without_a_model() {
+    let mut c = cfg();
+    c.promote_k = 10_000;
+    c.gate_fail_rate_bps = 0;
+    c.min_trade_size_lamports = 1;
+    c.entry_fee_bps = 0;
+    c.exit_fee_bps = 0;
+    c.entry_tip_lamports = 0;
+    c.exit_tip_lamports = 0;
+    c.expected_move_model_enable = true;
+    c.brain_haircut_enable = true;
+    c.money_proxy_enable = true;
+    c.curve_exact_fill_enable = true;
+    let mut e = Engine::new(c, RunMode::Paper);
+    for ev in events(VSOL, 7_900_000_000) {
+        e.tick(ev);
+    }
+    for _ in 0..40 {
+        e.tick(AppEvent::Tick);
+    }
+    let r = e.report();
+    assert_eq!(r.admitted, 0, "a legacy knob regained entry authority");
+    assert!(!e.model_position_open(&MINT));
+    assert_eq!(e.bankroll_balance(), 2_000_000_000, "cash untouched");
+    assert!(
+        admitted_records(&e).is_empty(),
+        "no Admitted record may be written without a model"
+    );
+}

@@ -6718,3 +6718,98 @@ mod model_lane_seam {
         ));
     }
 }
+
+#[cfg(test)]
+mod reject_code_pins {
+    //! Reject-code ordinals are SERIALIZED (journal `Decision::Rejected.reason`, live_status `reject_counts`).
+    //! Their meanings are frozen. The legacy gate that emitted 4..=28 is retired, but a recorded journal
+    //! still has to be read with the numbering it was written with. Codes 0..=3 were the gate's own
+    //! numbering (`GateReject`), 4..=28 the post-gate set below, 29 the only code still emitted.
+    use super::reject_codes_history as h;
+    use super::{REJECT_NO_ENTRY_AUTHORITY, REJECT_OPEN_FAILURE};
+
+    #[test]
+    fn every_historical_code_keeps_its_ordinal() {
+        let pinned: [(&str, u8, u8); 25] = [
+            ("VPIN_TOXIC", h::REJECT_VPIN_TOXIC, 4),
+            ("INSUFFICIENT_BANKROLL", h::REJECT_INSUFFICIENT_BANKROLL, 5),
+            ("MAX_CONCURRENT", h::REJECT_MAX_CONCURRENT, 6),
+            ("BELOW_COST_FLOOR", h::REJECT_BELOW_COST_FLOOR, 7),
+            ("WALLET_FLOOR", h::REJECT_WALLET_FLOOR, 8),
+            ("FABRICATED_FLOW", h::REJECT_FABRICATED_FLOW, 9),
+            ("EXIT_COST", h::REJECT_EXIT_COST, 10),
+            ("ARBITRATION", h::REJECT_ARBITRATION, 11),
+            ("LANE_RETIRED", h::REJECT_LANE_RETIRED, 12),
+            ("CREATOR_DUMP", h::REJECT_CREATOR_DUMP, 13),
+            ("FEE_FLOOR", h::REJECT_FEE_FLOOR, 14),
+            ("UNDECODED_QUOTE", h::REJECT_UNDECODED_QUOTE, 15),
+            ("BRAIN_BLED", h::REJECT_BRAIN_BLED, 16),
+            ("HOLDER_CONCENTRATION", h::REJECT_HOLDER_CONCENTRATION, 17),
+            ("PRICING_FAILURE", h::REJECT_PRICING_FAILURE, 18),
+            ("BUNDLE_DETECTED", h::REJECT_BUNDLE_DETECTED, 20),
+            ("BUNDLE_CONCENTRATION", h::REJECT_BUNDLE_CONCENTRATION, 21),
+            ("DEV_HISTORY", h::REJECT_DEV_HISTORY, 22),
+            ("COORDINATED_FUNDING", h::REJECT_COORDINATED_FUNDING, 23),
+            (
+                "INSUFFICIENT_EXIT_LIQUIDITY",
+                h::REJECT_INSUFFICIENT_EXIT_LIQUIDITY,
+                24,
+            ),
+            ("REENTRY_COOLDOWN", h::REJECT_REENTRY_COOLDOWN, 25),
+            ("PAYABILITY_UNPRICED", h::REJECT_PAYABILITY_UNPRICED, 26),
+            ("INSUFFICIENT_CASH", h::REJECT_INSUFFICIENT_CASH, 27),
+            ("EXPOSURE_CAP", h::REJECT_EXPOSURE_CAP, 28),
+            ("OPEN_FAILURE", REJECT_OPEN_FAILURE, 19),
+        ];
+        for (name, actual, expected) in pinned {
+            assert_eq!(
+                actual, expected,
+                "REJECT_{name} was renumbered: serialized journals would misread"
+            );
+        }
+        assert_eq!(
+            REJECT_NO_ENTRY_AUTHORITY, 29,
+            "the new code is pinned at 29"
+        );
+    }
+
+    #[test]
+    fn the_codes_are_distinct_and_fit_the_counter_array() {
+        let mut all: Vec<u8> = vec![
+            h::REJECT_VPIN_TOXIC,
+            h::REJECT_INSUFFICIENT_BANKROLL,
+            h::REJECT_MAX_CONCURRENT,
+            h::REJECT_BELOW_COST_FLOOR,
+            h::REJECT_WALLET_FLOOR,
+            h::REJECT_FABRICATED_FLOW,
+            h::REJECT_EXIT_COST,
+            h::REJECT_ARBITRATION,
+            h::REJECT_LANE_RETIRED,
+            h::REJECT_CREATOR_DUMP,
+            h::REJECT_FEE_FLOOR,
+            h::REJECT_UNDECODED_QUOTE,
+            h::REJECT_BRAIN_BLED,
+            h::REJECT_HOLDER_CONCENTRATION,
+            h::REJECT_PRICING_FAILURE,
+            REJECT_OPEN_FAILURE,
+            h::REJECT_BUNDLE_DETECTED,
+            h::REJECT_BUNDLE_CONCENTRATION,
+            h::REJECT_DEV_HISTORY,
+            h::REJECT_COORDINATED_FUNDING,
+            h::REJECT_INSUFFICIENT_EXIT_LIQUIDITY,
+            h::REJECT_REENTRY_COOLDOWN,
+            h::REJECT_PAYABILITY_UNPRICED,
+            h::REJECT_INSUFFICIENT_CASH,
+            h::REJECT_EXPOSURE_CAP,
+            REJECT_NO_ENTRY_AUTHORITY,
+        ];
+        let n = all.len();
+        all.sort_unstable();
+        all.dedup();
+        assert_eq!(all.len(), n, "two reject codes share an ordinal");
+        assert!(
+            all.iter().all(|c| usize::from(*c) < 32),
+            "reject_counts has 32 slots"
+        );
+    }
+}
