@@ -262,6 +262,8 @@ const LS_MAX_RESPAWN_ATTEMPTS: u32 = 5;
 
 /// Exit code on emergency stop.
 const EXIT_EMERGENCY: u8 = 99;
+/// `--live` together with a model endpoint: refused (the model lane is paper-only).
+const EXIT_MODEL_LIVE_CONFLICT: u8 = 98;
 /// Path (relative to CWD) for the graceful-shutdown sentinel file.
 const DAEMON_STOP_FILE: &str = "data/DAEMON_STOP";
 /// Path (relative to CWD) for the emergency-stop sentinel file.
@@ -376,6 +378,21 @@ fn parse_args() -> Result<DaemonArgs, u8> {
             }
             _ => {
                 i += 1;
+            }
+        }
+    }
+    // A model endpoint combined with --live is an INCOMPATIBLE configuration: the model lane is paper-only.
+    // Silently ignoring PQ_MODEL_ENDPOINT would start LEGACY live trading the operator did not ask for.
+    // Checked HERE - the first thing the process does - so nothing (credentials, wallet, feeds) is touched.
+    if a.live_mode {
+        if let Ok(v) = std::env::var("PQ_MODEL_ENDPOINT") {
+            if !v.is_empty() {
+                eprintln!(
+                    "[pq-daemon] FATAL: --live is incompatible with PQ_MODEL_ENDPOINT ({v}). The model lane is paper-only; \
+                     refusing to start rather than silently ignore the model and run legacy live trading. \
+                     Unset PQ_MODEL_ENDPOINT or drop --live."
+                );
+                return Err(EXIT_MODEL_LIVE_CONFLICT);
             }
         }
     }
@@ -1787,6 +1804,7 @@ fn main() -> ExitCode {
         }
     }
     let mut model_stop_last_alert = Instant::now() - Duration::from_secs(3600);
+    let mut model_stop_session = pump_quant_junction::model_lifecycle::StopSession::new();
 
     // Run-mode tag for tape/journal exports — derived from the ENGINE's actual
     // RunMode, NOT the --live CLI flag. This prevents paper-mode fallback from
@@ -2284,21 +2302,31 @@ fn main() -> ExitCode {
             // acknowledged protective handoff; otherwise stay up, blocked, and alert.
             if model_armed {
                 use pump_quant_junction::model_lifecycle::{
-                    handle_stop_request, StopGate, PROTECTIVE_HANDOFF_ACK_FILE,
+                    handle_stop_request, StopGate, HANDOFF_REQUEST_FILE, PROTECTIVE_HANDOFF_ACK_FILE,
                 };
-                match handle_stop_request(&mut engine, std::path::Path::new(PROTECTIVE_HANDOFF_ACK_FILE)) {
-                    StopGate::CompleteFlat | StopGate::CompleteHandedOff => {
-                        eprintln!("[pq-daemon] DAEMON_STOP accepted (flat/reconciled or acknowledged handoff)");
+                match handle_stop_request(
+                    &mut engine,
+                    &mut model_stop_session,
+                    std::path::Path::new(HANDOFF_REQUEST_FILE),
+                    std::path::Path::new(PROTECTIVE_HANDOFF_ACK_FILE),
+                ) {
+                    StopGate::CompleteFlat => {
+                        eprintln!("[pq-daemon] DAEMON_STOP accepted: flat and reconciled");
                         clean_stop_sentinel();
                         break;
                     }
-                    StopGate::Incomplete(a) => {
+                    StopGate::CompleteHandedOff { recipient } => {
+                        eprintln!("[pq-daemon] DAEMON_STOP accepted: protective handoff accepted by '{recipient}' (session/request/exposure bound)");
+                        clean_stop_sentinel();
+                        break;
+                    }
+                    StopGate::Incomplete { assessment: a, rejection, request_id, exposure_digest } => {
                         if model_stop_last_alert.elapsed() >= Duration::from_secs(30) {
                             eprintln!(
-                                "[pq-daemon] ALERT: INCOMPLETE SHUTDOWN — held={} pending_orders={} uncertain={}; \
-                                 entries BLOCKED, protection continues, process NOT terminated (no acknowledged handoff at {})",
+                                "[pq-daemon] ALERT: INCOMPLETE SHUTDOWN - held={} pending_orders={} uncertain={}; entries BLOCKED, protection continues, process NOT terminated. \
+                                 No valid protective-handoff acknowledgement ({rejection:?}). Recipient must write {} echoing request_id={} exposure_digest={} (see {})",
                                 a.held, a.pending_orders, a.uncertain_orders,
-                                pump_quant_junction::model_lifecycle::PROTECTIVE_HANDOFF_ACK_FILE
+                                PROTECTIVE_HANDOFF_ACK_FILE, request_id, exposure_digest, HANDOFF_REQUEST_FILE
                             );
                             model_stop_last_alert = Instant::now();
                         }

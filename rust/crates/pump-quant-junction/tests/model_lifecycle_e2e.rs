@@ -17,7 +17,7 @@ use pump_quant_app::engine::{Engine, RunMode};
 use pump_quant_app::event::{AppEvent, TradeVenue};
 use pump_quant_domain::ids::Mint as DomainMint;
 use pump_quant_junction::model_lifecycle::{
-    arm_paper_model, decide_stop, handle_stop_request, StopGate,
+    arm_paper_model, handle_stop_request, validate_ack, AckRejection, StopGate, StopSession,
 };
 
 const T0: i64 = 1_800_000_000_000;
@@ -394,25 +394,102 @@ fn a_malformed_or_hung_endpoint_trips_safety_off_but_keeps_management_and_protec
     assert!(r2.e.model_position_open(&MINT));
 }
 
+/// Read the published request, then write an acknowledgement with the given overrides.
+fn write_ack(ack: &std::path::Path, req: &std::path::Path, edit: impl Fn(&mut serde_json::Value)) {
+    let r: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(req).unwrap()).unwrap();
+    let mut a = serde_json::json!({
+        "session_id": r["session_id"], "request_id": r["request_id"],
+        "exposure_digest": r["exposure_digest"],
+        "recipient": "protector-B", "accepted_protective_responsibility": true,
+    });
+    edit(&mut a);
+    std::fs::write(ack, a.to_string()).unwrap();
+}
+
+fn incomplete_reason(g: StopGate) -> AckRejection {
+    match g {
+        StopGate::Incomplete { rejection, .. } => rejection,
+        other => panic!("must be incomplete: {other:?}"),
+    }
+}
+
 #[test]
 fn a_stop_request_does_not_terminate_the_sole_protector_of_open_exposure() {
     let ep = Endpoint::start(|_| HOLD);
     let mut r = rig(&ep, "stop");
-    let ack = r.dir.join("ACK");
-    // Held position, no handoff: INCOMPLETE — the daemon must stay up.
-    match handle_stop_request(&mut r.e, &ack) {
-        StopGate::Incomplete(a) => assert!(a.held >= 1, "{a:?}"),
-        other => panic!("must not complete with open exposure: {other:?}"),
-    }
+    let (ack, req) = (r.dir.join("ACK.json"), r.dir.join("REQ.json"));
+    // A PRE-EXISTING acknowledgement (garbage, or a plausible-looking file) exists before any request.
+    std::fs::write(&ack, b"operator handoff").unwrap();
+    let mut st = StopSession::new();
+    assert_eq!(incomplete_reason(handle_stop_request(&mut r.e, &mut st, &req, &ack)), AckRejection::Unreadable,
+        "a pre-existing file authorizes nothing");
     assert!(r.e.model_safety_blocked(), "stop request blocks entries");
     assert!(r.e.model_position_open(&MINT), "stop never liquidates");
-    // Explicit acknowledged protective handoff: now it may complete.
-    std::fs::write(&ack, b"operator handoff").unwrap();
-    assert_eq!(
-        format!("{:?}", handle_stop_request(&mut r.e, &ack)),
-        "CompleteHandedOff"
-    );
-    let _ = decide_stop; // pure rule is also covered by the unit tests
+    // A well-formed ack from a DIFFERENT session / stale request is rejected.
+    write_ack(&ack, &req, |a| a["session_id"] = "pq-other-session".into());
+    assert_eq!(incomplete_reason(handle_stop_request(&mut r.e, &mut st, &req, &ack)), AckRejection::SessionMismatch);
+    write_ack(&ack, &req, |a| a["request_id"] = "old-request".into());
+    assert_eq!(incomplete_reason(handle_stop_request(&mut r.e, &mut st, &req, &ack)), AckRejection::RequestMismatch);
+    write_ack(&ack, &req, |a| a["exposure_digest"] = "deadbeef".into());
+    assert_eq!(incomplete_reason(handle_stop_request(&mut r.e, &mut st, &req, &ack)), AckRejection::ExposureMismatch);
+    // No identified recipient / did not accept responsibility.
+    write_ack(&ack, &req, |a| a["recipient"] = "".into());
+    assert_eq!(incomplete_reason(handle_stop_request(&mut r.e, &mut st, &req, &ack)), AckRejection::NoAcceptedRecipient);
+    write_ack(&ack, &req, |a| a["accepted_protective_responsibility"] = false.into());
+    assert_eq!(incomplete_reason(handle_stop_request(&mut r.e, &mut st, &req, &ack)), AckRejection::NoAcceptedRecipient);
+    assert!(r.e.model_position_open(&MINT));
+    // The valid acknowledgement: this session, this request, this exposure, an identified recipient.
+    write_ack(&ack, &req, |_| {});
+    match handle_stop_request(&mut r.e, &mut st, &req, &ack) {
+        StopGate::CompleteHandedOff { recipient } => assert_eq!(recipient, "protector-B"),
+        other => panic!("a valid bound ack must complete: {other:?}"),
+    }
+}
+
+#[test]
+fn an_acknowledgement_for_an_earlier_exposure_snapshot_does_not_survive_a_change() {
+    // The endpoint answers EXIT once the position has been held long enough, so a management order
+    // APPEARS after the first shutdown request was published and acknowledged.
+    let ep = Endpoint::start(|step| if step == 0 { EXIT } else { HOLD });
+    let mut r = rig(&ep, "chg");
+    let (ack, req) = (r.dir.join("ACK.json"), r.dir.join("REQ.json"));
+    let mut st = StopSession::new();
+    let first = handle_stop_request(&mut r.e, &mut st, &req, &ack);
+    let req1: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&req).unwrap()).unwrap();
+    assert!(matches!(first, StopGate::Incomplete { .. }));
+    write_ack(&ack, &req, |_| {}); // a recipient accepts THIS snapshot (held, no pending order)
+    // Exposure changes: a pending EXIT order now exists.
+    r.advance_to_order(120_000);
+    assert!(r.e.model_mgmt_pending(&MINT).is_some(), "setup: an order appeared");
+    match handle_stop_request(&mut r.e, &mut st, &req, &ack) {
+        StopGate::Incomplete { rejection, .. } => assert!(
+            matches!(rejection, AckRejection::RequestMismatch | AckRejection::ExposureMismatch),
+            "{rejection:?}"
+        ),
+        other => panic!("the earlier acknowledgement must NOT authorize the changed exposure: {other:?}"),
+    }
+    let req2: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&req).unwrap()).unwrap();
+    assert_ne!(req1["request_id"], req2["request_id"], "a new request id is published for the new snapshot");
+    assert_ne!(req1["exposure_digest"], req2["exposure_digest"]);
+    // Re-acknowledging the NEW snapshot is what authorizes it.
+    write_ack(&ack, &req, |_| {});
+    assert!(matches!(handle_stop_request(&mut r.e, &mut st, &req, &ack), StopGate::CompleteHandedOff { .. }));
+}
+
+#[test]
+fn live_plus_model_endpoint_fails_clearly_and_never_starts_legacy_live() {
+    // The real binary, not a helper: PQ_MODEL_ENDPOINT together with --live must exit 98 before touching
+    // any wallet, engine or network.
+    let exe = env!("CARGO_BIN_EXE_pq-daemon");
+    let out = std::process::Command::new(exe)
+        .arg("--live")
+        .env("PQ_MODEL_ENDPOINT", "http://127.0.0.1:9")
+        .env("HOME", std::env::temp_dir())
+        .output()
+        .expect("run pq-daemon");
+    assert_eq!(out.status.code(), Some(98), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("incompatible with PQ_MODEL_ENDPOINT"), "{err}");
 }
 
 #[test]

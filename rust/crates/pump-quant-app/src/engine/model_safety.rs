@@ -210,6 +210,40 @@ impl Engine {
         }
     }
 
+    /// Canonical, order-independent text of everything the engine is responsible for right now (held
+    /// positions with inventory, every pending order with its kind/id/quantity/uncertainty), and its
+    /// SHA-256. A protective-handoff acknowledgement is bound to this digest: if exposure changes after the
+    /// recipient looked, the acknowledgement no longer matches and shutdown stays incomplete.
+    #[must_use]
+    pub fn model_exposure_digest(&self) -> (String, String) {
+        let (mut held, mut pending) = self.model_safety_records();
+        held.sort_by_key(|h| h.mint);
+        pending.sort_by_key(|p| (p.mint, p.id, p.kind));
+        let hex = |m: &[u8; 32]| m.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        let mut t = String::new();
+        for h in &held {
+            t.push_str(&format!(
+                "H {} entry_px_fp={} inv={} managed={}\n",
+                hex(&h.mint),
+                h.entry_price_fp,
+                h.inventory_tokens.map_or("unknown".to_string(), |v| v.to_string()),
+                h.model_managed
+            ));
+        }
+        for p in &pending {
+            t.push_str(&format!(
+                "P {} {} id={} qty={} uncertain={}\n",
+                hex(&p.mint),
+                p.kind,
+                p.id,
+                p.quantity,
+                p.uncertain
+            ));
+        }
+        let d = pump_quant_protocol::sha256::to_hex(&pump_quant_protocol::sha256::sha256(t.as_bytes()));
+        (d, t)
+    }
+
     /// Operator trip.
     pub fn model_safety_trip_operator(&mut self) -> usize {
         self.model_safety_trip(REASON_OPERATOR)
