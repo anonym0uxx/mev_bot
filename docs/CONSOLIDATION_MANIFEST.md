@@ -34,13 +34,18 @@ head, not to the tip SHA.
 
 **Hosted GitHub** - workflow `rust-ci`, `pull_request` event (tests the **merge** of the head
 into `main`, not the head alone):
-- run **18** on source head `d7596114` -> **SUCCESS**
-- tested merge SHA: **`2fabc31262712f2de8eea31b817efaced265df27`**
-- steps green: Record toolchain/runner CPU/effective flags · Format check · Clippy (deny
-  warnings) · Build (portable/dev profile) · Tests
-- runner CPU: **AMD EPYC 7763** (Zen3) · toolchain **rustc 1.99.0** · effective
-  `RUSTFLAGS=-C target-cpu=x86-64-v3` · cache key
-  `Linux-X64-rust1.99.0-cargo-<lock>-<flags>`
+
+| Run | Source head | Tested merge SHA | Runner CPU | Result |
+|---|---|---|---|---|
+| 18 | `d7596114` | `2fabc31262712f2de8eea31b817efaced265df27` | AMD EPYC 7763 | SUCCESS |
+| 19 | `a69e7e6f` | (docs-only head) | - | SUCCESS |
+| 20 | `1811e5fb` | `b3ec6fad8111c1cf83756982defb659c2e8927f1` | AMD EPYC 9V45 | SUCCESS |
+
+- all five steps green each time: Record toolchain/runner CPU/effective flags · Format check ·
+  Clippy (deny warnings) · Build (portable/dev profile) · Tests
+- toolchain **rustc 1.99.0** (`b940084d7`) · effective `RUSTFLAGS=-C target-cpu=x86-64-v3` ·
+  cache key separated by toolchain/arch/flag-hash (`Linux-X64-rust1.99.0-cargo-<lock>-<flags>`)
+- two DIFFERENT runner CPUs both green: the gate is deterministic across runner types now.
 
 **Superseded/misleading results - do not cite as current:**
 - Runs 12-14 and 16 (`18dc0ae2`, `442996b8`, `9cfa3a58`, `b737c2d9`) FAILED. Runs 12-14 failed at
