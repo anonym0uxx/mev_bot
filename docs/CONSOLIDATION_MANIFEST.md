@@ -60,3 +60,75 @@ No serialized enum, journal or position schema was changed or renumbered. Exit-r
 
 ## Not closed by this work
 Actual daemon with real Qwen; Windows serving parity/latency; live reserve freshness; AMM sell economics; north-star validation. Cleanup and synthetic tests do not close these.
+
+
+---
+## Addendum 2 (decisions applied) - head after slices G, H1, H1b, I
+
+### Legacy strategy retirement (H1, 9deb484e + 3c2c9242)
+- Removed from Engine: `gate_evaluate` and arbitration (deterministic entry selection) and 14 helpers only they used
+  (entry-mode confirmation, brain entry-at-admit, size haircut, deployer-screen multiplier, tracked/smart-money boosts,
+  coordinated-funding detector, fee-floor verdict, cost probes, counterfactual veto) plus 7 dead constants. engine.rs -2.1k lines.
+- With no armed model lane a candidate is refused with the NEW reject code 29 (NO_ENTRY_AUTHORITY). Codes 0-28 keep their meaning
+  in a frozen history registry (journals and live_status reject_counts serialize them). Nothing renumbered.
+- Kept shared infrastructure: open/fill/reconcile accounting, exits via the model lane, Rust hard safeguards (rug precursor, hard stop),
+  persistence, SAFETY_OFF, all serialized enums and position schemas.
+- Tests: 85 failed after removal (all drove the retired gate/arbitration/sizing). Each was removed BY NAME, ledger in
+  `consolidation/retirement_ledger.json` (85 entries, with the panic text). 2 files deleted outright (entry_exit_frontier, flow_persistence_laws).
+  No digest was regenerated. golden_digest.rs keeps 2 passing tests; the 6 failed ones asserted the retired strategy's journal digest/behaviour.
+  bankroll_origin: the live-vs-paper admitted-size comparison was removed; its sizing-basis claim (floor/deployable track the reconciled
+  wallet, not the seed) stays asserted in parts 1-2 of that test.
+- Coverage check of the retired set by infrastructure keyword (script coverage_audit.py): fee 10 retired / 19 remaining, fill 6/31,
+  order 6/20, reconcil 2/15, wallet 1/10, persist 3/6, restore 1/6, decode 2/4, quote 5/3, bankroll 6/5, journal 13/1.
+  This is a name heuristic, NOT proof. The weakest rows are journal and quote.
+- NOT done: the strategy crates (pump-quant-strategy etc.) and the offline comparator still exist, because the evaluator and
+  pq-research-runner bins depend on them. Isolating them behind a feature or moving them out of the daemon's dependency tree is open.
+  The old implementation is preserved at tag rollback/pre-consolidation-959cee8c.
+
+
+### Uncertain crates - decision matrix (evidence: Cargo dependents, bins, scripts, CI, configs, docs, Windows tasks)
+- pump-quant-tape: capability = durable append-only sink writing the 13-key trades.jsonl line shape for the c12 pipeline.
+  Dependents: none (Cargo, bins, scripts, CI). Consumers of the FORMAT are training/*.py, which read files produced by
+  stream-capture, not this crate. Replacement: tools/stream-capture-rs + the renormalizer. DECISION: REMOVED (I, 912cbeed).
+- pump-quant-clock: capability = Clock trait + ReplayClock. Dependents: none. Only mentions: README, docs/architecture.md, and a
+  crate-name map in build_rust_gold_v1.py (a label, no import). Replay uses its own sequencing. DECISION: REMOVED; architecture.md line marked.
+- pump-quant-telemetry: capability = integer drawdown/floor/open-count snapshot + alert bands. No dependents, but it is the only
+  implementation of that alert surface (the app has an unrelated shadow-equity drawdown). DECISION: KEPT, QUARANTINED
+  (not wired). Needs an owner decision to wire it to alerts or remove; no evidence it is required today.
+- pump-quant-treasury: capability = policy-gated SOL transfers from the hot wallet, with its own bin pq_treasury.
+  No dependents and no script/doc/CI caller found, but it is a fund-movement capability with a codeword gate, 1457 lines, and it
+  depends on stream-capture's signer. DECISION: KEPT, QUARANTINED. Not removed on a no-caller finding alone; not wired.
+  It cannot run unless PQ_KEYPAIR_PATH and related env are set. Removal should be an explicit owner decision.
+- Ensure `cargo check --workspace --all-targets` is clean after the removals: exit 0.
+
+### Deletion compatibility (beyond source references)
+- migrations/: RESTORED (G). docs/RUNBOOK.md documents `sqlite3 data/pump-quant.db`; the DB on the operator host has
+  schema_migrations 1-5 applied (read-only, immutable open). README added: read-compat only, no runtime writer.
+- Launchers: launch_rev16/17/29, detach_launch, restart_daemon, run_watchdog, launch_live removed. launch_rev36.sh, start_rev36.sh and
+  launch_watchdog.sh are KEPT. No scheduled task, startup entry or shortcut on the mounted Windows volume referenced the removed ones;
+  see scan_windows.py output notes in the handoff. This does not cover tasks stored outside that volume.
+
+
+### north-star-build (origin/task/north-star-build, 17 commits, all 2026-09-09, author Alon) - capability inventory vs head
+- Unique content: 170 files under tools/data-pipeline (32 src/north_star modules, 35 tests, schemas, ~9 master docs, one script),
+  plus 2 Rust files in tools/stream-capture-rs/grpc-server-only: raw_recorder.rs (+430, new) and encoding.rs.
+- Compared against this head: the zero-byte base58 encoder fix is ALREADY present on this head (an equivalent fix exists);
+  the branch's 7 base58 tests were added here (7/7 pass against this head's encoder, compiled standalone because the crate
+  needs OpenSSL dev headers that are not installed here). raw_recorder.rs is NOT on this head (this head's copy of that
+  file is the 08-22 version); it is part of the branch's capture envelope work and is not integrated.
+- Full branch NOT merged. Trial merge conflicts on 2 docs (00_HOLISTIC_CONTEXT.md differs by wording and is older than head; the ASR
+  receipt is byte-identical on both sides).
+
+### The 154 failures (reproduced on a clean archive of the branch, per-test from junit XML, bucket from the message only)
+- LF checkout: 154 failed / 2080 passed. Buckets: 72 line-ending-pinned hash (SLINKY quarantine file pinned at its CRLF bytes),
+  38 missing declared dependency (yt_dlp, imported by hls_clock_capture.py, absent from any requirements file on the branch),
+  38 Windows-only API (atomic no-clobber directory publication raises on non-Windows), 2 hard-coded D: paths, 4 unclassified.
+- CRLF checkout (all text files): 124 failed. The CRLF conversion fixes the pin but BREAKS other pins (33 hash mismatches), so
+  blanket normalization is wrong; the contract is byte-exact per file.
+- LF + only the quarantine JSON in CRLF + yt-dlp installed: 51 failed / 2183 passed: 38 Windows-only API, 3 D: paths, and 10
+  tests that fail with `EXACT_PATH: sample unavailable` (they need a sample file at a D: path) or an `assert ([])` in the publication
+  test (4, cause not isolated: it follows the Windows-only publication path). So: 103 of 154 explained by 2 environment causes
+  (pin bytes, missing dependency) that are reproducible; the remaining 51 are Windows-only API / D: data paths.
+  No failure was shown to be a code defect. 4 `assert ([])` publication failures are UNRESOLVED until run on Windows.
+- Windows validation task: on the operator host, check out the branch with its pinned files byte-exact, `pip install yt-dlp`,
+  run `pytest tools/data-pipeline/tests/north_star`; expect all 2234 to pass or report which fail. Until then north-star stays unmerged.
