@@ -68,12 +68,12 @@ pub fn search(state: &WatchlistState, cache: &PriceCache, q: &SearchQuery, now: 
         .entries()
         .values()
         .filter(|c| {
-            q.lane.map_or(true, |l| c.lane == l)
+            q.lane.is_none_or(|l| c.lane == l)
                 && c.discovery_score >= q.min_discovery_score
                 && c.features.liquidity_lamports >= q.min_liquidity_lamports
                 && c.features.volume_lamports >= q.min_volume_lamports
                 && c.features.unique_buyers >= q.min_unique_buyers
-                && q.max_age_slots.map_or(true, |a| c.features.age_slots <= a)
+                && q.max_age_slots.is_none_or(|a| c.features.age_slots <= a)
         })
         .filter_map(|c| {
             let price = cache.lookup(&c.mint, now);

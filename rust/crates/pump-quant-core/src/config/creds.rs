@@ -13,7 +13,7 @@
 
 use std::path::Path;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 
 use super::secret::Secret;
 

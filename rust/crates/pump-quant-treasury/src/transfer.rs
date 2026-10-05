@@ -143,6 +143,7 @@ fn encode_compact_u16(n: usize) -> [u8; 3] {
 ///
 /// This is the single entry point. It does validation, signing, submission,
 /// and audit logging in one atomic sequence. The `Treasury` facade calls this.
+#[allow(clippy::too_many_arguments)] // each argument is a distinct, separately-audited gate input
 pub fn execute_transfer(
     signer: &Arc<WalletSigner>,
     policy: &TreasuryPolicy,
@@ -297,7 +298,7 @@ pub fn execute_transfer(
 
     // Account keys
     msg.extend_from_slice(&encode_compact_u16(num_accounts));
-    msg.extend_from_slice(&from_bytes); // index 0: from (signer, writable)
+    msg.extend_from_slice(from_bytes); // index 0: from (signer, writable)
     msg.extend_from_slice(&to_bytes); // index 1: to (writable)
     msg.extend_from_slice(&SYSTEM_PROGRAM_ID); // index 2: system program (readonly)
 

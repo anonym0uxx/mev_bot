@@ -175,11 +175,10 @@ impl Committee {
 
         // Execution requires weighted majority: yes_weight > no_weight
         // AND yes_weight > 50% of total voting weight.
-        let execute = if total_weight == 0 {
-            false
-        } else {
-            yes_weight > no_weight && yes_weight * 10_000 / total_weight > MAJORITY_THRESHOLD_BPS
-        };
+        let execute = yes_weight > no_weight
+            && (yes_weight * 10_000)
+                .checked_div(total_weight)
+                .is_some_and(|share_bps| share_bps > MAJORITY_THRESHOLD_BPS);
 
         CommitteeVerdict {
             execute,

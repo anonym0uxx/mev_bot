@@ -282,7 +282,7 @@ impl InferenceClient {
         let content = v["choices"][0]["message"]["content"]
             .as_str()
             .map(|s| s.to_string())
-            .ok_or_else(|| InferenceError::Unparseable(text))?;
+            .ok_or(InferenceError::Unparseable(text))?;
         Ok(Completion {
             text: content,
             finish_reason: v["choices"][0]["finish_reason"]
@@ -508,7 +508,6 @@ impl StreamedDecision {
     /// headline completed: fail-closed at streaming speed, without waiting for the tail.
     /// The specific [`OffContract`] cause is recoverable here so the caller can record it
     /// on a [`DriftLedger`] immediately.
-    #[must_use]
     pub fn headline(&self) -> Result<Headline, OffContract> {
         self.headline
     }

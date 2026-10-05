@@ -39,9 +39,6 @@
 //! non-determinism across platforms.
 #![forbid(unsafe_code)]
 
-/// The fixed-point scale for DSR computations (1e6 = micro-units).
-const DSR_SCALE: f64 = 1_000_000.0;
-
 /// The bps scale (1e4).
 const BPS_SCALE: f64 = 10_000.0;
 
@@ -396,10 +393,7 @@ mod tests {
     #[test]
     fn sharpe_from_mixed_returns() {
         // Uniform symmetric distribution centered at 0
-        let returns: Vec<i64> = (0..50)
-            .map(|i| ((i as i64 - 24) * 10_000) - 50_000)
-            .collect();
-        // Actually just use a perfectly symmetric set: [-24,-23,...,-1,0,1,...,24,0]
+        // A perfectly symmetric set: [-24,-23,...,-1,0,1,...,24,0]
         let returns: Vec<i64> = (-25..=24)
             .map(|i| i * 10_000)
             .collect::<Vec<_>>()
@@ -407,7 +401,7 @@ mod tests {
             .chain(std::iter::once(&0i64))
             .cloned()
             .collect();
-        let (sr, skew, kurt) = sharpe_from_returns(&returns);
+        let (_sr, _skew, _kurt) = sharpe_from_returns(&returns);
         // Mean of (-25..24 + 0) = -25+24+0 = -1 → mean = -10 → SR is slightly negative
         // Let's use a truly symmetric set instead
         let mut returns_sym: Vec<i64> = vec![];

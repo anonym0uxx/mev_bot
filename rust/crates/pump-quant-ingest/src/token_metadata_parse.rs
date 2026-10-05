@@ -88,7 +88,7 @@ pub fn parse_token_metadata(raw: &[u8], slot: u64) -> Option<RawTokenMetadata> {
     // it decodes, the R-3 veto can query getSignaturesForAddress on this wallet.
     // When it does not (social handle or absent), creator_pubkey stays None and
     // the R-3 veto is skipped for this mint (fail-open, §6.4).
-    let creator_pubkey = creator_str.and_then(|s| base58::decode_pubkey(s));
+    let creator_pubkey = creator_str.and_then(base58::decode_pubkey);
     Some(RawTokenMetadata {
         mint,
         name,

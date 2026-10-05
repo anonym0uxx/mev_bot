@@ -277,7 +277,7 @@ impl TreasuryPolicy {
 
         // SHA-256 hash of the input
         let digest = ring::digest::digest(&ring::digest::SHA256, input.as_bytes());
-        let input_hash = hex_encode(&digest.as_ref());
+        let input_hash = hex_encode(digest.as_ref());
 
         // Constant-time comparison of hex strings.
         // ring doesn't expose constant_time::verify_equal publicly in 0.17,

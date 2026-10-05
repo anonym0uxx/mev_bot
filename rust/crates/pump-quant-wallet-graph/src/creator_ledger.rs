@@ -602,7 +602,7 @@ pub fn classify_track(s: &CreatorTrackSummary, cfg: &CreatorLedgerConfig) -> Cre
 // ---------------------------------------------------------------------------
 
 /// Magic bytes for the ledger file format: `b"CLGR"` (Creator Ledger).
-const LEDGER_MAGIC: [u8; 4] = [b'C', b'L', b'G', b'R'];
+const LEDGER_MAGIC: [u8; 4] = *b"CLGR";
 
 /// Current serialization format version. Increment on breaking change.
 /// v1 = initial format (config + entries + evictions).
