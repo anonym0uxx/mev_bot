@@ -5,6 +5,7 @@
 //!   * `derivation`: the transactions the arithmetic was worked out on (they are NOT evidence).
 //!   * `untouched`: 24 transactions sampled from other mints with a fixed seed AFTER the formula was
 //!     fixed. Only these count as validation.
+//!
 //! Unsupported layouts are asserted to be UNSUPPORTED (no quote), never silently priced.
 
 use pump_quant_protocol::pumpswap_event::{buy_exact_quote_in, sell_gross_quote_out};
@@ -93,7 +94,7 @@ fn legacy_buy_instruction_is_unsupported_here() {
 mod boundaries {
     use pump_quant_protocol::pumpswap_event::buy_exact_quote_in;
     fn ceil(n: u128, bps: u128) -> u128 {
-        (n * bps + 9_999) / 10_000
+        (n * bps).div_ceil(10_000)
     }
     fn ref_quote(
         base: u128,

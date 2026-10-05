@@ -153,7 +153,6 @@ impl Default for RemediationConfig {
 /// 3. The action is safe to execute (no chain-reaching artifact without proof).
 ///
 /// Returns an `AdmittedAction` that may proceed, or a `RemediationReject`.
-#[must_use]
 pub fn remediation_gate(
     action: RemediationAction,
     failure_class: FailureClass6,
@@ -319,7 +318,6 @@ pub fn default_action_for_class(class: FailureClass6) -> RemediationAction {
 mod tests {
     use super::*;
     use pump_quant_protocol::errors::FailureClass6;
-    use pump_quant_protocol::runtime_errors::*;
 
     #[test]
     fn reprice_retry_matches_slippage_class() {

@@ -21,13 +21,13 @@
 //! Usage: pq-refiner [--tape-path data/tape.jsonl] [--config-path config/paper.toml]
 //!                   [--margin-lamports N] [--max-challengers N]
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
 // Re-use the evaluator's own types.
 use pump_quant_evaluator::champion_challenger::{challenger_defeats_champion, ChampionVerdict};
-use pump_quant_evaluator::eight_gate::{evaluate_8gate, FoldResults, GateInput, GateVerdict};
+use pump_quant_evaluator::eight_gate::{evaluate_8gate, FoldResults, GateInput};
 use pump_quant_evaluator::evaluator_stats::{net_sol, Lane, NetSol, ReconTrade};
 use pump_quant_evaluator::tape::parse_jsonl;
 // Persistent state across refiner cycles (§51 cumulative FDR, §56.3 reproducibility).
@@ -180,7 +180,7 @@ const REFLECTION_DENYLIST: &[&str] = &[
 
 /// S3: Returns true if a parameter name is on the reflection denylist.
 fn is_reflection_denied(param_name: &str) -> bool {
-    REFLECTION_DENYLIST.iter().any(|d| *d == param_name)
+    REFLECTION_DENYLIST.contains(&param_name)
 }
 
 /// Compute a deterministic hash for a challenger config (for dedup).
@@ -466,8 +466,6 @@ fn param_tier(name: &str) -> u8 {
 /// T0 is always explored separately and is not part of the rotation.
 fn select_rotation_tier(cursor: &std::collections::HashMap<u8, u64>) -> u8 {
     // Count how many tiers have been explored so far
-    let max_tier = 7u8;
-    let explored = cursor.len() as u8;
 
     // Cycle through tiers 1-7 in order
     // The rotation key tracks the "next tier to explore"
@@ -595,7 +593,7 @@ fn adaptive_mutation_pct(name: &str) -> i64 {
 
 /// Rev-11 §2: Compute the mutation delta. For most params this is val * pct / 100.
 /// For count params (pct==0), use absolute steps of 1-2.
-fn compute_mutation_delta(val: i64, pct: i64, name: &str) -> i64 {
+fn compute_mutation_delta(val: i64, pct: i64, _name: &str) -> i64 {
     if pct == 0 {
         // Count params: absolute step
         if val.unsigned_abs() <= 3 {
@@ -745,6 +743,7 @@ struct EngineReplayScore {
     /// Events fed into the engine.
     events_fed: u64,
     /// Lines skipped during event stream parsing.
+    #[allow(dead_code)] // parsed from the replay JSON; kept for the schema
     parse_skipped: u64,
 }
 
@@ -945,7 +944,7 @@ fn shadow_replay(
 
     for m in &challenger.mutations {
         let pct_change = if m.current_value != 0 {
-            ((m.proposed_value - m.current_value) as f64 / m.current_value as f64)
+            (m.proposed_value - m.current_value) as f64 / m.current_value as f64
         } else {
             0.0
         };
@@ -973,14 +972,14 @@ fn shadow_replay(
                 // Higher fail rate → more failed cost per trade
                 let cost_mult = 1.0 + pct_change;
                 for t in &mut adjusted_trades {
-                    t.failed_costs = ((t.failed_costs as f64 * cost_mult) as u128).min(u128::MAX);
+                    t.failed_costs = (t.failed_costs as f64 * cost_mult) as u128;
                 }
             }
             "sim_impact_k_bps" => {
                 // Higher impact → more slippage (reduces gross)
                 let gross_mult = 1.0 - (pct_change * 0.5).max(-0.5);
                 for t in &mut adjusted_trades {
-                    t.gross_lamports = ((t.gross_lamports as f64 * gross_mult) as i128);
+                    t.gross_lamports = (t.gross_lamports as f64 * gross_mult) as i128;
                 }
             }
             "reflect_every_ticks" => {
@@ -1149,7 +1148,7 @@ fn main() -> std::process::ExitCode {
             .stderr(std::process::Stdio::piped())
             .spawn();
         match replay_cmd {
-            Ok(mut child) => {
+            Ok(child) => {
                 // Wait for it with a timeout (don't let replay block the cycle)
                 match child.wait_with_output() {
                     Ok(output) => {
@@ -1565,7 +1564,7 @@ fn main() -> std::process::ExitCode {
     {
         let mut committee = Committee::new();
         // Add a member for each strategy type with a posterior
-        for (type_id, _posterior) in &state.thompson_posteriors {
+        for type_id in state.thompson_posteriors.keys() {
             committee.add_member(Member {
                 strategy_type_id: *type_id,
                 weight_bps: 10_000, // equal weight
@@ -1708,7 +1707,7 @@ fn main() -> std::process::ExitCode {
     if let Some(ref best) = best_challenger {
         if any_gates_passed && best_has_engine_replay {
             eprintln!("[pq-refiner] CHAMPION DEFEATED by {} AND 8-gate passed AND engine-replay confirmed — writing promotion", best.challenger_id);
-            write_promotion_file(&best, &challengers);
+            write_promotion_file(best, &challengers);
             write_refiner_status(challengers.len(), 1, "promoted");
             append_refiner_log(&results, true);
         } else if any_gates_passed && !best_has_engine_replay {
@@ -1895,6 +1894,7 @@ fn write_refiner_status(num_challengers: usize, num_promoted: usize, status: &st
 /// S4: Extended refiner status writer that includes reflection health metrics.
 /// The status file now carries `reflection_health` alongside the existing
 /// `challengers_evaluated` / `promoted` / `status` fields.
+#[allow(dead_code)] // retained research helper, exercised by tests only
 fn write_refiner_status_with_reflection(
     num_challengers: usize,
     num_promoted: usize,
@@ -1920,6 +1920,7 @@ fn write_refiner_status_with_reflection(
 ///
 /// Returns `true` if the promotion should proceed, `false` if it should be
 /// deferred.
+#[allow(dead_code)] // retained research helper, exercised by tests only
 fn reflection_promotion_guard(
     challenger: Option<&Challenger>,
     health: Option<&ReflectionHealth>,
@@ -2110,7 +2111,7 @@ mod tests {
         // Most challengers should have exactly 1 mutation (single-axis search),
         // but combinatorial pairs will have 2.
         for c in &challengers {
-            assert!(c.mutations.len() >= 1);
+            assert!(!c.mutations.is_empty());
         }
     }
 

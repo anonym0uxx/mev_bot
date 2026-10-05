@@ -29,6 +29,7 @@
 /// SOURCE OF TRUTH: `cost_authority.py::FIXED_LAMPORTS_PER_LEG_P50` = 10_000
 /// lamports/leg. This mirror must track it; it read 150_000 while the app crate
 /// read the same value, and was left stale by the cost-authority refactor.
+#[allow(dead_code)] // source-of-truth mirror; referenced only by the test below in non-test builds
 const FIXED_LAMPORTS_PER_LEG: u64 = 10_000;
 
 /// A fee-calibration record (version 1). Produced by the sampler from
