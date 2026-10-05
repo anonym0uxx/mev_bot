@@ -682,12 +682,53 @@ impl Engine {
             .saturating_sub(self.model_mgmt_reserved(None))
     }
 
+    /// A reconciliation view of the money side, all in lamports, so a test (or an operator) can check
+    /// `balance == seed + realized` and `free == balance - committed - pending entries - ADD reservations`
+    /// together with the position's own remaining cost basis.
+    #[must_use]
+    pub fn model_accounting_view(&self, mint: &[u8; 32]) -> ModelAccountingView {
+        ModelAccountingView {
+            seed: self.bankroll_origin.seed_lamports(),
+            realized: self.bankroll_realized,
+            balance: self.bankroll_balance(),
+            committed: u64::try_from(self.bankroll_committed).unwrap_or(u64::MAX),
+            free: self.model_free_cash_lamports(),
+            attribution_entry_spend: self.open_lane.get(mint).map(|a| a.entry_spend),
+            attribution_realized: self.open_lane.get(mint).map(|a| a.realized_acc),
+            remaining_cost_basis: self.positions.remaining_cost_basis(mint),
+            inventory_tokens: self.positions.inventory_tokens(mint),
+        }
+    }
+
     /// Whether the management ACTION SET is implemented (HOLD/REDUCE/EXIT/ADD). It says nothing about
     /// profitability, AMM sell-economics validation, or held-state restoration.
     #[must_use]
     pub fn model_management_complete(&self) -> bool {
         true
     }
+}
+
+/// Money-side snapshot for reconciliation (lamports).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ModelAccountingView {
+    /// Bankroll seed.
+    pub seed: u64,
+    /// Realized net since start (partial tranches included).
+    pub realized: i128,
+    /// `seed + realized`, clamped.
+    pub balance: u64,
+    /// Capital committed to open positions (all-in entry/ADD cost still attached to inventory).
+    pub committed: u64,
+    /// Free cash as the management prompt states it.
+    pub free: u64,
+    /// The open position's attributed committed cost (None when flat).
+    pub attribution_entry_spend: Option<u64>,
+    /// The open position's realized-so-far (None when flat).
+    pub attribution_realized: Option<i128>,
+    /// Cost basis still attached to the remaining inventory.
+    pub remaining_cost_basis: Option<u64>,
+    /// Reconciled inventory.
+    pub inventory_tokens: Option<u64>,
 }
 
 /// Executable state an ADD is planned against.

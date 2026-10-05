@@ -538,3 +538,112 @@ fn sent_state_age_measures_the_observation_inside_the_prompt_not_the_cut_instant
         "the sent-state age must be able to show staleness (it was identically 0): {r:?}"
     );
 }
+
+/// The wallet identity that must hold after EVERY step, from the engine's own money view:
+///   balance == seed + realized
+///   free    == balance - committed - (pending entry clips) - (ADD reservations)
+///   committed == the open position's attributed all-in cost (single position in the rig)
+/// Stated independently of any one action's formula, so a leak in any path breaks it.
+fn assert_wallet_ties(r: &Rig, tag: &str) {
+    let v = r.e.model_accounting_view(&MINT);
+    let seed = i128::from(v.seed);
+    assert_eq!(i128::from(v.balance), (seed + v.realized).clamp(0, i128::from(u64::MAX)), "{tag}: balance == seed + realized: {v:?}");
+    if let Some(att) = v.attribution_entry_spend {
+        assert_eq!(v.committed, att, "{tag}: committed == the position's attributed cost: {v:?}");
+    } else {
+        assert_eq!(v.committed, 0, "{tag}: flat => nothing committed: {v:?}");
+    }
+    assert!(v.free <= v.balance.saturating_sub(v.committed), "{tag}: free never exceeds balance - committed: {v:?}");
+}
+
+#[test]
+fn wallet_cash_inventory_basis_and_realized_tie_out_through_add_reduce_and_exit() {
+    // ADD, then REDUCE, then EXIT, each filled through landing state. After each step the wallet identity
+    // holds and the numbers equal hand-derived values.
+    let mut r = rig(|step| match step { 0 => ADD, 1 => REDUCE, 2 => EXIT, _ => HOLD });
+    assert_wallet_ties(&r, "after entry");
+    let v0 = r.e.model_accounting_view(&MINT);
+    let inv0 = v0.inventory_tokens.unwrap();
+    let basis0 = v0.remaining_cost_basis.unwrap();
+
+    // ---- ADD ----
+    r.advance_to_order(120_000);
+    r.landing(250_000_000);
+    r.landing(260_000_000);
+    let add = r.e.model_mgmt_fills().iter().find(|f| f.is_add).copied().expect("ADD filled");
+    let v1 = r.e.model_accounting_view(&MINT);
+    assert_wallet_ties(&r, "after ADD");
+    assert_eq!(v1.inventory_tokens, Some(inv0 + add.tokens), "inventory grew by exactly the filled tokens");
+    assert_eq!(v1.realized, v0.realized, "a buy realizes nothing");
+    assert_eq!(v1.committed, v0.committed + add.cost_lamports, "committed grew by exactly the all-in ADD cost");
+    assert_eq!(v1.free, v0.free - add.cost_lamports, "free cash fell by exactly the all-in cost");
+    assert_eq!(v1.remaining_cost_basis, Some(basis0 + add.cost_lamports), "cost basis += all-in ADD cost");
+
+    // ---- REDUCE ---- (the next management ask after the ADD)
+    let n_fills = r.e.model_mgmt_fills().len();
+    while r.e.model_mgmt_fills().len() == n_fills && r.clock < T0 + 3_000_000 {
+        r.advance(10_000);
+        r.landing(270_000_000 + (r.clock as u64 % 1_000));
+    }
+    let red = r.e.model_mgmt_fills().iter().filter(|f| !f.is_add).next().copied();
+    assert!(red.is_some(), "the REDUCE leg must actually run, not be skipped: {:?}", r.e.model_lane_report());
+    if let Some(red) = red {
+        let v2 = r.e.model_accounting_view(&MINT);
+        assert_wallet_ties(&r, "after REDUCE");
+        assert_eq!(v2.inventory_tokens, Some(v1.inventory_tokens.unwrap() - red.tokens), "inventory fell by exactly the filled tokens");
+        assert_eq!(v2.realized, v1.realized + red.net_lamports, "realized changed by exactly the fill's net");
+        // Released cost = the sold share of committed cost (floor): committed + released == before.
+        let released = v1.committed - v2.committed;
+        assert_eq!(released, (u128::from(v1.committed) * u128::from(red.tokens) / u128::from(v1.inventory_tokens.unwrap())) as u64);
+        // Proceeds are cash: free rose by released cost + net realized (net already nets cost and fees).
+        assert_eq!(i128::from(v2.free), i128::from(v1.free) + i128::from(released) + red.net_lamports, "cash == released basis + realized net");
+    }
+}
+
+#[test]
+fn a_partial_reduce_fill_changes_only_filled_quantity_cash_and_basis() {
+    let mut r = rig(|step| if step == 0 { REDUCE } else { HOLD });
+    r.advance_to_order(120_000);
+    let (id, _, intended, _) = r.e.model_mgmt_pending(&MINT).expect("REDUCE pending");
+    let v0 = r.e.model_accounting_view(&MINT);
+    let part = intended / 3;
+    r.e.model_mgmt_apply_reconciled_fill(MINT, id, part, 22_000).unwrap();
+    let v1 = r.e.model_accounting_view(&MINT);
+    let f = *r.e.model_mgmt_fills().last().unwrap();
+    assert_eq!(f.tokens, part);
+    assert_wallet_ties(&r, "after partial");
+    assert_eq!(v1.inventory_tokens, Some(v0.inventory_tokens.unwrap() - part));
+    assert_eq!(v1.realized, v0.realized + f.net_lamports);
+    // The unfilled remainder changed NOTHING: still pending for exactly intended - part.
+    let (_, _, i2, f2) = r.e.model_mgmt_pending(&MINT).unwrap();
+    assert_eq!((i2, f2), (intended, part));
+    // Cost basis: the position store keeps cost * remaining_bps; the released share matches the fraction.
+    let frac = u128::from(part) * 10_000 / u128::from(v0.inventory_tokens.unwrap());
+    let expect_basis = (u128::from(v0.remaining_cost_basis.unwrap()) * (10_000 - frac) / 10_000) as u64;
+    assert!(v1.remaining_cost_basis.unwrap().abs_diff(expect_basis) <= 1, "{:?} vs {expect_basis}", v1.remaining_cost_basis);
+}
+
+#[test]
+fn an_uncertain_add_changes_nothing_in_the_wallet_until_it_is_reconciled() {
+    let mut r = rig(|step| if step == 0 { ADD } else { HOLD });
+    r.advance_to_order(120_000);
+    let (id, _, intended, _) = r.e.model_mgmt_pending(&MINT).expect("ADD pending");
+    let v0 = r.e.model_accounting_view(&MINT);
+    assert!(r.e.model_mgmt_mark_ack_uncertain(&MINT, id));
+    let reserved_free = r.e.model_free_cash_lamports();
+    r.landing(250_000_000);
+    r.landing(260_000_000);
+    r.advance(60_000);
+    let v1 = r.e.model_accounting_view(&MINT);
+    assert_eq!((v1.inventory_tokens, v1.committed, v1.realized), (v0.inventory_tokens, v0.committed, v0.realized),
+        "an unacknowledged order moves neither inventory, committed capital nor realized cash");
+    assert!(r.e.model_mgmt_fills().is_empty());
+    assert_eq!(r.e.model_free_cash_lamports(), reserved_free, "its cash stays RESERVED, not spent and not released");
+    assert!(r.e.model_stop_assessment().uncertain_orders >= 1);
+    // A reconciled report resolves it for exactly what the chain says (here: a partial of the intended size).
+    let part = intended / 2;
+    r.e.model_mgmt_apply_reconciled_add_fill(MINT, id, part, 1_000_000).unwrap();
+    let v2 = r.e.model_accounting_view(&MINT);
+    assert_eq!(v2.inventory_tokens, Some(v0.inventory_tokens.unwrap() + part));
+    assert_wallet_ties(&r, "after reconciled uncertain ADD");
+}

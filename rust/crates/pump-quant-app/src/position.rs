@@ -2027,4 +2027,79 @@ mod tests {
         let first = lc.on_trade(&mint, 1_300_000_000, 1, 1, 30_000_000_000);
         assert!(first.is_some(), "legacy ladder fires on the same print");
     }
+
+    // ---- exact accounting: expectations derived by hand from the formulas, not read from the engine ----
+
+    #[test]
+    fn a_partial_sell_realizes_exactly_proceeds_minus_fee_minus_prorata_cost_minus_fixed() {
+        // size 1_000_000 lamports at 1 lamport/token, cost = size + fixed leg. Sell 500_000 tokens at 1.2x.
+        let mut lc = held_with_fill(1_000_000);
+        let cost = 1_000_000 + P.fixed_lamports_per_leg;
+        let px = PX / 10 * 12; // 1.2x
+        let ex = lc.sell_tokens(&[1u8; 32], 500_000, px, ExitReason::ModelManaged).unwrap();
+        let gross: u128 = 500_000 * 12_000 / 10_000; // 600_000
+        let fee = gross * u128::from(P.fee_bps) / 10_000;
+        let pro_cost = u128::from(cost) * 5_000 / 10_000;
+        let expect = gross as i128 - fee as i128 - pro_cost as i128 - i128::from(P.fixed_lamports_per_leg);
+        assert_eq!(ex.net_lamports, expect, "gross {gross} fee {fee} pro-rata cost {pro_cost}");
+        assert!(!ex.closed);
+        assert_eq!(ex.token_amount, 500_000);
+        assert_eq!(lc.inventory_tokens(&[1u8; 32]), Some(500_000));
+        assert_eq!(lc.remaining_cost_basis(&[1u8; 32]), Some(cost / 2), "half the cost basis stays attached");
+        // The remainder at the same price realizes the same again; the two nets add up to the whole trade.
+        let ex2 = lc.sell_tokens(&[1u8; 32], 500_000, px, ExitReason::ModelManaged).unwrap();
+        assert!(ex2.closed);
+        assert_eq!(ex.net_lamports + ex2.net_lamports, 2 * expect);
+        // Whole-trade check from first principles: 1.2M gross - fees - 1.01M cost - 2 fixed legs.
+        let whole = 1_200_000i128 - 2 * fee as i128 - i128::from(cost) - 2 * i128::from(P.fixed_lamports_per_leg);
+        assert_eq!(ex.net_lamports + ex2.net_lamports, whole);
+    }
+
+    #[test]
+    fn add_filled_reblends_at_the_harmonic_mean_and_conserves_units_cost_and_inventory() {
+        let m = [1u8; 32];
+        let mut lc = held_with_fill(1_000_000);
+        let cost0 = 1_000_000 + P.fixed_lamports_per_leg;
+        // Trim half first so the lot ledger is genuinely partial (remaining 5_000 bp).
+        lc.sell_tokens(&m, 500_000, PX, ExitReason::ModelManaged).unwrap();
+        // ADD: 250_000 tokens delivered for 300_000 notional (1.2 lamports/token), all-in cost carries fee+fixed.
+        let add_n = 300_000u64;
+        let fee = add_n * u64::from(P.fee_bps) / 10_000;
+        let add_cost = add_n + fee + P.fixed_lamports_per_leg;
+        let fill_px = add_n * 1_000_000_000 / 250_000; // 1_200_000_000
+        lc.add_filled(&m, 250_000, add_n, add_cost, fill_px).unwrap();
+        assert_eq!(lc.inventory_tokens(&m), Some(750_000), "500_000 held + 250_000 delivered");
+        // Harmonic basis: (s1+s2)*p1*p2/(s1*p2+s2*p1) = 800_000*1e9*1.2e9/(500_000*1.2e9+300_000*1e9) rounded up.
+        let (s1, s2, p1, p2) = (500_000u128, 300_000u128, 1_000_000_000u128, 1_200_000_000u128);
+        let blended = ((s1 + s2) * p1 * p2).div_ceil(s1 * p2 + s2 * p1);
+        assert_eq!(blended, 1_066_666_667, "800_000 lamports / 750_000 tokens, rounded UP (never in our favour)");
+        assert_eq!(lc.entry_price_fp(&m), Some(blended as u64));
+        // Cost basis = remaining pro-rata original cost + the all-in ADD cost, nothing else.
+        assert_eq!(lc.remaining_cost_basis(&m), Some(cost0 / 2 + add_cost));
+        // Selling everything at 1.2x: realized uses the BLENDED basis, so no phantom profit appears.
+        let ex = lc.sell_tokens(&m, 750_000, 1_200_000_000, ExitReason::ModelManaged).unwrap();
+        assert!(ex.closed);
+        let mult = 1_200_000_000u128 * 10_000 / blended; // floor
+        let gross = 800_000u128 * mult / 10_000;
+        assert!(gross <= 900_000, "never more than 750_000 tokens x 1.2: {gross}");
+        assert!(gross >= 900_000 - 100, "at most ~1bp of conservative quantization: {gross}");
+        let fee2 = gross * u128::from(P.fee_bps) / 10_000;
+        let expect = gross as i128 - fee2 as i128 - (cost0 / 2 + add_cost) as i128 - i128::from(P.fixed_lamports_per_leg);
+        assert_eq!(ex.net_lamports, expect);
+    }
+
+    #[test]
+    fn add_filled_refuses_by_name_and_changes_nothing() {
+        let m = [1u8; 32];
+        let mut lc = open_one(1_000_000, PX); // inventory never established by a fill
+        assert_eq!(lc.add_filled(&m, 10, 10, 10, PX), Err(AddRefusal::InventoryUnknown));
+        let mut lc = held_with_fill(1_000);
+        assert_eq!(lc.add_filled(&m, 0, 10, 10, PX), Err(AddRefusal::ZeroQuantity));
+        assert_eq!(lc.add_filled(&m, 10, 0, 10, PX), Err(AddRefusal::ZeroQuantity));
+        assert_eq!(lc.add_filled(&m, 10, 10, 10, 0), Err(AddRefusal::NoPrice));
+        assert_eq!(lc.add_filled(&[9u8; 32], 10, 10, 10, PX), Err(AddRefusal::NotHeld));
+        assert_eq!(lc.add_filled(&m, u64::MAX, 10, 10, PX), Err(AddRefusal::Overflow));
+        assert_eq!(lc.inventory_tokens(&m), Some(1_000), "refusals leave the position untouched");
+        assert_eq!(lc.entry_price_fp(&m), Some(PX));
+    }
 }
