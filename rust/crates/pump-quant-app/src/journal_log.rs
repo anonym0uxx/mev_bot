@@ -71,6 +71,16 @@ pub enum Decision {
         net_pnl_lamports: i128,
         reason: u8,
     },
+    /// A paper-MODEL routing fill closed. Cash and inventory settled exactly as for any exit, but the
+    /// fill is NOT assessable (quote and/or landing unvalidated), so it is journalled as this distinct
+    /// record instead of `Filled`: a consumer summing `Filled` PnL can never include it. `status`
+    /// bit 0 = quote validated, bit 1 = landing validated (a routing fill has bit 1 clear).
+    RoutingExit {
+        mint: [u8; 32],
+        net_pnl_lamports: i128,
+        reason: u8,
+        status: u8,
+    },
     /// A reflection pass moved a lane weight.
     Reweighted {
         lane: u8,
@@ -101,6 +111,7 @@ impl Decision {
             Decision::Filled { .. } => 4,
             Decision::Reweighted { .. } => 5,
             Decision::Probe { .. } => 6,
+            Decision::RoutingExit { .. } => 7,
         }
     }
 
@@ -153,6 +164,17 @@ impl Decision {
                 // Signed 128-bit PnL as two's-complement bytes: exact, sign-stable.
                 push_bytes(buf, &net_pnl_lamports.to_le_bytes());
                 buf.push(reason);
+            }
+            Decision::RoutingExit {
+                mint,
+                net_pnl_lamports,
+                reason,
+                status,
+            } => {
+                push_bytes(buf, &mint);
+                push_bytes(buf, &net_pnl_lamports.to_le_bytes());
+                buf.push(reason);
+                buf.push(status);
             }
             Decision::Reweighted {
                 lane,

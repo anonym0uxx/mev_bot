@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use pump_quant_app::config::Config;
-use pump_quant_app::engine::model_admit::{FillReport, ReconcileOutcome};
+use pump_quant_app::engine::model_admit::{FaultResolution, FillReport, ReconcileOutcome};
 use pump_quant_app::engine::{Engine, RunMode};
 use pump_quant_app::event::{AppEvent, TradeVenue};
 use pump_quant_app::model_authority::ModelSource;
@@ -245,10 +245,114 @@ fn lifecycle_g_not_filled_then_credible_filled_is_a_fault_that_blocks_exposure_u
         std::thread::sleep(Duration::from_millis(5));
     }
     assert_eq!(rep(&e, "dispatched"), asks);
-    // Explicit, counted resolution.
-    assert!(e.model_resolve_recon_fault(&MINT));
-    assert_eq!(rep(&e, "reconcile:fault_resolved_by_authority"), 1);
+    // Resolution must reconcile the books with the authority's evidence, not just clear a flag.
+    // (1) Authority says FILLED but the books hold no order and no inventory: there is nothing to
+    //     attach the fill to and inventing an entry would fabricate economics => REFUSED, fault and
+    //     exposure block REMAIN.
+    assert_eq!(
+        e.model_resolve_recon_fault(&MINT, ReconcileOutcome::Filled(fr)),
+        FaultResolution::Refused("filled_evidence_without_matching_book_state")
+    );
+    assert_eq!(e.model_recon_faults().len(), 1, "fault stands");
+    assert_eq!(
+        rep(
+            &e,
+            "reconcile:resolution_refused:filled_evidence_without_matching_book_state"
+        ),
+        1
+    );
+    // (2) Authority confirms NOT filled: books already agree (no order, no position) => released.
+    assert_eq!(
+        e.model_resolve_recon_fault(&MINT, ReconcileOutcome::NotFilled),
+        FaultResolution::Released { unwound: false }
+    );
     assert!(e.model_recon_faults().is_empty());
+    assert_eq!(rep(&e, "reconcile:fault_resolved_not_filled"), 1);
+    assert!(!e.model_position_open(&MINT));
+    assert_eq!(e.bankroll_balance(), bal, "still no debit");
+}
+
+#[test]
+fn lifecycle_k_resolution_unwinds_a_position_the_authority_says_never_filled() {
+    // Paper fill happened, then a first Filled report and a CONFLICTING NotFilled: fault. Authority
+    // says NotFilled => the open inventory and committed capital are unwound, then the block lifts.
+    let (mut e, _c) = with_pending();
+    landing(&mut e, T_LAND, 2_100);
+    assert!(e.model_position_open(&MINT));
+    let fr = FillReport {
+        entry_price_fp: 30_000,
+        reserve_sol_lamports: VSOL,
+    };
+    // Record a first terminal Filled directly against the open book via the order-less path.
+    e.model_note_terminal_for_test(&MINT, ReconcileOutcome::Filled(fr));
+    assert!(!e.model_reconcile(&MINT, ReconcileOutcome::NotFilled));
+    assert_eq!(e.model_recon_faults().len(), 1);
+    // While blocked, the HELD position is still monitored: a price collapse closes it normally.
+    assert!(e.model_position_open(&MINT));
+    let bal_before = e.bankroll_balance();
+    assert_eq!(
+        e.model_resolve_recon_fault(&MINT, ReconcileOutcome::NotFilled),
+        FaultResolution::Released { unwound: true }
+    );
+    assert!(!e.model_position_open(&MINT), "inventory unwound");
+    assert!(
+        e.model_recon_faults().is_empty(),
+        "block released only after books agree"
+    );
+    assert_eq!(
+        e.bankroll_balance(),
+        bal_before,
+        "an unwound entry realized nothing"
+    );
+}
+
+#[test]
+fn lifecycle_l_held_position_is_monitored_while_new_exposure_on_the_mint_is_blocked() {
+    let (mut e, _c) = with_pending();
+    landing(&mut e, T_LAND, 2_100);
+    assert!(e.model_position_open(&MINT));
+    let fr = FillReport {
+        entry_price_fp: 30_000,
+        reserve_sol_lamports: VSOL,
+    };
+    e.model_note_terminal_for_test(&MINT, ReconcileOutcome::Filled(fr));
+    assert!(!e.model_reconcile(&MINT, ReconcileOutcome::NotFilled));
+    assert_eq!(e.model_recon_faults().len(), 1);
+    let asks_at_block = rep(&e, "dispatched");
+    // Protective exit still fires on the held position while the fault stands.
+    let mut ts = T_LAND + 1_000;
+    let mut slot = 2_200;
+    for _ in 0..200 {
+        e.tick(AppEvent::CurveObserved {
+            mint: mint(),
+            v_sol_lamports: VSOL / 4,
+            v_tokens: VTOK * 4,
+            real_sol_lamports: 1_000_000_000,
+            real_tokens: 900_000_000_000_000,
+            recv_unix_ms: Some(ts),
+            slot,
+        });
+        pump(&mut e, 2);
+        ts += 400;
+        slot += 1;
+        if !e.model_position_open(&MINT) {
+            break;
+        }
+    }
+    assert!(
+        !e.model_position_open(&MINT),
+        "held position was protected while the block stood"
+    );
+    assert_eq!(
+        e.model_recon_faults().len(),
+        1,
+        "the block did not lift by itself"
+    );
+    assert_eq!(
+        rep(&e, "dispatched"),
+        asks_at_block,
+        "no new ask/exposure for the blocked mint"
+    );
 }
 
 #[test]
@@ -361,4 +465,63 @@ fn lifecycle_i_older_report_paths_cannot_see_an_unvalidated_routing_fill() {
     );
     // Cash is real simulator state, so it is settled (and distinct from the assessment feeds).
     let _ = cash_before;
+}
+
+#[test]
+fn lifecycle_j_operational_reconciliation_and_protection_are_not_skipped_for_routing_fills() {
+    // OPERATIONAL (cash / inventory / protective exit) vs ASSESSMENT (lane perf, recon, analytics,
+    // tape, promotion). The guard may skip only the latter.
+    let (mut e, _c) = with_pending();
+    landing(&mut e, T_LAND, 2_100);
+    assert!(e.model_position_open(&MINT));
+    let cash_after_entry = e.bankroll_balance();
+    // A collapse of the held routing position's own price must close it through the NORMAL tick path
+    // (no report()/finalize), i.e. management and safety see it.
+    let mut ts = T_LAND + 1_000;
+    let mut slot = 2_200;
+    for _ in 0..200 {
+        e.tick(AppEvent::CurveObserved {
+            mint: mint(),
+            v_sol_lamports: VSOL / 4,
+            v_tokens: VTOK * 4,
+            real_sol_lamports: 1_000_000_000,
+            real_tokens: 900_000_000_000_000,
+            recv_unix_ms: Some(ts),
+            slot,
+        });
+        pump(&mut e, 2);
+        ts += 400;
+        slot += 1;
+        if !e.model_position_open(&MINT) {
+            break;
+        }
+    }
+    assert!(
+        !e.model_position_open(&MINT),
+        "a protective exit fired on a routing position"
+    );
+    // Cash settled exactly once, through the normal exit: one excluded exit, and the bankroll moved
+    // from its post-entry level by that exit's proceeds and nothing else.
+    assert_eq!(e.model_excluded_exits().len(), 1);
+    let x = e.model_excluded_exits()[0];
+    assert_ne!(
+        e.bankroll_balance(),
+        cash_after_entry,
+        "the exit settled cash"
+    );
+    // Journal: a RoutingExit (assessable=false) and never a Filled, so Filled consumers can't sum it.
+    let routing = e
+        .journal_recent()
+        .filter(|d| matches!(d, pump_quant_app::journal_log::Decision::RoutingExit { .. }))
+        .count();
+    let filled = e
+        .journal_recent()
+        .filter(|d| matches!(d, pump_quant_app::journal_log::Decision::Filled { .. }))
+        .count();
+    assert_eq!((routing, filled), (1, 0));
+    // Nothing leaked into assessment.
+    let r = e.report();
+    assert!(r.per_lane_net.iter().all(|(_, n)| *n == 0));
+    assert_eq!(e.analytics_report().trades, 0);
+    let _ = x;
 }

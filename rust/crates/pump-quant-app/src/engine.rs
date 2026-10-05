@@ -1632,6 +1632,11 @@ impl Engine {
     /// (not the config directly) is what makes a live path structurally unable to
     /// size off the paper seed.
     #[must_use]
+    /// Recent journal decisions (inspection; the digest covers all).
+    pub fn journal_recent(&self) -> impl Iterator<Item = &Decision> {
+        self.journal.recent()
+    }
+
     pub fn bankroll_balance(&self) -> u64 {
         let b = i128::from(self.bankroll_origin.seed_lamports()) + self.bankroll_realized;
         b.clamp(0, i128::from(u64::MAX)) as u64
@@ -5508,11 +5513,30 @@ impl Engine {
                 self.tape_latency.push(latency.trace);
             }
         }
-        self.journal.record(Decision::Filled {
-            mint: e.mint,
-            net_pnl_lamports: e.net_lamports,
-            reason: e.reason.code(),
-        });
+        // A routing (non-assessable) fill is journalled as its own record so a `Filled` consumer
+        // cannot sum it. Cash/inventory below are settled identically either way.
+        if quarantined {
+            let status = self
+                .model_fills
+                .iter()
+                .rev()
+                .find(|f| f.mint == e.mint)
+                .map_or(0, |f| {
+                    u8::from(f.quote_validated) | (u8::from(f.landing_validated) << 1)
+                });
+            self.journal.record(Decision::RoutingExit {
+                mint: e.mint,
+                net_pnl_lamports: e.net_lamports,
+                reason: e.reason.code(),
+                status,
+            });
+        } else {
+            self.journal.record(Decision::Filled {
+                mint: e.mint,
+                net_pnl_lamports: e.net_lamports,
+                reason: e.reason.code(),
+            });
+        }
         // §47/§54 LAW 17: register this exit for post-exit markout sampling at its
         // fill mark; the forward samples are taken at the mandated ns horizons on
         // the reflection cadence. Report-only — never touches the journal digest.

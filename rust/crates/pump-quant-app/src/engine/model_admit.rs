@@ -107,6 +107,17 @@ pub struct ModelFillRecord {
     pub from_reconcile: bool,
 }
 
+/// The result of resolving a reconciliation fault against authoritative evidence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FaultResolution {
+    /// There was no fault on this mint.
+    NoFault,
+    /// Books now agree with the evidence and the exposure block is released.
+    Released { unwound: bool },
+    /// The books cannot be reconciled without inventing data; the fault and block REMAIN.
+    Refused(&'static str),
+}
+
 /// How an uncertain acknowledgement was resolved.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReconcileOutcome {
@@ -933,20 +944,94 @@ impl Engine {
         &self.model_fills
     }
 
+    /// TEST SUPPORT: record a first terminal report for a mint whose fill the paper simulator already
+    /// applied, so a later conflicting report exercises the fault path against an open position.
+    #[doc(hidden)]
+    pub fn model_note_terminal_for_test(&mut self, mint: &[u8; 32], outcome: ReconcileOutcome) {
+        self.model_terminal.insert(*mint, outcome);
+    }
+
     /// Mints with an unresolved reconciliation fault, with the conflicting evidence preserved.
     #[must_use]
     pub fn model_recon_faults(&self) -> &BTreeMap<[u8; 32], Vec<ReconcileOutcome>> {
         &self.model_recon_faults
     }
 
-    /// Explicit, auditable resolution of a fault (authority decision); counted.
-    pub fn model_resolve_recon_fault(&mut self, mint: &[u8; 32]) -> bool {
-        let had = self.model_recon_faults.remove(mint).is_some();
-        if had {
-            self.model_terminal.remove(mint);
-            self.mrep("reconcile:fault_resolved_by_authority");
+    /// Resolve a reconciliation fault against AUTHORITATIVE execution evidence. The block is released
+    /// only after the engine's own books (pending order, open inventory, committed capital) have been
+    /// made to agree with that evidence; where they cannot be reconciled without inventing data the
+    /// fault stays and the reason is named. Every path is counted; nothing is silently dropped.
+    pub fn model_resolve_recon_fault(
+        &mut self,
+        mint: &[u8; 32],
+        authoritative: ReconcileOutcome,
+    ) -> FaultResolution {
+        if !self.model_recon_faults.contains_key(mint) {
+            return FaultResolution::NoFault;
         }
-        had
+        let holds_position = self.open_lane.contains_key(mint);
+        let has_order = self.model_orders.contains_key(mint);
+        let was_closed = self.model_excluded_exits.iter().any(|x| x.mint == *mint);
+        let refuse = |s: &mut Self, why: &'static str| {
+            s.mrep(format!("reconcile:resolution_refused:{why}"));
+            FaultResolution::Refused(why)
+        };
+        match authoritative {
+            ReconcileOutcome::NotFilled => {
+                if was_closed && !holds_position {
+                    // Cash from the (now-closed) position was already settled and exited; undoing it
+                    // would rewrite realized history. That needs an explicit ledger adjustment.
+                    return refuse(self, "position_already_closed_needs_ledger_adjustment");
+                }
+                let mut unwound = false;
+                if has_order {
+                    self.model_orders.remove(mint);
+                    unwound = true;
+                }
+                if holds_position {
+                    let (size, cost) = self
+                        .open_lane
+                        .get(mint)
+                        .map(|a| (a.entry_spend, a.entry_spend))
+                        .unwrap_or((0, 0));
+                    self.positions.reverse_paper_entry(mint, size);
+                    self.admitted = self.admitted.saturating_sub(1);
+                    self.bankroll_committed =
+                        self.bankroll_committed.saturating_sub(u128::from(cost));
+                    self.ata_open.remove(mint);
+                    self.open_lane.remove(mint);
+                    self.model_quarantine.remove(mint);
+                    self.theses.remove(mint);
+                    self.thesis_adverse.remove(mint);
+                    unwound = true;
+                }
+                self.model_recon_faults.remove(mint);
+                self.model_terminal
+                    .insert(*mint, ReconcileOutcome::NotFilled);
+                self.mrep("reconcile:fault_resolved_not_filled");
+                FaultResolution::Released { unwound }
+            }
+            ReconcileOutcome::Filled(_) => {
+                if holds_position && !has_order {
+                    // Books already show exactly one fill: consistent with the evidence.
+                    self.model_recon_faults.remove(mint);
+                    self.model_terminal.insert(*mint, authoritative);
+                    self.mrep("reconcile:fault_resolved_filled_consistent");
+                    FaultResolution::Released { unwound: false }
+                } else if has_order && !holds_position {
+                    // The pending order becomes the single fill, from the evidence's own numbers.
+                    self.model_recon_faults.remove(mint);
+                    self.model_terminal.remove(mint);
+                    let _ = self.model_reconcile(mint, authoritative);
+                    self.mrep("reconcile:fault_resolved_filled_applied");
+                    FaultResolution::Released { unwound: false }
+                } else {
+                    // No pending order and no position (or both): there is nothing to attach the fill
+                    // to, and inventing an entry would fabricate economics.
+                    refuse(self, "filled_evidence_without_matching_book_state")
+                }
+            }
+        }
     }
 
     /// The opportunity funnel by venue, in UNIQUE markets, including those that never became

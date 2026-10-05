@@ -17,6 +17,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use pump_quant_app::config::Config;
+use pump_quant_app::engine::model_admit::{FaultResolution, FillReport, ReconcileOutcome};
 use pump_quant_app::engine::{Engine, RunMode};
 use pump_quant_app::event::{AppEvent, TradeVenue};
 use pump_quant_app::model_authority::ModelSource;
@@ -143,8 +144,12 @@ fn replay(stop_before_first_amm: bool) -> Run {
                     token_reserve_pre: v["bres"].as_u64().unwrap(),
                     quote_reserve_pre: v["qres"].as_u64().unwrap(),
                     fee_bps: v["fee_bps"].as_u64().map(|x| x as u32),
-                    fee_parts: None,
-                    virtual_quote: None,
+                    fee_parts: Some((
+                        v["lp"].as_u64().unwrap() as u32,
+                        v["pr"].as_u64().unwrap() as u32,
+                        v["cr"].as_u64().unwrap() as u32,
+                    )),
+                    virtual_quote: v["vq"].as_u64(),
                     is_buy: v["buy"].as_bool().unwrap(),
                     token_amount: v["tok"].as_u64().unwrap(),
                     quote_lamports: v["sol"].as_u64().unwrap(),
@@ -214,18 +219,81 @@ fn an_amm_market_is_discovered_from_stream_events_and_bought_through_the_real_en
         0,
         "the stub never buys the curve: {rpt:?}"
     );
-    // TIMING/FEE CORRECTION (post 7b245eb7): a fill needs (a) a reserve state from a STRICTLY later
-    // chain slot than the order's creation, and (b) the fee rate reported by THAT landing swap's own
-    // event (never carried forward). This fixture carries a per-event fee on only 20 of its swaps, so
-    // most landing states are refused BY NAME instead of being priced with a stale 125 bp. The
-    // position-opening assertion returns with the full per-event-fee fixture (chain fetch pending).
+    // EXECUTION lifecycle on a source-backed fixture: every swap carries its OWN fee parts and
+    // virtual quote reserve decoded from the transaction's event (see fixtures/amm_atoo_events.jsonl,
+    // rebuilt from chain). Quote arithmetic is the validated `buy_exact_quote_in` rule; the landing
+    // assumption (fill against the next observed swap's pre-trade state, strictly later slot) is
+    // UNVALIDATED, so the resulting position is a ROUTING fill, not assessable. Not a prompt-parity
+    // claim: flow completeness is a separate test.
     assert!(
-        rep(&r.e, "fill_none:amm_economics_not_on_landing_event") >= 1,
-        "the strict-fee refusal must fire on this fixture: {rpt:?}"
+        rep(&r.e, "fill:position_opened_amm") >= 1,
+        "complete per-event economics must now allow the AMM fill: {rpt:?}"
     );
     assert_eq!(
-        rep(&r.e, "fill:position_opened_amm"),
+        rep(&r.e, "fill_none:amm_economics_not_on_landing_event"),
         0,
-        "no pool fill may be priced from a carried-forward fee: {rpt:?}"
+        "{rpt:?}"
     );
+    assert!(!r.e.model_all_fills().is_empty());
+    let f = r.e.model_all_fills()[0];
+    assert!(f.amm && f.quote_validated && !f.landing_validated);
+    assert!(r.e.model_assessable_fills().is_empty());
+}
+
+// ---- LIFECYCLE on the AMM path (execution lifecycle only; not routing, quote or prompt parity).
+// Uses the same source-backed fixture, so the position is a real AMM fill with per-event economics.
+fn amm_run_with_fill() -> Run {
+    let r = replay(false);
+    assert!(
+        rep(&r.e, "fill:position_opened_amm") >= 1,
+        "AMM fill required for these lifecycle cases"
+    );
+    r
+}
+
+#[test]
+fn amm_fill_is_applied_once_and_duplicates_do_not_add_inventory() {
+    let r = amm_run_with_fill();
+    assert_eq!(
+        rep(&r.e, "fill:position_opened_amm"),
+        1,
+        "exactly one fill for one order"
+    );
+    assert_eq!(r.e.model_all_fills().iter().filter(|f| f.amm).count(), 1);
+    assert_eq!(
+        r.e.model_pending_orders(),
+        0,
+        "no order left pending after its fill"
+    );
+}
+
+#[test]
+fn amm_conflicting_terminal_reports_fault_and_resolution_reconciles_the_books() {
+    let mut r = amm_run_with_fill();
+    let m = r.e.model_all_fills()[0].mint;
+    let fr = FillReport {
+        entry_price_fp: 1,
+        reserve_sol_lamports: 1,
+    };
+    r.e.model_note_terminal_for_test(&m, ReconcileOutcome::Filled(fr));
+    assert!(!r.e.model_reconcile(&m, ReconcileOutcome::NotFilled));
+    assert_eq!(r.e.model_recon_faults().len(), 1);
+    assert_eq!(rep(&r.e, "reconcile:FAULT_conflicting_terminal"), 1);
+    let held = r.e.model_position_open(&m);
+    let res =
+        r.e.model_resolve_recon_fault(&m, ReconcileOutcome::NotFilled);
+    if held {
+        assert_eq!(res, FaultResolution::Released { unwound: true });
+        assert!(
+            !r.e.model_position_open(&m),
+            "inventory unwound before the block lifts"
+        );
+    } else {
+        // Already closed by the normal exit path: realized cash cannot be silently rewritten.
+        assert_eq!(
+            res,
+            FaultResolution::Refused("position_already_closed_needs_ledger_adjustment")
+        );
+        assert_eq!(r.e.model_recon_faults().len(), 1, "fault and block remain");
+    }
 }

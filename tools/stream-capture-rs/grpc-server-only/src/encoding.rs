@@ -21,6 +21,15 @@ pub fn b58_encode(bytes: &[u8]) -> String {
             carry /= 58;
         }
     }
+    // `digits` is seeded with a single 0, which for an all-zero input stays as a spurious extra digit
+    // (the 32-byte System Program key came out as 33 '1's). Drop most-significant zero digits; the
+    // leading-zero BYTES are re-added as '1's below.
+    while digits.len() > 1 && digits.last() == Some(&0) {
+        digits.pop();
+    }
+    if bytes.iter().all(|&b| b == 0) {
+        digits.clear();
+    }
     let zeros = bytes.iter().take_while(|&&b| b == 0).count();
     let mut out = String::with_capacity(zeros + digits.len());
     out.extend(std::iter::repeat('1').take(zeros));
