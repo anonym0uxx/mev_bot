@@ -2045,22 +2045,18 @@ impl Config {
             "alpha_exit_pressure_enable = {}",
             self.alpha_exit_pressure_enable as i64
         );
-        let _ = writeln!(
-            s,
-            "arb_min_expected_net_lamports = {}",
-            { self.arb_min_expected_net_lamports }
-        );
+        let _ = writeln!(s, "arb_min_expected_net_lamports = {}", {
+            self.arb_min_expected_net_lamports
+        });
         let _ = writeln!(
             s,
             "bankroll_initial_lamports = {}",
             self.bankroll_initial_lamports as i64
         );
         let _ = writeln!(s, "bar_trades_per_bar = {}", self.bar_trades_per_bar as i64);
-        let _ = writeln!(
-            s,
-            "baseline_margin_lamports = {}",
-            { self.baseline_margin_lamports }
-        );
+        let _ = writeln!(s, "baseline_margin_lamports = {}", {
+            self.baseline_margin_lamports
+        });
         let _ = writeln!(
             s,
             "baseline_min_trades = {}",
@@ -2288,11 +2284,9 @@ impl Config {
             "mcap_band_lo_lamports = {}",
             self.mcap_band_lo_lamports as i64
         );
-        let _ = writeln!(
-            s,
-            "meta_accel_threshold = {}",
-            { self.meta_accel_threshold }
-        );
+        let _ = writeln!(s, "meta_accel_threshold = {}", {
+            self.meta_accel_threshold
+        });
         let _ = writeln!(
             s,
             "meta_max_categories = {}",

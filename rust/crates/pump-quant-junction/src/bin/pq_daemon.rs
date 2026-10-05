@@ -48,8 +48,8 @@ use pump_quant_junction::autonomous_bridge::{
 use pump_quant_junction::decode::decode_onchain_confirm_with_curve;
 use pump_quant_junction::event_stream::EventStreamWriter;
 use pump_quant_junction::laserstream::{
-    classify_pump_instructions, instructions_to_events_with_meta,
-    parse_ndjson_line, LaserStreamState, LaserStreamUpdate,
+    classify_pump_instructions, instructions_to_events_with_meta, parse_ndjson_line,
+    LaserStreamState, LaserStreamUpdate,
 };
 use pump_quant_junction::memory_bank::{MemoryBank, MemoryBankConfig};
 use pump_quant_junction::pumpportal::{
@@ -225,8 +225,8 @@ const OUTBOUND_LANES: usize = pump_quant_junction::async_sink::DEFAULT_LANES;
 /// 120s is conservative — the median OnchainConfirm latency is 37.6s, so
 /// 120s of silence means 3x the median with zero confirms = definitely dead.
 #[allow(dead_code)] // unimplemented OnchainConfirm stagnation detector: last_confirm_tick is
-// tracked (2718/3331/3437) but the `tick - last_confirm_tick > ONCHAIN_STAGNATION_SECS`
-// comparison is not yet wired. Kept as the policy anchor; see N2 report (production dead code).
+                    // tracked (2718/3331/3437) but the `tick - last_confirm_tick > ONCHAIN_STAGNATION_SECS`
+                    // comparison is not yet wired. Kept as the policy anchor; see N2 report (production dead code).
 const ONCHAIN_STAGNATION_SECS: u64 = 120;
 
 /// WS read timeout in millis. Tightened from tick_period_ms (250ms) to prevent
@@ -914,7 +914,7 @@ impl SubTracker {
     /// Some if Helius has ACKed the subscription (needed to send
     /// accountUnsubscribe), or None if the ACK hasn't arrived yet.
     #[allow(dead_code)] // convenience wrapper over evict_oldest_protecting; referenced by the
-    // doc link below, not yet called. Kept; see N2 report (production dead code).
+                        // doc link below, not yet called. Kept; see N2 report (production dead code).
     fn evict_oldest(&mut self) -> Option<(u64, [u8; 32], Option<u64>)> {
         self.evict_oldest_protecting(&std::collections::HashSet::new())
     }
@@ -2230,7 +2230,8 @@ fn main() -> ExitCode {
                     for line in reader.lines() {
                         match line {
                             Ok(text) => {
-                                if !text.is_empty() && fc_tx_clone.send(text.into_bytes()).is_err() {
+                                if !text.is_empty() && fc_tx_clone.send(text.into_bytes()).is_err()
+                                {
                                     break;
                                 }
                             }
@@ -3036,7 +3037,9 @@ fn main() -> ExitCode {
                         }
 
                         if trade_sub_tracker.add(&mint_b58) {
-                            let sub_msg = pumpportal_ws::subscribe_token_trade(std::slice::from_ref(&mint_b58));
+                            let sub_msg = pumpportal_ws::subscribe_token_trade(
+                                std::slice::from_ref(&mint_b58),
+                            );
                             match pp_conn.send_text(&sub_msg) {
                                 Ok(()) => {
                                     stats.pp_trade_subs_sent += 1;
@@ -4145,7 +4148,8 @@ fn main() -> ExitCode {
                         l.text
                     );
                 }
-                #[allow(clippy::manual_is_multiple_of)] // MSRV 1.85: is_multiple_of stabilised in 1.87
+                #[allow(clippy::manual_is_multiple_of)]
+                // MSRV 1.85: is_multiple_of stabilised in 1.87
                 if tick_counter % args.status_every_ticks.max(1) == 0 {
                     let (report, _) =
                         pump_quant_junction::model_lifecycle::held_data_report(&engine);

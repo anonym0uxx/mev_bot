@@ -11,12 +11,12 @@
 // helper stabilised in 1.87) — the same choice `engine.rs` documents.
 #![allow(clippy::manual_is_multiple_of)]
 
-use base64::engine::general_purpose::STANDARD as B64;
-use base64::Engine as _;
 use crate::laserstream::{classify_pump_instructions, parse_ndjson_line, LaserStreamUpdate};
 use crate::memory_bank::{MemoryBank, MemoryBankConfig};
 use crate::trade_journal::{RunMode, TradeOutcome, TradeRecord, TradeSide};
 use crate::ProvenanceSource;
+use base64::engine::general_purpose::STANDARD as B64;
+use base64::Engine as _;
 
 // ---------------------------------------------------------------------------
 // LaserStream parser chaos tests

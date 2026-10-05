@@ -734,10 +734,7 @@ fn wallet_cash_inventory_basis_and_realized_tie_out_through_add_reduce_and_exit(
         r.advance(10_000);
         r.landing(270_000_000 + (r.clock as u64 % 1_000));
     }
-    let red =
-        r.e.model_mgmt_fills()
-            .iter().find(|f| !f.is_add)
-            .copied();
+    let red = r.e.model_mgmt_fills().iter().find(|f| !f.is_add).copied();
     assert!(
         red.is_some(),
         "the REDUCE leg must actually run, not be skipped: {:?}",

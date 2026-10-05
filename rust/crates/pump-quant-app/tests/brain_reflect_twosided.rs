@@ -156,7 +156,6 @@
 // Plain modulo, not `is_multiple_of`, to honour the workspace MSRV 1.85 (the
 // helper stabilised in 1.87) — the same choice `engine.rs` documents.
 #![allow(dead_code)] // test scaffolding: helper/fixture chains not every #[test] exercises (consolidation N2)
-
 #![allow(clippy::manual_is_multiple_of)]
 
 use pump_quant_app::config::Config;

@@ -887,11 +887,13 @@ struct ShadowReplayResult {
     challenger_id: String,
     /// NetSol for the challenger after applying the mutation's cost model.
     challenger_net_scalp: NetSol,
-    #[allow(dead_code)] // early-horizon mirror of challenger_net_scalp; kept for the two-horizon result shape, not yet read
+    #[allow(dead_code)]
+    // early-horizon mirror of challenger_net_scalp; kept for the two-horizon result shape, not yet read
     challenger_net_early: NetSol,
     /// The champion's NetSol for comparison.
     champion_net_scalp: NetSol,
-    #[allow(dead_code)] // early-horizon mirror of champion_net_scalp; kept for the two-horizon result shape, not yet read
+    #[allow(dead_code)]
+    // early-horizon mirror of champion_net_scalp; kept for the two-horizon result shape, not yet read
     champion_net_early: NetSol,
     /// The verdict: does the challenger defeat the champion?
     verdict: ChampionVerdict,

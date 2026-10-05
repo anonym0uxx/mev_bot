@@ -867,7 +867,8 @@ pub struct Engine {
     model_excluded_exits: Vec<model_admit::ExcludedExit>,
     model_recon_faults: BTreeMap<u64, model_admit::ReconFault>,
     /// Per-mint (fee parts, virtual quote, swap time) of the latest swap: executable economics.
-    #[allow(clippy::type_complexity)] // per-mint latest-swap economics tuple; a type alias would scatter the shape
+    #[allow(clippy::type_complexity)]
+    // per-mint latest-swap economics tuple; a type alias would scatter the shape
     model_amm_econ: BTreeMap<[u8; 32], (Option<(u32, u32, u32)>, Option<u64>, i64)>,
     /// Non-canonical pools seen per mint (counted, never priced from): the honest `pools_total`.
     model_other_pools: BTreeMap<[u8; 32], BTreeSet<[u8; 32]>>,

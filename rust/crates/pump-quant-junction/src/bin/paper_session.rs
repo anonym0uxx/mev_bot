@@ -606,7 +606,9 @@ fn main() -> ExitCode {
 
                         // ── Dynamically subscribe to trades for this mint ──
                         if trade_sub_tracker.add(&mint_b58) {
-                            let sub_msg = pumpportal_ws::subscribe_token_trade(std::slice::from_ref(&mint_b58));
+                            let sub_msg = pumpportal_ws::subscribe_token_trade(
+                                std::slice::from_ref(&mint_b58),
+                            );
                             match pp_conn.send_text(&sub_msg) {
                                 Ok(()) => {
                                     stats.pp_trade_subs_sent += 1;
