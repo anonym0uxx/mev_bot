@@ -1033,6 +1033,7 @@ dependencies = [
  "pump-quant-domain",
  "pump-quant-evaluator",
  "pump-quant-execution",
+ "pump-quant-inference",
  "pump-quant-ingest",
  "pump-quant-market-state",
  "pump-quant-narrative",

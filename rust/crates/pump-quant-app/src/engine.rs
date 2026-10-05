@@ -15,7 +15,7 @@
 
 use std::time::Instant;
 
-mod model_admit;
+pub mod model_admit;
 use crate::analytics::ReflectionAnalytics;
 use crate::brain::{
     burst_phase_of, discovery_lane_of, exit_reason_of, narrative_class_of, platform_of,
@@ -874,6 +874,10 @@ pub struct Engine {
     model_clock_ms: i64,
     /// Highest on-chain slot observed on the model feed (orders record it at creation).
     model_slot: u64,
+    /// (receipt ms, slot) of the AMM swap being processed right now; `None` between swaps.
+    model_swap_ctx: Option<(i64, u64)>,
+    /// The last named refusal per registered market (for never-ready reporting).
+    model_last_refusal: BTreeMap<[u8; 32], String>,
     /// The installed model source, when the lane is armed. `None` in legacy/replay.
     model_source: Option<std::sync::Arc<dyn ModelSource + Send + Sync>>,
     now: u64,
@@ -1472,6 +1476,8 @@ impl Engine {
             model_report: BTreeMap::new(),
             model_clock_ms: 0,
             model_slot: 0,
+            model_swap_ctx: None,
+            model_last_refusal: BTreeMap::new(),
             model_source: None,
             now: 0,
             numeric: NumericLane::new(),

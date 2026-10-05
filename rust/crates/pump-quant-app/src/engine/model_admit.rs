@@ -18,6 +18,7 @@
 //! PAPER ONLY. A `RunMode::Live` engine, or one with an outbound sink installed, refuses every
 //! model admission by name (`refuse:live_forbidden`) and dispatches nothing.
 
+use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
 use pump_quant_inference::seam::DriftLedger;
@@ -74,6 +75,20 @@ pub struct AmmSwapIn {
     pub slot: u64,
 }
 
+/// A fill reported by an authority outside the paper simulator (execution truth).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FillReport {
+    pub entry_price_fp: u64,
+    pub reserve_sol_lamports: u64,
+}
+
+/// How an uncertain acknowledgement was resolved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReconcileOutcome {
+    NotFilled,
+    Filled(FillReport),
+}
+
 /// What the engine remembers about one outstanding request: the immutable snapshot it was bound to.
 #[derive(Debug, Clone)]
 pub(super) struct ModelReqMeta {
@@ -92,6 +107,13 @@ pub(super) struct ModelOrder {
     /// Highest ON-CHAIN slot the feed had shown when the order was created. A fill state must come
     /// from a STRICTLY later slot: a swap observed late but executed earlier is not a landing state.
     pub created_slot: u64,
+    /// The prompt's decision clock; distinct from `created_ms` (verdict accepted) and from the
+    /// reserve receipt time that prices the fill.
+    pub snap_t_dec_ms: i64,
+    /// Acknowledgement unknown: stays PENDING (not inventory, not TTL-cleared) until reconciled.
+    pub uncertain: bool,
+    /// Execution truth reported by `model_reconcile`, applied exactly once.
+    pub confirmed: Option<FillReport>,
     pub lane: WlLane,
     pub discovery_lane: DiscoveryLane,
     pub snap_price: f64,
@@ -217,7 +239,9 @@ impl Engine {
         for mint in dirty {
             if budget == 0 {
                 self.mrep("sched_deferred_budget");
-                break;
+                let (v, _, _) = self.model_cache.describe(&mint, clock);
+                self.mrep(format!("sched_deferred|venue={v}"));
+                continue;
             }
             if self
                 .model_last_ask
@@ -324,7 +348,9 @@ impl Engine {
         // Event-driven: the FIRST eligible landing state fills the order, not whatever is newest at
         // the next tick.
         let c = self.model_clock_ms;
+        self.model_swap_ctx = Some((ts_ms, a.slot));
         self.model_try_fills(c);
+        self.model_swap_ctx = None;
     }
 
     fn model_admit_mint(&mut self, mint: [u8; 32], cand_lane: WlLane, cand_dlane: DiscoveryLane) {
@@ -372,6 +398,9 @@ impl Engine {
         let snap = match self.model_cache.snapshot(&mint, clock) {
             Ok(s) => s,
             Err(r) => {
+                if self.model_last_refusal.len() < REGISTRY_CAP {
+                    self.model_last_refusal.insert(mint, r.as_str().to_string());
+                }
                 self.mrep(format!("refuse:{}|{dims}", r.as_str()));
                 return;
             }
@@ -436,6 +465,7 @@ impl Engine {
             },
         );
         self.model_uniq("dispatched", &mint, venue);
+        self.mrep(format!("dispatched|venue={venue}"));
         self.mrep("dispatched");
     }
 
@@ -531,6 +561,9 @@ impl Engine {
                         clip_lamports,
                         price_limit,
                         created_ms: clock,
+                        snap_t_dec_ms: meta.snap.t_dec_ms,
+                        uncertain: false,
+                        confirmed: None,
                         created_slot: self.model_slot,
                         lane: meta.lane,
                         discovery_lane: meta.discovery_lane,
@@ -565,13 +598,30 @@ impl Engine {
             let Some(order) = self.model_orders.get(&mint).copied() else {
                 continue;
             };
+            if order.uncertain && order.confirmed.is_none() {
+                // Acknowledgement unknown: still pending intent. Neither expired nor filled here.
+                self.mrep("pending_uncertain_held");
+                continue;
+            }
+            if let Some(fr) = order.confirmed {
+                self.model_orders.remove(&mint);
+                self.mrep("fill:applied_from_reconcile");
+                self.model_open_filled(mint, order, fr.reserve_sol_lamports, fr.entry_price_fp, 0);
+                continue;
+            }
             let landing = order.created_ms + MODEL_FILL_LANDING_MS;
             let size = order.clip_lamports;
             // Landing state: the first reserve observation at/after landing, from the plane the
             // DECISION used. A curve order is never priced from a pool, nor the reverse.
             let (reserve_sol, tokens_out, entry_price, entry_fee_bps) = if order.amm {
                 let obs = self.model_cache.amm_obs(&mint).filter(|o| {
-                    o.ts_ms >= landing && o.ts_ms <= clock && o.slot > order.created_slot
+                    o.ts_ms >= landing
+                        && o.ts_ms <= clock
+                        && o.slot > order.created_slot
+                        // Pre-trade liquidity is valid ONLY at the instant of the swap it precedes.
+                        // Once that swap has been observed the pool has moved, so a later tick must
+                        // never fill against it: only the swap being processed right now qualifies.
+                        && self.model_swap_ctx == Some((o.ts_ms, o.slot))
                 });
                 let Some(obs) = obs else {
                     if clock - order.created_ms > MODEL_ORDER_TTL_MS {
@@ -581,6 +631,7 @@ impl Engine {
                     continue;
                 };
                 self.model_orders.remove(&mint);
+                self.model_note_latency(&order, obs.ts_ms);
                 // The fee is the rate the LANDING-STATE swap's own event reported (lp + protocol +
                 // creator, charged on the input). It is NEVER carried forward from an earlier swap:
                 // PumpSwap fees are dynamic, so a stale rate would price a different pool state.
@@ -663,71 +714,166 @@ impl Engine {
                     }
                 }
             }
-            let Some(rt_bps) = self.unified_rt_bps(&mint, size, reserve_sol) else {
-                self.mrep("fill_none:undecoded_quote");
-                continue;
-            };
-            let entry_fee = (u128::from(size) * u128::from(entry_fee_bps) / 10_000) as u64;
-            let needs_ata = !self.ata_open.contains(&mint);
-            let entry_cost = size
-                .saturating_add(entry_fee)
-                .saturating_add(crate::cost_model::FIXED_LAMPORTS_PER_LEG)
-                .saturating_add(if needs_ata {
-                    crate::cost_model::ATA_RENT_LAMPORTS
-                } else {
-                    0
-                });
-            let floor = derive_survival_floor(
-                self.bankroll_origin.seed_lamports(),
-                self.cfg.floor_fraction_bps,
-            );
-            if wallet_floor_guard(entry_cost, self.bankroll_balance(), floor)
-                == FloorVerdict::RefusedBelowFloor
-            {
-                self.mrep("fill_none:below_wallet_floor");
-                continue;
-            }
-            let pe = PendingEntry {
-                lane: order.lane,
-                discovery_lane: order.discovery_lane,
-                archetype: self.classify_archetype(&mint),
-                mint,
-                entry_price,
-                size,
-                entry_cost,
-                // No economic band and no expected-net exist for a model entry: the brain decided
-                // it, and arbitration is bypassed. Zero, not a fabricated figure.
-                expected_net: 0,
-                round_trip_cost_bps: rt_bps,
-                entry_vsol: reserve_sol,
-                entry_obs: crate::expected_move::SignalObs::none(),
-                x_min: 0,
-                x_cost: 0,
-                x_max: 0,
-                priced_move: self.priced_move(order.lane, None),
-                // 2 = decoded from the curve account; 3 = migrated pool, decoded from the pool's
-                // own swap-event reserves.
-                depth_basis: if order.amm { 3 } else { 2 },
-                brain: None,
-                t_dec: None,
-                price_limit: order.price_limit,
-                full_clip: true,
-            };
-            self.open_pending(&pe);
-            if self.open_lane.contains_key(&mint) {
-                self.mrep(if order.amm {
-                    "fill:position_opened_amm"
-                } else {
-                    "fill:position_opened"
-                });
-                self.journal.record(Decision::Promoted {
-                    mint,
-                    lane: order.lane as u8,
-                    rank: 0,
-                });
+            self.model_open_filled(mint, order, reserve_sol, entry_price, entry_fee_bps);
+        }
+    }
+
+    /// Open the position for an order whose fill price/liquidity are established. The ONLY place a
+    /// model order becomes inventory, so a fill is applied at most once (the caller has already
+    /// removed the order; a second report finds none).
+    fn model_open_filled(
+        &mut self,
+        mint: [u8; 32],
+        order: ModelOrder,
+        reserve_sol: u64,
+        entry_price: u64,
+        entry_fee_bps: u32,
+    ) {
+        let size = order.clip_lamports;
+        let Some(rt_bps) = self.unified_rt_bps(&mint, size, reserve_sol) else {
+            self.mrep("fill_none:undecoded_quote");
+            return;
+        };
+        let entry_fee = (u128::from(size) * u128::from(entry_fee_bps) / 10_000) as u64;
+        let needs_ata = !self.ata_open.contains(&mint);
+        let entry_cost = size
+            .saturating_add(entry_fee)
+            .saturating_add(crate::cost_model::FIXED_LAMPORTS_PER_LEG)
+            .saturating_add(if needs_ata {
+                crate::cost_model::ATA_RENT_LAMPORTS
             } else {
-                self.mrep("fill_none:position_cap");
+                0
+            });
+        let floor = derive_survival_floor(
+            self.bankroll_origin.seed_lamports(),
+            self.cfg.floor_fraction_bps,
+        );
+        if wallet_floor_guard(entry_cost, self.bankroll_balance(), floor)
+            == FloorVerdict::RefusedBelowFloor
+        {
+            self.mrep("fill_none:below_wallet_floor");
+            return;
+        }
+        let pe = PendingEntry {
+            lane: order.lane,
+            discovery_lane: order.discovery_lane,
+            archetype: self.classify_archetype(&mint),
+            mint,
+            entry_price,
+            size,
+            entry_cost,
+            // No economic band and no expected-net exist for a model entry: the brain decided
+            // it, and arbitration is bypassed. Zero, not a fabricated figure.
+            expected_net: 0,
+            round_trip_cost_bps: rt_bps,
+            entry_vsol: reserve_sol,
+            entry_obs: crate::expected_move::SignalObs::none(),
+            x_min: 0,
+            x_cost: 0,
+            x_max: 0,
+            priced_move: self.priced_move(order.lane, None),
+            // 2 = decoded from the curve account; 3 = migrated pool, decoded from the pool's
+            // own swap-event reserves.
+            depth_basis: if order.amm { 3 } else { 2 },
+            brain: None,
+            t_dec: None,
+            price_limit: order.price_limit,
+            full_clip: true,
+        };
+        self.open_pending(&pe);
+        if self.open_lane.contains_key(&mint) {
+            self.mrep(if order.amm {
+                "fill:position_opened_amm|quote=unvalidated"
+            } else {
+                "fill:position_opened"
+            });
+            self.journal.record(Decision::Promoted {
+                mint,
+                lane: order.lane as u8,
+                rank: 0,
+            });
+        } else {
+            self.mrep("fill_none:position_cap");
+        }
+    }
+
+    /// Record the three distinct times behind a fill: decision snapshot -> verdict accepted ->
+    /// reserve receipt. A sum/count pair each, so a report can show the real latencies.
+    fn model_note_latency(&mut self, order: &ModelOrder, receipt_ms: i64) {
+        let d2v = (order.created_ms - order.snap_t_dec_ms).max(0) as u64;
+        let v2r = (receipt_ms - order.created_ms).max(0) as u64;
+        for (k, v) in [("lat_dec_to_verdict", d2v), ("lat_verdict_to_receipt", v2r)] {
+            *self.model_report.entry(format!("{k}_ms_sum")).or_insert(0) += v;
+            *self.model_report.entry(format!("{k}_n")).or_insert(0) += 1;
+        }
+    }
+
+    /// The execution acknowledgement for a pending order is unknown. The order stays pending: it
+    /// is not inventory, and it is NOT cleared by the TTL. Returns false if there is no order.
+    pub fn model_mark_ack_uncertain(&mut self, mint: &[u8; 32]) -> bool {
+        match self.model_orders.get_mut(mint) {
+            Some(o) => {
+                o.uncertain = true;
+                self.mrep("ack:uncertain_marked");
+                true
+            }
+            None => {
+                self.mrep("ack:no_pending_order");
+                false
             }
         }
+    }
+
+    /// Resolve an uncertain order from execution truth. `NotFilled` clears the intent; `Filled`
+    /// applies the reported fill exactly once. With no pending order (already applied / cleared /
+    /// never existed) it is ignored and counted: a duplicate report cannot create a second position.
+    pub fn model_reconcile(&mut self, mint: &[u8; 32], outcome: ReconcileOutcome) -> bool {
+        let Some(o) = self.model_orders.get_mut(mint) else {
+            self.mrep("reconcile:no_pending_order");
+            return false;
+        };
+        match outcome {
+            ReconcileOutcome::NotFilled => {
+                self.model_orders.remove(mint);
+                self.mrep("reconcile:not_filled_cleared");
+            }
+            ReconcileOutcome::Filled(fr) => {
+                o.confirmed = Some(fr);
+                let c = self.model_clock_ms;
+                self.model_try_fills(c);
+            }
+        }
+        true
+    }
+
+    /// The opportunity funnel by venue, in UNIQUE markets, including those that never became
+    /// ready (with the last named reason each was refused). Computed from the registry, so a
+    /// market that was observed but never dispatched is counted, not silently absent.
+    #[must_use]
+    pub fn model_funnel(&self) -> BTreeMap<String, u64> {
+        let mut out: BTreeMap<String, u64> = BTreeMap::new();
+        let clock = self.model_clock_ms;
+        for mint in &self.model_registry {
+            let (venue, _, _) = self.model_cache.describe(mint, clock);
+            *out.entry(format!("discovered|venue={venue}")).or_insert(0) += 1;
+            let ready = self.model_uniq_seen.contains(&("ready".to_string(), *mint));
+            let disp = self
+                .model_uniq_seen
+                .contains(&("dispatched".to_string(), *mint));
+            if ready {
+                *out.entry(format!("ready|venue={venue}")).or_insert(0) += 1;
+            } else {
+                let why = self
+                    .model_last_refusal
+                    .get(mint)
+                    .map_or("never_evaluated", String::as_str);
+                *out.entry(format!("never_ready|venue={venue}|last={why}"))
+                    .or_insert(0) += 1;
+            }
+            if disp {
+                *out.entry(format!("dispatched|venue={venue}")).or_insert(0) += 1;
+            }
+        }
+        out
     }
 }
