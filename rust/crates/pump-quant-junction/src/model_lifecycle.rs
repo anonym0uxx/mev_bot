@@ -222,3 +222,37 @@ pub fn handle_stop_request(
         },
     }
 }
+
+/// One line per held position describing whether management data is actually fresh, plus a loud degraded
+/// summary. Pure formatting over the engine's measured status so the daemon and tests print the same thing.
+#[must_use]
+pub fn held_data_report(engine: &Engine) -> (String, bool) {
+    let hex = |m: &[u8; 32]| m.iter().take(4).map(|b| format!("{b:02x}")).collect::<String>();
+    let status = engine.model_held_data_status();
+    let mut lines = Vec::new();
+    let mut degraded = false;
+    for s in &status {
+        let age = |v: Option<i64>| v.map_or("none".to_string(), |a| format!("{a}ms"));
+        match &s.management_ready {
+            Ok(()) => lines.push(format!(
+                "held {} venue={} reserve_age={} print_age={} READY",
+                hex(&s.mint),
+                if s.amm { "amm" } else { "curve" },
+                age(s.reserve_age_ms),
+                age(s.last_print_age_ms)
+            )),
+            Err(why) => {
+                degraded = true;
+                lines.push(format!(
+                    "held {} venue={} reserve_age={} print_age={} DEGRADED: management data unavailable ({why}); \
+                     protection that remains = print-driven rug-precursor/hard-stop ONLY while prints arrive",
+                    hex(&s.mint),
+                    if s.amm { "amm" } else { "curve" },
+                    age(s.reserve_age_ms),
+                    age(s.last_print_age_ms)
+                ));
+            }
+        }
+    }
+    (lines.join("\n"), degraded)
+}

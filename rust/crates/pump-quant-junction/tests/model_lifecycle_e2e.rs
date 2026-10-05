@@ -155,6 +155,8 @@ struct Endpoint {
     url: String,
     answer: Arc<Mutex<fn(i64) -> &'static str>>,
     hang: Arc<AtomicBool>,
+    /// When non-zero, a MANAGEMENT answer is delayed by this many ms (still a valid, complete decision).
+    delay_ms: Arc<std::sync::atomic::AtomicU64>,
     mgmt_requests: Arc<AtomicUsize>,
     bodies: Arc<Mutex<Vec<String>>>,
 }
@@ -190,9 +192,11 @@ impl Endpoint {
             url,
             answer: Arc::new(Mutex::new(answer)),
             hang: Arc::new(AtomicBool::new(false)),
+            delay_ms: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             mgmt_requests: Arc::new(AtomicUsize::new(0)),
             bodies: Arc::new(Mutex::new(Vec::new())),
         };
+        let delay = Arc::clone(&ep.delay_ms);
         let (ans, hang, cnt, bodies) = (
             Arc::clone(&ep.answer),
             Arc::clone(&ep.hang),
@@ -203,6 +207,7 @@ impl Endpoint {
             for conn in l.incoming() {
                 let Ok(mut s) = conn else { continue };
                 let (ans, hang, cnt, bodies) = (Arc::clone(&ans), Arc::clone(&hang), Arc::clone(&cnt), Arc::clone(&bodies));
+                let delay = Arc::clone(&delay);
                 std::thread::spawn(move || {
                     let Some(body) = read_request(&mut s) else { return };
                     let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
@@ -214,6 +219,10 @@ impl Endpoint {
                     }
                     let text = if user.starts_with("Decide the next action for a position you already hold") {
                         cnt.fetch_add(1, Ordering::SeqCst);
+                        let d = delay.load(Ordering::SeqCst);
+                        if d > 0 {
+                            std::thread::sleep(Duration::from_millis(d));
+                        }
                         let step: i64 = user
                             .lines()
                             .find_map(|l| l.strip_prefix("STEP: "))
@@ -512,4 +521,72 @@ fn the_latch_survives_process_recreation_and_rearm_is_refused_with_unresolved_ex
     // Explicit re-arm with an unresolved record is refused or succeeds only by named operator.
     let res = e2.model_safety_rearm("");
     assert!(res.is_err(), "an unnamed re-arm is refused");
+}
+
+/// Advance the feed a little with prints + curve observations so the engine polls its worker results.
+fn ticks_and_prints(r: &mut Rig, n: usize) {
+    for _ in 0..n {
+        r.clock += 1_000;
+        r.slot += 1;
+        r.n += 1;
+        curve_quiet(&mut r.e, r.clock, r.slot);
+        print(&mut r.e, r.n, r.clock, r.slot);
+        ticks(&mut r.e, 2);
+    }
+}
+
+#[test]
+fn an_abandoned_ask_whose_http_worker_is_still_busy_never_executes_late_and_the_pool_is_not_exhausted() {
+    // The endpoint answers with a VALID EXIT, but only after 5 s: past the engine's 3 s deadline, within
+    // the 8 s socket timeout. The engine abandons each ask; the worker stays occupied until the (valid,
+    // complete) answer finally arrives. That late answer must NOT execute, and repeated timeouts must not
+    // let the request table or the fixed worker pool grow without bound.
+    let ep = Endpoint::start(|_| EXIT);
+    let mut r = rig(&ep, "late");
+    ep.delay_ms.store(5_000, Ordering::SeqCst);
+    r.advance(150_000);
+    let abandoned = r.rep("mgmt:request_abandoned_deadline");
+    assert!(abandoned >= 1, "{:?}", r.e.model_lane_report());
+    // Capacity: the fixed pool (2 workers) / table (4 slots) bound what can be outstanding; excess asks are
+    // REFUSED by name instead of queueing without limit.
+    let dispatched = r.rep("mgmt:dispatched");
+    let refused = r.rep("mgmt:refuse:submit") + r.rep("mgmt:refuse:dispatch");
+    assert!(dispatched >= abandoned, "{:?}", r.e.model_lane_report());
+    assert!(dispatched - abandoned <= 4 || refused > 0,
+        "outstanding asks stay inside the table bound: dispatched={dispatched} abandoned={abandoned} refused={refused}");
+    // Let the delayed (valid, complete) EXIT answers actually ARRIVE on the wire, then drive the engine so it
+    // drains them. Wall-clock wait: the endpoint sleeps 5 s per answer.
+    std::thread::sleep(Duration::from_millis(7_500));
+    ticks_and_prints(&mut r, 6);
+    let discarded = r.rep("mgmt:discard:");
+    assert!(discarded >= 1, "the late answers must be DISCARDED BY NAME when they land: {:?}", r.e.model_lane_report());
+    assert_eq!(r.rep("mgmt:verdict:exit"), 0);
+    assert_eq!(r.rep("mgmt:order:"), 0, "no late response created an order");
+    assert!(r.e.model_position_open(&MINT), "a late answer must never close the position");
+    assert!(r.e.model_mgmt_fills().is_empty(), "no late response may place or fill an order");
+    assert!(r.e.model_mgmt_pending(&MINT).is_none());
+    // Repeated timeouts trip SAFETY_OFF after the tested threshold (3 consecutive), never earlier.
+    assert!(r.e.model_safety_blocked(), "three consecutive abandoned asks trip the latch");
+    // And once the endpoint is fast again the lane recovers its worker slots (nothing leaked forever).
+    ep.delay_ms.store(0, Ordering::SeqCst);
+    std::thread::sleep(Duration::from_millis(6_000));
+    r.advance(60_000);
+    let after = r.rep("mgmt:dispatched");
+    assert!(after > dispatched, "worker slots were released after the blocked requests returned: {:?}", r.e.model_lane_report());
+}
+
+#[test]
+fn a_late_valid_answer_after_the_position_changed_is_discarded_by_version_not_executed() {
+    // Fast endpoint: an ask is answered REDUCE; before the verdict is accepted the position version changes
+    // (a reconciled fill from a previous order). The bound version no longer matches => discarded.
+    let ep = Endpoint::start(|step| if step == 0 { REDUCE } else { HOLD });
+    let mut r = rig(&ep, "ver");
+    r.advance_to_order(120_000);
+    let (id, _, intended, _) = r.e.model_mgmt_pending(&MINT).expect("REDUCE pending");
+    // Fill the order completely: the position version moves on and the order is gone.
+    r.e.model_mgmt_apply_reconciled_fill(MINT, id, intended, 22_000).unwrap();
+    let fills = r.e.model_mgmt_fills().len();
+    // Replaying the same reconciled report cannot repeat the reduction.
+    assert!(r.e.model_mgmt_apply_reconciled_fill(MINT, id, intended, 22_000).is_err());
+    assert_eq!(r.e.model_mgmt_fills().len(), fills);
 }

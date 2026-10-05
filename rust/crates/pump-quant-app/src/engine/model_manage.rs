@@ -682,6 +682,65 @@ impl Engine {
             .saturating_sub(self.model_mgmt_reserved(None))
     }
 
+    /// Mints the daemon MUST keep a live reserve (curve/pool) feed for: every held position, independent of
+    /// new-opportunity discovery and of eviction pressure from it.
+    #[must_use]
+    pub fn model_held_mints(&self) -> Vec<[u8; 32]> {
+        self.positions.held_records().iter().map(|h| h.mint).collect()
+    }
+
+    /// Measure, per held position, whether the data a management decision needs is actually fresh. This is
+    /// what "management readiness" means; a connected socket proves nothing. Uses the existing 60 s
+    /// `PRICING_BUDGET_MS`; no new threshold.
+    #[must_use]
+    pub fn model_held_data_status(&self) -> Vec<HeldDataStatus> {
+        let clock = self.model_clock_ms;
+        self.positions
+            .held_records()
+            .iter()
+            .map(|h| {
+                let amm = self.model_cache.snapshot_venue_is_amm(&h.mint);
+                let reserve_ts = if amm {
+                    self.model_cache.amm_obs(&h.mint).map(|o| o.ts_ms)
+                } else {
+                    self.model_cache.curve_obs(&h.mint).map(|o| o.ts_ms)
+                };
+                let reserve_age_ms = reserve_ts.map(|t| clock - t);
+                let last_print_age_ms = self.model_cache.marker(&h.mint).map(|m| clock - m.last_recv_ms);
+                let reserve_fresh = reserve_age_ms
+                    .is_some_and(|a| a <= crate::curve_annotation::PRICING_BUDGET_MS);
+                let management_ready = match self.model_mgmt_inputs(&h.mint, clock) {
+                    Err(r) => Err(r.to_string()),
+                    Ok(inputs) => self
+                        .model_cache
+                        .management_snapshot(&h.mint, clock, &inputs)
+                        .map(|_| ())
+                        .map_err(|r| r.as_str().to_string()),
+                };
+                HeldDataStatus {
+                    mint: h.mint,
+                    amm,
+                    reserve_age_ms,
+                    last_print_age_ms,
+                    reserve_fresh,
+                    management_ready,
+                }
+            })
+            .collect()
+    }
+
+    /// DEGRADED: at least one held position cannot be managed because its required state is stale or
+    /// missing. Independent protection that remains possible: the hard safeguards (rug precursor, hard
+    /// stop) run on PRINTS, so they only work while prints arrive - a position whose print feed is also
+    /// silent has NO protection at all, which is why this is reported and not hidden.
+    #[must_use]
+    pub fn model_held_degraded(&self) -> Vec<HeldDataStatus> {
+        self.model_held_data_status()
+            .into_iter()
+            .filter(|s| s.management_ready.is_err())
+            .collect()
+    }
+
     /// A reconciliation view of the money side, all in lamports, so a test (or an operator) can check
     /// `balance == seed + realized` and `free == balance - committed - pending entries - ADD reservations`
     /// together with the position's own remaining cost basis.
@@ -706,6 +765,23 @@ impl Engine {
     pub fn model_management_complete(&self) -> bool {
         true
     }
+}
+
+/// Per-held-position data readiness at one instant: a measured condition, not a connection flag.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeldDataStatus {
+    /// Market.
+    pub mint: [u8; 32],
+    /// Whether the position is on the AMM plane (else curve).
+    pub amm: bool,
+    /// Age of the latest executable reserve observation vs the feed clock, ms; `None` = none observed.
+    pub reserve_age_ms: Option<i64>,
+    /// Age of the newest trade print the state was built from, ms.
+    pub last_print_age_ms: Option<i64>,
+    /// Reserve is within the existing `PRICING_BUDGET_MS` (60 s) bound.
+    pub reserve_fresh: bool,
+    /// A management prompt could be cut now (every join gate passes). `Err` carries the named refusal.
+    pub management_ready: Result<(), String>,
 }
 
 /// Money-side snapshot for reconciliation (lamports).

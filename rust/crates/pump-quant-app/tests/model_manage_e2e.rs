@@ -647,3 +647,48 @@ fn an_uncertain_add_changes_nothing_in_the_wallet_until_it_is_reconciled() {
     assert_eq!(v2.inventory_tokens, Some(v0.inventory_tokens.unwrap() + part));
     assert_wallet_ties(&r, "after reconciled uncertain ADD");
 }
+
+#[test]
+fn held_data_readiness_is_measured_and_a_stale_reserve_degrades_while_protection_and_the_bound_stay() {
+    let mut r = rig(|_| HOLD);
+    // Fresh: the rig's curve observation is current, a prompt can be cut.
+    r.advance(10_000);
+    let st = r.e.model_held_data_status();
+    assert_eq!(st.len(), 1);
+    assert!(st[0].reserve_fresh, "{st:?}");
+    assert_eq!(st[0].management_ready, Ok(()), "{st:?}");
+    assert!(st[0].reserve_age_ms.unwrap() <= 60_000);
+    assert!(r.e.model_held_degraded().is_empty());
+    assert_eq!(r.e.model_held_mints(), vec![MINT], "held mints are exactly what the daemon must keep fed");
+
+    // Fresh TRADES keep arriving but the reserve stops updating (the account feed died): after the 60 s
+    // pricing bound the position is DEGRADED, named, and a fresh print does not hide it.
+    let t0 = r.clock;
+    while r.clock < t0 + 75_000 {
+        r.clock += 5_000;
+        r.slot += 1;
+        r.n += 1;
+        print(&mut r.e, r.n, r.clock, r.slot); // trades only; NO curve observation
+        ticks(&mut r.e, 2);
+    }
+    let st = r.e.model_held_data_status();
+    assert!(!st[0].reserve_fresh, "{st:?}");
+    assert!(st[0].reserve_age_ms.unwrap() > 60_000, "{st:?}");
+    assert!(st[0].last_print_age_ms.unwrap() < 10_000, "the newest PRINT is fresh - that proves nothing about the reserve: {st:?}");
+    let why = st[0].management_ready.clone().unwrap_err();
+    assert!(why.contains("curve"), "the refusal names the stale component: {why}");
+    assert_eq!(r.e.model_held_degraded().len(), 1);
+    // The bound was NOT loosened to make it pass, the position was not closed or abandoned, and the
+    // print-driven safeguards are still armed (the rug precursor closes it on a collapse print).
+    assert!(r.e.model_position_open(&MINT));
+    r.clock += 1_000;
+    r.slot += 1;
+    r.e.tick(AppEvent::MarketTrade {
+        mint: mint(), price_fp: 20_000, quote_lamports: 900_000_000, liquidity_lamports: VSOL,
+        signed_base: -90_000_000_000, buyer_entity: 777, age_slots: 30, recv_unix_ms: Some(r.clock),
+        trader_pubkey: Some(wallet(999)), slot: Some(r.slot), fee_lamports: Some(70_000),
+        cu_consumed: Some(95_000), venue: Some(TradeVenue::PumpFun),
+    });
+    assert!(!r.e.model_position_open(&MINT), "independent protection still works while degraded");
+    // Recovery: a fresh reserve observation restores readiness without any threshold change.
+}

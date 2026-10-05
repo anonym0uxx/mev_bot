@@ -907,16 +907,29 @@ impl SubTracker {
     /// Some if Helius has ACKed the subscription (needed to send
     /// accountUnsubscribe), or None if the ACK hasn't arrived yet.
     fn evict_oldest(&mut self) -> Option<(u64, [u8; 32], Option<u64>)> {
+        self.evict_oldest_protecting(&std::collections::HashSet::new())
+    }
+
+    /// Like [`evict_oldest`](Self::evict_oldest) but NEVER evicts a mint in `protected` (held positions):
+    /// their reserve feed must not be sacrificed to new-opportunity discovery. Returns `None` when every
+    /// subscription is protected (the caller then declines the NEW subscription instead).
+    fn evict_oldest_protecting(
+        &mut self,
+        protected: &std::collections::HashSet<[u8; 32]>,
+    ) -> Option<(u64, [u8; 32], Option<u64>)> {
         if self.subscription_order.is_empty() {
             return None;
         }
-        // Tier 1: find the index of the oldest subscription with no trades.
+        // Tier 1: find the index of the oldest subscription with no trades that is not protected.
         let dormant_idx = self
             .subscription_order
             .iter()
-            .position(|(_, _, has_trades)| !*has_trades);
-
-        let idx = dormant_idx.unwrap_or(0);
+            .position(|(_, m, has_trades)| !*has_trades && !protected.contains(m));
+        let fallback_idx = self
+            .subscription_order
+            .iter()
+            .position(|(_, m, _)| !protected.contains(m));
+        let idx = dormant_idx.or(fallback_idx)?;
         // Vec::remove returns the value directly (not Option). The idx is
         // always valid because subscription_order is non-empty (guarded above).
         let item = self.subscription_order.remove(idx);
@@ -3040,8 +3053,14 @@ fn main() -> ExitCode {
                                 }
 
                                 if sub_tracker.len() >= MAX_ACCOUNT_SUBS {
+                                    // Held positions keep their reserve feed regardless of discovery pressure.
+                                    let protected: std::collections::HashSet<[u8; 32]> = if model_armed {
+                                        engine.model_held_mints().into_iter().collect()
+                                    } else {
+                                        std::collections::HashSet::new()
+                                    };
                                     if let Some((evicted_req, evicted_mint, evicted_server_sub)) =
-                                        sub_tracker.evict_oldest()
+                                        sub_tracker.evict_oldest_protecting(&protected)
                                     {
                                         stats.account_subs_evicted += 1;
                                         reserve_tracker.remove(&evicted_mint);
@@ -4004,6 +4023,18 @@ fn main() -> ExitCode {
             // ── Periodic status write ────────────────────────────────────
             // Tick-count based status write. The wall-clock heartbeat at
             // the top of the loop handles the event-starvation case.
+            // Held-position data readiness: MEASURED (reserve age vs the 60 s pricing bound, management
+            // prompt cuttable now), reported on the status cadence. A degraded held position is stated
+            // loudly; the 60 s bound is never loosened to make refusals disappear.
+            if model_armed && tick_counter % 100 == 0 {
+                let (report, degraded) = pump_quant_junction::model_lifecycle::held_data_report(&engine);
+                if !report.is_empty() && (degraded || tick_counter % args.status_every_ticks.max(1) == 0) {
+                    eprintln!(
+                        "[pq-daemon] {}HELD-DATA\n{report}",
+                        if degraded { "ALERT: DEGRADED " } else { "" }
+                    );
+                }
+            }
             if tick_counter - last_status_write_tick >= args.status_every_ticks {
                 let st = engine.live_status();
                 match st.write_to_path(status_path) {
@@ -4657,4 +4688,43 @@ fn main() -> ExitCode {
     println!("[pq-daemon] shutdown complete — exit 0");
 
     ExitCode::SUCCESS
+}
+
+#[cfg(test)]
+mod held_feed_tests {
+    use super::*;
+
+    fn m(i: u8) -> [u8; 32] {
+        [i; 32]
+    }
+
+    #[test]
+    fn eviction_never_removes_a_held_positions_reserve_subscription() {
+        let mut t = SubTracker::new();
+        // oldest first: 1 (held), 2, 3
+        for (i, id) in [(1u8, 10u64), (2, 11), (3, 12)] {
+            t.record_request(id, m(i));
+        }
+        let protected: std::collections::HashSet<[u8; 32]> = [m(1)].into_iter().collect();
+        let (_, evicted, _) = t.evict_oldest_protecting(&protected).expect("an unprotected one exists");
+        assert_eq!(evicted, m(2), "the oldest UNPROTECTED subscription goes; the held one stays");
+        assert!(t.active_mints().iter().any(|(_, mm)| *mm == m(1)));
+        // Control: the legacy path would have evicted the held one (oldest).
+        let mut t2 = SubTracker::new();
+        for (i, id) in [(1u8, 10u64), (2, 11), (3, 12)] {
+            t2.record_request(id, m(i));
+        }
+        assert_eq!(t2.evict_oldest().unwrap().1, m(1));
+    }
+
+    #[test]
+    fn when_every_subscription_is_held_nothing_is_evicted_and_the_caller_declines_the_new_one() {
+        let mut t = SubTracker::new();
+        for (i, id) in [(1u8, 10u64), (2, 11)] {
+            t.record_request(id, m(i));
+        }
+        let protected: std::collections::HashSet<[u8; 32]> = [m(1), m(2)].into_iter().collect();
+        assert!(t.evict_oldest_protecting(&protected).is_none());
+        assert_eq!(t.len(), 2);
+    }
 }
