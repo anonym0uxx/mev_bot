@@ -186,11 +186,16 @@ fn rig_with(bankroll: u64, answer: fn(i64) -> &'static str) -> Rig {
 }
 
 fn rig_floor(bankroll: u64, floor_bps: u32, answer: fn(i64) -> &'static str) -> Rig {
+    rig_cfg(bankroll, floor_bps, answer, |_| {})
+}
+
+fn rig_cfg(bankroll: u64, floor_bps: u32, answer: fn(i64) -> &'static str, tweak: fn(&mut Config)) -> Rig {
     let prompts = Arc::new(Mutex::new(Vec::new()));
     let calls = Arc::new(AtomicUsize::new(0));
     let mut c = cfg();
     c.bankroll_initial_lamports = bankroll;
     c.floor_fraction_bps = floor_bps;
+    tweak(&mut c);
     let mut e = Engine::new(c, RunMode::Paper);
     e.enable_paper_model(Script {
         prompts: Arc::clone(&prompts),
@@ -912,4 +917,62 @@ fn the_ledger_follows_the_exposure_through_reduce_and_exit_and_a_restart_after_t
     } else {
         assert!(e2.model_position_open(&MINT));
     }
+}
+
+
+// ===================== LEGACY AUTHORITY CANNOT REGAIN THE MODEL PATH =====================
+
+/// Every legacy discretionary-exit / sizing knob pushed to its most aggressive value. If ANY of them could
+/// still act on a model-managed position, this configuration would close it on the first ordinary print.
+fn aggressive_legacy(c: &mut Config) {
+    c.lc_tp1_bps = 10_050; // +0.5%
+    c.lc_tp1_frac_bps = 10_000; // sell everything
+    c.lc_tp2_bps = 10_100;
+    c.lc_tp3_bps = 10_150;
+    c.lc_trail_base_bps = 1; // 0.01% trail
+    c.lc_trail_max_bps = 1;
+    c.lc_stall_ticks = 1;
+    c.lc_max_hold_ticks = 1;
+    c.lc_cvd_hold_frac_bps = 10_000;
+    c.thesis_persist_obs = 1;
+    c.derived_targets_enable = true;
+    c.into_strength_exit_enable = true;
+    c.vol_stop_enable = true;
+    c.alpha_exit_pressure_enable = true;
+    c.entry_mode_leaves_enable = true;
+    c.probe_budget_enable = true;
+    c.setup_classifier_enable = true;
+    c.brain_enable = true;
+    c.brain_haircut_enable = true;
+    c.scale_confirm_auth_min_bp = 0; // any flow "confirms" a legacy scale-in
+}
+
+#[test]
+fn no_legacy_config_value_can_close_or_resize_a_model_managed_position() {
+    let mut r = rig_cfg(2_000_000_000, 2_500, |_| HOLD, aggressive_legacy);
+    let inv0 = r.e.model_inventory_tokens(&MINT).unwrap();
+    let basis0 = r.e.model_accounting_view(&MINT).remaining_cost_basis;
+    // Ordinary, mildly rising prints for a long while: any ladder/trail/stall/time/thesis/into-strength
+    // rule that still had authority would fire here (TP1 is +0.5% and sells 100%; max-hold is 1 tick).
+    r.advance(240_000);
+    for k in 0..40 {
+        r.clock += 1_000;
+        r.slot += 1;
+        r.n += 1;
+        curve(&mut r.e, r.clock, r.slot, 200_000_000 + 2_000_000 * (k + 1));
+        print(&mut r.e, r.n, r.clock, r.slot);
+        ticks(&mut r.e, 2);
+    }
+    assert!(r.e.model_position_open(&MINT), "no legacy rule may close it: {:?}", r.e.model_lane_report());
+    assert_eq!(r.e.model_inventory_tokens(&MINT), Some(inv0), "no legacy rule may resize it (no ladder sell, no scale-in)");
+    assert_eq!(r.e.model_accounting_view(&MINT).remaining_cost_basis, basis0);
+    assert!(r.e.model_mgmt_fills().is_empty(), "the only thing that can create a management fill is a model instruction");
+    // Control: the SAME tape with the SAME aggressive config but a LEGACY (unmanaged) lane is not what is
+    // under test here - the store-level control lives in position.rs. What this proves: only the model's own
+    // verdict (or the two agreed safeguards) moves this position.
+    let mut m = rig_cfg(2_000_000_000, 2_500, |step| if step == 0 { EXIT } else { HOLD }, aggressive_legacy);
+    m.advance_to_order(120_000);
+    m.landing(250_000_000);
+    assert!(!m.e.model_position_open(&MINT), "the model's own EXIT still closes it");
+    assert!(m.e.model_mgmt_fills().iter().any(|f| f.closed));
 }

@@ -1097,6 +1097,12 @@ impl ScalpLifecycle {
         let Some(pos) = self.open.get_mut(mint) else {
             return false;
         };
+        // AUTHORITY: this is the legacy capital-based probe->confirm scale-in. A model-managed position
+        // is sized ONLY by the model's own ADD (inventory-based, through reconciled fills), so this path
+        // can never add risk to it - regardless of config or of what armed `scale_add` upstream.
+        if pos.model_managed {
+            return false;
+        }
         if pos.scaled || pos.tranche_mask != 0 || pos.remaining_bps != 10_000 {
             return false;
         }
@@ -2157,5 +2163,21 @@ mod tests {
         assert_eq!(lc.add_filled(&m, u64::MAX, 10, 10, PX), Err(AddRefusal::Overflow));
         assert_eq!(lc.inventory_tokens(&m), Some(1_000), "refusals leave the position untouched");
         assert_eq!(lc.entry_price_fp(&m), Some(PX));
+    }
+
+    #[test]
+    fn legacy_scale_in_can_never_add_risk_to_a_model_managed_position() {
+        let mut lc = ScalpLifecycle::new(LifecycleParams::standard(), 4);
+        let mint = [7u8; 32];
+        assert!(lc.open(mint, 45_085, 1_000, 1_001, 0));
+        // Control: an unmanaged probe may scale in once (the legacy contract is unchanged).
+        let mut ctl = ScalpLifecycle::new(LifecycleParams::standard(), 4);
+        assert!(ctl.open([8u8; 32], 45_085, 1_000, 1_001, 0));
+        assert!(ctl.scale_in(&[8u8; 32], 500, 501, 50_000), "control: legacy scale-in still works unmanaged");
+        // Model-managed: refused, nothing changes.
+        assert!(lc.set_model_managed(&mint));
+        let before = lc.export_held();
+        assert!(!lc.scale_in(&mint, 500, 501, 50_000), "model-managed positions are never legacy-scaled");
+        assert_eq!(lc.export_held(), before, "a refused scale-in leaves the position untouched");
     }
 }
