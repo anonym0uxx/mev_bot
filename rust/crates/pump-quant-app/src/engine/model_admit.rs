@@ -642,6 +642,14 @@ impl Engine {
                 done.push(v);
             }
         }
+        let (mut ok_n, mut bad_n) = (0u32, 0u32);
+        for v in &done {
+            if v.result.is_ok() {
+                ok_n += 1;
+            } else {
+                bad_n += 1;
+            }
+        }
         for v in done {
             if v.id.0 >= super::model_manage::MGMT_ID_BASE {
                 self.model_mgmt_accept(v, clock);
@@ -651,10 +659,13 @@ impl Engine {
         }
         for _id in self.model_table.expire(clock) {
             self.mrep("request_abandoned_deadline");
+            bad_n += 1;
         }
         for _id in self.model_mgmt.table.expire(clock) {
             self.mrep("mgmt:request_abandoned_deadline");
+            bad_n += 1;
         }
+        self.model_safety_note_endpoint(ok_n, bad_n);
         self.model_try_fills(clock);
         self.model_mgmt_try_fills(clock);
     }

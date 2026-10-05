@@ -32,6 +32,7 @@ pump-quant-protocol = { path = "../pump-quant-protocol" }
 pump-quant-governance = { path = "../pump-quant-governance" }
 pump-quant-brain = { path = "../pump-quant-brain" }
 pump-quant-execution = { path = "../pump-quant-execution" }
+serde_json = "1"
 
 [dev-dependencies]
 serde_json = "1"

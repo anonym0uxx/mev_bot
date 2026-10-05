@@ -713,6 +713,20 @@ impl ScalpLifecycle {
         self.open.get(mint).map(|p| (p.peak_price_fp, p.trough_price_fp))
     }
 
+    /// Every held position as a durable record (inventory stays `None` until a fill established it).
+    #[must_use]
+    pub fn held_records(&self) -> Vec<crate::safety_off::HeldRecord> {
+        self.open
+            .iter()
+            .map(|(m, p)| crate::safety_off::HeldRecord {
+                mint: *m,
+                entry_price_fp: p.entry_price_fp,
+                inventory_tokens: p.inventory_from_fill.then_some(p.inventory_tokens),
+                model_managed: p.model_managed,
+            })
+            .collect()
+    }
+
     /// Entry price (fixed point) of a held position.
     #[must_use]
     pub fn entry_price_fp(&self, mint: &[u8; 32]) -> Option<u64> {
