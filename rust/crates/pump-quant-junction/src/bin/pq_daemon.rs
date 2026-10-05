@@ -48,7 +48,7 @@ use pump_quant_junction::autonomous_bridge::{
 use pump_quant_junction::decode::decode_onchain_confirm_with_curve;
 use pump_quant_junction::event_stream::EventStreamWriter;
 use pump_quant_junction::laserstream::{
-    classify_pump_instructions, instructions_to_events, instructions_to_events_with_meta,
+    classify_pump_instructions, instructions_to_events_with_meta,
     parse_ndjson_line, LaserStreamState, LaserStreamUpdate,
 };
 use pump_quant_junction::memory_bank::{MemoryBank, MemoryBankConfig};
@@ -224,6 +224,9 @@ const OUTBOUND_LANES: usize = pump_quant_junction::async_sink::DEFAULT_LANES;
 /// fail, this catches the symptom (frozen confirms) and forces a reconnect.
 /// 120s is conservative — the median OnchainConfirm latency is 37.6s, so
 /// 120s of silence means 3x the median with zero confirms = definitely dead.
+#[allow(dead_code)] // unimplemented OnchainConfirm stagnation detector: last_confirm_tick is
+// tracked (2718/3331/3437) but the `tick - last_confirm_tick > ONCHAIN_STAGNATION_SECS`
+// comparison is not yet wired. Kept as the policy anchor; see N2 report (production dead code).
 const ONCHAIN_STAGNATION_SECS: u64 = 120;
 
 /// WS read timeout in millis. Tightened from tick_period_ms (250ms) to prevent
@@ -522,6 +525,7 @@ fn json_escape(s: &str) -> String {
 
 /// Write cumulative_pnl.json — the trustworthy cross-session PnL report.
 /// Schema: {\"schema\":\"cumulative_pnl/1\",\"config_fingerprint\":\"0x...\",\"strategy_label\":\"...\",\"session_realized_lamports\":N,\"prior_tape_realized_lamports\":N,\"cumulative_realized_lamports\":N,\"prior_tape_trade_count\":N,\"session_admitted\":N,\"session_tick\":N,\"info_time_tick\":N}
+#[allow(clippy::too_many_arguments)] // 8 args: report fields, one call site; a struct would obscure the schema order
 fn write_cumulative_pnl(
     path: &str,
     config_fp: u64,
@@ -576,6 +580,7 @@ fn write_cumulative_pnl(
 /// GAP E fix: includes a `session_id` field — a unique per-daemon-restart identifier
 /// (process PID + start timestamp) so A/B comparison can unambiguously attribute
 /// PnL to specific sessions, even when consecutive sessions share the same config.
+#[allow(clippy::too_many_arguments)] // 13 args: history-row fields, one call site; a struct would obscure the schema order
 fn append_session_history(
     path: &str,
     config_fp: u64,
@@ -679,9 +684,9 @@ fn hex_short(b: &[u8; 32]) -> String {
 /// GAP #13: This function is called on EVERY child kill path (graceful
 /// shutdown, emergency stop, defense-in-depth halt, and LS respawn).
 fn kill_process_tree(child: &mut std::process::Child) {
-    let pid = child.id();
     #[cfg(windows)]
     {
+        let pid = child.id();
         // taskkill /T = kill tree, /F = force. This kills the PID and all
         // processes spawned by it recursively — critical for wsl.exe → bash →
         // pq-laserstream-grpc process chains.
@@ -908,6 +913,8 @@ impl SubTracker {
     /// state). Returns (req_id, mint, server_sub_id) where server_sub_id is
     /// Some if Helius has ACKed the subscription (needed to send
     /// accountUnsubscribe), or None if the ACK hasn't arrived yet.
+    #[allow(dead_code)] // convenience wrapper over evict_oldest_protecting; referenced by the
+    // doc link below, not yet called. Kept; see N2 report (production dead code).
     fn evict_oldest(&mut self) -> Option<(u64, [u8; 32], Option<u64>)> {
         self.evict_oldest_protecting(&std::collections::HashSet::new())
     }
@@ -1064,8 +1071,8 @@ fn extract_helius_rpc_url(_args: &DaemonArgs) -> String {
     if let Ok(creds) = std::fs::read_to_string(&creds_path) {
         for line in creds.lines() {
             if let Some(v) = line.strip_prefix("HELIUS_WS_URL=") {
-                if v.starts_with("wss://") {
-                    rpc_url = format!("https://{}", &v[6..]);
+                if let Some(rest) = v.strip_prefix("wss://") {
+                    rpc_url = format!("https://{rest}");
                 } else {
                     rpc_url = v.to_string();
                 }
@@ -1079,8 +1086,8 @@ fn extract_helius_rpc_url(_args: &DaemonArgs) -> String {
     // Fall back to env vars
     if rpc_url.is_empty() {
         if let Ok(v) = std::env::var("HELIUS_WS_URL") {
-            if v.starts_with("wss://") {
-                rpc_url = format!("https://{}", &v[6..]);
+            if let Some(rest) = v.strip_prefix("wss://") {
+                rpc_url = format!("https://{rest}");
             } else {
                 rpc_url = v;
             }
@@ -1268,13 +1275,10 @@ fn poll_signature_confirmations(
         };
 
         // Check if this signature matches one of our pending txs.
-        if let Some((mint_bytes, kind)) = sig_lookup.remove(&sig_bytes) {
+        if let Some((_mint_bytes, kind)) = sig_lookup.remove(&sig_bytes) {
             let err = entry.get("err");
             // err is null → tx succeeded; err is a string/object → tx failed.
-            let is_confirmed = match err {
-                Some(Value::Null) | None => true,
-                _ => false,
-            };
+            let is_confirmed = matches!(err, Some(Value::Null) | None);
             let slot = entry.get("slot").and_then(|s| s.as_u64()).unwrap_or(0);
 
             eprintln!(
@@ -1333,9 +1337,7 @@ fn construct_live_engine(
         spawn_blockhash_warmer, HeliusSenderSubmitter, LiveWalletSigner, PrefetchConfig,
         RpcLiveStateFetcher,
     };
-    use pump_quant_protocol::layout::{
-        LayoutKey, LayoutRegistry, Side, Variant, Venue, VerifiedLayout,
-    };
+    use pump_quant_protocol::layout::LayoutRegistry;
     use pump_quant_protocol::tx_build::{ComputePlan, TipPlan};
     use pump_quant_protocol::venue_accounts::FeeTail;
     use std::sync::Arc;
@@ -1370,8 +1372,8 @@ fn construct_live_engine(
     for line in creds.lines() {
         if let Some(v) = line.strip_prefix("HELIUS_WS_URL=") {
             let v = v.trim();
-            if v.starts_with("wss://") {
-                helius_rpc_url = format!("https://{}", &v[6..]);
+            if let Some(rest) = v.strip_prefix("wss://") {
+                helius_rpc_url = format!("https://{rest}");
             } else if v.starts_with("https://") {
                 helius_rpc_url = v.to_string();
             }
@@ -1391,8 +1393,8 @@ fn construct_live_engine(
 
     if helius_rpc_url.is_empty() {
         if let Ok(v) = std::env::var("HELIUS_WS_URL") {
-            if v.starts_with("wss://") {
-                helius_rpc_url = format!("https://{}", &v[6..]);
+            if let Some(rest) = v.strip_prefix("wss://") {
+                helius_rpc_url = format!("https://{rest}");
             } else {
                 helius_rpc_url = v;
             }
@@ -2026,7 +2028,7 @@ fn main() -> ExitCode {
             let pda = bonding_curve_pda(&mint_bytes);
             pda_to_mint.insert(pda.to_bytes(), mint_bytes);
             if trade_sub_tracker.add(&mint_b58) {
-                let sub_msg = pumpportal_ws::subscribe_token_trade(&[mint_b58.clone()]);
+                let sub_msg = pumpportal_ws::subscribe_token_trade(std::slice::from_ref(&mint_b58));
                 match pp_conn.send_text(&sub_msg) {
                     Ok(()) => {
                         stats.pp_trade_subs_sent += 1;
@@ -2228,10 +2230,8 @@ fn main() -> ExitCode {
                     for line in reader.lines() {
                         match line {
                             Ok(text) => {
-                                if !text.is_empty() {
-                                    if fc_tx_clone.send(text.into_bytes()).is_err() {
-                                        break;
-                                    }
+                                if !text.is_empty() && fc_tx_clone.send(text.into_bytes()).is_err() {
+                                    break;
                                 }
                             }
                             Err(_) => break,
@@ -2648,30 +2648,28 @@ fn main() -> ExitCode {
                             mint,
                             signed_base,
                             buyer_entity,
-                            trader_pubkey,
+                            // Only a known address is worth noting: the join exists to supply
+                            // the address, so a hash-only print has nothing to contribute.
+                            trader_pubkey: Some(pk),
                             recv_unix_ms,
                             ..
                         } = &ev.event
                         {
-                            // Only a known address is worth noting: the join exists to supply
-                            // the address, so a hash-only print has nothing to contribute.
-                            if let Some(pk) = trader_pubkey {
-                                trade_join.note_instruction_with_meta(
-                                    mint.as_bytes(),
-                                    ev.slot,
-                                    *buyer_entity,
-                                    *pk,
-                                    *signed_base > 0,
-                                    *recv_unix_ms,
-                                    tx.fee_lamports,
-                                    tx.cu_consumed,
-                                );
-                            }
+                            trade_join.note_instruction_with_meta(
+                                mint.as_bytes(),
+                                ev.slot,
+                                *buyer_entity,
+                                *pk,
+                                *signed_base > 0,
+                                *recv_unix_ms,
+                                tx.fee_lamports,
+                                tx.cu_consumed,
+                            );
                         }
                     }
                     for ev in &events {
                         stats.ls_events_emitted += 1;
-                        if !queue.push(ev.clone(), tx.slot) {
+                        if !queue.push(*ev, tx.slot) {
                             stats.junction_overflow_dropped += 1;
                         }
                     }
@@ -2684,7 +2682,7 @@ fn main() -> ExitCode {
                 }
                 Ok(LaserStreamUpdate::Account {
                     pubkey,
-                    owner,
+                    owner: _,
                     data,
                     slot,
                     recv_unix_ms,
@@ -3038,7 +3036,7 @@ fn main() -> ExitCode {
                         }
 
                         if trade_sub_tracker.add(&mint_b58) {
-                            let sub_msg = pumpportal_ws::subscribe_token_trade(&[mint_b58.clone()]);
+                            let sub_msg = pumpportal_ws::subscribe_token_trade(std::slice::from_ref(&mint_b58));
                             match pp_conn.send_text(&sub_msg) {
                                 Ok(()) => {
                                     stats.pp_trade_subs_sent += 1;
@@ -3160,23 +3158,13 @@ fn main() -> ExitCode {
                                         // the server-side slot leaks permanently
                                         // until TCP timeout. This is the root cause
                                         // of the 1000-sub cap death spiral.
-                                        if evicted_server_sub.is_none() {
-                                            stats.subs_leaked_no_ack += 1;
-                                            eprintln!(
-                                                "[pq-daemon] EVICT LEAK: req={evicted_req} \
-                                             mint={:.8} — ACK never arrived, server slot \
-                                             leaked (total leaked: {})",
-                                                hex_short(&evicted_mint),
-                                                stats.subs_leaked_no_ack
-                                            );
-                                        } else {
+                                        if let Some(ssid) = evicted_server_sub {
                                             // Send accountUnsubscribe to release the Helius
                                             // server-side subscription slot. Without this the
                                             // connection leaks subscriptions until Helius caps
                                             // at 1000, after which no new accountSubscribe
                                             // succeeds and ALL new candidates fail with
                                             // NeedsOnchainConfirmation.
-                                            let ssid = evicted_server_sub.unwrap();
                                             let unsub_id = next_req_id;
                                             next_req_id += 1;
                                             let unsub = helius_ws::account_unsubscribe_request(
@@ -3188,6 +3176,15 @@ fn main() -> ExitCode {
                                             );
                                                 stats.ws_errors += 1;
                                             }
+                                        } else {
+                                            stats.subs_leaked_no_ack += 1;
+                                            eprintln!(
+                                                "[pq-daemon] EVICT LEAK: req={evicted_req} \
+                                             mint={:.8} — ACK never arrived, server slot \
+                                             leaked (total leaked: {})",
+                                                hex_short(&evicted_mint),
+                                                stats.subs_leaked_no_ack
+                                            );
                                         }
                                         eprintln!(
                                             "[pq-daemon] EVICT sub req={evicted_req} mint={:.8}",
@@ -3421,7 +3418,7 @@ fn main() -> ExitCode {
                                 stats.helius_account_notifications += 1;
                                 let params = v.get("params");
                                 let server_sub =
-                                    params.and_then(|p| extract_server_sub_id(p)).unwrap_or(0);
+                                    params.and_then(extract_server_sub_id).unwrap_or(0);
 
                                 let mint_bytes = sub_tracker.mint_for_server_sub(server_sub);
 
@@ -4118,6 +4115,7 @@ fn main() -> ExitCode {
             // loudly; the 60 s bound is never loosened to make refusals disappear.
             // Durable state must never fail silently: check headroom on the safety file's filesystem and say
             // so loudly before a write can fail. (A failed persist is already fail-closed in the engine.)
+            #[allow(clippy::manual_is_multiple_of)] // MSRV 1.85: is_multiple_of stabilised in 1.87
             if model_armed && tick_counter % 6000 == 0 {
                 let sf = std::env::var("PQ_MODEL_SAFETY_FILE").unwrap_or_else(|_| {
                     pump_quant_junction::model_lifecycle::DEFAULT_SAFETY_FILE.to_string()
@@ -4137,6 +4135,7 @@ fn main() -> ExitCode {
                     pump_quant_junction::model_lifecycle::Headroom::Ok { .. } => {}
                 }
             }
+            #[allow(clippy::manual_is_multiple_of)] // MSRV 1.85: is_multiple_of stabilised in 1.87
             if model_armed && tick_counter % 20 == 0 {
                 let now_ms = engine.model_clock_ms_now();
                 for l in stale_callout.evaluate(&engine, now_ms, 60_000) {
@@ -4146,6 +4145,7 @@ fn main() -> ExitCode {
                         l.text
                     );
                 }
+                #[allow(clippy::manual_is_multiple_of)] // MSRV 1.85: is_multiple_of stabilised in 1.87
                 if tick_counter % args.status_every_ticks.max(1) == 0 {
                     let (report, _) =
                         pump_quant_junction::model_lifecycle::held_data_report(&engine);
@@ -4793,7 +4793,7 @@ fn main() -> ExitCode {
             let pnl_sol = pos.unrealized_pnl_lamports as f64 / 1e9;
             println!(
                 "  mint={} entry={:.6} unrealized_pnl={:.6} remaining={}bps",
-                Pubkey::from(pos.mint).to_string(),
+                Pubkey::from(pos.mint),
                 entry_sol,
                 pnl_sol,
                 pos.remaining_bps

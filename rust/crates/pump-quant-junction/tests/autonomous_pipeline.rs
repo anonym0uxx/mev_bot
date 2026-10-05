@@ -11,7 +11,7 @@ use pump_quant_execution::ex_promotion_gate::{
     derive_envelope, evaluate, PaperEnvelopeEvidence, PaperEvidence, PromotionCriteria,
     PromotionVerdict,
 };
-use pump_quant_junction::tape_export::{TapeExporter, TapeLane, TapeRecord};
+use pump_quant_junction::tape_export::TapeExporter;
 use pump_quant_junction::trade_journal::{
     JournalConfig, RunMode, TradeJournal, TradeOutcome, TradeRecord, TradeSide,
 };
@@ -22,6 +22,7 @@ use pump_quant_junction::ProvenanceSource;
 // ─────────────────────────────────────────────────────────────────────────
 
 /// Create a synthetic trade record that a paper session would produce.
+#[allow(clippy::too_many_arguments)] // test fixture builder: field-per-arg reads clearer than a struct literal
 fn make_trade(
     mint: &str,
     slot: u64,

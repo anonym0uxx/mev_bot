@@ -17,7 +17,7 @@ use pump_quant_app::engine::{Engine, RunMode};
 use pump_quant_app::event::{AppEvent, TradeVenue};
 use pump_quant_domain::ids::Mint as DomainMint;
 use pump_quant_junction::model_lifecycle::{
-    arm_paper_model, handle_stop_request, restore_held_state, validate_ack, AckRejection,
+    arm_paper_model, handle_stop_request, restore_held_state, AckRejection,
     StaleCallout, StartupRestore, StopGate, StopSession,
 };
 
@@ -152,6 +152,7 @@ const ADD: &str = "DECISION: ADD\nINVALIDATION: none\nEVIDENCE: x";
 /// A controlled llama-server stand-in speaking the OpenAI chat-completions wire form over real TCP.
 struct Endpoint {
     url: String,
+    #[allow(clippy::type_complexity)] // fn-pointer answer hook; a type alias would not add clarity here
     answer: Arc<Mutex<fn(i64) -> &'static str>>,
     hang: Arc<AtomicBool>,
     /// When non-zero, a MANAGEMENT answer is delayed by this many ms (still a valid, complete decision).
@@ -332,6 +333,7 @@ impl Rig {
             ticks(&mut self.e, 3);
         }
     }
+    #[allow(dead_code)] // test scaffolding helper; not every scenario drives a landing
     fn landing(&mut self, dsol: u64) {
         self.clock += 1_000;
         self.slot += 5;

@@ -77,6 +77,7 @@ fn main() -> ExitCode {
         })
         .collect();
     let jobs = Arc::new(Mutex::new(jobs.into_iter().enumerate().collect::<Vec<_>>()));
+    #[allow(clippy::type_complexity)] // (job name, latency, status) tuple rows; a type alias would not add clarity
     let results: Arc<Mutex<Vec<(&'static str, f64, &'static str)>>> =
         Arc::new(Mutex::new(Vec::new()));
     // Warm-up is excluded from the statistics and reported separately (first-request cost is real but different).

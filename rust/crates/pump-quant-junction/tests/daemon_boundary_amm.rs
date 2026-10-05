@@ -69,7 +69,7 @@ fn real_pumpswap_lines_become_amm_swap_events_and_reach_the_engine() {
             if let AppEvent::MarketTrade { price_fp: 0, .. } = &pe.event {
                 priced_halves += 1;
             }
-            e.tick(pe.event.clone());
+            e.tick(pe.event);
         }
     }
     e.tick(AppEvent::Tick);

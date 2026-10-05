@@ -30,12 +30,6 @@ use pump_quant_evaluator::evaluator_state::LifecycleStage;
 /// Path to the promotion file written by pq-refiner.
 pub const PROMOTION_FILE: &str = "data/CONFIG_PROMOTION.json";
 
-/// Path to the refiner binary (relative to the workspace target dir).
-const REFINER_BIN: &str = "pq-refiner";
-
-/// Path to the refiner state file.
-const REFINER_STATE_FILE: &str = "data/evaluator_state.json";
-
 /// Path to the tape file.
 const TAPE_FILE: &str = "data/tape.jsonl";
 
@@ -158,7 +152,7 @@ pub fn try_reload_config(cfg: &mut Config, last_mtime: &mut Option<u64>) -> Relo
     // width) that the per-mutation apply() cannot detect because each apply()
     // only sees one key at a time.
     let mut snapshot = *cfg;
-    let mut snapshot_ok = true;
+    let snapshot_ok = true;
     let mut mutations_applied = 0usize;
     let mut summary_parts: Vec<String> = Vec::new();
     let mut apply_errors: Vec<String> = Vec::new();
@@ -391,7 +385,7 @@ impl DefenseState {
             &self.cliff_config,
             &self.breaker_state,
             &self.kill_switch,
-            self.stage.clone(),
+            self.stage,
         )
     }
 
@@ -596,7 +590,7 @@ pub fn spawn_refiner_cycle(config_text: &str) -> Result<String, String> {
 // pre-promotion rate, not just "slightly less profitable".
 
 /// State tracked for auto-revert decisions.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct AutoRevertState {
     /// Config fingerprint of the config that was promoted (the "new" config).
     pub promoted_fingerprint: u64,
@@ -611,19 +605,6 @@ pub struct AutoRevertState {
     pub trades_at_promotion: u64,
     /// Whether auto-revert has triggered for this promotion.
     pub reverted: bool,
-}
-
-impl Default for AutoRevertState {
-    fn default() -> Self {
-        Self {
-            promoted_fingerprint: 0,
-            prior_champion_fingerprint: 0,
-            pnl_at_promotion: 0,
-            ticks_since_promotion: 0,
-            trades_at_promotion: 0,
-            reverted: false,
-        }
-    }
 }
 
 /// Minimum trades before auto-revert evaluates post-promotion PnL.
@@ -683,7 +664,7 @@ pub fn read_auto_revert_state() -> Option<AutoRevertState> {
         let needle = format!("\"{key}\":");
         let start = text.find(&needle)? + needle.len();
         let rest = &text[start..];
-        let end = rest.find(|c: char| c == ',' || c == '}')?;
+        let end = rest.find([',', '}'])?;
         Some(rest[..end].trim().to_string())
     };
     Some(AutoRevertState {
@@ -831,7 +812,6 @@ fn archive_champion_config() {
     let _ = fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .write(true)
         .open(&manifest_path)
         .and_then(|mut f| {
             use std::io::Write;

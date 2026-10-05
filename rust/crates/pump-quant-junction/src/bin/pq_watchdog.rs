@@ -207,6 +207,7 @@ fn daemon_is_healthy(health_timeout_secs: u64) -> bool {
 /// via TWO possible lanes:
 ///   1. `ls_onchain_confirms_decoded` — LaserStream gRPC account updates
 ///   2. `onchain_confirms_decoded`     — Helius WS accountSubscribe (fallback)
+///
 /// The daemon is considered starved ONLY if BOTH are zero after uptime > 120s.
 fn daemon_onchain_confirm_healthy() -> Option<bool> {
     let path = Path::new("data/daemon_health.json");
@@ -405,9 +406,9 @@ fn reap_orphaned_laserstream() {
 /// burning credits. We must use `taskkill /T /F /PID` to recursively kill
 /// the entire process tree before falling back to child.kill().
 fn kill_child(child: &mut Child) {
-    let pid = child.id();
     #[cfg(windows)]
     {
+        let pid = child.id();
         // taskkill /T = kill tree (recursive), /F = force. This kills the
         // daemon PID and ALL processes spawned by it — including wsl.exe
         // → bash → pq-laserstream-grpc chains in WSL2.
@@ -443,6 +444,7 @@ fn wait_with_health(
 
         // Periodic health check
         health_check_counter += 1;
+        #[allow(clippy::manual_is_multiple_of)] // MSRV 1.85: is_multiple_of stabilised in 1.87
         if health_check_counter % check_interval_secs == 0 {
             if !daemon_is_healthy(health_timeout_secs) {
                 eprintln!("[pq-watchdog] HEALTH CHECK FAILED — daemon appears hung, killing");

@@ -449,7 +449,7 @@ fn main() -> ExitCode {
     // (secondary lane) and log the gap. This is NOT a stub — Helius WS
     // accountSubscribe is real on-chain data, just higher latency.
     let (ls_tx, ls_rx) = mpsc::channel::<LaserStreamUpdate>();
-    let mut ls_child: Option<std::process::Child> = None;
+    let mut _ls_child: Option<std::process::Child> = None; // write-only: child not reaped here; see N2 report
     let ls_bin: Option<String> = std::env::var("PQ_LASERSTREAM_BIN")
         .ok()
         .or_else(|| {
@@ -506,7 +506,7 @@ fn main() -> ExitCode {
                         }
                     }
                 });
-                ls_child = Some(child);
+                _ls_child = Some(child);
             }
             Err(e) => {
                 eprintln!("[paper-session] LaserStream spawn FAILED: {e}");
@@ -525,7 +525,7 @@ fn main() -> ExitCode {
             .stubbed_or_assumed
             .push("LaserStream gRPC binary not found — Helius WS as fallback ingest".to_string());
     }
-    let mut ls_state = LaserStreamState::new();
+    let mut _ls_state = LaserStreamState::new(); // write-only state tracker; see N2 report
 
     let tick_period = Duration::from_millis(tick_period_ms);
     let mut next_tick = Instant::now() + tick_period;
@@ -544,15 +544,15 @@ fn main() -> ExitCode {
                 Ok(LaserStreamUpdate::Transaction(tx)) => {
                     did_work = true;
                     stats.ls_transactions_received += 1;
-                    ls_state.last_slot = tx.slot;
-                    ls_state.connected = true;
+                    _ls_state.last_slot = tx.slot;
+                    _ls_state.connected = true;
                     let classified = classify_pump_instructions(&tx);
                     stats.ls_instructions_classified += classified.len() as u64;
                     // Replay: the tape records no receive time for this feed, so the print carries none.
                     let events = instructions_to_events(&classified, tx.slot, tx.is_live, None);
                     for ev in &events {
                         stats.ls_events_emitted += 1;
-                        if !queue.push(ev.clone(), tx.slot) {
+                        if !queue.push(*ev, tx.slot) {
                             stats.junction_overflow_dropped += 1;
                         }
                     }
@@ -560,8 +560,8 @@ fn main() -> ExitCode {
                 Ok(LaserStreamUpdate::Slot { slot }) => {
                     did_work = true;
                     stats.ls_slots_received += 1;
-                    ls_state.last_slot = slot;
-                    ls_state.connected = true;
+                    _ls_state.last_slot = slot;
+                    _ls_state.connected = true;
                     last_slot_seen = slot;
                     last_slot_time = Instant::now();
                 }
@@ -606,7 +606,7 @@ fn main() -> ExitCode {
 
                         // ── Dynamically subscribe to trades for this mint ──
                         if trade_sub_tracker.add(&mint_b58) {
-                            let sub_msg = pumpportal_ws::subscribe_token_trade(&[mint_b58.clone()]);
+                            let sub_msg = pumpportal_ws::subscribe_token_trade(std::slice::from_ref(&mint_b58));
                             match pp_conn.send_text(&sub_msg) {
                                 Ok(()) => {
                                     stats.pp_trade_subs_sent += 1;
@@ -818,7 +818,7 @@ fn main() -> ExitCode {
                                 // (NOT from the result array)
                                 let params = v.get("params");
                                 let server_sub =
-                                    params.and_then(|p| extract_server_sub_id(p)).unwrap_or(0);
+                                    params.and_then(extract_server_sub_id).unwrap_or(0);
 
                                 // Look up the mint via server_sub_id
                                 let mint_bytes = sub_tracker.mint_for_server_sub(server_sub);
@@ -1180,7 +1180,7 @@ fn main() -> ExitCode {
             let mark_sol = pos.mark_price_fp as f64 / 1e18;
             let pnl_sol = pos.unrealized_pnl_lamports as f64 / 1e9;
             println!("  STILL_OPEN mint={} entry_tick={} entry_price={:.6} current_tick={} mark_price={:.6} unrealized_pnl={:.6} remaining={}bps",
-                Pubkey::from(pos.mint).to_string(),
+                Pubkey::from(pos.mint),
                 pos.entry_tick, entry_sol, pos.current_tick, mark_sol, pnl_sol, pos.remaining_bps);
         }
     }
