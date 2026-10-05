@@ -6,7 +6,9 @@ addenda that used to live here; that earlier text is preserved verbatim, warts a
 contains decisions later reversed. Where the two disagree, this file wins. Operating entry
 points, commands and the historical-alternatives index are in [`ENTRY.md`](ENTRY.md).
 
-Last updated: 2026-10-05 (head `d7596114`).
+Last updated: 2026-10-05. **Accepted code head: `d7596114`** (tested merge `2fabc312`). The
+branch tip may be a later docs-only commit; the acceptance in section 2 is bound to the code
+head, not to the tip SHA.
 
 ---
 
@@ -15,7 +17,7 @@ Last updated: 2026-10-05 (head `d7596114`).
 | Item | Value |
 |---|---|
 | Consolidated branch | `task/main-consolidation` |
-| Current head | `d7596114` |
+| Current code head | `d7596114` (docs-only commits may follow it) |
 | Base (`main`) | `09e9194b` (2026-09-26) |
 | Rollback ref | tag `rollback/pre-consolidation-959cee8c` (local + remote) |
 | PR | **#10** - `main consolidation: Qwen-first main` - **DRAFT, not merged** |
