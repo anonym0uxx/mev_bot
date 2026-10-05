@@ -61,6 +61,7 @@ fn captured_history_through_the_real_engine_reports_coverage() {
     e.enable_paper_model(Stub(Arc::clone(&calls)));
 
     let mut n_events = 0u64;
+    let mut n_market_trades = 0u64;
     let mut last_tick_ms = 0i64;
     let mut ticks = 0u64;
     let mut by_kind: BTreeMap<&'static str, u64> = BTreeMap::new();
@@ -124,6 +125,7 @@ fn captured_history_through_the_real_engine_reports_coverage() {
                         slot: v["slot"].as_u64().expect("slot"),
                     });
                 }
+                n_market_trades += 1;
                 e.tick(AppEvent::MarketTrade {
                     mint,
                     price_fp,
@@ -154,12 +156,18 @@ fn captured_history_through_the_real_engine_reports_coverage() {
         e.tick(AppEvent::Tick);
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
+    let ingest = {
+        let c = e.model_ingest_counters();
+        serde_json::json!({"accepted": c.accepted, "no_clock": c.no_clock, "no_price": c.no_price, "out_of_order": c.out_of_order, "duplicate": c.duplicate})
+    };
     let report = serde_json::json!({
         "events": n_events,
+        "market_trades_fed": n_market_trades,
         "ticks": ticks,
         "kinds": by_kind,
         "model_calls": calls.load(Ordering::SeqCst),
         "lane": e.model_lane_report(),
+        "ingest": ingest,
         "funnel": e.model_funnel(),
         "admission_comparison": e.model_admission_comparison(),
     });

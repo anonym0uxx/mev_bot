@@ -17,7 +17,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use pump_quant_app::config::Config;
-use pump_quant_app::engine::model_admit::{FaultResolution, FillReport, ReconcileOutcome};
+use pump_quant_app::engine::model_admit::{
+    Evidence, EvidenceResult, FaultResolution, FillReport, ReconcileOutcome,
+};
 use pump_quant_app::engine::{Engine, RunMode};
 use pump_quant_app::event::{AppEvent, TradeVenue};
 use pump_quant_app::model_authority::ModelSource;
@@ -63,6 +65,88 @@ struct Run {
     first_position_ms: Option<i64>,
 }
 
+/// Feed one fixture line into the engine exactly as the replay does (one feed path for every test).
+fn feed_line(e: &mut Engine, v: &serde_json::Value, m: DomainMint, t: i64) {
+    match v["k"].as_str().unwrap() {
+        "L" => e.tick(AppEvent::LaunchObserved {
+            mint: m,
+            creator: hex32(v["c"].as_str().unwrap()),
+            launch_unix_ms: t,
+        }),
+        "T" => {
+            let w = hex32(v["w"].as_str().unwrap());
+            let r = v["rv"].as_array();
+            let (price_fp, liq) = match r {
+                Some(r) => {
+                    let (a, b) = (r[0].as_u64().unwrap(), r[1].as_u64().unwrap());
+                    (
+                        if b > 0 {
+                            (u128::from(a) * 1_000_000_000 / u128::from(b)) as i128
+                        } else {
+                            0
+                        },
+                        a,
+                    )
+                }
+                None => (0, 0),
+            };
+            if let Some(r) = r {
+                e.tick(AppEvent::CurveObserved {
+                    mint: m,
+                    v_sol_lamports: r[0].as_u64().unwrap(),
+                    v_tokens: r[1].as_u64().unwrap(),
+                    real_sol_lamports: r[2].as_u64().unwrap(),
+                    real_tokens: r[3].as_u64().unwrap(),
+                    recv_unix_ms: Some(t),
+                    slot: v["slot"].as_u64().unwrap(),
+                });
+            }
+            e.tick(AppEvent::MarketTrade {
+                mint: m,
+                price_fp,
+                quote_lamports: v["sol"].as_u64().unwrap(),
+                liquidity_lamports: liq,
+                signed_base: v["base"].as_i64().unwrap(),
+                buyer_entity: entity(&w),
+                age_slots: 30,
+                recv_unix_ms: Some(t),
+                trader_pubkey: Some(w),
+                slot: v["slot"].as_u64(),
+                fee_lamports: v["fee"].as_u64(),
+                cu_consumed: v["cu"].as_u64(),
+                venue: Some(TradeVenue::PumpFun),
+            });
+        }
+        "A" => {
+            let w = hex32(v["w"].as_str().unwrap());
+            e.tick(AppEvent::AmmSwap {
+                mint: m,
+                pool: hex32(v["pool"].as_str().unwrap()),
+                pool_is_canonical: true,
+                quote_is_wsol: true,
+                token_reserve_pre: v["bres"].as_u64().unwrap(),
+                quote_reserve_pre: v["qres"].as_u64().unwrap(),
+                fee_bps: v["fee_bps"].as_u64().map(|x| x as u32),
+                fee_parts: Some((
+                    v["lp"].as_u64().unwrap() as u32,
+                    v["pr"].as_u64().unwrap() as u32,
+                    v["cr"].as_u64().unwrap() as u32,
+                )),
+                virtual_quote: v["vq"].as_u64(),
+                is_buy: v["buy"].as_bool().unwrap(),
+                token_amount: v["tok"].as_u64().unwrap(),
+                quote_lamports: v["sol"].as_u64().unwrap(),
+                trader: w,
+                fee_lamports: v["fee"].as_u64(),
+                cu_consumed: v["cu"].as_u64(),
+                recv_unix_ms: Some(t),
+                slot: v["slot"].as_u64().unwrap(),
+            });
+        }
+        k => panic!("kind {k}"),
+    }
+}
+
 fn replay(stop_before_first_amm: bool) -> Run {
     let mut cfg = Config::dev_portable();
     cfg.bankroll_initial_lamports = 2_000_000_000;
@@ -72,96 +156,19 @@ fn replay(stop_before_first_amm: bool) -> Run {
     let mut last_tick = 0i64;
     let mut first_amm_ms = 0i64;
     let mut first_position_ms = None;
-    let mut mint = None;
     for line in FIXTURE.lines() {
         let v: serde_json::Value = serde_json::from_str(line).unwrap();
         let m = DomainMint::from_bytes(hex32(v["m"].as_str().unwrap()));
-        mint = Some(m);
         let t = v["t"].as_i64().unwrap();
-        match v["k"].as_str().unwrap() {
-            "L" => e.tick(AppEvent::LaunchObserved {
-                mint: m,
-                creator: hex32(v["c"].as_str().unwrap()),
-                launch_unix_ms: t,
-            }),
-            "T" => {
-                let w = hex32(v["w"].as_str().unwrap());
-                let r = v["rv"].as_array();
-                let (price_fp, liq) = match r {
-                    Some(r) => {
-                        let (a, b) = (r[0].as_u64().unwrap(), r[1].as_u64().unwrap());
-                        (
-                            if b > 0 {
-                                (u128::from(a) * 1_000_000_000 / u128::from(b)) as i128
-                            } else {
-                                0
-                            },
-                            a,
-                        )
-                    }
-                    None => (0, 0),
-                };
-                if let Some(r) = r {
-                    e.tick(AppEvent::CurveObserved {
-                        mint: m,
-                        v_sol_lamports: r[0].as_u64().unwrap(),
-                        v_tokens: r[1].as_u64().unwrap(),
-                        real_sol_lamports: r[2].as_u64().unwrap(),
-                        real_tokens: r[3].as_u64().unwrap(),
-                        recv_unix_ms: Some(t),
-                        slot: v["slot"].as_u64().unwrap(),
-                    });
-                }
-                e.tick(AppEvent::MarketTrade {
-                    mint: m,
-                    price_fp,
-                    quote_lamports: v["sol"].as_u64().unwrap(),
-                    liquidity_lamports: liq,
-                    signed_base: v["base"].as_i64().unwrap(),
-                    buyer_entity: entity(&w),
-                    age_slots: 30,
-                    recv_unix_ms: Some(t),
-                    trader_pubkey: Some(w),
-                    slot: v["slot"].as_u64(),
-                    fee_lamports: v["fee"].as_u64(),
-                    cu_consumed: v["cu"].as_u64(),
-                    venue: Some(TradeVenue::PumpFun),
-                });
+        if v["k"] == "A" {
+            if stop_before_first_amm {
+                break;
             }
-            "A" => {
-                if stop_before_first_amm {
-                    break;
-                }
-                if first_amm_ms == 0 {
-                    first_amm_ms = t;
-                }
-                let w = hex32(v["w"].as_str().unwrap());
-                e.tick(AppEvent::AmmSwap {
-                    mint: m,
-                    pool: hex32(v["pool"].as_str().unwrap()),
-                    pool_is_canonical: true,
-                    quote_is_wsol: true,
-                    token_reserve_pre: v["bres"].as_u64().unwrap(),
-                    quote_reserve_pre: v["qres"].as_u64().unwrap(),
-                    fee_bps: v["fee_bps"].as_u64().map(|x| x as u32),
-                    fee_parts: Some((
-                        v["lp"].as_u64().unwrap() as u32,
-                        v["pr"].as_u64().unwrap() as u32,
-                        v["cr"].as_u64().unwrap() as u32,
-                    )),
-                    virtual_quote: v["vq"].as_u64(),
-                    is_buy: v["buy"].as_bool().unwrap(),
-                    token_amount: v["tok"].as_u64().unwrap(),
-                    quote_lamports: v["sol"].as_u64().unwrap(),
-                    trader: w,
-                    fee_lamports: v["fee"].as_u64(),
-                    cu_consumed: v["cu"].as_u64(),
-                    recv_unix_ms: Some(t),
-                    slot: v["slot"].as_u64().unwrap(),
-                });
+            if first_amm_ms == 0 {
+                first_amm_ms = t;
             }
-            k => panic!("kind {k}"),
         }
+        feed_line(&mut e, &v, m, t);
         if t - last_tick >= 1_000 {
             last_tick = t;
             e.tick(AppEvent::Tick);
@@ -175,13 +182,21 @@ fn replay(stop_before_first_amm: bool) -> Run {
         e.tick(AppEvent::Tick);
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    let _ = mint;
     Run {
         e,
         calls,
         first_amm_ms,
         first_position_ms,
     }
+}
+
+fn amm_run_with_fill() -> Run {
+    let r = replay(false);
+    assert!(
+        rep(&r.e, "fill:position_opened_amm") >= 1,
+        "AMM fill required for these lifecycle cases"
+    );
+    r
 }
 
 fn rep(e: &Engine, prefix: &str) -> u64 {
@@ -242,14 +257,6 @@ fn an_amm_market_is_discovered_from_stream_events_and_bought_through_the_real_en
 
 // ---- LIFECYCLE on the AMM path (execution lifecycle only; not routing, quote or prompt parity).
 // Uses the same source-backed fixture, so the position is a real AMM fill with per-event economics.
-fn amm_run_with_fill() -> Run {
-    let r = replay(false);
-    assert!(
-        rep(&r.e, "fill:position_opened_amm") >= 1,
-        "AMM fill required for these lifecycle cases"
-    );
-    r
-}
 
 #[test]
 fn amm_fill_is_applied_once_and_duplicates_do_not_add_inventory() {
@@ -270,18 +277,25 @@ fn amm_fill_is_applied_once_and_duplicates_do_not_add_inventory() {
 #[test]
 fn amm_conflicting_terminal_reports_fault_and_resolution_reconciles_the_books() {
     let mut r = amm_run_with_fill();
-    let m = r.e.model_all_fills()[0].mint;
-    let fr = FillReport {
-        entry_price_fp: 1,
-        reserve_sol_lamports: 1,
-    };
-    r.e.model_note_terminal_for_test(&m, ReconcileOutcome::Filled(fr));
-    assert!(!r.e.model_reconcile(&m, ReconcileOutcome::NotFilled));
+    let f0 = r.e.model_all_fills()[0];
+    let m = f0.mint;
+    let id = f0.order_id;
+    let q = r.e.model_order_rec(id).unwrap().clip_lamports;
+    let held = r.e.model_position_open(&m);
+    // The paper simulator filled this AMM order; the execution side then says NotFilled.
+    assert_eq!(
+        r.e.model_ingest_evidence(Evidence {
+            order_id: id,
+            attempt: 1,
+            clip_lamports: q,
+            outcome: ReconcileOutcome::NotFilled
+        }),
+        EvidenceResult::Fault
+    );
     assert_eq!(r.e.model_recon_faults().len(), 1);
     assert_eq!(rep(&r.e, "reconcile:FAULT_conflicting_terminal"), 1);
-    let held = r.e.model_position_open(&m);
     let res =
-        r.e.model_resolve_recon_fault(&m, ReconcileOutcome::NotFilled);
+        r.e.model_resolve_recon_fault(id, ReconcileOutcome::NotFilled);
     if held {
         assert_eq!(res, FaultResolution::Released { unwound: true });
         assert!(
@@ -296,4 +310,147 @@ fn amm_conflicting_terminal_reports_fault_and_resolution_reconciles_the_books() 
         );
         assert_eq!(r.e.model_recon_faults().len(), 1, "fault and block remain");
     }
+}
+
+#[test]
+fn amm_uncertain_ack_stays_pending_then_reconciles_to_exactly_one_fill() {
+    // Stop the replay right after the AMM BUY verdict, mark the ack uncertain, let further AMM
+    // landing states arrive (it must NOT fill or expire), then confirm FILLED by evidence.
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut cfg = Config::dev_portable();
+    cfg.bankroll_initial_lamports = 2_000_000_000;
+    let mut e = Engine::new(cfg, RunMode::Paper);
+    e.enable_paper_model(Stub(Arc::clone(&calls)));
+    let mut last_tick = 0i64;
+    let mut marked: Option<(u64, u32, u64)> = None;
+    let mut mint_seen = None;
+    for line in FIXTURE.lines() {
+        let v: serde_json::Value = serde_json::from_str(line).unwrap();
+        let m = DomainMint::from_bytes(hex32(v["m"].as_str().unwrap()));
+        mint_seen = Some(*m.as_bytes());
+        let t = v["t"].as_i64().unwrap();
+        feed_line(&mut e, &v, m, t);
+        if t - last_tick >= 1_000 {
+            last_tick = t;
+            e.tick(AppEvent::Tick);
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        if marked.is_none() {
+            if let Some(po) = e.model_pending_order(m.as_bytes()) {
+                assert!(e.model_mark_ack_uncertain(po.0));
+                marked = Some(po);
+            }
+        }
+    }
+    for _ in 0..20 {
+        e.tick(AppEvent::Tick);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let (id, at, q) = marked.expect("the stub bought, so an order existed");
+    let mint = mint_seen.unwrap();
+    // The uncertain order never filled and never expired, however many AMM states followed.
+    assert_eq!(
+        e.model_pending_orders(),
+        1,
+        "an uncertain AMM order stays pending"
+    );
+    assert!(
+        !e.model_position_open(&mint),
+        "unknown ack is not inventory"
+    );
+    assert_eq!(rep(&e, "fill:position_opened_amm|quote=unvalidated"), 0);
+    assert_eq!(
+        rep(&e, "fill_none:no_landing_state"),
+        0,
+        "TTL must not clear it"
+    );
+    // Evidence says FILLED: applied exactly once through the normal report-ingestion path.
+    let fr = FillReport {
+        entry_price_fp: 40_000,
+        reserve_sol_lamports: 40_000_000_000,
+    };
+    assert_eq!(
+        e.model_ingest_evidence(Evidence {
+            order_id: id,
+            attempt: at,
+            clip_lamports: q,
+            outcome: ReconcileOutcome::Filled(fr)
+        }),
+        EvidenceResult::Applied
+    );
+    assert!(e.model_position_open(&mint));
+    assert_eq!(e.model_position_order_id(&mint), Some(id));
+    assert_eq!(
+        e.model_ingest_evidence(Evidence {
+            order_id: id,
+            attempt: at,
+            clip_lamports: q,
+            outcome: ReconcileOutcome::Filled(fr)
+        }),
+        EvidenceResult::Duplicate
+    );
+    assert_eq!(
+        e.model_all_fills()
+            .iter()
+            .filter(|f| f.order_id == id)
+            .count(),
+        1,
+        "one fill for one order"
+    );
+}
+
+#[test]
+fn amm_fixture_funnel_pools_discovered_ready_dispatched() {
+    // FUNNEL on the source-backed AMM fixture, which feeds real `AppEvent::AmmSwap` (the curve-only
+    // replay never does). One mint / one canonical pool: this measures the PATH, not population
+    // coverage. Written to /tmp/amm_funnel.json for the report.
+    let r = replay(false);
+    let rpt = r.e.model_lane_report().clone();
+    let funnel = r.e.model_funnel();
+    let pools_observed: std::collections::BTreeSet<&str> = FIXTURE
+        .lines()
+        .filter_map(|l| {
+            let v: serde_json::Value = serde_json::from_str(l).ok()?;
+            (v["k"] == "A").then(|| ())?;
+            Some("pool")
+        })
+        .collect();
+    let distinct_pools = {
+        let mut set = std::collections::BTreeSet::new();
+        for l in FIXTURE.lines() {
+            let v: serde_json::Value = serde_json::from_str(l).unwrap();
+            if v["k"] == "A" {
+                set.insert(v["pool"].as_str().unwrap().to_string());
+            }
+        }
+        set.len()
+    };
+    let _ = pools_observed;
+    std::fs::write(
+        "/tmp/amm_funnel.json",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "distinct_canonical_pools_observed": distinct_pools,
+            "funnel": funnel, "lane": rpt,
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(distinct_pools, 1);
+    // Registry-based funnel (CURRENT venue of each market): 1 pool -> discovered -> ready -> dispatched.
+    assert_eq!(
+        funnel.get("discovered|venue=pumpswap"),
+        Some(&1),
+        "{funnel:?}"
+    );
+    assert_eq!(funnel.get("ready|venue=pumpswap"), Some(&1), "{funnel:?}");
+    assert_eq!(
+        funnel.get("dispatched|venue=pumpswap"),
+        Some(&1),
+        "{funnel:?}"
+    );
+    // The AMM plane itself was asked (7 pumpswap dispatches) and the AMM verdict reached the engine.
+    assert!(rep(&r.e, "dispatched|venue=pumpswap") >= 1, "{rpt:?}");
+    // NOTE (measurement): the `uniq_*` counters are keyed by the venue AT THE TIME of each stage, so a
+    // market that migrates curve -> pool appears under both venues there. That is why this assertion
+    // uses the registry funnel.
 }

@@ -308,6 +308,15 @@ fn write_trade_jsonl(
                 status & 1 == 1,
                 status & 2 == 2
             ),
+            Decision::ReconFault {
+                mint,
+                order_id,
+                closed,
+            } => format!(
+                "{{\"t\":\"recon_fault\",\"mint\":\"{}\",\"order_id\":{order_id},\"position_closed\":{}}}",
+                hex32(&mint),
+                closed == 1
+            ),
             Decision::Reweighted {
                 lane,
                 before_bp,

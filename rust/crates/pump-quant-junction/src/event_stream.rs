@@ -424,6 +424,7 @@ fn event_kind(event: &AppEvent) -> &'static str {
         AppEvent::TimeSignal { .. } => "TimeSignal",
         AppEvent::NarrativeResolved { .. } => "NarrativeResolved",
         // Rev-19 on-chain feedback: new event variants.
+        AppEvent::ModelOrderEvidence { .. } => "ModelOrderEvidence",
         AppEvent::OurBuyConfirmed { .. } => "OurBuyConfirmed",
         AppEvent::OurBuyFailed { .. } => "OurBuyFailed",
         AppEvent::OurSellConfirmed { .. } => "OurSellConfirmed",
@@ -592,6 +593,26 @@ fn event_fields_json(event: &AppEvent) -> String {
             parts.push(format!(r#""stage":{}"#, stage));
             parts.push(format!(r#""family":{}"#, family));
             parts.push(format!(r#""lexicon_version":{}"#, lexicon_version));
+        }
+        // Paper-model execution evidence: order identity + quantity + outcome (no signature exists).
+        AppEvent::ModelOrderEvidence {
+            order_id,
+            attempt,
+            clip_lamports,
+            filled,
+            ..
+        } => {
+            parts.push(format!(r#""order_id":{order_id}"#));
+            parts.push(format!(r#""attempt":{attempt}"#));
+            parts.push(format!(r#""clip_lamports":{clip_lamports}"#));
+            match filled {
+                Some((px, res)) => {
+                    parts.push(format!(
+                        r#""filled":true,"entry_price_fp":{px},"reserve_sol_lamports":{res}"#
+                    ));
+                }
+                None => parts.push(r#""filled":false"#.to_string()),
+            }
         }
         // Rev-19 on-chain feedback: serialize signature + slot for confirmation events.
         AppEvent::OurBuyConfirmed {

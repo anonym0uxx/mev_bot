@@ -54,6 +54,8 @@ const FIRST_CAND_CAP: usize = 100_000;
 const REGISTRY_CAP: usize = 100_000;
 /// Maximum asks started per tick: a coalescing bound, not a strategy filter.
 const SCHEDULE_PER_TICK: usize = 8;
+/// Bound on the in-memory order log (oldest terminal records are the only candidates to evict).
+const ORDER_LOG_CAP: usize = 100_000;
 
 /// A canonical-pool swap handed to the engine (see `AppEvent::AmmSwap`).
 #[derive(Debug, Clone, Copy)]
@@ -97,6 +99,8 @@ pub struct ExcludedExit {
 /// promotion consumers MUST read [`Engine::model_assessable_fills`], never positions directly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ModelFillRecord {
+    /// The order that opened this inventory.
+    pub order_id: OrderId,
     pub mint: [u8; 32],
     pub amm: bool,
     /// Quote arithmetic validated for this instruction/fee case (protocol vectors).
@@ -105,6 +109,73 @@ pub struct ModelFillRecord {
     pub landing_validated: bool,
     /// Came from `model_reconcile` (execution truth) rather than the paper simulator.
     pub from_reconcile: bool,
+}
+
+/// Identity of one paper-model order. Evidence is bound to this, never to the mint alone.
+pub type OrderId = u64;
+
+/// Where one order is in its life. Terminal states are final; evidence that contradicts one is a fault.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OrderState {
+    /// Accepted verdict, awaiting a simulated landing. Not inventory.
+    Pending,
+    /// Acknowledgement unknown; still pending, never TTL-cleared.
+    PendingUncertain,
+    /// Filled: this order opened (or topped up) inventory.
+    Filled,
+    /// Resolved as never filled (by evidence or by TTL with no landing state).
+    NotFilled,
+    /// Closed out after fill (position exited).
+    Closed,
+}
+
+/// One order's durable record: identity, attempt, intended and filled quantity, and terminal evidence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OrderRec {
+    pub id: OrderId,
+    pub mint: [u8; 32],
+    /// Execution attempt for this order (1 for the first submission; a retry keeps the order id).
+    pub attempt: u32,
+    /// The quote lamports the model asked to spend (the clip).
+    pub clip_lamports: u64,
+    /// Inventory this order actually opened, set only by a fill (0 until then).
+    pub filled_clip_lamports: u64,
+    pub state: OrderState,
+    /// First terminal evidence applied to this order, if any (kept for audit).
+    pub terminal: Option<ReconcileOutcome>,
+}
+
+/// Evidence about ONE order: which order, which attempt, and what quantity it speaks about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Evidence {
+    pub order_id: OrderId,
+    pub attempt: u32,
+    /// Quantity (clip lamports) the evidence source says it is reporting on.
+    pub clip_lamports: u64,
+    pub outcome: ReconcileOutcome,
+}
+
+/// A durable reconciliation fault: contradictory evidence for one order, preserved verbatim.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReconFault {
+    pub order_id: OrderId,
+    pub mint: [u8; 32],
+    /// The first terminal evidence, or `None` when the first "fact" was the engine's own book
+    /// (a paper fill, or an order expired without evidence); `first_source` names which.
+    pub first: Option<ReconcileOutcome>,
+    pub first_source: &'static str,
+    pub contradicting: Vec<ReconcileOutcome>,
+}
+
+/// What `model_ingest_evidence` did with a report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EvidenceResult {
+    Applied,
+    Duplicate,
+    /// Contradicts the order's first terminal evidence: fault raised, nothing applied.
+    Fault,
+    /// Refused without touching any state, with the named reason.
+    Rejected(&'static str),
 }
 
 /// The result of resolving a reconciliation fault against authoritative evidence.
@@ -137,6 +208,8 @@ pub(super) struct ModelReqMeta {
 /// An accepted BUY awaiting its simulated fill. Creating this moves NO capital and opens NO position.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct ModelOrder {
+    pub id: OrderId,
+    pub attempt: u32,
     pub clip_lamports: u64,
     pub price_limit: Option<f64>,
     pub created_ms: i64,
@@ -193,6 +266,14 @@ impl Engine {
 
     /// The model lane's coverage / refusal / lifecycle counters (candidate-ticks, not unique mints).
     #[must_use]
+    /// Ingest accounting for the decision cache: every market event the engine received that the
+    /// cache saw, split by what became of it. Scheduling coalesces ASK requests only; this proves
+    /// whether any trade was dropped from the flow/feature history before that.
+    #[must_use]
+    pub fn model_ingest_counters(&self) -> crate::decision_join::IngestCounters {
+        self.model_cache.counters()
+    }
+
     pub fn model_lane_report(&self) -> &std::collections::BTreeMap<String, u64> {
         &self.model_report
     }
@@ -242,6 +323,7 @@ impl Engine {
         // Admission-SOURCE evidence for the old-vs-new comparison: this market reached the model
         // through the legacy priced-print promotion path.
         let clock = self.model_clock_ms;
+        self.mrep("admit_attempt|src=legacy_promoted");
         let cm = cand.mint.bytes();
         let (venue, _, _) = self.model_cache.describe(&cm, clock);
         self.model_uniq("legacy_promoted", &cm, venue);
@@ -302,6 +384,7 @@ impl Engine {
                 continue; // stays dirty; re-offered after the window
             }
             self.model_dirty.remove(&mint);
+            self.mrep("admit_attempt|src=stream");
             if let Some(since) = self.model_dirty_since.remove(&mint) {
                 // Queue age at dispatch (ms), bucketed, split by venue so starvation is visible.
                 let age = (clock - since).max(0);
@@ -439,7 +522,7 @@ impl Engine {
             self.mrep("refuse:no_feed_clock");
             return;
         }
-        if self.model_recon_faults.contains_key(&mint) {
+        if self.model_mint_blocked(&mint) {
             self.mrep("refuse:recon_fault_blocks_exposure");
             return;
         }
@@ -493,6 +576,7 @@ impl Engine {
             }
             self.model_uniq("ready", &mint, venue);
         }
+        let snap_t = snap.t_dec_ms;
         let id = match self
             .model_table
             .submit(mint, clock, clock + MODEL_DEADLINE_MS)
@@ -536,6 +620,11 @@ impl Engine {
                 dims,
             },
         );
+        // STATE VERSION that actually reaches the model: the prompt's decision clock and the number of
+        // strictly-prior trades it was built from. Logged per dispatch (sum/count) so the staleness
+        // of what Qwen sees versus the feed at dispatch time is measurable.
+        self.mrep_add("sent_state_age_ms_sum", (clock - snap_t).max(0) as u64);
+        self.mrep("sent_state_n");
         self.model_uniq("dispatched", &mint, venue);
         self.mrep(format!("dispatched|venue={venue}"));
         self.mrep("dispatched");
@@ -627,9 +716,27 @@ impl Engine {
                 ..
             } => {
                 self.mrep(format!("verdict:buy|{}", meta.dims));
+                self.model_order_seq += 1;
+                let oid = self.model_order_seq;
+                if self.model_order_log.len() < ORDER_LOG_CAP {
+                    self.model_order_log.insert(
+                        oid,
+                        OrderRec {
+                            id: oid,
+                            mint: entry.mint,
+                            attempt: 1,
+                            clip_lamports,
+                            filled_clip_lamports: 0,
+                            state: OrderState::Pending,
+                            terminal: None,
+                        },
+                    );
+                }
                 self.model_orders.insert(
                     entry.mint,
                     ModelOrder {
+                        id: oid,
+                        attempt: 1,
                         clip_lamports,
                         price_limit,
                         created_ms: clock,
@@ -676,7 +783,7 @@ impl Engine {
                 continue;
             }
             if let Some(fr) = order.confirmed {
-                self.model_orders.remove(&mint);
+                self.model_retire_order(&mint);
                 self.mrep("fill:applied_from_reconcile");
                 self.model_open_filled(mint, order, fr.reserve_sol_lamports, fr.entry_price_fp, 0);
                 continue;
@@ -697,12 +804,12 @@ impl Engine {
                 });
                 let Some(obs) = obs else {
                     if clock - order.created_ms > MODEL_ORDER_TTL_MS {
-                        self.model_orders.remove(&mint);
+                        self.model_retire_order(&mint);
                         self.mrep("fill_none:no_landing_state");
                     }
                     continue;
                 };
-                self.model_orders.remove(&mint);
+                self.model_retire_order(&mint);
                 self.model_note_latency(&order, obs.ts_ms);
                 // The fee is the rate the LANDING-STATE swap's own event reported (lp + protocol +
                 // creator, charged on the input). It is NEVER carried forward from an earlier swap:
@@ -751,12 +858,12 @@ impl Engine {
                 });
                 let Some(obs) = obs else {
                     if clock - order.created_ms > MODEL_ORDER_TTL_MS {
-                        self.model_orders.remove(&mint);
+                        self.model_retire_order(&mint);
                         self.mrep("fill_none:no_landing_state");
                     }
                     continue;
                 };
-                self.model_orders.remove(&mint);
+                self.model_retire_order(&mint);
                 let Some(out) =
                     crate::curve_fill::buy_tokens_out(obs.v_sol_lamports, obs.v_tokens, size)
                 else {
@@ -862,7 +969,13 @@ impl Engine {
             if !(quote_validated && landing_validated) {
                 self.model_quarantine.insert(mint);
             }
+            if let Some(rec) = self.model_order_log.get_mut(&order.id) {
+                rec.state = OrderState::Filled;
+                rec.filled_clip_lamports = order.clip_lamports;
+            }
+            self.model_position_order.insert(mint, order.id);
             self.model_fills.push(ModelFillRecord {
+                order_id: order.id,
                 mint,
                 amm: order.amm,
                 quote_validated,
@@ -895,59 +1008,216 @@ impl Engine {
         }
     }
 
-    /// The execution acknowledgement for a pending order is unknown. The order stays pending: it
-    /// is not inventory, and it is NOT cleared by the TTL. Returns false if there is no order.
-    pub fn model_mark_ack_uncertain(&mut self, mint: &[u8; 32]) -> bool {
-        match self.model_orders.get_mut(mint) {
-            Some(o) => {
+    /// Remove a pending order from the pending book. If its log record is still pending it becomes
+    /// `NotFilled` (TTL expiry / no landing state); a fill sets `Filled` afterwards, so the order of
+    /// calls (retire, then open) leaves the right final state.
+    pub(super) fn model_retire_order(&mut self, mint: &[u8; 32]) {
+        if let Some(o) = self.model_orders.remove(mint) {
+            if let Some(rec) = self.model_order_log.get_mut(&o.id) {
+                if matches!(
+                    rec.state,
+                    OrderState::Pending | OrderState::PendingUncertain
+                ) {
+                    rec.state = OrderState::NotFilled;
+                }
+            }
+        }
+    }
+
+    /// The held position on `mint` was closed: its opening order is `Closed` and the mint no longer
+    /// maps to an order. Settled history is not touched.
+    pub(super) fn model_on_position_closed(&mut self, mint: &[u8; 32]) {
+        if let Some(id) = self.model_position_order.remove(mint) {
+            if let Some(rec) = self.model_order_log.get_mut(&id) {
+                if rec.state == OrderState::Filled {
+                    rec.state = OrderState::Closed;
+                }
+            }
+        }
+    }
+
+    /// Identity of the pending order on `mint`: what a report-ingestion layer must quote back.
+    #[must_use]
+    pub fn model_pending_order(&self, mint: &[u8; 32]) -> Option<(OrderId, u32, u64)> {
+        self.model_orders
+            .get(mint)
+            .map(|o| (o.id, o.attempt, o.clip_lamports))
+    }
+
+    /// Identity of the order that opened the held position on `mint`, if any.
+    #[must_use]
+    pub fn model_position_order_id(&self, mint: &[u8; 32]) -> Option<OrderId> {
+        self.model_position_order.get(mint).copied()
+    }
+
+    /// One order's durable record.
+    #[must_use]
+    pub fn model_order_rec(&self, id: OrderId) -> Option<OrderRec> {
+        self.model_order_log.get(&id).copied()
+    }
+
+    /// The execution acknowledgement for a pending order is unknown. The order stays pending: it is
+    /// not inventory, and it is NOT cleared by the TTL. Bound to the exact order id.
+    pub fn model_mark_ack_uncertain(&mut self, order_id: OrderId) -> bool {
+        let Some(mint) = self.model_order_log.get(&order_id).map(|r| r.mint) else {
+            self.mrep("ack:unknown_order");
+            return false;
+        };
+        match self.model_orders.get_mut(&mint) {
+            Some(o) if o.id == order_id => {
                 o.uncertain = true;
+                if let Some(rec) = self.model_order_log.get_mut(&order_id) {
+                    rec.state = OrderState::PendingUncertain;
+                }
                 self.mrep("ack:uncertain_marked");
                 true
             }
-            None => {
+            _ => {
                 self.mrep("ack:no_pending_order");
                 false
             }
         }
     }
 
-    /// Resolve an uncertain order from execution truth. `NotFilled` clears the intent; `Filled`
-    /// applies the reported fill exactly once. With no pending order (already applied / cleared /
-    /// never existed) it is ignored and counted: a duplicate report cannot create a second position.
-    pub fn model_reconcile(&mut self, mint: &[u8; 32], outcome: ReconcileOutcome) -> bool {
-        // A report that CONFLICTS with the first terminal one is never ignored and never applied:
-        // the evidence is kept, a named fault is raised and the mint is blocked from new exposure
-        // until a human/authority resolves it (`model_resolve_recon_fault`).
-        if let Some(first) = self.model_terminal.get(mint).copied() {
-            if first == outcome {
-                self.mrep("reconcile:duplicate_same_terminal");
-            } else {
-                self.model_recon_faults
-                    .entry(*mint)
-                    .or_default()
-                    .push(outcome);
-                self.mrep("reconcile:FAULT_conflicting_terminal");
-            }
-            return false;
-        }
-        let Some(o) = self.model_orders.get_mut(mint) else {
-            self.mrep("reconcile:no_pending_order");
-            return false;
+    /// Ingest execution evidence for ONE order. The report must quote the order id, the attempt and
+    /// the quantity it speaks about; a mismatch is rejected with no state touched. Never keyed by
+    /// mint, so evidence for one order cannot clear, unwind or confirm another order or pre-existing
+    /// inventory. Conflicting terminal evidence is a durable fault; settled history is never rewritten.
+    pub fn model_ingest_evidence(&mut self, ev: Evidence) -> EvidenceResult {
+        let Some(rec) = self.model_order_log.get(&ev.order_id).copied() else {
+            self.mrep("evidence:rejected:unknown_order");
+            return EvidenceResult::Rejected("unknown_order");
         };
-        match outcome {
-            ReconcileOutcome::NotFilled => {
-                self.model_orders.remove(mint);
-                self.model_terminal.insert(*mint, outcome);
-                self.mrep("reconcile:not_filled_cleared");
+        if rec.attempt != ev.attempt {
+            self.mrep("evidence:rejected:attempt_mismatch");
+            return EvidenceResult::Rejected("attempt_mismatch");
+        }
+        if rec.clip_lamports != ev.clip_lamports {
+            self.mrep("evidence:rejected:quantity_mismatch");
+            return EvidenceResult::Rejected("quantity_mismatch");
+        }
+        let mint = rec.mint;
+        if let Some(first) = rec.terminal {
+            if first == ev.outcome {
+                self.mrep("reconcile:duplicate_same_terminal");
+                return EvidenceResult::Duplicate;
             }
-            ReconcileOutcome::Filled(fr) => {
-                o.confirmed = Some(fr);
-                self.model_terminal.insert(*mint, outcome);
+            self.model_raise_fault(&rec, Some(first), "first_terminal_evidence", ev.outcome);
+            return EvidenceResult::Fault;
+        }
+        match (rec.state, ev.outcome) {
+            (OrderState::Pending | OrderState::PendingUncertain, ReconcileOutcome::NotFilled) => {
+                self.model_orders.remove(&mint);
+                if let Some(r) = self.model_order_log.get_mut(&ev.order_id) {
+                    r.state = OrderState::NotFilled;
+                    r.terminal = Some(ev.outcome);
+                }
+                self.mrep("reconcile:not_filled_cleared");
+                EvidenceResult::Applied
+            }
+            (OrderState::Pending | OrderState::PendingUncertain, ReconcileOutcome::Filled(fr)) => {
+                if let Some(o) = self.model_orders.get_mut(&mint) {
+                    if o.id == ev.order_id {
+                        o.confirmed = Some(fr);
+                    }
+                }
+                if let Some(r) = self.model_order_log.get_mut(&ev.order_id) {
+                    r.terminal = Some(ev.outcome);
+                }
                 let c = self.model_clock_ms;
                 self.model_try_fills(c);
+                EvidenceResult::Applied
+            }
+            (OrderState::Filled | OrderState::Closed, ReconcileOutcome::Filled(_)) => {
+                // The paper simulator already filled this order; the evidence agrees. Recorded, no
+                // second application.
+                if let Some(r) = self.model_order_log.get_mut(&ev.order_id) {
+                    r.terminal = Some(ev.outcome);
+                }
+                self.mrep("reconcile:confirms_existing_fill");
+                EvidenceResult::Applied
+            }
+            (OrderState::Filled | OrderState::Closed, ReconcileOutcome::NotFilled) => {
+                // Contradicts the book's fill. Not applied, not dropped.
+                self.model_raise_fault(&rec, None, "paper_fill", ev.outcome);
+                EvidenceResult::Fault
+            }
+            (OrderState::NotFilled, ReconcileOutcome::Filled(_)) => {
+                self.model_raise_fault(
+                    &rec,
+                    None,
+                    "expired_or_cleared_without_evidence",
+                    ev.outcome,
+                );
+                EvidenceResult::Fault
+            }
+            (OrderState::NotFilled, ReconcileOutcome::NotFilled) => {
+                if let Some(r) = self.model_order_log.get_mut(&ev.order_id) {
+                    r.terminal = Some(ev.outcome);
+                }
+                self.mrep("reconcile:confirms_not_filled");
+                EvidenceResult::Applied
             }
         }
-        true
+    }
+
+    /// Report-ingestion entry (the `AppEvent::ModelOrderEvidence` arm). The event's mint must equal
+    /// the logged order's mint, so a mislabelled report cannot reach another market's order.
+    pub(super) fn model_on_evidence_event(
+        &mut self,
+        mint: [u8; 32],
+        order_id: OrderId,
+        attempt: u32,
+        clip_lamports: u64,
+        filled: Option<(u64, u64)>,
+    ) {
+        if self
+            .model_order_log
+            .get(&order_id)
+            .is_some_and(|r| r.mint != mint)
+        {
+            self.mrep("evidence:rejected:mint_mismatch");
+            return;
+        }
+        let outcome = match filled {
+            Some((entry_price_fp, reserve_sol_lamports)) => ReconcileOutcome::Filled(FillReport {
+                entry_price_fp,
+                reserve_sol_lamports,
+            }),
+            None => ReconcileOutcome::NotFilled,
+        };
+        let _ = self.model_ingest_evidence(Evidence {
+            order_id,
+            attempt,
+            clip_lamports,
+            outcome,
+        });
+    }
+
+    fn model_raise_fault(
+        &mut self,
+        rec: &OrderRec,
+        first: Option<ReconcileOutcome>,
+        source: &'static str,
+        contradicting: ReconcileOutcome,
+    ) {
+        let f = self
+            .model_recon_faults
+            .entry(rec.id)
+            .or_insert_with(|| ReconFault {
+                order_id: rec.id,
+                mint: rec.mint,
+                first,
+                first_source: source,
+                contradicting: Vec::new(),
+            });
+        f.contradicting.push(contradicting);
+        self.journal.record(Decision::ReconFault {
+            mint: rec.mint,
+            order_id: rec.id,
+            closed: u8::from(rec.state == OrderState::Closed),
+        });
+        self.mrep("reconcile:FAULT_conflicting_terminal");
     }
 
     /// Fills usable for assessing trading skill: quote AND landing validated. While the landing
@@ -974,94 +1244,104 @@ impl Engine {
         &self.model_fills
     }
 
-    /// TEST SUPPORT: record a first terminal report for a mint whose fill the paper simulator already
-    /// applied, so a later conflicting report exercises the fault path against an open position.
-    #[doc(hidden)]
-    pub fn model_note_terminal_for_test(&mut self, mint: &[u8; 32], outcome: ReconcileOutcome) {
-        self.model_terminal.insert(*mint, outcome);
-    }
-
-    /// Mints with an unresolved reconciliation fault, with the conflicting evidence preserved.
+    /// Every order-level reconciliation fault, evidence preserved verbatim, keyed by order id.
     #[must_use]
-    pub fn model_recon_faults(&self) -> &BTreeMap<[u8; 32], Vec<ReconcileOutcome>> {
+    pub fn model_recon_faults(&self) -> &BTreeMap<OrderId, ReconFault> {
         &self.model_recon_faults
     }
 
-    /// Resolve a reconciliation fault against AUTHORITATIVE execution evidence. The block is released
-    /// only after the engine's own books (pending order, open inventory, committed capital) have been
-    /// made to agree with that evidence; where they cannot be reconciled without inventing data the
-    /// fault stays and the reason is named. Every path is counted; nothing is silently dropped.
+    /// Resolve a fault against AUTHORITATIVE evidence for that exact order. The block is released only
+    /// after the books agree for THIS order, and only this order's own effects are unwound: another
+    /// order's fill, or pre-existing inventory, is never touched. A closed position is never rewritten
+    /// (it needs a deliberate ledger adjustment, which does not exist yet), so that fault stays.
     pub fn model_resolve_recon_fault(
         &mut self,
-        mint: &[u8; 32],
+        order_id: OrderId,
         authoritative: ReconcileOutcome,
     ) -> FaultResolution {
-        if !self.model_recon_faults.contains_key(mint) {
+        let Some(fault) = self.model_recon_faults.get(&order_id).cloned() else {
             return FaultResolution::NoFault;
-        }
-        let holds_position = self.open_lane.contains_key(mint);
-        let has_order = self.model_orders.contains_key(mint);
-        let was_closed = self.model_excluded_exits.iter().any(|x| x.mint == *mint);
+        };
+        let Some(rec) = self.model_order_log.get(&order_id).copied() else {
+            return FaultResolution::Refused("order_not_in_log");
+        };
+        let mint = fault.mint;
         let refuse = |s: &mut Self, why: &'static str| {
             s.mrep(format!("reconcile:resolution_refused:{why}"));
             FaultResolution::Refused(why)
         };
+        let owns_position = self.model_position_order.get(&mint) == Some(&order_id)
+            && self.open_lane.contains_key(&mint);
         match authoritative {
-            ReconcileOutcome::NotFilled => {
-                if was_closed && !holds_position {
-                    // Cash from the (now-closed) position was already settled and exited; undoing it
-                    // would rewrite realized history. That needs an explicit ledger adjustment.
-                    return refuse(self, "position_already_closed_needs_ledger_adjustment");
+            ReconcileOutcome::NotFilled => match rec.state {
+                OrderState::Closed => {
+                    refuse(self, "position_already_closed_needs_ledger_adjustment")
                 }
-                let mut unwound = false;
-                if has_order {
-                    self.model_orders.remove(mint);
-                    unwound = true;
-                }
-                if holds_position {
-                    let (size, cost) = self
-                        .open_lane
-                        .get(mint)
-                        .map(|a| (a.entry_spend, a.entry_spend))
-                        .unwrap_or((0, 0));
-                    self.positions.reverse_paper_entry(mint, size);
+                OrderState::Filled if owns_position => {
+                    let cost = self.open_lane.get(&mint).map_or(0, |a| a.entry_spend);
+                    self.positions.reverse_paper_entry(&mint, cost);
                     self.admitted = self.admitted.saturating_sub(1);
                     self.bankroll_committed =
                         self.bankroll_committed.saturating_sub(u128::from(cost));
-                    self.ata_open.remove(mint);
-                    self.open_lane.remove(mint);
-                    self.model_quarantine.remove(mint);
-                    self.theses.remove(mint);
-                    self.thesis_adverse.remove(mint);
-                    unwound = true;
+                    self.ata_open.remove(&mint);
+                    self.open_lane.remove(&mint);
+                    self.model_quarantine.remove(&mint);
+                    self.model_position_order.remove(&mint);
+                    self.theses.remove(&mint);
+                    self.thesis_adverse.remove(&mint);
+                    self.model_finish_fault(order_id, OrderState::NotFilled, authoritative);
+                    self.mrep("reconcile:fault_resolved_not_filled");
+                    FaultResolution::Released { unwound: true }
                 }
-                self.model_recon_faults.remove(mint);
-                self.model_terminal
-                    .insert(*mint, ReconcileOutcome::NotFilled);
-                self.mrep("reconcile:fault_resolved_not_filled");
-                FaultResolution::Released { unwound }
-            }
-            ReconcileOutcome::Filled(_) => {
-                if holds_position && !has_order {
-                    // Books already show exactly one fill: consistent with the evidence.
-                    self.model_recon_faults.remove(mint);
-                    self.model_terminal.insert(*mint, authoritative);
+                OrderState::Filled => {
+                    refuse(self, "order_filled_but_does_not_own_the_held_position")
+                }
+                OrderState::Pending | OrderState::PendingUncertain => {
+                    self.model_orders.remove(&mint);
+                    self.model_finish_fault(order_id, OrderState::NotFilled, authoritative);
+                    self.mrep("reconcile:fault_resolved_not_filled");
+                    FaultResolution::Released { unwound: true }
+                }
+                OrderState::NotFilled => {
+                    self.model_finish_fault(order_id, OrderState::NotFilled, authoritative);
+                    self.mrep("reconcile:fault_resolved_not_filled");
+                    FaultResolution::Released { unwound: false }
+                }
+            },
+            ReconcileOutcome::Filled(_) => match rec.state {
+                OrderState::Filled | OrderState::Closed => {
+                    self.model_finish_fault(order_id, rec.state, authoritative);
                     self.mrep("reconcile:fault_resolved_filled_consistent");
                     FaultResolution::Released { unwound: false }
-                } else if has_order && !holds_position {
-                    // The pending order becomes the single fill, from the evidence's own numbers.
-                    self.model_recon_faults.remove(mint);
-                    self.model_terminal.remove(mint);
-                    let _ = self.model_reconcile(mint, authoritative);
-                    self.mrep("reconcile:fault_resolved_filled_applied");
-                    FaultResolution::Released { unwound: false }
-                } else {
-                    // No pending order and no position (or both): there is nothing to attach the fill
-                    // to, and inventing an entry would fabricate economics.
+                }
+                // No inventory exists for an order the books cleared; inventing an entry from
+                // after-the-fact evidence would fabricate economics.
+                OrderState::NotFilled => {
                     refuse(self, "filled_evidence_without_matching_book_state")
                 }
-            }
+                OrderState::Pending | OrderState::PendingUncertain => {
+                    refuse(self, "filled_evidence_for_pending_order_use_ingest")
+                }
+            },
         }
+    }
+
+    fn model_finish_fault(
+        &mut self,
+        order_id: OrderId,
+        state: OrderState,
+        outcome: ReconcileOutcome,
+    ) {
+        self.model_recon_faults.remove(&order_id);
+        if let Some(r) = self.model_order_log.get_mut(&order_id) {
+            r.state = state;
+            r.terminal = Some(outcome);
+        }
+    }
+
+    /// New exposure on `mint` is blocked while ANY of its orders has an unresolved fault.
+    pub(super) fn model_mint_blocked(&self, mint: &[u8; 32]) -> bool {
+        self.model_recon_faults.values().any(|f| f.mint == *mint)
     }
 
     /// OLD-vs-NEW admission, measured on whatever stream the engine has seen: unique markets reaching

@@ -400,6 +400,16 @@ pub enum AppEvent {
     /// Fed by the daemon's `getSignaturesForAddress` poller when a pending buy
     /// signature is confirmed. The engine uses this to reconcile the paper
     /// position with on-chain reality and mark it as on-chain confirmed.
+    /// Execution evidence for ONE paper-model order (report ingestion). Bound to the order id, the
+    /// attempt and the quantity; `filled` is `Some((entry_price_fp, reserve_sol_lamports))` for a
+    /// fill and `None` for not-filled. Mint is for routing only and is cross-checked against the log.
+    ModelOrderEvidence {
+        mint: Mint,
+        order_id: u64,
+        attempt: u32,
+        clip_lamports: u64,
+        filled: Option<(u64, u64)>,
+    },
     OurBuyConfirmed {
         /// The mint that was bought.
         mint: Mint,
@@ -473,6 +483,7 @@ impl AppEvent {
             | AppEvent::Migration { mint, .. }
             | AppEvent::MarketAuxiliary { mint, .. }
             | AppEvent::NarrativeResolved { mint, .. }
+            | AppEvent::ModelOrderEvidence { mint, .. }
             | AppEvent::OurBuyConfirmed { mint, .. }
             | AppEvent::OurBuyFailed { mint, .. }
             | AppEvent::OurSellConfirmed { mint, .. }

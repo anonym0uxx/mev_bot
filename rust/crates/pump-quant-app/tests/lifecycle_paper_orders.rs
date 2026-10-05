@@ -10,7 +10,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use pump_quant_app::config::Config;
-use pump_quant_app::engine::model_admit::{FaultResolution, FillReport, ReconcileOutcome};
+use pump_quant_app::engine::model_admit::{
+    Evidence, EvidenceResult, FaultResolution, FillReport, OrderState, ReconcileOutcome,
+};
 use pump_quant_app::engine::{Engine, RunMode};
 use pump_quant_app::event::{AppEvent, TradeVenue};
 use pump_quant_app::model_authority::ModelSource;
@@ -153,10 +155,32 @@ fn lifecycle_a_duplicate_landing_observation_applies_the_fill_once() {
     );
 }
 
+/// Identity of the order currently pending on MINT, as a report-ingestion layer would quote it back.
+fn pending(e: &Engine) -> (u64, u32, u64) {
+    e.model_pending_order(&MINT).expect("a pending order")
+}
+
+fn ev(id: u64, attempt: u32, clip: u64, outcome: ReconcileOutcome) -> Evidence {
+    Evidence {
+        order_id: id,
+        attempt,
+        clip_lamports: clip,
+        outcome,
+    }
+}
+
+fn fr() -> FillReport {
+    FillReport {
+        entry_price_fp: 30_000,
+        reserve_sol_lamports: VSOL,
+    }
+}
+
 #[test]
 fn lifecycle_b_an_uncertain_ack_stays_pending_past_the_ttl_and_is_not_inventory() {
     let (mut e, _c) = with_pending();
-    assert!(e.model_mark_ack_uncertain(&MINT));
+    let (id, _, _) = pending(&e);
+    assert!(e.model_mark_ack_uncertain(id));
     // Far beyond the order TTL, with landing states available: it must neither fill nor expire.
     landing(&mut e, T_LAND + 60_000, 2_200);
     assert_eq!(
@@ -174,23 +198,28 @@ fn lifecycle_b_an_uncertain_ack_stays_pending_past_the_ttl_and_is_not_inventory(
         "TTL must not clear an uncertain order"
     );
     assert!(rep(&e, "pending_uncertain_held") >= 1);
+    assert_eq!(
+        e.model_order_rec(id).unwrap().state,
+        OrderState::PendingUncertain
+    );
 }
 
 #[test]
 fn lifecycle_c_reconciled_not_filled_clears_the_intent_without_a_position() {
     let (mut e, _c) = with_pending();
-    e.model_mark_ack_uncertain(&MINT);
-    assert!(e.model_reconcile(&MINT, ReconcileOutcome::NotFilled));
+    let (id, at, q) = pending(&e);
+    e.model_mark_ack_uncertain(id);
+    assert_eq!(
+        e.model_ingest_evidence(ev(id, at, q, ReconcileOutcome::NotFilled)),
+        EvidenceResult::Applied
+    );
     assert_eq!(e.model_pending_orders(), 0);
     assert!(!e.model_position_open(&MINT));
-    // A late duplicate report finds nothing to apply.
-    assert!(!e.model_reconcile(
-        &MINT,
-        ReconcileOutcome::Filled(FillReport {
-            entry_price_fp: 30_000,
-            reserve_sol_lamports: VSOL
-        })
-    ));
+    // Credible Filled evidence for the SAME order after NotFilled is a fault, never inventory.
+    assert_eq!(
+        e.model_ingest_evidence(ev(id, at, q, ReconcileOutcome::Filled(fr()))),
+        EvidenceResult::Fault
+    );
     assert!(
         !e.model_position_open(&MINT),
         "a report after clearing cannot resurrect inventory"
@@ -200,22 +229,33 @@ fn lifecycle_c_reconciled_not_filled_clears_the_intent_without_a_position() {
 #[test]
 fn lifecycle_d_a_reconciled_fill_is_applied_exactly_once() {
     let (mut e, _c) = with_pending();
-    e.model_mark_ack_uncertain(&MINT);
-    let fr = FillReport {
-        entry_price_fp: 30_000,
-        reserve_sol_lamports: VSOL,
-    };
-    assert!(e.model_reconcile(&MINT, ReconcileOutcome::Filled(fr)));
+    let (id, at, q) = pending(&e);
+    e.model_mark_ack_uncertain(id);
+    assert_eq!(
+        e.model_ingest_evidence(ev(id, at, q, ReconcileOutcome::Filled(fr()))),
+        EvidenceResult::Applied
+    );
     assert!(e.model_position_open(&MINT));
     assert_eq!(rep(&e, "fill:applied_from_reconcile"), 1);
     let bal = e.bankroll_balance();
-    // Duplicate confirmation, and a conflicting NotFilled: neither changes inventory or balance.
-    assert!(!e.model_reconcile(&MINT, ReconcileOutcome::Filled(fr)));
+    // Duplicate confirmation: no second position, no second debit.
+    assert_eq!(
+        e.model_ingest_evidence(ev(id, at, q, ReconcileOutcome::Filled(fr()))),
+        EvidenceResult::Duplicate
+    );
     assert_eq!(rep(&e, "reconcile:duplicate_same_terminal"), 1);
-    // A CONFLICTING terminal report is not silent and not applied: named fault, evidence kept.
-    assert!(!e.model_reconcile(&MINT, ReconcileOutcome::NotFilled));
+    // A CONFLICTING terminal report: named fault, evidence kept, nothing applied.
+    assert_eq!(
+        e.model_ingest_evidence(ev(id, at, q, ReconcileOutcome::NotFilled)),
+        EvidenceResult::Fault
+    );
     assert_eq!(rep(&e, "reconcile:FAULT_conflicting_terminal"), 1);
-    assert_eq!(e.model_recon_faults().get(&MINT).map(Vec::len), Some(1));
+    assert_eq!(
+        e.model_recon_faults()
+            .get(&id)
+            .map(|f| f.contradicting.len()),
+        Some(1)
+    );
     assert_eq!(rep(&e, "fill:position_opened"), 1);
     assert_eq!(e.bankroll_balance(), bal);
     assert!(e.model_position_open(&MINT));
@@ -224,18 +264,24 @@ fn lifecycle_d_a_reconciled_fill_is_applied_exactly_once() {
 #[test]
 fn lifecycle_g_not_filled_then_credible_filled_is_a_fault_that_blocks_exposure_until_resolved() {
     let (mut e, _c) = with_pending();
-    e.model_mark_ack_uncertain(&MINT);
-    assert!(e.model_reconcile(&MINT, ReconcileOutcome::NotFilled));
-    assert_eq!(e.model_pending_orders(), 0);
+    let (id, at, q) = pending(&e);
+    e.model_mark_ack_uncertain(id);
+    assert_eq!(
+        e.model_ingest_evidence(ev(id, at, q, ReconcileOutcome::NotFilled)),
+        EvidenceResult::Applied
+    );
     let bal = e.bankroll_balance();
-    let fr = FillReport {
-        entry_price_fp: 30_000,
-        reserve_sol_lamports: VSOL,
-    };
-    // Credible Filled evidence after a NotFilled: not applied, not discarded, raised.
-    assert!(!e.model_reconcile(&MINT, ReconcileOutcome::Filled(fr)));
+    assert_eq!(
+        e.model_ingest_evidence(ev(id, at, q, ReconcileOutcome::Filled(fr()))),
+        EvidenceResult::Fault
+    );
     assert_eq!(rep(&e, "reconcile:FAULT_conflicting_terminal"), 1);
-    assert_eq!(e.model_recon_faults().get(&MINT).map(Vec::len), Some(1));
+    assert_eq!(
+        e.model_recon_faults()
+            .get(&id)
+            .map(|f| f.contradicting.len()),
+        Some(1)
+    );
     assert!(!e.model_position_open(&MINT), "no silent inventory");
     assert_eq!(e.bankroll_balance(), bal, "no debit");
     // New exposure for the affected mint is blocked while the fault stands.
@@ -245,53 +291,155 @@ fn lifecycle_g_not_filled_then_credible_filled_is_a_fault_that_blocks_exposure_u
         std::thread::sleep(Duration::from_millis(5));
     }
     assert_eq!(rep(&e, "dispatched"), asks);
-    // Resolution must reconcile the books with the authority's evidence, not just clear a flag.
-    // (1) Authority says FILLED but the books hold no order and no inventory: there is nothing to
-    //     attach the fill to and inventing an entry would fabricate economics => REFUSED, fault and
-    //     exposure block REMAIN.
+    // Authority says FILLED but the books cleared the order: inventing an entry would fabricate
+    // economics => REFUSED, fault and block REMAIN.
     assert_eq!(
-        e.model_resolve_recon_fault(&MINT, ReconcileOutcome::Filled(fr)),
+        e.model_resolve_recon_fault(id, ReconcileOutcome::Filled(fr())),
         FaultResolution::Refused("filled_evidence_without_matching_book_state")
     );
     assert_eq!(e.model_recon_faults().len(), 1, "fault stands");
+    // Authority confirms NOT filled: books already agree => released.
     assert_eq!(
-        rep(
-            &e,
-            "reconcile:resolution_refused:filled_evidence_without_matching_book_state"
-        ),
-        1
-    );
-    // (2) Authority confirms NOT filled: books already agree (no order, no position) => released.
-    assert_eq!(
-        e.model_resolve_recon_fault(&MINT, ReconcileOutcome::NotFilled),
+        e.model_resolve_recon_fault(id, ReconcileOutcome::NotFilled),
         FaultResolution::Released { unwound: false }
     );
     assert!(e.model_recon_faults().is_empty());
-    assert_eq!(rep(&e, "reconcile:fault_resolved_not_filled"), 1);
     assert!(!e.model_position_open(&MINT));
     assert_eq!(e.bankroll_balance(), bal, "still no debit");
 }
 
 #[test]
-fn lifecycle_k_resolution_unwinds_a_position_the_authority_says_never_filled() {
-    // Paper fill happened, then a first Filled report and a CONFLICTING NotFilled: fault. Authority
-    // says NotFilled => the open inventory and committed capital are unwound, then the block lifts.
+fn lifecycle_m_evidence_must_match_order_attempt_and_quantity_or_touch_nothing() {
     let (mut e, _c) = with_pending();
+    let (id, at, q) = pending(&e);
+    let before = (e.model_pending_orders(), e.bankroll_balance());
+    for (bad, why) in [
+        (
+            ev(id + 99, at, q, ReconcileOutcome::NotFilled),
+            "unknown_order",
+        ),
+        (
+            ev(id, at + 1, q, ReconcileOutcome::NotFilled),
+            "attempt_mismatch",
+        ),
+        (
+            ev(id, at, q + 1, ReconcileOutcome::NotFilled),
+            "quantity_mismatch",
+        ),
+    ] {
+        assert_eq!(e.model_ingest_evidence(bad), EvidenceResult::Rejected(why));
+        assert_eq!(
+            (e.model_pending_orders(), e.bankroll_balance()),
+            before,
+            "{why}: state untouched"
+        );
+    }
+    assert_eq!(e.model_order_rec(id).unwrap().state, OrderState::Pending);
+}
+
+#[test]
+fn lifecycle_n_evidence_for_one_order_never_unwinds_another_orders_or_preexisting_inventory() {
+    // Order #1 fills and holds inventory. A DIFFERENT order id on the same mint (an earlier cleared
+    // order) gets NotFilled evidence: the held position must be untouched.
+    let (mut e, _c) = with_pending();
+    let (id1, at, q) = pending(&e);
     landing(&mut e, T_LAND, 2_100);
     assert!(e.model_position_open(&MINT));
-    let fr = FillReport {
-        entry_price_fp: 30_000,
-        reserve_sol_lamports: VSOL,
-    };
-    // Record a first terminal Filled directly against the open book via the order-less path.
-    e.model_note_terminal_for_test(&MINT, ReconcileOutcome::Filled(fr));
-    assert!(!e.model_reconcile(&MINT, ReconcileOutcome::NotFilled));
-    assert_eq!(e.model_recon_faults().len(), 1);
-    // While blocked, the HELD position is still monitored: a price collapse closes it normally.
+    assert_eq!(e.model_position_order_id(&MINT), Some(id1));
+    let bal = e.bankroll_balance();
+    // Evidence quoting a different (non-existent) order on this mint: rejected, inventory intact.
+    assert_eq!(
+        e.model_ingest_evidence(ev(id1 + 1, at, q, ReconcileOutcome::NotFilled)),
+        EvidenceResult::Rejected("unknown_order")
+    );
     assert!(e.model_position_open(&MINT));
+    assert_eq!(e.bankroll_balance(), bal);
+    // Even a contradicting report for order 1 is a FAULT (not an unwind) while its position is held.
+    assert_eq!(
+        e.model_ingest_evidence(ev(id1, at, q, ReconcileOutcome::NotFilled)),
+        EvidenceResult::Fault
+    );
+    assert!(
+        e.model_position_open(&MINT),
+        "a fault does not unwind by itself"
+    );
+    // Resolution for an order that does not own the held position is refused, never applied.
+    let fake = id1 + 1000;
+    assert_eq!(
+        e.model_resolve_recon_fault(fake, ReconcileOutcome::NotFilled),
+        FaultResolution::NoFault
+    );
+    assert!(e.model_position_open(&MINT));
+}
+
+#[test]
+fn lifecycle_o_closed_position_conflict_stays_blocked_with_durable_evidence() {
+    let (mut e, _c) = with_pending();
+    let (id, at, q) = pending(&e);
+    landing(&mut e, T_LAND, 2_100);
+    // Close it through the normal path.
+    let mut ts = T_LAND + 1_000;
+    let mut slot = 2_200;
+    for _ in 0..200 {
+        e.tick(AppEvent::CurveObserved {
+            mint: mint(),
+            v_sol_lamports: VSOL / 4,
+            v_tokens: VTOK * 4,
+            real_sol_lamports: 1_000_000_000,
+            real_tokens: 900_000_000_000_000,
+            recv_unix_ms: Some(ts),
+            slot,
+        });
+        pump(&mut e, 2);
+        ts += 400;
+        slot += 1;
+        if !e.model_position_open(&MINT) {
+            break;
+        }
+    }
+    assert!(!e.model_position_open(&MINT));
+    assert_eq!(e.model_order_rec(id).unwrap().state, OrderState::Closed);
+    let bal = e.bankroll_balance();
+    // NotFilled evidence for an order whose position is already SETTLED: fault, never a rewrite.
+    assert_eq!(
+        e.model_ingest_evidence(ev(id, at, q, ReconcileOutcome::NotFilled)),
+        EvidenceResult::Fault
+    );
+    assert_eq!(e.bankroll_balance(), bal, "settled history untouched");
+    assert_eq!(
+        e.model_resolve_recon_fault(id, ReconcileOutcome::NotFilled),
+        FaultResolution::Refused("position_already_closed_needs_ledger_adjustment")
+    );
+    assert_eq!(e.model_recon_faults().len(), 1, "fault and block remain");
+    assert_eq!(e.bankroll_balance(), bal);
+    // The fault is journalled durably (position_closed = true).
+    assert!(e.journal_recent().any(|d| matches!(
+        d,
+        pump_quant_app::journal_log::Decision::ReconFault { closed: 1, .. }
+    )));
+}
+
+#[test]
+fn lifecycle_k_resolution_unwinds_only_the_order_that_the_authority_says_never_filled() {
+    // The paper simulator filled order #1 (inventory held). The execution side then reports
+    // NotFilled for that same order: a fault (the books and evidence disagree). Authority confirms
+    // NotFilled => THAT order's inventory and committed capital are unwound and the block lifts.
+    let (mut e, _c) = with_pending();
+    let (id, at, q) = pending(&e);
+    landing(&mut e, T_LAND, 2_100);
+    assert!(e.model_position_open(&MINT));
+    assert_eq!(
+        e.model_ingest_evidence(ev(id, at, q, ReconcileOutcome::NotFilled)),
+        EvidenceResult::Fault
+    );
+    assert_eq!(e.model_recon_faults().len(), 1);
+    assert!(
+        e.model_position_open(&MINT),
+        "inventory persists while the fault stands"
+    );
     let bal_before = e.bankroll_balance();
     assert_eq!(
-        e.model_resolve_recon_fault(&MINT, ReconcileOutcome::NotFilled),
+        e.model_resolve_recon_fault(id, ReconcileOutcome::NotFilled),
         FaultResolution::Released { unwound: true }
     );
     assert!(!e.model_position_open(&MINT), "inventory unwound");
@@ -304,6 +452,7 @@ fn lifecycle_k_resolution_unwinds_a_position_the_authority_says_never_filled() {
         bal_before,
         "an unwound entry realized nothing"
     );
+    assert_eq!(e.model_order_rec(id).unwrap().state, OrderState::NotFilled);
 }
 
 #[test]
@@ -311,12 +460,12 @@ fn lifecycle_l_held_position_is_monitored_while_new_exposure_on_the_mint_is_bloc
     let (mut e, _c) = with_pending();
     landing(&mut e, T_LAND, 2_100);
     assert!(e.model_position_open(&MINT));
-    let fr = FillReport {
-        entry_price_fp: 30_000,
-        reserve_sol_lamports: VSOL,
-    };
-    e.model_note_terminal_for_test(&MINT, ReconcileOutcome::Filled(fr));
-    assert!(!e.model_reconcile(&MINT, ReconcileOutcome::NotFilled));
+    let id = e.model_position_order_id(&MINT).expect("owning order");
+    let q = e.model_order_rec(id).unwrap().clip_lamports;
+    assert_eq!(
+        e.model_ingest_evidence(ev(id, 1, q, ReconcileOutcome::NotFilled)),
+        EvidenceResult::Fault
+    );
     assert_eq!(e.model_recon_faults().len(), 1);
     let asks_at_block = rep(&e, "dispatched");
     // Protective exit still fires on the held position while the fault stands.
@@ -360,10 +509,13 @@ fn lifecycle_e_reconcile_with_no_order_is_a_counted_noop() {
     let calls = Arc::new(AtomicUsize::new(0));
     let mut e = Engine::new(Config::dev_portable(), RunMode::Paper);
     e.enable_paper_model(Stub(calls));
-    assert!(!e.model_mark_ack_uncertain(&MINT));
-    assert!(!e.model_reconcile(&MINT, ReconcileOutcome::NotFilled));
-    assert_eq!(rep(&e, "ack:no_pending_order"), 1);
-    assert_eq!(rep(&e, "reconcile:no_pending_order"), 1);
+    assert!(!e.model_mark_ack_uncertain(7));
+    assert_eq!(
+        e.model_ingest_evidence(ev(7, 1, 1, ReconcileOutcome::NotFilled)),
+        EvidenceResult::Rejected("unknown_order")
+    );
+    assert_eq!(rep(&e, "ack:unknown_order"), 1);
+    assert_eq!(rep(&e, "evidence:rejected:unknown_order"), 1);
     assert!(!e.model_position_open(&MINT));
 }
 
@@ -524,4 +676,55 @@ fn lifecycle_j_operational_reconciliation_and_protection_are_not_skipped_for_rou
     assert!(r.per_lane_net.iter().all(|(_, n)| *n == 0));
     assert_eq!(e.analytics_report().trades, 0);
     let _ = x;
+}
+
+#[test]
+fn lifecycle_p_evidence_through_the_normal_event_path_is_order_bound() {
+    // Same protections as the direct API, but delivered as `AppEvent::ModelOrderEvidence` through
+    // `Engine::tick` -- the path a real report source uses, not a test helper.
+    let (mut e, _c) = with_pending();
+    let (id, at, q) = pending(&e);
+    let evt = |order_id: u64, attempt: u32, clip: u64, filled: Option<(u64, u64)>| {
+        AppEvent::ModelOrderEvidence {
+            mint: mint(),
+            order_id,
+            attempt,
+            clip_lamports: clip,
+            filled,
+        }
+    };
+    // Wrong order / attempt / quantity: nothing changes.
+    for bad in [
+        evt(id + 9, at, q, None),
+        evt(id, at + 1, q, None),
+        evt(id, at, q + 1, None),
+    ] {
+        e.tick(bad);
+    }
+    assert_eq!(e.model_pending_orders(), 1);
+    assert_eq!(e.model_order_rec(id).unwrap().state, OrderState::Pending);
+    assert_eq!(rep(&e, "evidence:rejected:unknown_order"), 1);
+    assert_eq!(rep(&e, "evidence:rejected:attempt_mismatch"), 1);
+    assert_eq!(rep(&e, "evidence:rejected:quantity_mismatch"), 1);
+    // A report with the right order but the WRONG mint is rejected without reaching the order.
+    e.tick(AppEvent::ModelOrderEvidence {
+        mint: DomainMint::from_bytes([9u8; 32]),
+        order_id: id,
+        attempt: at,
+        clip_lamports: q,
+        filled: None,
+    });
+    assert_eq!(rep(&e, "evidence:rejected:mint_mismatch"), 1);
+    assert_eq!(e.model_pending_orders(), 1);
+    // The exact report applies; a duplicate does not apply twice; a contradiction is a fault.
+    e.tick(evt(id, at, q, Some((30_000, VSOL))));
+    assert!(e.model_position_open(&MINT));
+    let bal = e.bankroll_balance();
+    e.tick(evt(id, at, q, Some((30_000, VSOL))));
+    assert_eq!(rep(&e, "reconcile:duplicate_same_terminal"), 1);
+    e.tick(evt(id, at, q, None));
+    assert_eq!(rep(&e, "reconcile:FAULT_conflicting_terminal"), 1);
+    assert_eq!(e.model_recon_faults().len(), 1);
+    assert_eq!(e.bankroll_balance(), bal);
+    assert_eq!(rep(&e, "fill:applied_from_reconcile"), 1);
 }

@@ -81,6 +81,13 @@ pub enum Decision {
         reason: u8,
         status: u8,
     },
+    /// Contradictory execution evidence for one order. `closed` = 1 when the order's position is
+    /// already settled (needs a deliberate ledger adjustment). Durable audit of the fault itself.
+    ReconFault {
+        mint: [u8; 32],
+        order_id: u64,
+        closed: u8,
+    },
     /// A reflection pass moved a lane weight.
     Reweighted {
         lane: u8,
@@ -112,6 +119,7 @@ impl Decision {
             Decision::Reweighted { .. } => 5,
             Decision::Probe { .. } => 6,
             Decision::RoutingExit { .. } => 7,
+            Decision::ReconFault { .. } => 8,
         }
     }
 
@@ -175,6 +183,15 @@ impl Decision {
                 push_bytes(buf, &net_pnl_lamports.to_le_bytes());
                 buf.push(reason);
                 buf.push(status);
+            }
+            Decision::ReconFault {
+                mint,
+                order_id,
+                closed,
+            } => {
+                push_bytes(buf, &mint);
+                push_u64(buf, order_id);
+                buf.push(closed);
             }
             Decision::Reweighted {
                 lane,

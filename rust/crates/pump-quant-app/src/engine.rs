@@ -870,7 +870,13 @@ pub struct Engine {
     model_uniq_seen: BTreeSet<(String, [u8; 32])>,
     model_amm_fee: BTreeMap<[u8; 32], (Option<u32>, i64)>,
     /// First terminal execution report per mint (evidence kept), and mints blocked by a conflicting one.
-    model_terminal: BTreeMap<[u8; 32], model_admit::ReconcileOutcome>,
+    /// Monotonic id of the next model order. Every order, fill, evidence report and fault is keyed by
+    /// this, never by mint alone, so evidence for one order cannot touch another order's state.
+    model_order_seq: u64,
+    /// Append-only-ish order book (bounded): identity, attempt, quantity, state and terminal evidence.
+    model_order_log: BTreeMap<u64, model_admit::OrderRec>,
+    /// Which order opened the currently-held model position on each mint.
+    model_position_order: BTreeMap<[u8; 32], u64>,
     /// Every paper-model fill with its validation status (routing simulation vs assessable).
     model_fills: Vec<model_admit::ModelFillRecord>,
     /// Mints whose open position is a paper-model routing fill that is NOT assessable. Their exits
@@ -878,7 +884,7 @@ pub struct Engine {
     model_quarantine: std::collections::BTreeSet<[u8; 32]>,
     /// Exits excluded from every economic assessment, with the reason. Visible, never zero-filled.
     model_excluded_exits: Vec<model_admit::ExcludedExit>,
-    model_recon_faults: BTreeMap<[u8; 32], Vec<model_admit::ReconcileOutcome>>,
+    model_recon_faults: BTreeMap<u64, model_admit::ReconFault>,
     /// Per-mint (fee parts, virtual quote, swap time) of the latest swap: executable economics.
     model_amm_econ: BTreeMap<[u8; 32], (Option<(u32, u32, u32)>, Option<u64>, i64)>,
     /// Non-canonical pools seen per mint (counted, never priced from): the honest `pools_total`.
@@ -1486,7 +1492,9 @@ impl Engine {
             model_dirty_since: BTreeMap::new(),
             model_uniq_seen: BTreeSet::new(),
             model_amm_fee: BTreeMap::new(),
-            model_terminal: BTreeMap::new(),
+            model_order_seq: 0,
+            model_order_log: BTreeMap::new(),
+            model_position_order: BTreeMap::new(),
             model_fills: Vec::new(),
             model_quarantine: std::collections::BTreeSet::new(),
             model_excluded_exits: Vec::new(),
@@ -2443,6 +2451,23 @@ impl Engine {
             // ─── Rev-19 on-chain feedback loop ──────────────────────────────
             // Our buy tx landed on-chain. Reconcile the paper position: mark it
             // as on-chain confirmed so the sell path knows tokens are real.
+            AppEvent::ModelOrderEvidence {
+                mint,
+                order_id,
+                attempt,
+                clip_lamports,
+                filled,
+            } => {
+                if self.paper_model_mode {
+                    self.model_on_evidence_event(
+                        *mint.as_bytes(),
+                        order_id,
+                        attempt,
+                        clip_lamports,
+                        filled,
+                    );
+                }
+            }
             AppEvent::OurBuyConfirmed {
                 mint, signature, ..
             } => {
@@ -5561,6 +5586,7 @@ impl Engine {
             self.context.on_rug_precursor();
         }
         if e.closed {
+            self.model_on_position_closed(&e.mint);
             if let Some(att) = self.open_lane.remove(&e.mint) {
                 let (lane_w, total, entry_spend, entry_price, archetype, entry_vsol, entry_obs) = (
                     att.lane,
