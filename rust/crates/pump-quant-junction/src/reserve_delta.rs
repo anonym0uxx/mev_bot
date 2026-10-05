@@ -173,6 +173,25 @@ pub fn derive_market_trade_from_delta(
     })
 }
 
+/// Whether both reserve deltas are representable as `i64` — the derivation's ONLY
+/// out-of-range rejection. Lets a caller separate a genuinely out-of-range observation
+/// from an ordinary no-trade (first sighting / zero delta / inconsistent curve), which
+/// are all legitimate `None`s. Reserves are widened to i128, so only a delta that cannot
+/// fit `i64` returns `false`.
+#[must_use]
+pub fn delta_representable(prev: Option<&ReserveSnapshot>, current: &PumpCurve) -> bool {
+    let Some(p) = prev else {
+        return true;
+    };
+    let fits = |a: u64, b: u64| {
+        i128::from(a)
+            .checked_sub(i128::from(b))
+            .and_then(|d| i64::try_from(d).ok())
+            .is_some()
+    };
+    fits(current.virtual_sol, p.virtual_sol) && fits(current.virtual_token, p.virtual_token)
+}
+
 /// Record the result of a derivation attempt, for stats tracking.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct DeltaStats {
@@ -189,6 +208,30 @@ mod tests {
     use super::*;
     /// A u64 reserve above i64::MAX cannot be represented as a signed delta, so the
     /// derivation rejects it (checked conversion) instead of wrapping.
+    #[test]
+    fn delta_representable_separates_out_of_range_from_ordinary_no_trade() {
+        let prev = ReserveSnapshot {
+            virtual_sol: 30_000_000_000,
+            virtual_token: 1_000_000_000,
+            slot: 900,
+        };
+        // Ordinary no-trade: a small, representable delta.
+        assert!(delta_representable(
+            Some(&prev),
+            &make_curve(31_000_000_000, 1_000_000_000)
+        ));
+        // No previous snapshot is NOT out-of-range.
+        assert!(delta_representable(
+            None,
+            &make_curve(31_000_000_000, 1_000_000_000)
+        ));
+        // Genuinely out-of-range: the SOL delta exceeds i64.
+        assert!(!delta_representable(
+            Some(&prev),
+            &make_curve(u64::MAX, 1_000_000_000)
+        ));
+    }
+
     #[test]
     fn out_of_range_reserve_is_rejected() {
         let prev = ReserveSnapshot {

@@ -170,6 +170,7 @@ struct SessionStats {
     delta_trades_derived: u64,
     /// Snapshots that produced no trade delta.
     delta_no_trade: u64,
+    delta_out_of_range: u64,
     pdas_derived: usize,
     pda_venue_matches: usize, // venue-supplied address matched derived PDA
     pda_venue_present: usize, // venue supplied an address at all
@@ -210,6 +211,7 @@ impl SessionStats {
             account_subs_evicted: 0,
             delta_trades_derived: 0,
             delta_no_trade: 0,
+            delta_out_of_range: 0,
             pdas_derived: 0,
             pda_venue_matches: 0,
             pda_venue_present: 0,
@@ -780,6 +782,12 @@ fn main() -> ExitCode {
                                                 );
                                             } else {
                                                 stats.delta_no_trade += 1;
+
+                                                if !pump_quant_junction::reserve_delta::delta_representable(prev.as_ref(), &curve) {
+
+                                                    stats.delta_out_of_range += 1;
+
+                                                }
                                             }
                                             // Update the snapshot for next delta.
                                             reserve_tracker.insert(
@@ -858,6 +866,12 @@ fn main() -> ExitCode {
                                                     );
                                                 } else {
                                                     stats.delta_no_trade += 1;
+
+                                                    if !pump_quant_junction::reserve_delta::delta_representable(prev.as_ref(), &curve) {
+
+                                                        stats.delta_out_of_range += 1;
+
+                                                    }
                                                 }
                                                 // Update the snapshot for next delta.
                                                 reserve_tracker.insert(
@@ -1133,6 +1147,7 @@ fn main() -> ExitCode {
         stats.delta_trades_derived
     );
     println!("  delta_no_trade:            {}", stats.delta_no_trade);
+    println!("  delta_out_of_range:        {}", stats.delta_out_of_range);
     println!("  last_slot_seen:            {last_slot_seen}");
     println!("  reconnects:                {}", stats.helius_reconnects);
     println!();

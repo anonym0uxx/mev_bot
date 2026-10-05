@@ -762,6 +762,7 @@ struct SessionStats {
     last_confirm_tick: u64,
     delta_trades_derived: u64,
     delta_no_trade: u64,
+    delta_out_of_range: u64,
     pdas_derived: usize,
     pda_venue_matches: usize,
     pda_venue_present: usize,
@@ -812,6 +813,7 @@ impl SessionStats {
             last_confirm_tick: 0,
             delta_trades_derived: 0,
             delta_no_trade: 0,
+            delta_out_of_range: 0,
             pdas_derived: 0,
             pda_venue_matches: 0,
             pda_venue_present: 0,
@@ -2593,6 +2595,9 @@ fn main() -> ExitCode {
                     "\"ls_account_received\":{},",
                     "\"ls_onchain_confirms_decoded\":{},",
                     "\"ls_account_unresolved\":{},",
+                    "\"delta_trades_derived\":{},",
+                    "\"delta_no_trade\":{},",
+                    "\"delta_out_of_range\":{},",
                     "\"uptime_secs\":{},",
                     "\"tick\":{},",
                     "\"account_subs_active\":{},",
@@ -2610,6 +2615,9 @@ fn main() -> ExitCode {
                 stats.ls_account_received,
                 stats.ls_onchain_confirms_decoded,
                 stats.ls_account_unresolved,
+                stats.delta_trades_derived,
+                stats.delta_no_trade,
+                stats.delta_out_of_range,
                 uptime_secs,
                 tick_counter,
                 sub_tracker.len(),
@@ -2801,6 +2809,13 @@ fn main() -> ExitCode {
                                 stats.delta_trades_derived += 1;
                             } else {
                                 stats.delta_no_trade += 1;
+
+                                if !pump_quant_junction::reserve_delta::delta_representable(
+                                    prev.as_ref(),
+                                    &curve,
+                                ) {
+                                    stats.delta_out_of_range += 1;
+                                }
                             }
                             reserve_tracker.insert(
                                 mb,
@@ -3369,6 +3384,12 @@ fn main() -> ExitCode {
                                                 stats.delta_trades_derived += 1;
                                             } else {
                                                 stats.delta_no_trade += 1;
+
+                                                if !pump_quant_junction::reserve_delta::delta_representable(prev.as_ref(), &curve) {
+
+                                                    stats.delta_out_of_range += 1;
+
+                                                }
                                             }
                                             reserve_tracker.insert(
                                                 mb,
@@ -3476,6 +3497,12 @@ fn main() -> ExitCode {
                                                     stats.delta_trades_derived += 1;
                                                 } else {
                                                     stats.delta_no_trade += 1;
+
+                                                    if !pump_quant_junction::reserve_delta::delta_representable(prev.as_ref(), &curve) {
+
+                                                        stats.delta_out_of_range += 1;
+
+                                                    }
                                                 }
                                                 reserve_tracker.insert(
                                                     mb,
