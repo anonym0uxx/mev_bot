@@ -132,3 +132,46 @@ Actual daemon with real Qwen; Windows serving parity/latency; live reserve fresh
   No failure was shown to be a code defect. 4 `assert ([])` publication failures are UNRESOLVED until run on Windows.
 - Windows validation task: on the operator host, check out the branch with its pinned files byte-exact, `pip install yt-dlp`,
   run `pytest tools/data-pipeline/tests/north_star`; expect all 2234 to pass or report which fail. Until then north-star stays unmerged.
+
+
+---
+## Addendum 3 - review items (head: see PR; tested code SHA recorded below)
+
+### Test-count reconciliation (cargo test --no-fail-fast --workspace; passed counts)
+- 3584 (pre-retirement, 959cee8c) -> 3464 (912cbeed): -120 = 85 retired legacy tests + 9 in pump-quant-tape (4 unit + 5 integration) + 26 in pump-quant-clock (7 tie_break, 6 deterministic_test_clock, 5 replay_clock, 4 windows_system_clock, 4 dossier_clock_*). 85+9+26 = 120, matched per test binary (count_recon.py).
+- 3464 -> 3477 (current): +13 = 5 journal serialization pins + 2 reject-code pins (unit, pump-quant-app lib) + 6 tests in tests/retired_invariants_e2e.rs.
+- Net 3584 -> 3477 = -107. Counts are accounting only. 0 failed, 1 ignored (print_identity_block, a golden-text generator for the Python prompt port; asserts nothing).
+
+### Retired-assertion audit (docs/consolidation_assertion_ledger.json: 85 rows)
+Classification read from the ASSERT lines of each retired body (rollback tag), not from names: OBSOLETE 77, MIXED 8, PRESERVED 0 standalone.
+Replacements (each mutant-checked where marked):
+- journal serialization: journal_log.rs::serialization_pins (5 tests): every Decision variant's tag, byte layout and FNV-1a digest, derived by an independent Python encoder (journal_pin.py); sequence digest and order sensitivity; seed separation; signed PnL for both signs. Mutant (rt_cost_bps+1 in the Admitted encoding) fails 2 of 5.
+- reject ordinals: engine.rs::reject_code_pins (2): 4..=28 and 19 keep their ordinals, code 29 pinned, all distinct, all < 32 (histogram slots).
+- decoder boundary: an honest reserve pair is recorded, a contradictory one is refused not clamped, tolerance both sides (mutant: check removed -> fails).
+- Admitted record on the model path: depth_basis decoded/migrated, round-trip cost > 0, move_source known, band 0 by design (mutant depth_basis=0 -> fails).
+- no entry authority without a model: code 29 journalled and counted once, histogram sums to rejected, codes 0..28 never emitted (mutants: not journalled, renumbered -> fail).
+- survival floor on the model fill: no deployable capital -> named refusal, cash untouched. Legacy fee/tip fields cannot move a model entry. Extreme legacy config cannot open a position without a model.
+- GAP, not papered over: the operator minimum trade size (min_trade_size_lamports, 0.1 SOL) is NOT asserted on model clips; it was a property of the retired sizing law. Whether it applies to Qwen's clips is a policy decision.
+- Not ported because no model-path equivalent exists: quote arithmetic (cost_model has 27 unit tests, curve_fill 24; they still run), brain episode sealing on close (model entries carry brain: None).
+- Retired and NOT replaced: every pinned golden net/digest of the retired gate (GOLDEN_*), A/B "law earns more than its absence" comparisons, arm-vs-neutral inertness proofs of retired laws.
+
+### GitHub status of PR #10 ("unstable")
+- Repo has no branch protection on main (404), so there are NO required checks; no reviews; mergeable true, rebaseable true; no conflicts.
+- Only workflow: rust-ci (gate.yml). Runs on this PR: 18dc0ae2 failure, 442996b8 failure; both failed at step "Format check" and every later step (Clippy, Build, Tests) was SKIPPED, so they have never run on this branch.
+- Cause: rustfmt differences in tools/stream-capture-rs/src/{sender,ws}.rs (operator formatting on main). Fixed in commit K1 (format only, content patch identical to the preserved one).
+- Clippy was then run for the first time (CI step 2): main (09e9194b) already fails it with 40 errors; this branch: 39 pre-existing + 1 introduced (ingest base58 repeat().take()), fixed in K2. 39 pre-existing errors remain in 8 crates (evaluator, governance, ingest, market-state, proposal, protocol, wallet-graph, watchlist). They were not touched: CI will stay red at clippy until they are fixed or the gate is changed, and I did not disable it.
+- 912cbeed -> 442996b8: only docs/CONSOLIDATION_MANIFEST.md (modified) and docs/consolidation_retirement_ledger.json (added); git diff outside docs/ is empty. The workspace suite was run on 912cbeed (3464/0/1).
+
+### Daemon dependency graph (cargo tree, normal edges, package pump-quant-junction which owns pq-daemon)
+- Before (rollback tag) and after: 285 resolved packages and the same 23 workspace crates; feature listing byte-equal. NO dependency was cut in this pass.
+- Reason (traced, dep_trace.py): the strategy-named crates are used by the daemon for shared functions, not only the retired gate: strategy (economic_gate, exit_ladder, scalp_position, safety_integrity, hazard_estimator in 11 files), simulator (fill/capacity used by scalp.rs), signals/features/narrative/social/wallet-graph (data enrichment for the prompt), governance (authority.rs registry hash), memory (analytics hashing), evaluator (autonomous_bridge: defense-in-depth drawdown halt, CONFIG_PROMOTION hot-reload, refiner scheduling, auto-revert).
+- Finding to decide: pq-daemon still hot-reloads data/CONFIG_PROMOTION.json into the live Config and spawns pq-refiner. The extreme-config test shows no config state can open a position without a model, but the evaluator/refiner path is a legacy-strategy tuning loop inside the daemon; removing it is the next separable slice and is not done.
+
+### Telemetry and treasury (by capability, evidence)
+- pump-quant-telemetry: std-only, 7 integration tests; alerts() = floor breach, drawdown Critical/Degraded. Zero callers (no Cargo dependents, no bins, no scripts). SAFETY_OFF does NOT reach it: a trip sets blocked, bumps an epoch, writes the durable file and increments the safety:tripped:<reason> model-lane counter. The real alert surface today is stderr ALERT lines in pq_daemon (held-state restore refused, incomplete shutdown, stale held data, disk headroom) plus the watchdog reading data/live_status.json staleness. Nothing consumes the model-lane counter as a pager, so "alerts work" is NOT demonstrated for SAFETY_OFF. Kept; wiring it is a separate decision.
+- pump-quant-treasury: crate with a CLI bin pq_treasury (transfer / confirm; env PQ_KEYPAIR_PATH, PQ_WALLET_ADDRESS, PQ_TREASURY_POLICY, PQ_TREASURY_AUDIT, PQ_RPC_URL), whitelist/limits/daily cap/codeword policy (gitignored real policy, template in config/), append-only audit log, 4 policy unit tests. Only dependent: none in Cargo; only entry point: the operator-run CLI. It is not on any model or daemon path and is not wired. Kept, authority boundary = human-initiated CLI only, never callable from the model lane. No transfer was attempted or authorized.
+
+### north-star-build, precise
+- 154 failures on LF checkout reproduced (classification in ns/*.json: junit-based, by exception text). Not established as defect-free. 51 failures remain with the pinned file CRLF and yt-dlp installed: 38 Windows-only publication (requires Windows), 3 D: path, 10 unexplained (6 "EXACT_PATH: sample unavailable" expected from a D:-backed sample, 4 test_publication_is_complete_or_absent_and_retryable assertions with unknown cause). Those 10 are UNRESOLVED.
+- The grpc-server-only crate was built and its 7 b58 tests were run in the actual crate/build configuration using the documented local OpenSSL tree (handoff 0019: apt-get download libssl-dev + dpkg -x into /tmp, OPENSSL_STATIC/LIB_DIR/INCLUDE_DIR): 7 passed. The binary was not run against LaserStream.
+- Branch remains unmerged.

@@ -1,0 +1,257 @@
+[
+ {
+  "id": "tests.north_star.test_aggregate_corrected_capture::test_all_three_parts_conserved_and_exact_schema_nulls",
+  "bucket": "platform_windows_only_api",
+  "first": "RuntimeError: no-clobber directory publication implemented for Windows only"
+ },
+ {
+  "id": "tests.north_star.test_aggregate_corrected_capture::test_interruption_has_no_false_complete_and_can_retry[KeyboardInterrupt]",
+  "bucket": "platform_windows_only_api",
+  "first": "RuntimeError: no-clobber directory publication implemented for Windows only"
+ },
+ {
+  "id": "tests.north_star.test_aggregate_corrected_capture::test_interruption_has_no_false_complete_and_can_retry[OSError]",
+  "bucket": "platform_windows_only_api",
+  "first": "RuntimeError: no-clobber directory publication implemented for Windows only"
+ },
+ {
+  "id": "tests.north_star.test_aggregate_corrected_capture::test_whole_manifest_hash_verification_precedes_project",
+  "bucket": "platform_windows_only_api",
+  "first": "RuntimeError: no-clobber directory publication implemented for Windows only"
+ },
+ {
+  "id": "tests.north_star.test_aggregate_corrected_capture::test_producer_mismatch_not_adjusted_or_published",
+  "bucket": "platform_windows_only_api",
+  "first": "RuntimeError: no-clobber directory publication implemented for Windows only"
+ },
+ {
+  "id": "tests.north_star.test_aggregate_corrected_capture::test_missing_output_resume_never_heals",
+  "bucket": "platform_windows_only_api",
+  "first": "RuntimeError: no-clobber directory publication implemented for Windows only"
+ },
+ {
+  "id": "tests.north_star.test_aggregate_corrected_capture::test_destination_race_preserves_existing_target",
+  "bucket": "platform_windows_only_api",
+  "first": "RuntimeError: no-clobber directory publication implemented for Windows only"
+ },
+ {
+  "id": "tests.north_star.test_development_pipeline::test_real_source_identity_is_proven_by_pinned_capture_manifest",
+  "bucket": "hardcoded_D_drive_path",
+  "first": "FileNotFoundError: [Errno 2] No such file or directory: '/tmp/ns_mix/tools/data-pipeline/D:'"
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_sample_tampering_refused_before_decode",
+  "bucket": "unclassified",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_bounded_audit_preserves_original_bytes_and_field_scope",
+  "bucket": "hardcoded_D_drive_path",
+  "first": "FileNotFoundError: [Errno 2] No such file or directory: 'D:/mev_bot-artifacts/north_star/development/slinky_economics_audit_v1/development_samples.jso"
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_raw_inventory_is_separate_unadmitted_and_bounded",
+  "bucket": "hardcoded_D_drive_path",
+  "first": "FileNotFoundError: [Errno 2] No such file or directory: 'D:'"
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_decoded_lineage_and_join_failclosed[pump_state_v3-code_config_hash-changed]",
+  "bucket": "unclassified",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_decoded_lineage_and_join_failclosed[pump_state_v3-source_hash-changed]",
+  "bucket": "unclassified",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_decoded_lineage_and_join_failclosed[counterfactual_trade_v3-execution_config_hash-changed]",
+  "bucket": "unclassified",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_decoded_lineage_and_join_failclosed[pump_outcome_v3-run_uuid-changed]",
+  "bucket": "unclassified",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_decoded_lineage_and_join_failclosed[pump_outcome_v3-state_id-different_join]",
+  "bucket": "unclassified",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_narrative_sources::test_exact_prefix_roundtrip_keeps_bytes_versions_and_unverified_times",
+  "bucket": "platform_windows_only_api",
+  "first": "OSError: atomic no-clobber directory publication requires Windows"
+ },
+ {
+  "id": "tests.north_star.test_narrative_sources::test_only_exact_nonempty_prefix_gets_span[content0-prefix-CONTENT_ID_NOT_FOUND-False]",
+  "bucket": "platform_windows_only_api",
+  "first": "OSError: atomic no-clobber directory publication requires Windows"
+ },
+ {
+  "id": "tests.north_star.test_narrative_sources::test_only_exact_nonempty_prefix_gets_span[content1-prefix-CLAIM_PREFIX_NOT_EXACT-True]",
+  "bucket": "platform_windows_only_api",
+  "first": "OSError: atomic no-clobber directory publication requires Windows"
+ },
+ {
+  "id": "tests.north_star.test_narrative_sources::test_only_exact_nonempty_prefix_gets_span[content2-PREFIX-CLAIM_PREFIX_NOT_EXACT-True]",
+  "bucket": "platform_windows_only_api",
+  "first": "OSError: atomic no-clobber directory publication requires Windows"
+ },
+ {
+  "id": "tests.north_star.test_narrative_sources::test_only_exact_nonempty_prefix_gets_span[content3-e\\u0301-CLAIM_PREFIX_NOT_EXACT-True]",
+  "bucket": "platform_windows_only_api",
+  "first": "OSError: atomic no-clobber directory publication requires Windows"
+ },
+ {
+  "id": "tests.north_star.test_narrative_sources::test_only_exact_nonempty_prefix_gets_span[content4--CLAIM_PREFIX_NOT_EXACT-True]",
+  "bucket": "platform_windows_only_api",
+  "first": "OSError: atomic no-clobber directory publication requires Windows"
+ },
+ {
+  "id": "tests.north_star.test_narrative_sources::test_only_exact_nonempty_prefix_gets_span[content5-prefix-TEXT_MISSING-False]",
+  "bucket": "platform_windows_only_api",
+  "first": "OSError: atomic no-clobber directory publication requires Windows"
+ },
+ {
+  "id": "tests.north_star.test_narrative_sources::test_only_exact_nonempty_prefix_gets_span[content6-prefix-TEXT_MISSING-False]",
+  "bucket": "platform_windows_only_api",
+  "first": "OSError: atomic no-clobber directory publication requires Windows"
+ },
+ {
+  "id": "tests.north_star.test_narrative_sources::test_only_exact_nonempty_prefix_gets_span[content7-prefix-TEXT_MISSING-False]",
+  "bucket": "platform_windows_only_api",
+  "first": "OSError: atomic no-clobber directory publication requires Windows"
+ },
+ {
+  "id": "tests.north_star.test_narrative_sources::test_duplicate_content_is_flagged_and_conflicts_never_arbitrarily_selected[change0-False]",
+  "bucket": "platform_windows_only_api",
+  "first": "OSError: atomic no-clobber directory publication requires Windows"
+ },
+ {
+  "id": "tests.north_star.test_narrative_sources::test_duplicate_content_is_flagged_and_conflicts_never_arbitrarily_selected[change1-True]",
+  "bucket": "platform_windows_only_api",
+  "first": "OSError: atomic no-clobber directory publication requires Windows"
+ },
+ {
+  "id": "tests.north_star.test_narrative_sources::test_duplicate_content_is_flagged_and_conflicts_never_arbitrarily_selected[change2-True]",
+  "bucket": "platform_windows_only_api",
+  "first": "OSError: atomic no-clobber directory publication requires Windows"
+ },
+ {
+  "id": "tests.north_star.test_narrative_sources::test_duplicate_claim_ids_are_not_counted_as_independent_examples[False]",
+  "bucket": "platform_windows_only_api",
+  "first": "OSError: atomic no-clobber directory publication requires Windows"
+ },
+ {
+  "id": "tests.north_star.test_narrative_sources::test_duplicate_claim_ids_are_not_counted_as_independent_examples[True]",
+  "bucket": "platform_windows_only_api",
+  "first": "OSError: atomic no-clobber directory publication requires Windows"
+ },
+ {
+  "id": "tests.north_star.test_narrative_sources::test_provider_pointer_is_unverified_not_a_verified_blob",
+  "bucket": "platform_windows_only_api",
+  "first": "OSError: atomic no-clobber directory publication requires Windows"
+ },
+ {
+  "id": "tests.north_star.test_narrative_sources::test_claim_prefix_is_bounded_and_full_content_hash_is_exact",
+  "bucket": "platform_windows_only_api",
+  "first": "OSError: atomic no-clobber directory publication requires Windows"
+ },
+ {
+  "id": "tests.north_star.test_narrative_sources::test_empty_inputs",
+  "bucket": "platform_windows_only_api",
+  "first": "OSError: atomic no-clobber directory publication requires Windows"
+ },
+ {
+  "id": "tests.north_star.test_narrative_sources::test_identifiers_are_literal_data_not_paths[ ]",
+  "bucket": "platform_windows_only_api",
+  "first": "OSError: atomic no-clobber directory publication requires Windows"
+ },
+ {
+  "id": "tests.north_star.test_narrative_sources::test_identifiers_are_literal_data_not_paths[ c1 ]",
+  "bucket": "platform_windows_only_api",
+  "first": "OSError: atomic no-clobber directory publication requires Windows"
+ },
+ {
+  "id": "tests.north_star.test_narrative_sources::test_identifiers_are_literal_data_not_paths[../../outside]",
+  "bucket": "platform_windows_only_api",
+  "first": "OSError: atomic no-clobber directory publication requires Windows"
+ },
+ {
+  "id": "tests.north_star.test_narrative_sources::test_identifiers_are_literal_data_not_paths[C:/outside]",
+  "bucket": "platform_windows_only_api",
+  "first": "OSError: atomic no-clobber directory publication requires Windows"
+ },
+ {
+  "id": "tests.north_star.test_narrative_sources::test_identifiers_are_literal_data_not_paths[\\\\\\\\host\\\\share]",
+  "bucket": "platform_windows_only_api",
+  "first": "OSError: atomic no-clobber directory publication requires Windows"
+ },
+ {
+  "id": "tests.north_star.test_narrative_sources::test_publication_is_complete_or_absent_and_retryable[manifest_error]",
+  "bucket": "unclassified",
+  "first": "assert ([])"
+ },
+ {
+  "id": "tests.north_star.test_narrative_sources::test_publication_is_complete_or_absent_and_retryable[manifest_short]",
+  "bucket": "unclassified",
+  "first": "assert ([])"
+ },
+ {
+  "id": "tests.north_star.test_narrative_sources::test_publication_is_complete_or_absent_and_retryable[object_error]",
+  "bucket": "unclassified",
+  "first": "assert ([])"
+ },
+ {
+  "id": "tests.north_star.test_narrative_sources::test_publication_is_complete_or_absent_and_retryable[object_short]",
+  "bucket": "unclassified",
+  "first": "assert ([])"
+ },
+ {
+  "id": "tests.north_star.test_narrative_sources::test_publication_is_complete_or_absent_and_retryable[source_change]",
+  "bucket": "platform_windows_only_api",
+  "first": "OSError: atomic no-clobber directory publication requires Windows"
+ },
+ {
+  "id": "tests.north_star.test_narrative_sources::test_publication_is_complete_or_absent_and_retryable[concurrent_dir]",
+  "bucket": "platform_windows_only_api",
+  "first": "OSError: atomic no-clobber directory publication requires Windows"
+ },
+ {
+  "id": "tests.north_star.test_narrative_sources::test_publication_is_complete_or_absent_and_retryable[concurrent_file]",
+  "bucket": "platform_windows_only_api",
+  "first": "OSError: atomic no-clobber directory publication requires Windows"
+ },
+ {
+  "id": "tests.north_star.test_narrative_sources::test_artifact_pins_current_transform_and_is_fully_read_back",
+  "bucket": "platform_windows_only_api",
+  "first": "OSError: atomic no-clobber directory publication requires Windows"
+ },
+ {
+  "id": "tests.north_star.test_narrative_sources::test_os_publication_refuses_concurrent_destination_at_rename[empty_directory]",
+  "bucket": "platform_windows_only_api",
+  "first": "OSError: atomic no-clobber directory publication requires Windows"
+ },
+ {
+  "id": "tests.north_star.test_narrative_sources::test_os_publication_refuses_concurrent_destination_at_rename[file]",
+  "bucket": "platform_windows_only_api",
+  "first": "OSError: atomic no-clobber directory publication requires Windows"
+ },
+ {
+  "id": "tests.north_star.test_narrative_sources::test_readback_detects_corruption_even_when_write_reports_success[manifest]",
+  "bucket": "platform_windows_only_api",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_narrative_sources::test_readback_detects_corruption_even_when_write_reports_success[object]",
+  "bucket": "platform_windows_only_api",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_narrative_sources::test_depth_boundary_and_escaped_quotes_are_not_overrejected",
+  "bucket": "platform_windows_only_api",
+  "first": "OSError: atomic no-clobber directory publication requires Windows"
+ }
+]
