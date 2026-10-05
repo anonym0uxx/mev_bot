@@ -11,7 +11,6 @@ members = [
     "crates/pump-quant-core",
     "crates/pump-quant-strategy",
     "crates/pump-quant-evaluator",
-    "crates/pump-quant-clock",
     "crates/pump-quant-domain",
     "crates/pump-quant-features",
     "crates/pump-quant-inference",
@@ -31,7 +30,6 @@ members = [
     "crates/pq-research-runner",
     "crates/pump-quant-treasury",
     "crates/pump-quant-telemetry",
-    "crates/pump-quant-tape",
 ]
 
 [workspace.package]

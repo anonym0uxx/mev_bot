@@ -970,10 +970,6 @@ name = "pump-quant-brain"
 version = "0.1.0"
 
 [[package]]
-name = "pump-quant-clock"
-version = "0.1.0"
-
-[[package]]
 name = "pump-quant-core"
 version = "0.1.0"
 dependencies = [
@@ -1085,10 +1081,6 @@ version = "0.1.0"
 
 [[package]]
 name = "pump-quant-strategy"
-version = "0.1.0"
-
-[[package]]
-name = "pump-quant-tape"
 version = "0.1.0"
 
 [[package]]
