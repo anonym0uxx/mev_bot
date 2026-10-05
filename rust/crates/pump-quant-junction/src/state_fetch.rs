@@ -154,6 +154,8 @@ impl<'a> RpcStateFetch<'a> {
     /// Make a single JSON-RPC POST and parse the response.
     fn rpc_call(&self, method: &str, params: &str) -> Result<Value, StateFetchError> {
         let id = self.id_counter.get();
+        #[allow(clippy::arithmetic_side_effects)]
+        // LINT-ALLOW(hot_arith): u64 RPC id counter; overflow infeasible
         self.id_counter.set(id + 1);
         let body =
             format!(r#"{{"jsonrpc":"2.0","id":{id},"method":"{method}","params":{params}}}"#,);
@@ -366,6 +368,7 @@ impl<'a> StateFetch for RpcStateFetch<'a> {
 
 /// Decode a base64 string into bytes. Returns `None` on any invalid character
 /// or padding error.
+#[allow(clippy::arithmetic_side_effects, clippy::cast_possible_truncation)] // LINT-ALLOW(hot_arith,hot_cast): base64: TABLE idx 0..=63 fits i16; bits in {6,12}->-8; capacity len*3/4; (buf>>bits) extracts one byte
 fn decode_base64(s: &str) -> Option<Vec<u8>> {
     let table: [i16; 256] = {
         let mut t = [-1i16; 256];
@@ -404,6 +407,7 @@ fn decode_base64(s: &str) -> Option<Vec<u8>> {
 
 const BS58_ALPHABET: &[u8] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 
+#[allow(clippy::arithmetic_side_effects, clippy::cast_possible_truncation)] // LINT-ALLOW(hot_arith,hot_cast): base58: idx 0..=57; carry += byte*58 bounded u32; &0xFF mask exact; out[32-decoded.len()] guarded len<=32
 fn decode_base58(s: &str) -> Option<[u8; 32]> {
     let bytes = s.as_bytes();
     let mut out = [0u8; 32];
@@ -447,6 +451,7 @@ fn decode_base58(s: &str) -> Option<[u8; 32]> {
     Some(out)
 }
 
+#[allow(clippy::arithmetic_side_effects, clippy::cast_possible_truncation)] // LINT-ALLOW(hot_arith,hot_cast): base58 encode: n=rem<<8|byte in u32; n/58,rem%58 in 0..=57 exact u8; leading<32
 fn encode_base58(pk: &[u8; 32]) -> String {
     let mut num = *pk;
     let mut out = String::with_capacity(44);
@@ -573,6 +578,7 @@ mod tests {
         }
     }
 
+    #[allow(clippy::arithmetic_side_effects, clippy::cast_possible_truncation)] // LINT-ALLOW(hot_arith,hot_cast): offset idx+10 from find("\"method\":\"")?, <=len
     fn extract_method(body: &str) -> String {
         // Simple substring search — the body is a JSON-RPC request.
         if let Some(idx) = body.find("\"method\":\"") {
@@ -588,6 +594,7 @@ mod tests {
     // + buyback_fee_recipients (8×32 at offset 741). Sized to 1045 bytes
     // (the real mainnet Global account size) so the buyback_fee_recipients
     // decode path is exercised in tests.
+    #[allow(clippy::arithmetic_side_effects, clippy::cast_possible_truncation)] // LINT-ALLOW(hot_arith,hot_cast): test fixture: pk[i]=const+i (i<32), buf[741+i*32] i bounded by loop
     fn make_global_account(fee_recipient: [u8; 32]) -> Vec<u8> {
         let mut buf = vec![0u8; 1045];
         buf[0..8].copy_from_slice(&[167, 232, 232, 177, 200, 108, 114, 127]);

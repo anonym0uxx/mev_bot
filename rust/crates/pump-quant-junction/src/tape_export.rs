@@ -463,7 +463,11 @@ impl TapeExporter {
             .map_err(|e| format!("tape_export: write: {e}"))?;
 
         let written = self.pending.len();
-        self.total_exported += written as u64;
+        #[allow(clippy::arithmetic_side_effects)]
+        // LINT-ALLOW(hot_arith): u64 export counter; written:usize fit u64
+        {
+            self.total_exported += written as u64;
+        }
         self.pending.clear();
         Ok(written)
     }

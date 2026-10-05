@@ -168,7 +168,11 @@ impl TradeJoin {
             // without an identity, which the ledger reports rather than guesses.
             if let Some((&oldest, _)) = self.pending.iter().next() {
                 self.pending.remove(&oldest);
-                self.dropped += 1;
+                #[allow(clippy::arithmetic_side_effects)]
+                // LINT-ALLOW(hot_arith): u64 drop counter; overflow infeasible
+                {
+                    self.dropped += 1;
+                }
             }
         }
         let entry = self.pending.entry(key).or_default();
@@ -190,7 +194,11 @@ impl TradeJoin {
                 cu_consumed,
             });
         } else {
-            self.dropped += 1;
+            #[allow(clippy::arithmetic_side_effects)]
+            // LINT-ALLOW(hot_arith): u64 drop counter; overflow infeasible
+            {
+                self.dropped += 1;
+            }
         }
     }
 
@@ -220,7 +228,10 @@ impl TradeJoin {
                 if entry.is_empty() {
                     self.pending.remove(&key);
                 }
-                self.joined += 1;
+                #[allow(clippy::arithmetic_side_effects)] // LINT-ALLOW(hot_arith): u64 join counter
+                {
+                    self.joined += 1;
+                }
                 JoinOutcome::Identity {
                     entity,
                     pubkey,
@@ -231,7 +242,11 @@ impl TradeJoin {
             _ => {
                 // Leave the candidates in place: the other reserve print on this key may still
                 // be theirs, and consuming them here would deny it an identity.
-                self.ambiguous += 1;
+                #[allow(clippy::arithmetic_side_effects)]
+                // LINT-ALLOW(hot_arith): u64 ambiguous counter
+                {
+                    self.ambiguous += 1;
+                }
                 JoinOutcome::Ambiguous
             }
         }
@@ -270,6 +285,8 @@ impl TradeJoin {
         if self.newest_slot <= self.horizon_slots {
             return;
         }
+        #[allow(clippy::arithmetic_side_effects)]
+        // LINT-ALLOW(hot_arith,hot_cast): guarded: newest_slot>horizon_slots returned above
         let floor = self.newest_slot - self.horizon_slots;
         let stale: Vec<([u8; 32], u64)> = self
             .pending
@@ -279,7 +296,11 @@ impl TradeJoin {
             .collect();
         for key in stale {
             self.pending.remove(&key);
-            self.dropped += 1;
+            #[allow(clippy::arithmetic_side_effects)]
+            // LINT-ALLOW(hot_arith): u64 drop counter; overflow infeasible
+            {
+                self.dropped += 1;
+            }
         }
     }
 }

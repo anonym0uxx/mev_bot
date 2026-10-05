@@ -177,7 +177,11 @@ pub fn try_reload_config(cfg: &mut Config, last_mtime: &mut Option<u64>) -> Relo
     ) {
         match snapshot.apply(name, to_val) {
             Ok(()) => {
-                *mutations_applied += 1;
+                #[allow(clippy::arithmetic_side_effects)]
+                // LINT-ALLOW(hot_arith,hot_cast): u64 counter
+                {
+                    *mutations_applied += 1;
+                }
                 summary_parts.push(format!("{name}={to_val}"));
             }
             Err(e) => {
@@ -284,6 +288,7 @@ pub fn try_reload_config(cfg: &mut Config, last_mtime: &mut Option<u64>) -> Relo
 /// Extract a string value for a given key from a JSON fragment.
 /// Finds the LAST occurrence of `"key"` then reads the string after the
 /// colon that follows it. This handles lines with multiple key-value pairs.
+#[allow(clippy::arithmetic_side_effects)] // LINT-ALLOW(hot_arith,hot_cast): offsets from find()?, bounded by len
 fn extract_json_string(token: &str, key: &str) -> Option<String> {
     let needle = format!("\"{key}\"");
     let key_pos = token.rfind(&needle)?;
@@ -300,6 +305,7 @@ fn extract_json_string(token: &str, key: &str) -> Option<String> {
 /// Extract an i64 value for a given key from a JSON fragment.
 /// Finds the LAST occurrence of `"key"` then parses the number after the
 /// colon that follows it.
+#[allow(clippy::arithmetic_side_effects)] // LINT-ALLOW(hot_arith,hot_cast): offsets from find()?, bounded by len
 fn extract_json_i64(token: &str, key: &str) -> Option<i64> {
     let needle = format!("\"{key}\"");
     let key_pos = token.rfind(&needle)?;
@@ -367,6 +373,7 @@ impl DefenseState {
     }
 
     /// Update drawdown tracking from the current net realized P&L.
+    #[allow(clippy::arithmetic_side_effects)] // LINT-ALLOW(hot_arith,hot_cast): peak updated >= net first, dd non-negative; i64
     pub fn update_drawdown(&mut self, net_realized_lamports: i64) {
         if net_realized_lamports > self.peak_net_lamports {
             self.peak_net_lamports = net_realized_lamports;
@@ -657,6 +664,7 @@ pub fn write_auto_revert_state(state: &AutoRevertState) {
 /// Read the auto-revert state from disk. Returns None if the file doesn't
 /// exist or can't be parsed. Backward-compatible: if trades_at_promotion is
 /// missing (schema v1), defaults to 0.
+#[allow(clippy::arithmetic_side_effects)] // LINT-ALLOW(hot_arith,hot_cast): offset find()+len bounded
 pub fn read_auto_revert_state() -> Option<AutoRevertState> {
     let text = fs::read_to_string(AUTO_REVERT_STATE_FILE).ok()?;
     // Simple field extraction — no JSON parser in this crate's deps.
@@ -724,11 +732,15 @@ pub fn check_auto_revert(
 
     // Compute the variance-based threshold: max(FLOOR, k × σ × √n)
     let n = trades_since_promotion as f64;
+    #[allow(clippy::cast_possible_truncation)]
+    // LINT-ALLOW(hot_cast): f64 product then `as i128` saturates/truncates by design (variance threshold)
     let dynamic_threshold =
         (AUTO_REVERT_CONFIDENCE_K * AUTO_REVERT_PER_TRADE_SIGMA_LAMPORTS * n.sqrt()) as i128;
     let threshold = AUTO_REVERT_DRAWDOWN_FLOOR_LAMPORTS.max(dynamic_threshold);
 
     // Check deterioration: has PnL dropped below the threshold?
+    #[allow(clippy::arithmetic_side_effects)]
+    // LINT-ALLOW(hot_arith,hot_cast): i128 money diff; overflow needs ~i128::MAX
     let drawdown = state.pnl_at_promotion - current_cumulative_pnl;
     if drawdown > threshold {
         eprintln!(

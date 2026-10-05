@@ -101,6 +101,8 @@ impl AsyncOutboundSink {
                     while let Ok((ticket, record)) = jobs_rx.recv() {
                         let started = Instant::now();
                         let outcome = inner.on_admit(&record);
+                        #[allow(clippy::cast_possible_truncation)]
+                        // LINT-ALLOW(hot_arith): process-lifetime micros < u64::MAX (~5.8e5 yr)
                         let worker_us = started.elapsed().as_micros() as u64;
                         if results_tx
                             .send(OutboundResult {
@@ -140,6 +142,7 @@ impl AsyncOutboundSink {
     /// avalanche at the end fixes the low bits, so the lane depends on the whole hash
     /// rather than its trailing residue. Real mints are high-entropy; the router must
     /// not depend on that.
+    #[allow(clippy::arithmetic_side_effects, clippy::cast_possible_truncation)] // LINT-ALLOW(hot_arith,hot_cast): lanes built with lanes.max(1) so lanes.len()>=1 (no div-by-zero)
     fn lane_of(&self, mint: &[u8; 32]) -> usize {
         let mut h: u64 = 0xcbf2_9ce4_8422_2325; // FNV-1a offset basis
         for b in mint {
@@ -237,9 +240,12 @@ mod tests {
         fn on_admit(&self, _record: &AdmitRecord) -> OutboundOutcome {
             std::thread::sleep(self.delay);
             self.seen.store(true, Ordering::SeqCst);
+            #[allow(clippy::cast_possible_truncation)]
+            // LINT-ALLOW(hot_cast): configured delay micros fits u64
+            let submit_rpc_us = self.delay.as_micros() as u64;
             OutboundOutcome::Accepted {
                 signature: [0xAB; 64],
-                submit_rpc_us: self.delay.as_micros() as u64,
+                submit_rpc_us,
             }
         }
     }

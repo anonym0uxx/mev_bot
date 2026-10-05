@@ -187,7 +187,11 @@ pub fn handle_stop_request(
     }
     let (digest, snapshot) = engine.model_exposure_digest();
     if digest != st.last_digest || st.request_id.is_empty() {
-        st.request_seq += 1;
+        #[allow(clippy::arithmetic_side_effects)]
+        // LINT-ALLOW(hot_arith,hot_cast): u64 request seq counter
+        {
+            st.request_seq += 1;
+        }
         st.request_id = format!("{}-req{}", st.session_id, st.request_seq);
         st.last_digest = digest.clone();
         let doc = serde_json::json!({
@@ -391,20 +395,26 @@ impl StaleCallout {
                         .entry(s.mint)
                         .or_insert((now_ms, i64::MIN / 2, false));
                     let first = e.1 == i64::MIN / 2;
+                    #[allow(clippy::arithmetic_side_effects)]
+                    // LINT-ALLOW(hot_arith,hot_cast): now_ms,e.1 i64 ms; diff fits i64
                     if first || now_ms - e.1 >= remind_ms {
                         e.1 = now_ms;
-                        out.push(CalloutLine {
-                            text: format!(
-                                "{} held {} venue={} MANAGEMENT UNAVAILABLE: {why} (reserve_age={} print_age={}) degraded_for={}s",
-                                if first { "ONSET" } else { "REMINDER" },
-                                hex(&s.mint),
-                                if s.amm { "amm" } else { "curve" },
-                                s.reserve_age_ms.map_or("none".into(), |a| format!("{a}ms")),
-                                s.last_print_age_ms.map_or("none".into(), |a| format!("{a}ms")),
-                                (now_ms - e.0).max(0) / 1000
-                            ),
-                            alert: true,
-                        });
+                        #[allow(clippy::arithmetic_side_effects)]
+                        // LINT-ALLOW(hot_arith,hot_cast): now_ms,e.0 i64 ms; diff fits i64
+                        {
+                            out.push(CalloutLine {
+                                text: format!(
+                                    "{} held {} venue={} MANAGEMENT UNAVAILABLE: {why} (reserve_age={} print_age={}) degraded_for={}s",
+                                    if first { "ONSET" } else { "REMINDER" },
+                                    hex(&s.mint),
+                                    if s.amm { "amm" } else { "curve" },
+                                    s.reserve_age_ms.map_or("none".into(), |a| format!("{a}ms")),
+                                    s.last_print_age_ms.map_or("none".into(), |a| format!("{a}ms")),
+                                    (now_ms - e.0).max(0) / 1000
+                                ),
+                                alert: true,
+                            });
+                        }
                     }
                     if silent && !e.2 {
                         e.2 = true;
@@ -423,14 +433,18 @@ impl StaleCallout {
                 }
                 Ok(()) => {
                     if let Some((since, _, _)) = self.state.remove(&s.mint) {
-                        out.push(CalloutLine {
-                            text: format!(
-                                "RECOVERED held {}: management data fresh again after {}s degraded",
-                                hex(&s.mint),
-                                (now_ms - since).max(0) / 1000
-                            ),
-                            alert: false,
-                        });
+                        #[allow(clippy::arithmetic_side_effects)]
+                        // LINT-ALLOW(hot_arith,hot_cast): now_ms,since i64 ms; diff fits i64
+                        {
+                            out.push(CalloutLine {
+                                text: format!(
+                                    "RECOVERED held {}: management data fresh again after {}s degraded",
+                                    hex(&s.mint),
+                                    (now_ms - since).max(0) / 1000
+                                ),
+                                alert: false,
+                            });
+                        }
                     }
                 }
             }

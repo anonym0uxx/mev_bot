@@ -221,6 +221,7 @@ impl<'a> OutboundJunction<'a> {
 
 /// Encode bytes as a base64 string. Standard alphabet with padding.
 /// Used for the Sender submission format.
+#[allow(clippy::arithmetic_side_effects, clippy::cast_possible_truncation)] // LINT-ALLOW(hot_arith,hot_cast): base64 output capacity = data.len().div_ceil(3)*4, bounded by input len
 fn encode_base64(data: &[u8]) -> String {
     const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(data.len().div_ceil(3) * 4);

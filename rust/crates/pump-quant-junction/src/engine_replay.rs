@@ -37,6 +37,7 @@ const TICK_INJECTION_INTERVAL: usize = 50;
 ///
 /// If the stream already contains Ticks, it is returned unchanged — the live
 /// daemon's native Ticks are authoritative.
+#[allow(clippy::arithmetic_side_effects)] // LINT-ALLOW(hot_arith,hot_cast): events.len() capacity + u64 tick counter
 fn inject_missing_ticks(mut events: Vec<AppEvent>) -> Vec<AppEvent> {
     let has_ticks = events.iter().any(|e| matches!(e, AppEvent::Tick));
     if has_ticks {
@@ -137,6 +138,7 @@ pub fn replay_event_stream_windowed<P: AsRef<Path>>(
 /// and all events between them. Events before the cutoff point are dropped.
 /// This ensures the engine sees a coherent slice of market history, not
 /// dangling references to tokens that were admitted before the window.
+#[allow(clippy::arithmetic_side_effects, clippy::cast_possible_truncation)] // LINT-ALLOW(hot_arith,hot_cast): total_ticks>window_ticks guarded; tick counter; window_ticks as usize fits
 fn apply_rolling_window(events: Vec<AppEvent>, window_ticks: u64) -> Vec<AppEvent> {
     // Count total ticks in the stream.
     let total_ticks = events

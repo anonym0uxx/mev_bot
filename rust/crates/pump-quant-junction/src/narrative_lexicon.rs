@@ -315,16 +315,22 @@ impl NarrativeLexicon {
                 }
             }
             // Baseline daily rate over the 7d window EXCLUDING the last 24h.
+            #[allow(clippy::cast_possible_truncation)]
+            // LINT-ALLOW(hot_arith,hot_cast): count bounded by per-mint ts buffer
             let older = ts
                 .iter()
                 .filter(|&&t| now_ms.saturating_sub(t) > WINDOW_24H_MS)
                 .count() as u32;
             let baseline_daily = older / 6;
             if baseline_daily > 0 {
-                obs.accel_x100 = obs
-                    .prior_count_24h
-                    .saturating_mul(100)
-                    .saturating_div(baseline_daily);
+                #[allow(clippy::arithmetic_side_effects)]
+                // LINT-ALLOW(hot_arith): baseline_daily>0 guarded; saturating_div panics only on 0
+                {
+                    obs.accel_x100 = obs
+                        .prior_count_24h
+                        .saturating_mul(100)
+                        .saturating_div(baseline_daily);
+                }
             } else if obs.prior_count_24h > 0 {
                 // No prior-week baseline: any appearance is an acceleration.
                 obs.accel_x100 = obs.prior_count_24h.saturating_mul(100);
@@ -339,7 +345,11 @@ impl NarrativeLexicon {
                 .collect();
             seen.sort_unstable();
             seen.dedup();
-            obs.variant_count_1h = seen.len().min(u32::MAX as usize) as u32;
+            #[allow(clippy::cast_possible_truncation)]
+            // LINT-ALLOW(hot_arith,hot_cast): .min(u32::MAX) guards the cast
+            {
+                obs.variant_count_1h = seen.len().min(u32::MAX as usize) as u32;
+            }
         }
         obs
     }
@@ -436,7 +446,8 @@ impl NarrativeLexicon {
                         .iter()
                         .position(|e| e.alias == t && Some(e.family) == Some(resolution.family))
                         // GLOBAL index: `observation`/`record` key on the flat vector.
-                        .map(|i| bstart + i)
+                        // checked: rejects an out-of-range index rather than wrapping.
+                        .and_then(|i| bstart.checked_add(i))
                 }),
             };
             let stage = hit.map(|idx| {

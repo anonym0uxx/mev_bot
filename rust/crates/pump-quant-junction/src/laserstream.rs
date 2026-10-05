@@ -219,7 +219,11 @@ pub fn decode_amm_swaps(tx: &LaserStreamTx) -> (Vec<AmmSwapFacts>, u32) {
             })
             .count();
         if swap_ixs_on_pool > 1 {
-            excluded += 1;
+            #[allow(clippy::arithmetic_side_effects)]
+            // LINT-ALLOW(hot_arith,hot_cast): u64 excluded counter ×2
+            {
+                excluded += 1;
+            }
             continue;
         }
         let mut found: Option<([u8; 32], bool, bool)> = None;
@@ -246,7 +250,11 @@ pub fn decode_amm_swaps(tx: &LaserStreamTx) -> (Vec<AmmSwapFacts>, u32) {
             }
         }
         let Some((mint, quote_is_wsol, canonical)) = found else {
-            excluded += 1;
+            #[allow(clippy::arithmetic_side_effects)]
+            // LINT-ALLOW(hot_arith,hot_cast): u64 excluded counter ×2
+            {
+                excluded += 1;
+            }
             continue;
         };
         out.push(AmmSwapFacts {
@@ -254,7 +262,8 @@ pub fn decode_amm_swaps(tx: &LaserStreamTx) -> (Vec<AmmSwapFacts>, u32) {
             pool,
             token_reserve_pre: tok_res,
             quote_reserve_pre: quote_res,
-            fee_bps: creator.and_then(|c| u32::try_from(lp + prot + c).ok()),
+            fee_bps: creator
+                .and_then(|c| u32::try_from(lp.checked_add(prot)?.checked_add(c)?).ok()),
             fee_parts: creator.and_then(|c| {
                 Some((
                     u32::try_from(lp).ok()?,
@@ -556,7 +565,10 @@ pub fn instructions_to_events_with_meta(
                         price_fp: 0,
                         quote_lamports: 0, // Sell: quote_lamports = SOL received
                         liquidity_lamports: 0,
-                        signed_base: -i64::try_from(*amount_tokens).unwrap_or(i64::MAX),
+                        signed_base: i64::try_from(*amount_tokens)
+                            .ok()
+                            .and_then(i64::checked_neg)
+                            .unwrap_or(-i64::MAX),
                         buyer_entity: wallet_entity_id(seller),
                         trader_pubkey: Some(*seller),
                         age_slots: 0,
@@ -610,7 +622,10 @@ pub fn instructions_to_events_with_meta(
                         price_fp: 0,
                         quote_lamports: 0,
                         liquidity_lamports: 0,
-                        signed_base: -i64::try_from(*amount_tokens).unwrap_or(i64::MAX),
+                        signed_base: i64::try_from(*amount_tokens)
+                            .ok()
+                            .and_then(i64::checked_neg)
+                            .unwrap_or(-i64::MAX),
                         buyer_entity: wallet_entity_id(seller),
                         trader_pubkey: Some(*seller),
                         age_slots: 0,
@@ -836,16 +851,17 @@ pub fn parse_ndjson_line(line: &str) -> Option<LaserStreamUpdate> {
                                 .and_then(|v| v.as_str())
                                 .or_else(|| ix.get("data_b58").and_then(|v| v.as_str()))?;
                             let data = B64.decode(data_b64).ok()?;
-                            let accounts: Vec<u8> = ix
-                                .get("accounts")
-                                .and_then(|a| a.as_array())
-                                .map(|arr| {
-                                    arr.iter()
-                                        .filter_map(|n| n.as_u64())
-                                        .map(|n| n as u8)
-                                        .collect()
-                                })
-                                .unwrap_or_default();
+                            // Account-index array. Solana binds an index to u8; a value
+                            // outside 0..=255 is malformed input, so REJECT the whole
+                            // instruction rather than silently truncating the index.
+                            let accounts: Vec<u8> =
+                                match ix.get("accounts").and_then(|a| a.as_array()) {
+                                    Some(arr) => arr
+                                        .iter()
+                                        .map(|n| n.as_u64().and_then(|v| u8::try_from(v).ok()))
+                                        .collect::<Option<Vec<u8>>>()?,
+                                    None => Vec::new(),
+                                };
                             Some(LaserStreamInstruction {
                                 program_id,
                                 data,
@@ -908,6 +924,7 @@ pub fn parse_ndjson_line(line: &str) -> Option<LaserStreamUpdate> {
 
 /// Minimal base58 (Bitcoin alphabet) decoder.
 /// Returns None on invalid characters or overflow — fail-safe.
+#[allow(clippy::arithmetic_side_effects, clippy::cast_possible_truncation)] // LINT-ALLOW(hot_arith,hot_cast): base58: idx 0..=57; carry+=byte*58 bounded u32; masked u8 exact
 fn b58_decode(s: &str) -> Option<Vec<u8>> {
     const ALPHABET: &[u8] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
     let alphabet_map: [i16; 128] = {

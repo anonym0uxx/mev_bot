@@ -199,6 +199,7 @@ mod chaos_parser {
 
     /// Fuzzy: 100 random byte sequences as instruction data — none must panic.
     #[test]
+    #[allow(clippy::cast_possible_truncation)] // LINT-ALLOW(hot_arith,hot_cast): test fixture: (i*const)%256 masked before as u8
     fn chaos_fuzzy_instruction_data() {
         let pump_b58 = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
         let mint_b58 = "11111111111111111111111111111111";
@@ -237,6 +238,7 @@ mod chaos_parser {
 mod chaos_journal {
     use super::*;
 
+    #[allow(clippy::arithmetic_side_effects)] // LINT-ALLOW(hot_arith,hot_cast): test fixture: seed-bounded i128/usize
     fn make_record(seed: u64) -> TradeRecord {
         TradeRecord {
             slot: seed % 1_000_000,
@@ -386,6 +388,7 @@ mod chaos_memory {
     use crate::trade_journal::{RunMode, TradeOutcome, TradeRecord, TradeSide};
     use crate::ProvenanceSource;
 
+    #[allow(clippy::arithmetic_side_effects)] // LINT-ALLOW(hot_arith,hot_cast): test fixture: seed-bounded i128/usize
     fn make_record(seed: u64) -> TradeRecord {
         TradeRecord {
             slot: seed % 1_000_000,

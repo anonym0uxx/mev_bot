@@ -83,8 +83,14 @@ pub fn derive_market_trade_from_delta(
 ) -> Option<ProvenancedEvent> {
     let prev = previous?;
 
-    let delta_vsol: i64 = current.virtual_sol as i64 - prev.virtual_sol as i64;
-    let delta_vtoken: i64 = current.virtual_token as i64 - prev.virtual_token as i64;
+    // u64 reserves are externally supplied; a checked conversion + checked
+    // subtraction rejects an out-of-range value instead of wrapping.
+    let delta_vsol: i64 = i64::try_from(current.virtual_sol)
+        .ok()?
+        .checked_sub(i64::try_from(prev.virtual_sol).ok()?)?;
+    let delta_vtoken: i64 = i64::try_from(current.virtual_token)
+        .ok()?
+        .checked_sub(i64::try_from(prev.virtual_token).ok()?)?;
 
     // No SOL moved → no trade (could be a `complete` flag flip on migration,
     // or a spurious notification). Fail-closed: emit nothing.
@@ -112,11 +118,16 @@ pub fn derive_market_trade_from_delta(
             // Inconsistent: vsol down AND vtoken down — not a valid trade.
             return None;
         }
-        -(delta_vtoken.unsigned_abs() as i64)
+        i64::try_from(delta_vtoken.unsigned_abs())
+            .ok()?
+            .checked_neg()?
     };
 
     // Price: post-trade execution price = vsol_after * PRICE_SCALE / vtoken_after.
     const PRICE_SCALE: i128 = 1_000_000_000;
+    // u64->i128 is a widening conversion (infallible); u64::MAX*1e9 < i128::MAX; divisor guarded above.
+    #[allow(clippy::arithmetic_side_effects)]
+    // LINT-ALLOW(hot_arith): u64*1e9 < i128::MAX, divisor>0 guarded
     let price_fp: i128 = if current.virtual_token > 0 {
         (current.virtual_sol as i128) * PRICE_SCALE / (current.virtual_token as i128)
     } else {
@@ -174,6 +185,21 @@ pub struct DeltaStats {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// A u64 reserve above i64::MAX cannot be represented as a signed delta, so the
+    /// derivation rejects it (checked conversion) instead of wrapping.
+    #[test]
+    fn out_of_range_reserve_is_rejected() {
+        let prev = ReserveSnapshot {
+            virtual_sol: 30_000_000_000,
+            virtual_token: 1_000_000_000,
+            slot: 900,
+        };
+        let cur = make_curve(u64::MAX, 1_000_000_000);
+        assert!(
+            derive_market_trade_from_delta(&[0xAB; 32], Some(prev), &cur, 1000, true, None)
+                .is_none()
+        );
+    }
 
     fn make_curve(vsol: u64, vtoken: u64) -> PumpCurve {
         PumpCurve {

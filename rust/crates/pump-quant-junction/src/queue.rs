@@ -54,6 +54,8 @@ impl BoundedJunctionQueue {
     pub fn with_capacity(capacity: usize) -> Self {
         // Round up to power-of-2.
         let cap = capacity.next_power_of_two();
+        #[allow(clippy::arithmetic_side_effects)]
+        // LINT-ALLOW(hot_arith): cap = capacity.next_power_of_two() >= 1 for any usize capacity
         let cap_mask = cap - 1;
 
         let mut buf = Vec::with_capacity(cap);

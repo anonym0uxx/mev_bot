@@ -66,6 +66,7 @@ pub fn load_tracked_wallets_from_json(
 ///
 /// This is the pure-function core (no file I/O) — testable without touching
 /// the filesystem.
+#[allow(clippy::arithmetic_side_effects)] // LINT-ALLOW(hot_arith,hot_cast): byte offsets pos+len/i+=1/vj+=1 bounded by bytes.len() guards; u64 entry counters
 pub fn parse_tracked_wallets_json(text: &str) -> Result<(TrackedWalletMatcher, LoadStats), String> {
     // We use a simple regex-free scanner: find every occurrence of the
     // literal `"pubkey"` key, then extract the quoted string value that
@@ -158,6 +159,7 @@ pub fn parse_tracked_wallets_json(text: &str) -> Result<(TrackedWalletMatcher, L
 
 /// Find the first occurrence of `needle` in `haystack` starting from `from`.
 /// Returns the byte position, or `None` if not found.
+#[allow(clippy::arithmetic_side_effects)] // LINT-ALLOW(hot_arith,hot_cast): p+from bounded by haystack len
 fn find_subslice(haystack: &[u8], needle: &[u8], from: usize) -> Option<usize> {
     if from >= haystack.len() || needle.is_empty() {
         return None;

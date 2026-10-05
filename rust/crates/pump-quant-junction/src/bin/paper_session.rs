@@ -600,9 +600,7 @@ fn main() -> ExitCode {
                         text.as_bytes(),
                     ) {
                         let mint_bytes = meta.mint;
-                        let mint_b58 = Pubkey::try_from(mint_bytes)
-                            .map(|pk| pk.to_string())
-                            .unwrap_or_else(|_| hex_short(&mint_bytes));
+                        let mint_b58 = Pubkey::from(mint_bytes).to_string();
 
                         // ── Dynamically subscribe to trades for this mint ──
                         if trade_sub_tracker.add(&mint_b58) {

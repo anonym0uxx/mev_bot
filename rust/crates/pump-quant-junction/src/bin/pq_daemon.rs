@@ -109,7 +109,7 @@ struct DaemonCreatorHistoryRpc {
 
 impl CreatorHistoryRpc for DaemonCreatorHistoryRpc {
     fn query_signature_count(&self, creator_pubkey: &[u8; 32]) -> Option<u32> {
-        let creator_b58 = Pubkey::try_from(*creator_pubkey).ok()?.to_string();
+        let creator_b58 = Pubkey::from(*creator_pubkey).to_string();
 
         // Request up to 1000 recent signatures (the RPC max per call).
         // Each pump.fun mint creation produces ~1-3 signatures for the creator
@@ -2022,9 +2022,7 @@ fn main() -> ExitCode {
     // stays DEGRADED (named) until a fresh reserve actually arrives; a subscription is not readiness.
     if model_armed {
         for mint_bytes in pump_quant_junction::model_lifecycle::mints_needing_feeds(&engine) {
-            let mint_b58 = Pubkey::try_from(mint_bytes)
-                .map(|pk| pk.to_string())
-                .unwrap_or_else(|_| hex_short(&mint_bytes));
+            let mint_b58 = Pubkey::from(mint_bytes).to_string();
             let pda = bonding_curve_pda(&mint_bytes);
             pda_to_mint.insert(pda.to_bytes(), mint_bytes);
             if trade_sub_tracker.add(&mint_b58) {
@@ -2957,9 +2955,7 @@ fn main() -> ExitCode {
                         text.as_bytes(),
                     ) {
                         let mint_bytes = meta.mint;
-                        let mint_b58 = Pubkey::try_from(mint_bytes)
-                            .map(|pk| pk.to_string())
-                            .unwrap_or_else(|_| hex_short(&mint_bytes));
+                        let mint_b58 = Pubkey::from(mint_bytes).to_string();
 
                         // ── R-3: populate creator→mint pubkey map ──────────────
                         // The creator's raw wallet pubkey is captured from the
@@ -4245,9 +4241,7 @@ fn main() -> ExitCode {
                     // Fields not yet available from engine.take_tape_trades() are
                     // zeroed — future enrichment will populate them from the
                     // decision journal and position exit context.
-                    let mint_b58 = Pubkey::try_from(t.mint)
-                        .map(|pk| pk.to_string())
-                        .unwrap_or_else(|_| hex_short(&t.mint));
+                    let mint_b58 = Pubkey::from(t.mint).to_string();
                     tape_exporter.push(TapeRecord::TradeFull {
                         slot: last_slot_seen,
                         mint_b58,
@@ -4292,9 +4286,7 @@ fn main() -> ExitCode {
                     };
                     let rec = TradeRecord {
                         slot: last_slot_seen,
-                        mint_b58: Pubkey::try_from(t.mint)
-                            .map(|pk| pk.to_string())
-                            .unwrap_or_else(|_| hex_short(&t.mint)),
+                        mint_b58: Pubkey::from(t.mint).to_string(),
                         side: TradeSide::Buy,
                         entry_price_fp: t.entry_price_fp as i128,
                         exit_price_fp: t.exit_price_fp as i128,
@@ -4576,9 +4568,7 @@ fn main() -> ExitCode {
             TapeLane::Early
         };
         let net = t.gross as i64 - t.fees as i64 - t.tips as i64 - t.failed as i64;
-        let mint_b58 = Pubkey::try_from(t.mint)
-            .map(|pk| pk.to_string())
-            .unwrap_or_else(|_| hex_short(&t.mint));
+        let mint_b58 = Pubkey::from(t.mint).to_string();
         // Feed final trades to memory bank too
         let trade_lane = if t.scalp {
             TradeLane::Scalp

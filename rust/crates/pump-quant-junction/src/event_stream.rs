@@ -42,7 +42,11 @@ pub fn read_event_stream<P: AsRef<Path>>(path: P) -> io::Result<(Vec<AppEvent>, 
         match parse_event_line(line) {
             Ok(evt) => events.push(evt),
             Err(_) => {
-                skipped += 1;
+                #[allow(clippy::arithmetic_side_effects)]
+                // LINT-ALLOW(hot_arith): u64 skipped counter
+                {
+                    skipped += 1;
+                }
             }
         }
     }
@@ -73,7 +77,10 @@ fn parse_event_line(line: &str) -> Result<AppEvent, String> {
                 signed_base: extract_int_field(line, "signed_base").ok_or("missing signed_base")?,
                 buyer_entity: extract_int_field(line, "buyer_entity")
                     .ok_or("missing buyer_entity")? as u64,
-                age_slots: extract_int_field(line, "age_slots").ok_or("missing age_slots")? as u32,
+                age_slots: u32::try_from(
+                    extract_int_field(line, "age_slots").ok_or("missing age_slots")?,
+                )
+                .map_err(|_| "age_slots out of range")?,
                 // OPTIONAL by design: every tape written before this field existed stays
                 // readable, and `read_event_stream` keeps skipping only genuinely malformed
                 // lines. Making this key REQUIRED would turn every legacy tape into a stream
@@ -118,8 +125,11 @@ fn parse_event_line(line: &str) -> Result<AppEvent, String> {
             let mint = parse_mint(&mint_str)?;
             Ok(AppEvent::SocialCall {
                 mint,
-                source_quality_bp: extract_int_field(line, "source_quality_bp")
-                    .ok_or("missing source_quality_bp")? as u32,
+                source_quality_bp: u32::try_from(
+                    extract_int_field(line, "source_quality_bp")
+                        .ok_or("missing source_quality_bp")?,
+                )
+                .map_err(|_| "source_quality_bp out of range")?,
             })
         }
         "WalletAction" => {
@@ -139,8 +149,11 @@ fn parse_event_line(line: &str) -> Result<AppEvent, String> {
                 mint,
                 category_id: extract_int_field(line, "category_id").ok_or("missing category_id")?
                     as u64,
-                taxonomy_version: extract_int_field(line, "taxonomy_version")
-                    .ok_or("missing taxonomy_version")? as u32,
+                taxonomy_version: u32::try_from(
+                    extract_int_field(line, "taxonomy_version")
+                        .ok_or("missing taxonomy_version")?,
+                )
+                .map_err(|_| "taxonomy_version out of range")?,
                 creator: extract_int_field(line, "creator").ok_or("missing creator")? as u64,
                 slot: extract_int_field(line, "metadata_slot").ok_or("missing metadata_slot")?
                     as u64,
@@ -195,15 +208,21 @@ fn parse_event_line(line: &str) -> Result<AppEvent, String> {
             let mint = parse_mint(&mint_str)?;
             Ok(AppEvent::MarketAuxiliary {
                 mint,
-                token_standard: extract_int_field(line, "token_standard")
-                    .ok_or("missing token_standard")? as u8,
-                symbol_len: extract_int_field(line, "symbol_len").ok_or("missing symbol_len")?
-                    as u8,
+                token_standard: u8::try_from(
+                    extract_int_field(line, "token_standard").ok_or("missing token_standard")?,
+                )
+                .map_err(|_| "token_standard out of range")?,
+                symbol_len: u8::try_from(
+                    extract_int_field(line, "symbol_len").ok_or("missing symbol_len")?,
+                )
+                .map_err(|_| "symbol_len out of range")?,
             })
         }
         "TimeSignal" => Ok(AppEvent::TimeSignal {
-            dow: extract_int_field(line, "dow").ok_or("missing dow")? as u8,
-            hour_utc: extract_int_field(line, "hour_utc").ok_or("missing hour_utc")? as u8,
+            dow: u8::try_from(extract_int_field(line, "dow").ok_or("missing dow")?)
+                .map_err(|_| "dow out of range")?,
+            hour_utc: u8::try_from(extract_int_field(line, "hour_utc").ok_or("missing hour_utc")?)
+                .map_err(|_| "hour_utc out of range")?,
         }),
         // Narrative precondition (operator ruling 2026-09-26): parse the resolved
         // narrative verdict so a replay reproduces the gate's decision exactly.
@@ -212,11 +231,16 @@ fn parse_event_line(line: &str) -> Result<AppEvent, String> {
             let mint = parse_mint(&mint_str)?;
             Ok(AppEvent::NarrativeResolved {
                 mint,
-                verdict: extract_int_field(line, "verdict").ok_or("missing verdict")? as u8,
-                stage: extract_int_field(line, "stage").ok_or("missing stage")? as u8,
-                family: extract_int_field(line, "family").ok_or("missing family")? as u8,
-                lexicon_version: extract_int_field(line, "lexicon_version")
-                    .ok_or("missing lexicon_version")? as u32,
+                verdict: u8::try_from(extract_int_field(line, "verdict").ok_or("missing verdict")?)
+                    .map_err(|_| "verdict out of range")?,
+                stage: u8::try_from(extract_int_field(line, "stage").ok_or("missing stage")?)
+                    .map_err(|_| "stage out of range")?,
+                family: u8::try_from(extract_int_field(line, "family").ok_or("missing family")?)
+                    .map_err(|_| "family out of range")?,
+                lexicon_version: u32::try_from(
+                    extract_int_field(line, "lexicon_version").ok_or("missing lexicon_version")?,
+                )
+                .map_err(|_| "lexicon_version out of range")?,
             })
         }
         // Rev-19 on-chain feedback: parse confirmation events.
@@ -239,7 +263,10 @@ fn parse_event_line(line: &str) -> Result<AppEvent, String> {
             Ok(AppEvent::OurBuyFailed {
                 mint,
                 signature,
-                err_code: extract_int_field(line, "err_code").ok_or("missing err_code")? as u8,
+                err_code: u8::try_from(
+                    extract_int_field(line, "err_code").ok_or("missing err_code")?,
+                )
+                .map_err(|_| "err_code out of range")?,
                 slot: extract_int_field(line, "confirm_slot").ok_or("missing confirm_slot")? as u64,
             })
         }
@@ -262,7 +289,10 @@ fn parse_event_line(line: &str) -> Result<AppEvent, String> {
             Ok(AppEvent::OurSellFailed {
                 mint,
                 signature,
-                err_code: extract_int_field(line, "err_code").ok_or("missing err_code")? as u8,
+                err_code: u8::try_from(
+                    extract_int_field(line, "err_code").ok_or("missing err_code")?,
+                )
+                .map_err(|_| "err_code out of range")?,
                 slot: extract_int_field(line, "confirm_slot").ok_or("missing confirm_slot")? as u64,
             })
         }
@@ -271,6 +301,7 @@ fn parse_event_line(line: &str) -> Result<AppEvent, String> {
 }
 
 /// Extract a string field value from a JSON line: `"field":"value"`.
+#[allow(clippy::arithmetic_side_effects)] // LINT-ALLOW(hot_arith,hot_cast): offset start+needle.len() from find()?, slicing <=len
 fn extract_string_field(line: &str, field: &str) -> Option<String> {
     let needle = format!("\"{field}\":\"");
     let start = line.find(&needle)? + needle.len();
@@ -281,6 +312,7 @@ fn extract_string_field(line: &str, field: &str) -> Option<String> {
 }
 
 /// Extract an integer field value from a JSON line: `"field":N`.
+#[allow(clippy::arithmetic_side_effects)] // LINT-ALLOW(hot_arith,hot_cast): offset start+needle.len() from find()?, <=len
 fn extract_int_field(line: &str, field: &str) -> Option<i64> {
     let needle = format!("\"{field}\":");
     let start = line.find(&needle)? + needle.len();
@@ -294,6 +326,7 @@ fn extract_int_field(line: &str, field: &str) -> Option<i64> {
 }
 
 /// Extract a nested integer from a JSON fragment like `"creator_init":{"initial_tokens":N,...}`.
+#[allow(clippy::arithmetic_side_effects)] // LINT-ALLOW(hot_arith,hot_cast): offset start+needle.len() from find()?, <=len
 fn extract_nested_int(line: &str, field: &str) -> Option<i64> {
     let needle = format!("\"{field}\":");
     let start = line.find(&needle)? + needle.len();
@@ -366,7 +399,10 @@ impl EventStreamWriter {
         let json = event_to_json(event, slot);
         self.writer.write_all(json.as_bytes())?;
         self.writer.write_all(b"\n")?;
-        self.events_written += 1;
+        #[allow(clippy::arithmetic_side_effects)] // LINT-ALLOW(hot_arith): u64 events counter
+        {
+            self.events_written += 1;
+        }
         Ok(())
     }
 
@@ -702,6 +738,7 @@ fn sig_to_hex(sig: &[u8; 64]) -> String {
 }
 
 /// **Rev-19**: Decode a hex string back into a 64-byte signature.
+#[allow(clippy::arithmetic_side_effects)] // LINT-ALLOW(hot_arith,hot_cast): hex[i*2..i*2+2] over 0..64, i*2+2<=128=len of 64-byte sig
 fn hex_to_sig(hex: &str) -> Result<[u8; 64], String> {
     if hex.len() != 128 {
         return Err(format!("signature hex length {} != 128", hex.len()));
@@ -720,6 +757,18 @@ mod tests {
     use pump_quant_app::event::AppEvent;
     use pump_quant_domain::ids::Mint;
     use std::fs;
+    /// A tape field outside its target type's range is REJECTED (checked conversion),
+    /// not silently truncated.
+    #[test]
+    fn out_of_range_field_is_rejected_not_truncated() {
+        let good = r#"{"slot":1,"kind":"MarketTrade","mint":"US517G5965aydkZ46HS38QLi7UQiSojurfbQfKCELFx","price_fp":1,"quote_lamports":1,"liquidity_lamports":1,"signed_base":1,"buyer_entity":1,"age_slots":5}"#;
+        assert!(parse_event_line(good).is_ok(), "in-range age_slots parses");
+        let bad = good.replace("\"age_slots\":5", "\"age_slots\":4294967296");
+        assert!(
+            parse_event_line(&bad).is_err(),
+            "age_slots = 2^32 exceeds u32 and must be rejected"
+        );
+    }
 
     #[test]
     fn write_and_read_event_stream() {
