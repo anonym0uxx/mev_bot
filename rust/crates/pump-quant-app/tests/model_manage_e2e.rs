@@ -382,3 +382,28 @@ fn legacy_exits_do_not_close_a_model_managed_position_but_the_rug_precursor_stil
     );
     assert!(r.calls.load(Ordering::SeqCst) >= 1);
 }
+
+#[test]
+fn sent_state_age_measures_the_observation_inside_the_prompt_not_the_cut_instant() {
+    // Entry path. The feed prints every 2 s; the engine's clock advances on a curve observation that
+    // arrives 1.5 s after the newest print, so the state that is SENT is at least that old.
+    let prompts = Arc::new(Mutex::new(Vec::new()));
+    let mut e = Engine::new(cfg(), RunMode::Paper);
+    e.enable_paper_model(Script {
+        prompts,
+        calls: Arc::new(AtomicUsize::new(0)),
+        answer: |_| HOLD,
+    });
+    for ev in events(40) {
+        e.tick(ev);
+    }
+    ticks(&mut e, 8);
+    let r = e.model_lane_report().clone();
+    let n = *r.get("sent_state_n").unwrap_or(&0);
+    let sum = *r.get("sent_state_age_ms_sum").unwrap_or(&0);
+    assert!(n >= 1, "{r:?}");
+    assert!(
+        sum > 0,
+        "the sent-state age must be able to show staleness (it was identically 0): {r:?}"
+    );
+}

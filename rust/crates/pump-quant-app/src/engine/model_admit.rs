@@ -578,7 +578,7 @@ impl Engine {
             }
             self.model_uniq("ready", &mint, venue);
         }
-        let snap_t = snap.t_dec_ms;
+        let sent_last_recv_ms = snap.marker.last_recv_ms;
         let id = match self
             .model_table
             .submit(mint, clock, clock + MODEL_DEADLINE_MS)
@@ -625,7 +625,13 @@ impl Engine {
         // STATE VERSION that actually reaches the model: the prompt's decision clock and the number of
         // strictly-prior trades it was built from. Logged per dispatch (sum/count) so the staleness
         // of what Qwen sees versus the feed at dispatch time is measurable.
-        self.mrep_add("sent_state_age_ms_sum", (clock - snap_t).max(0) as u64);
+        // AGE OF THE NEWEST OBSERVATION INSIDE the state that was sent: dispatch clock minus the last
+        // receive time the snapshot was built from. (The previous `clock - snap.t_dec_ms` compared the
+        // snapshot to the instant it was cut AT, so it was identically 0 and could never show staleness.)
+        self.mrep_add(
+            "sent_state_age_ms_sum",
+            (clock - sent_last_recv_ms).max(0) as u64,
+        );
         self.mrep("sent_state_n");
         self.model_uniq("dispatched", &mint, venue);
         self.mrep(format!("dispatched|venue={venue}"));
