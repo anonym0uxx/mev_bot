@@ -1026,6 +1026,7 @@ name = "pump-quant-junction"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "libc",
  "pq-stream-capture",
  "pump-quant-app",
  "pump-quant-brain",

@@ -1816,6 +1816,15 @@ fn main() -> ExitCode {
             }
         }
     }
+    if model_armed {
+        let sf = std::env::var("PQ_MODEL_SAFETY_FILE")
+            .unwrap_or_else(|_| pump_quant_junction::model_lifecycle::DEFAULT_SAFETY_FILE.to_string());
+        let h = pump_quant_junction::model_lifecycle::check_headroom(
+            std::path::Path::new(&sf),
+            pump_quant_junction::model_lifecycle::MIN_FREE_BYTES,
+        );
+        eprintln!("[pq-daemon] durable-state headroom at start: {h:?}");
+    }
     let mut model_stop_last_alert = Instant::now() - Duration::from_secs(3600);
     let mut model_stop_session = pump_quant_junction::model_lifecycle::StopSession::new();
 
@@ -4026,6 +4035,26 @@ fn main() -> ExitCode {
             // Held-position data readiness: MEASURED (reserve age vs the 60 s pricing bound, management
             // prompt cuttable now), reported on the status cadence. A degraded held position is stated
             // loudly; the 60 s bound is never loosened to make refusals disappear.
+            // Durable state must never fail silently: check headroom on the safety file's filesystem and say
+            // so loudly before a write can fail. (A failed persist is already fail-closed in the engine.)
+            if model_armed && tick_counter % 6000 == 0 {
+                let sf = std::env::var("PQ_MODEL_SAFETY_FILE")
+                    .unwrap_or_else(|_| pump_quant_junction::model_lifecycle::DEFAULT_SAFETY_FILE.to_string());
+                match pump_quant_junction::model_lifecycle::check_headroom(
+                    std::path::Path::new(&sf),
+                    pump_quant_junction::model_lifecycle::MIN_FREE_BYTES,
+                ) {
+                    pump_quant_junction::model_lifecycle::Headroom::Low { free, floor } => eprintln!(
+                        "[pq-daemon] ALERT: DISK HEADROOM LOW free={free} < floor={floor} on the durable-state filesystem; \
+                         journal/safety writes may fail (persist failures count: {})",
+                        engine.model_safety_persist_failures()
+                    ),
+                    pump_quant_junction::model_lifecycle::Headroom::Unknown => {
+                        eprintln!("[pq-daemon] WARN: disk headroom could not be measured for {sf}");
+                    }
+                    pump_quant_junction::model_lifecycle::Headroom::Ok { .. } => {}
+                }
+            }
             if model_armed && tick_counter % 100 == 0 {
                 let (report, degraded) = pump_quant_junction::model_lifecycle::held_data_report(&engine);
                 if !report.is_empty() && (degraded || tick_counter % args.status_every_ticks.max(1) == 0) {

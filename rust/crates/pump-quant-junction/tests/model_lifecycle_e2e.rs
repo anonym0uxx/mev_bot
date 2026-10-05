@@ -590,3 +590,40 @@ fn a_late_valid_answer_after_the_position_changed_is_discarded_by_version_not_ex
     assert!(r.e.model_mgmt_apply_reconciled_fill(MINT, id, intended, 22_000).is_err());
     assert_eq!(r.e.model_mgmt_fills().len(), fills);
 }
+
+#[test]
+fn a_safety_state_that_cannot_be_persisted_fails_closed_everywhere() {
+    // The latch path is a DIRECTORY: every write fails (the same observable as a full disk / read-only fs).
+    let ep = Endpoint::start(|_| HOLD);
+    let dir = tmp("nowrite");
+    let bad = dir.join("safety_is_a_dir");
+    std::fs::create_dir_all(&bad).unwrap();
+    let mut e = Engine::new(cfg(), RunMode::Paper);
+    let _ = arm_paper_model(&mut e, &ep.url, &bad);
+    // Whatever the attach decided, a trip must be reported as UNPERSISTED, stay blocked in memory, and count.
+    e.model_safety_trip_operator();
+    assert!(e.model_safety_blocked(), "an unpersistable trip still blocks in memory");
+    assert!(e.model_safety_persist_failures() >= 1);
+    assert!(e.model_lane_report().get("safety:persist_failed").copied().unwrap_or(0) >= 1);
+    // Re-arm must be REFUSED when it cannot be made durable (never a volatile re-arm that a restart forgets).
+    assert!(e.model_safety_rearm("alon").is_err());
+    assert!(e.model_safety_blocked(), "still blocked after the refused re-arm");
+    // Shutdown cannot claim completion on an unrecorded exposure.
+    let report = e.model_controlled_shutdown();
+    assert!(!report.persisted);
+    let mut st = StopSession::new();
+    let g = handle_stop_request(&mut e, &mut st, &dir.join("REQ.json"), &dir.join("ACK.json"));
+    // Flat engine + unpersisted state: must NOT be CompleteFlat.
+    assert!(matches!(g, StopGate::Incomplete { .. }), "{g:?}");
+}
+
+#[test]
+fn headroom_check_reports_ok_low_and_unknown_distinctly() {
+    use pump_quant_junction::model_lifecycle::{check_headroom, free_bytes, Headroom};
+    let d = tmp("headroom");
+    let free = free_bytes(&d).expect("measurable");
+    assert!(free > 0);
+    assert!(matches!(check_headroom(&d, 1), Headroom::Ok { .. }));
+    assert!(matches!(check_headroom(&d, u64::MAX), Headroom::Low { .. }), "a floor above free is LOW");
+    assert_eq!(check_headroom(std::path::Path::new("/definitely/not/a/real/path/x"), 1), Headroom::Unknown);
+}

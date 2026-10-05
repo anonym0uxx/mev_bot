@@ -256,3 +256,45 @@ pub fn held_data_report(engine: &Engine) -> (String, bool) {
     }
     (lines.join("\n"), degraded)
 }
+
+/// Free bytes on the filesystem holding `path` (None when it cannot be measured).
+#[must_use]
+pub fn free_bytes(path: &Path) -> Option<u64> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    let dir = if path.is_dir() { path } else { path.parent().unwrap_or(Path::new(".")) };
+    let c = CString::new(dir.as_os_str().as_bytes()).ok()?;
+    let mut s: libc::statvfs = unsafe { std::mem::zeroed() };
+    // SAFETY: `c` is a valid NUL-terminated path and `s` is a properly sized, zeroed statvfs.
+    let rc = unsafe { libc::statvfs(c.as_ptr(), &mut s) };
+    if rc != 0 {
+        return None;
+    }
+    Some(u64::from(s.f_bavail).saturating_mul(u64::from(s.f_frsize)))
+}
+
+/// What the headroom check concluded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Headroom {
+    /// Enough free space for durable writes.
+    Ok { free: u64 },
+    /// Below the floor: durable state/journals are at risk. The daemon must say so loudly and treat any
+    /// failed persist as fail-closed (blocked), not keep trading blind.
+    Low { free: u64, floor: u64 },
+    /// Could not be measured: reported, never assumed fine.
+    Unknown,
+}
+
+/// Minimum free bytes the durable-state directory must keep. Generous relative to the files at stake (the
+/// safety latch is KBs, journals grow) so the alert fires well before a write actually fails.
+pub const MIN_FREE_BYTES: u64 = 1024 * 1024 * 1024;
+
+/// Check headroom on the filesystem that holds the durable safety file.
+#[must_use]
+pub fn check_headroom(path: &Path, floor: u64) -> Headroom {
+    match free_bytes(path) {
+        None => Headroom::Unknown,
+        Some(free) if free < floor => Headroom::Low { free, floor },
+        Some(free) => Headroom::Ok { free },
+    }
+}
