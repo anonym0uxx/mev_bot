@@ -34,3 +34,16 @@ evidence.db-shm
 evidence.db-wal
 .env
 .hermes/
+
+# Build outputs: never tracked (cargo target dirs of the non-workspace tools and the bench harness).
+# Launch scripts reference <tool>/target/release/<bin> as the BUILD OUTPUT location; build it, do not commit it.
+bench/target/
+tools/social-ingest-rs/target/
+tools/stream-capture-rs/grpc-server-only/target/
+**/target/CACHEDIR.TAG
+tools/training/qwen27b/.pytest_cache/
+
+# Runtime outputs written by the daemon/tools (their tracked copies were stale snapshots)
+data/live_status.json
+data/brain_analysis.json
+data/launch_test.log
