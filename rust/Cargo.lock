@@ -1038,6 +1038,7 @@ dependencies = [
  "pump-quant-protocol",
  "pump-quant-wallet-graph",
  "serde_json",
+ "sha2 0.10.9",
  "solana-program",
 ]
 

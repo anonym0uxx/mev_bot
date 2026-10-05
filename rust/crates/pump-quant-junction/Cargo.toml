@@ -29,6 +29,8 @@ solana-program = "2.1"
 base64 = "0.22"
 libc = "0.2"
 serde_json = "1"
+# Operator-approval digest for the CONFIG_PROMOTION gate (already in the lock via solana-program).
+sha2 = "0.10"
 
 [dev-dependencies]
 

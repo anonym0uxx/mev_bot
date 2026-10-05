@@ -27,8 +27,35 @@ use pump_quant_evaluator::evaluator_state::LifecycleStage;
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
-/// Path to the promotion file written by pq-refiner.
+/// Path to the promotion file. Its appearance alone does NOT authorize a config
+/// change - see [`PROMOTION_APPROVAL_FILE`].
 pub const PROMOTION_FILE: &str = "data/CONFIG_PROMOTION.json";
+
+/// Operator approval file. Must contain the lowercase-hex SHA-256 of the exact bytes
+/// of [`PROMOTION_FILE`]. A promotion is applied ONLY when this file exists AND its
+/// digest matches, so the operator's action is bound to one specific config/version:
+/// a stale file, a file produced by anything else, or any post-approval edit is
+/// refused. Approve with:
+/// `sha256sum data/CONFIG_PROMOTION.json | cut -d' ' -f1 > data/CONFIG_PROMOTION.approved`
+pub const PROMOTION_APPROVAL_FILE: &str = "data/CONFIG_PROMOTION.approved";
+
+/// Lowercase-hex SHA-256 of `bytes`.
+#[must_use]
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(bytes);
+    let mut out = String::with_capacity(64);
+    for b in h.finalize() {
+        out.push_str(&format!("{b:02x}"));
+    }
+    out
+}
+
+/// Promotion-file mtime whose refusal was last logged, so an unapproved file sitting
+/// in place does not re-log every tick.
+static LAST_REFUSED_MTIME: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(u64::MAX);
 
 /// Path to the tape file.
 const TAPE_FILE: &str = "data/tape.jsonl";
@@ -133,14 +160,46 @@ pub fn try_reload_config(cfg: &mut Config, last_mtime: &mut Option<u64>) -> Relo
         }
     }
 
-    // Read and parse the promotion file
-    let content = match fs::read_to_string(path) {
-        Ok(s) => s,
+    // ── OPERATOR AUTHORIZATION GATE ───────────────────────────────────────
+    // File appearance alone must not authorize a config change. Apply only when
+    // `data/CONFIG_PROMOTION.approved` holds the SHA-256 of the exact promotion
+    // bytes, binding the operator's approval to this one config/version. Nothing
+    // the evaluation pipeline emits can satisfy this by itself.
+    let bytes = match fs::read(path) {
+        Ok(b) => b,
         Err(e) => {
             return ReloadResult {
                 applied: false,
                 n_mutations: 0,
                 summary: format!("read error: {e}"),
+            }
+        }
+    };
+    let digest = sha256_hex(&bytes);
+    let approved = fs::read_to_string(PROMOTION_APPROVAL_FILE)
+        .map(|s| s.trim().to_ascii_lowercase())
+        .unwrap_or_default();
+    if approved != digest {
+        if LAST_REFUSED_MTIME.swap(mtime, std::sync::atomic::Ordering::Relaxed) != mtime {
+            eprintln!(
+                "[autonomous-bridge] CONFIG HOT-RELOAD REFUSED: {PROMOTION_FILE} is not operator-approved \
+                 (approval {} ; promotion sha256={digest}). Approve with: sha256sum {PROMOTION_FILE} | cut -d' ' -f1 > {PROMOTION_APPROVAL_FILE}",
+                if approved.is_empty() { "<missing>".to_string() } else { approved }
+            );
+        }
+        return ReloadResult {
+            applied: false,
+            n_mutations: 0,
+            summary: "refused: not operator-approved".to_string(),
+        };
+    }
+    let content = match String::from_utf8(bytes) {
+        Ok(s) => s,
+        Err(_) => {
+            return ReloadResult {
+                applied: false,
+                n_mutations: 0,
+                summary: "promotion file is not valid UTF-8".to_string(),
             }
         }
     };
@@ -960,6 +1019,55 @@ mod tests {
         assert_eq!(extract_json_i64(token, "to"), Some(60));
     }
 
+    /// Write the operator approval matching `content`.
+    fn approve(content: &str) {
+        let _ = fs::create_dir_all(Path::new("data"));
+        let _ = fs::write(PROMOTION_APPROVAL_FILE, sha256_hex(content.as_bytes()));
+    }
+
+    /// File appearance alone must NOT authorize a config change.
+    #[test]
+    fn test_reload_refuses_without_operator_approval() {
+        let _lock = promotion_lock();
+        let _ = fs::create_dir_all(Path::new("data"));
+        let _ = fs::remove_file(PROMOTION_FILE);
+        let _ = fs::remove_file(PROMOTION_APPROVAL_FILE);
+        let promotion_content = r#"{
+  "challenger_id": "unapproved",
+  "mutations": [
+    {"name": "gate_margin_bps", "from": 50, "to": 55}
+  ],
+  "verdict": "defeats",
+  "gate_verdict": "G1:pass",
+  "status": "READY_FOR_CONFIG_UPDATE"
+}"#;
+        let _ = fs::write(PROMOTION_FILE, promotion_content);
+        let mut cfg = Config::dev_portable().with_mcap_band();
+        let before = cfg.gate_margin_bps;
+
+        let mut last_mtime = None;
+        let r1 = try_reload_config(&mut cfg, &mut last_mtime);
+        assert!(!r1.applied, "an unapproved promotion must not apply");
+        assert_eq!(cfg.gate_margin_bps, before, "config must be untouched");
+        assert!(
+            Path::new(PROMOTION_FILE).exists(),
+            "an unapproved file must NOT be consumed"
+        );
+
+        // A present-but-wrong approval digest is refused as well.
+        let _ = fs::write(PROMOTION_APPROVAL_FILE, "deadbeef");
+        let r2 = try_reload_config(&mut cfg, &mut last_mtime);
+        assert!(!r2.applied);
+        assert_eq!(cfg.gate_margin_bps, before);
+
+        // Only the matching approval for THIS content authorizes it.
+        approve(promotion_content);
+        let r3 = try_reload_config(&mut cfg, &mut last_mtime);
+        assert!(r3.applied, "a matching operator approval applies");
+        assert_eq!(cfg.gate_margin_bps, 55);
+        let _ = fs::remove_file(PROMOTION_APPROVAL_FILE);
+    }
+
     #[test]
     fn test_reload_no_file() {
         // S1: Serialize against other promotion-file tests.
@@ -1001,6 +1109,7 @@ mod tests {
   "status": "READY_FOR_CONFIG_UPDATE"
 }"#;
         let _ = fs::write(PROMOTION_FILE, promotion_content);
+        approve(promotion_content);
 
         let mut cfg = Config::dev_portable().with_mcap_band();
         let original_margin = cfg.gate_margin_bps;
@@ -1043,6 +1152,7 @@ mod tests {
   "status": "READY_FOR_CONFIG_UPDATE"
 }"#;
         let _ = fs::write(PROMOTION_FILE, promotion_content);
+        approve(promotion_content);
 
         let mut cfg = Config::dev_portable().with_mcap_band();
         let original_floor = cfg.reflect_weight_floor_bp;
@@ -1089,6 +1199,7 @@ mod tests {
   "status": "READY_FOR_CONFIG_UPDATE"
 }"#;
         let _ = fs::write(PROMOTION_FILE, promotion_content);
+        approve(promotion_content);
 
         let mut cfg = Config::dev_portable().with_mcap_band();
 
