@@ -17,7 +17,8 @@ use pump_quant_app::engine::{Engine, RunMode};
 use pump_quant_app::event::{AppEvent, TradeVenue};
 use pump_quant_domain::ids::Mint as DomainMint;
 use pump_quant_junction::model_lifecycle::{
-    arm_paper_model, handle_stop_request, validate_ack, AckRejection, StopGate, StopSession,
+    arm_paper_model, handle_stop_request, StaleCallout, restore_held_state, validate_ack, AckRejection, StartupRestore,
+    StopGate, StopSession,
 };
 
 const T0: i64 = 1_800_000_000_000;
@@ -626,4 +627,148 @@ fn headroom_check_reports_ok_low_and_unknown_distinctly() {
     assert!(matches!(check_headroom(&d, 1), Headroom::Ok { .. }));
     assert!(matches!(check_headroom(&d, u64::MAX), Headroom::Low { .. }), "a floor above free is LOW");
     assert_eq!(check_headroom(std::path::Path::new("/definitely/not/a/real/path/x"), 1), Headroom::Unknown);
+}
+
+#[test]
+fn a_crash_mid_reduce_restarts_through_the_daemons_restore_path_and_resolves_only_by_reconciled_report() {
+    // The production client over HTTP; the engine persists held state as it changes (NOT only at a trip
+    // or shutdown), then the process "crashes": no handoff, no shutdown call, engine just dropped.
+    let ep = Endpoint::start(|step| if step == 0 { REDUCE } else { HOLD });
+    let dir = tmp("crash");
+    let held = dir.join("held.json");
+    let mut e = Engine::new(cfg(), RunMode::Paper);
+    let armed = arm_paper_model(&mut e, &ep.url, &dir.join("safety.json"));
+    assert!(!armed.blocked_at_start);
+    assert!(matches!(restore_held_state(&mut e, &held), StartupRestore::Clean), "first start is clean");
+    for ev in events(40) {
+        e.tick(ev);
+    }
+    ticks(&mut e, 8);
+    let t_last = T0 + 1_000 + 40 * 2_000;
+    curve(&mut e, t_last + 1_500, 2_100, 200_000_000);
+    for _ in 0..50 {
+        if e.model_position_open(&MINT) {
+            break;
+        }
+        ticks(&mut e, 2);
+        curve(&mut e, t_last + 1_500, 2_100, 200_000_000);
+    }
+    let mut r = Rig { e, clock: t_last + 1_500, slot: 2_100, n: 41, dir: dir.clone() };
+    r.advance_to_order(120_000);
+    let (id, kind, intended, _) = r.e.model_mgmt_pending(&MINT).expect("REDUCE in flight");
+    assert_eq!(format!("{kind:?}"), "Reduce");
+    // One more tick lets the on-change persist write the in-flight order (no explicit flush).
+    ticks(&mut r.e, 2);
+    let inv_before = r.e.model_inventory_tokens(&MINT).unwrap();
+    let basis = r.e.model_accounting_view(&MINT).remaining_cost_basis;
+    assert!(held.exists(), "the ledger was written by the running engine, not by a shutdown hook");
+    drop(r.e); // crash
+
+    let mut e2 = Engine::new(cfg(), RunMode::Paper);
+    let _ = arm_paper_model(&mut e2, &ep.url, &dir.join("safety2.json"));
+    match restore_held_state(&mut e2, &held) {
+        StartupRestore::Restored(rep) => {
+            assert_eq!(rep.positions, 1);
+            assert_eq!(rep.pending_uncertain, 1);
+        }
+        other => panic!("expected a restore, got {other:?}"),
+    }
+    assert_eq!(e2.model_inventory_tokens(&MINT), Some(inv_before), "the unfilled REDUCE changed nothing");
+    assert_eq!(e2.model_accounting_view(&MINT).remaining_cost_basis, basis);
+    let (id2, _, int2, _) = e2.model_mgmt_pending(&MINT).unwrap();
+    assert_eq!((id2, int2), (id, intended));
+    assert_eq!(pump_quant_junction::model_lifecycle::mints_needing_feeds(&e2), vec![MINT], "its feeds are re-established independent of discovery");
+    // The stop gate sees unresolved exposure: a restart is not a handoff.
+    let mut st = StopSession::new();
+    let g = handle_stop_request(&mut e2, &mut st, &dir.join("req.json"), &dir.join("ack.json"));
+    assert!(matches!(g, StopGate::Incomplete { .. }), "{g:?}");
+    // Only a reconciled report resolves it: exactly the filled quantity.
+    e2.model_mgmt_apply_reconciled_fill(MINT, id, intended, 22_000).unwrap();
+    assert_eq!(e2.model_inventory_tokens(&MINT), Some(inv_before - intended));
+    assert!(e2.model_mgmt_pending(&MINT).is_none());
+}
+
+#[test]
+fn a_ledger_that_cannot_be_applied_refuses_startup_and_is_left_untouched() {
+    let ep = Endpoint::start(|_| HOLD);
+    let dir = tmp("refuse");
+    let held = dir.join("held.json");
+    let mut r = rig(&ep, "refuse_src");
+    r.e.model_held_attach(&held);
+    assert!(r.e.model_held_persist_now());
+    drop(r.e);
+    let before = std::fs::read(&held).unwrap();
+    // A different wallet seed than the books were kept under.
+    let mut c = cfg();
+    c.bankroll_initial_lamports = 1_234_567_890;
+    let mut e2 = Engine::new(c, RunMode::Paper);
+    let _ = arm_paper_model(&mut e2, &ep.url, &dir.join("safety.json"));
+    match restore_held_state(&mut e2, &held) {
+        StartupRestore::Refused(why) => assert!(why.contains("SeedMismatch"), "{why}"),
+        other => panic!("must refuse: {other:?}"),
+    }
+    assert!(!e2.model_position_open(&MINT), "nothing applied");
+    assert_eq!(std::fs::read(&held).unwrap(), before, "the ledger is untouched for the operator");
+}
+
+#[test]
+fn the_stale_callout_is_edge_triggered_names_the_loss_of_protection_and_recovers() {
+    let ep = Endpoint::start(|_| HOLD);
+    let mut r = rig(&ep, "callout");
+    let mut c = StaleCallout::default();
+    // Healthy: fresh reserve + prints => silence.
+    r.advance(20_000);
+    let now = r.e.model_clock_ms_now();
+    assert!(c.evaluate(&r.e, now, 60_000).is_empty(), "no callout while management data is fresh");
+    // Feed goes quiet: ONLY the clock moves (a heartbeat tick with no reserve/print), as a dead feed does.
+    r.e.tick(AppEvent::Tick);
+    let quiet_from = now;
+    // Advance the engine's own clock past the 60 s pricing bound using an unrelated mint's print, which
+    // must NOT refresh the held mint's reserve.
+    let other = [0x77u8; 32];
+    for k in 1..=3 {
+        let t = quiet_from + k * 40_000;
+        r.e.tick(AppEvent::MarketTrade {
+            mint: DomainMint::from_bytes(other),
+            price_fp: 1_000,
+            quote_lamports: 1_000_000,
+            liquidity_lamports: 30_000_000_000,
+            signed_base: 5,
+            buyer_entity: 9,
+            age_slots: 30,
+            recv_unix_ms: Some(t),
+            trader_pubkey: Some(wallet(900 + k as u32)),
+            slot: Some(9_000 + k as u64),
+            fee_lamports: Some(5_000),
+            cu_consumed: Some(1),
+            venue: Some(TradeVenue::PumpFun),
+        });
+    }
+    let t1 = r.e.model_clock_ms_now();
+    assert!(t1 - quiet_from >= 100_000);
+    let lines = c.evaluate(&r.e, t1, 60_000);
+    assert!(lines.iter().any(|l| l.alert && l.text.starts_with("ONSET")), "{lines:?}");
+    assert!(lines.iter().any(|l| l.text.contains("UNPROTECTED")), "prints for the held mint are silent too: {lines:?}");
+    assert_eq!(c.degraded_count(), 1);
+    // Edge-triggered: the same instant again says nothing; a reminder only after the interval.
+    assert!(c.evaluate(&r.e, t1, 60_000).is_empty(), "no repeat inside the reminder interval");
+    let rem = c.evaluate(&r.e, t1 + 61_000, 60_000);
+    assert!(rem.iter().any(|l| l.text.starts_with("REMINDER")), "{rem:?}");
+    // The 60 s bound was not loosened to make it go away: management still refuses.
+    assert!(r.e.model_held_degraded().len() == 1);
+    // A fresh reserve + print for the HELD mint recovers it, and the outage length is reported.
+    r.clock = t1 + 1_000;
+    r.slot += 10;
+    curve(&mut r.e, r.clock, r.slot, 200_000_000);
+    print(&mut r.e, r.n + 1, r.clock, r.slot);
+    // The state ledger serves trades STRICTLY BEFORE the decision clock, so the next live print is what
+    // makes the market "alive" at the clock (the existing 60 s idle contract, unchanged).
+    r.clock += 1_000;
+    r.slot += 1;
+    curve_quiet(&mut r.e, r.clock, r.slot);
+    print(&mut r.e, r.n + 2, r.clock, r.slot);
+    ticks(&mut r.e, 3);
+    let rec = c.evaluate(&r.e, r.clock, 60_000);
+    assert!(rec.iter().any(|l| !l.alert && l.text.starts_with("RECOVERED")), "{rec:?} {:?}", r.e.model_held_degraded());
+    assert_eq!(c.degraded_count(), 0);
 }

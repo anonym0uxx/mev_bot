@@ -264,6 +264,8 @@ const LS_MAX_RESPAWN_ATTEMPTS: u32 = 5;
 const EXIT_EMERGENCY: u8 = 99;
 /// `--live` together with a model endpoint: refused (the model lane is paper-only).
 const EXIT_MODEL_LIVE_CONFLICT: u8 = 98;
+/// A held-state ledger exists but cannot be applied: refusing to start rather than orphan exposure.
+const EXIT_HELD_STATE_REFUSED: u8 = 97;
 /// Path (relative to CWD) for the graceful-shutdown sentinel file.
 const DAEMON_STOP_FILE: &str = "data/DAEMON_STOP";
 /// Path (relative to CWD) for the emergency-stop sentinel file.
@@ -1817,6 +1819,33 @@ fn main() -> ExitCode {
         }
     }
     if model_armed {
+        let held_file = std::env::var("PQ_MODEL_HELD_FILE")
+            .unwrap_or_else(|_| pump_quant_junction::model_lifecycle::DEFAULT_HELD_FILE.to_string());
+        match pump_quant_junction::model_lifecycle::restore_held_state(
+            &mut engine,
+            std::path::Path::new(&held_file),
+        ) {
+            pump_quant_junction::model_lifecycle::StartupRestore::Clean => {
+                eprintln!("[pq-daemon] held-state: no ledger at {held_file} - clean start");
+            }
+            pump_quant_junction::model_lifecycle::StartupRestore::Restored(r) => {
+                eprintln!(
+                    "[pq-daemon] held-state RESTORED from {held_file}: positions={} pending_orders_uncertain={} \
+                     committed_lamports={} realized_lamports={} inventory_unknown={} - management stays DEGRADED \
+                     until history + reserves are recovered; uncertain orders need a reconciled report",
+                    r.positions, r.pending_uncertain, r.committed_lamports, r.realized_lamports, r.inventory_unknown
+                );
+            }
+            pump_quant_junction::model_lifecycle::StartupRestore::Refused(why) => {
+                eprintln!(
+                    "[pq-daemon] ALERT: HELD-STATE RESTORE REFUSED ({why}) for {held_file}. The ledger is untouched. \
+                     Starting would orphan recorded exposure, so the daemon exits without trading."
+                );
+                return ExitCode::from(EXIT_HELD_STATE_REFUSED);
+            }
+        }
+    }
+    if model_armed {
         let sf = std::env::var("PQ_MODEL_SAFETY_FILE")
             .unwrap_or_else(|_| pump_quant_junction::model_lifecycle::DEFAULT_SAFETY_FILE.to_string());
         let h = pump_quant_junction::model_lifecycle::check_headroom(
@@ -1827,6 +1856,7 @@ fn main() -> ExitCode {
     }
     let mut model_stop_last_alert = Instant::now() - Duration::from_secs(3600);
     let mut model_stop_session = pump_quant_junction::model_lifecycle::StopSession::new();
+    let mut stale_callout = pump_quant_junction::model_lifecycle::StaleCallout::default();
 
     // Run-mode tag for tape/journal exports — derived from the ENGINE's actual
     // RunMode, NOT the --live CLI flag. This prevents paper-mode fallback from
@@ -1980,6 +2010,41 @@ fn main() -> ExitCode {
     // STALE_SECS of connection establishment, the connection is declared
     // stale and reconnected — regardless of last_slot_seen.
     let mut helius_conn_established_at = Instant::now();
+    // ── Restored held positions: re-establish their feeds INDEPENDENTLY of discovery ──
+    // A restart that rebuilt held positions (model_lifecycle::restore_held_state) has no live reserve or
+    // print feed for them until something subscribes. Do it now: trade prints via PumpPortal, the PDA map
+    // for LaserStream account decoding, and the Helius account subscription as the fallback plane. Status
+    // stays DEGRADED (named) until a fresh reserve actually arrives; a subscription is not readiness.
+    if model_armed {
+        for mint_bytes in pump_quant_junction::model_lifecycle::mints_needing_feeds(&engine) {
+            let mint_b58 = Pubkey::try_from(mint_bytes)
+                .map(|pk| pk.to_string())
+                .unwrap_or_else(|_| hex_short(&mint_bytes));
+            let pda = bonding_curve_pda(&mint_bytes);
+            pda_to_mint.insert(pda.to_bytes(), mint_bytes);
+            if trade_sub_tracker.add(&mint_b58) {
+                let sub_msg = pumpportal_ws::subscribe_token_trade(&[mint_b58.clone()]);
+                match pp_conn.send_text(&sub_msg) {
+                    Ok(()) => {
+                        stats.pp_trade_subs_sent += 1;
+                        eprintln!("[pq-daemon] restored held mint {mint_b58}: trade feed subscribed");
+                    }
+                    Err(e) => {
+                        eprintln!("[pq-daemon] ALERT: restored held mint {mint_b58}: trade subscribe FAILED: {e}");
+                        stats.ws_errors += 1;
+                    }
+                }
+            }
+            if !ls_active {
+                let req_id = next_req_id;
+                next_req_id += 1;
+                let req = helius_ws::account_subscribe_request(req_id, &pda.to_string(), &args.commitment);
+                if helius_conn.send_text(&req).is_ok() {
+                    sub_tracker.record_request(req_id, mint_bytes);
+                }
+            }
+        }
+    }
 
     // ─── LaserStream gRPC primary ingest lane ────────────────────────────
     let (ls_tx, ls_rx) = mpsc::channel::<LaserStreamUpdate>();
@@ -4055,13 +4120,16 @@ fn main() -> ExitCode {
                     pump_quant_junction::model_lifecycle::Headroom::Ok { .. } => {}
                 }
             }
-            if model_armed && tick_counter % 100 == 0 {
-                let (report, degraded) = pump_quant_junction::model_lifecycle::held_data_report(&engine);
-                if !report.is_empty() && (degraded || tick_counter % args.status_every_ticks.max(1) == 0) {
-                    eprintln!(
-                        "[pq-daemon] {}HELD-DATA\n{report}",
-                        if degraded { "ALERT: DEGRADED " } else { "" }
-                    );
+            if model_armed && tick_counter % 20 == 0 {
+                let now_ms = engine.model_clock_ms_now();
+                for l in stale_callout.evaluate(&engine, now_ms, 60_000) {
+                    eprintln!("[pq-daemon] {}HELD-DATA {}", if l.alert { "ALERT: " } else { "" }, l.text);
+                }
+                if tick_counter % args.status_every_ticks.max(1) == 0 {
+                    let (report, _) = pump_quant_junction::model_lifecycle::held_data_report(&engine);
+                    if !report.is_empty() {
+                        eprintln!("[pq-daemon] HELD-DATA status\n{report}");
+                    }
                 }
             }
             if tick_counter - last_status_write_tick >= args.status_every_ticks {

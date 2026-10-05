@@ -332,6 +332,25 @@ pub struct Exit {
     pub token_amount: u64,
 }
 
+/// Durable export of one held position's store entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeldExport {
+    /// Market.
+    pub mint: [u8; 32],
+    /// Entry price fixed point.
+    pub entry_price_fp: u64,
+    /// Deployed notional.
+    pub size_lamports: u64,
+    /// Pro-rata entry cost.
+    pub cost_lamports: u64,
+    /// Fraction still held, bps.
+    pub remaining_bps: u32,
+    /// Raw tokens, `None` when never established by a fill.
+    pub inventory_tokens: Option<u64>,
+    /// Model-managed.
+    pub model_managed: bool,
+}
+
 /// One held position, integer/fixed-point.
 #[derive(Clone, Copy, Debug)]
 struct HeldPosition {
@@ -740,6 +759,43 @@ impl ScalpLifecycle {
                 model_managed: p.model_managed,
             })
             .collect()
+    }
+
+    /// Everything a restart needs from one held position's store entry (inventory stays `None` when never
+    /// established by a fill).
+    #[must_use]
+    pub fn export_held(&self) -> Vec<HeldExport> {
+        self.open
+            .iter()
+            .map(|(m, p)| HeldExport {
+                mint: *m,
+                entry_price_fp: p.entry_price_fp,
+                size_lamports: p.size_lamports,
+                cost_lamports: p.cost_lamports,
+                remaining_bps: p.remaining_bps,
+                inventory_tokens: p.inventory_from_fill.then_some(p.inventory_tokens),
+                model_managed: p.model_managed,
+            })
+            .collect()
+    }
+
+    /// Rebuild one held position from a durable record. Refused (false) when the mint is held or the
+    /// store is at capacity. Peak/trough start at the entry price; the caller restores true extremes
+    /// through the management lane. The ladder state is never armed: a restored position is model-managed
+    /// or is held with ONLY the hard safeguards.
+    pub fn restore_held(&mut self, x: &HeldExport, tick: u64) -> bool {
+        if !self.open(x.mint, x.entry_price_fp, x.size_lamports, x.cost_lamports, tick) {
+            return false;
+        }
+        if let Some(p) = self.open.get_mut(&x.mint) {
+            p.remaining_bps = x.remaining_bps;
+            if let Some(t) = x.inventory_tokens {
+                p.inventory_tokens = t;
+                p.inventory_from_fill = true;
+            }
+            p.model_managed = x.model_managed;
+        }
+        true
     }
 
     /// Entry price (fixed point) of a held position.

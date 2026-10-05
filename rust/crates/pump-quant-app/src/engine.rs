@@ -17,6 +17,7 @@ use std::time::Instant;
 
 pub mod model_admit;
 pub mod model_manage;
+pub mod model_restore;
 pub mod model_safety;
 use crate::analytics::ReflectionAnalytics;
 use crate::brain::{
@@ -879,6 +880,7 @@ pub struct Engine {
     /// Monotonic id of the next model order. Every order, fill, evidence report and fault is keyed by
     /// this, never by mint alone, so evidence for one order cannot touch another order's state.
     model_order_seq: u64,
+    model_held: model_restore::HeldPersist,
     /// Append-only-ish order book (bounded): identity, attempt, quantity, state and terminal evidence.
     model_order_log: BTreeMap<u64, model_admit::OrderRec>,
     /// Which order opened the currently-held model position on each mint.
@@ -1501,6 +1503,7 @@ impl Engine {
             model_uniq_seen: BTreeSet::new(),
             model_amm_fee: BTreeMap::new(),
             model_order_seq: 0,
+            model_held: model_restore::HeldPersist::default(),
             model_order_log: BTreeMap::new(),
             model_position_order: BTreeMap::new(),
             model_fills: Vec::new(),
@@ -3051,6 +3054,7 @@ impl Engine {
             self.model_poll();
             self.model_stream_schedule();
             self.model_mgmt_schedule();
+            self.model_held_persist_if_changed();
         }
 
         // §Quant-Rev-7: prune expired re-entry cooldown entries. The set is bounded

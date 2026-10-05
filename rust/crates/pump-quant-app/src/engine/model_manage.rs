@@ -729,6 +729,12 @@ impl Engine {
             .collect()
     }
 
+    /// The lane's wire clock (ms): the newest receive time seen. Used to age things on the same clock.
+    #[must_use]
+    pub fn model_clock_ms_now(&self) -> i64 {
+        self.model_clock_ms
+    }
+
     /// DEGRADED: at least one held position cannot be managed because its required state is stale or
     /// missing. Independent protection that remains possible: the hard safeguards (rug precursor, hard
     /// stop) run on PRINTS, so they only work while prints arrive - a position whose print feed is also

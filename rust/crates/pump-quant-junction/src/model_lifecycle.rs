@@ -298,3 +298,128 @@ pub fn check_headroom(path: &Path, floor: u64) -> Headroom {
         Some(free) => Headroom::Ok { free },
     }
 }
+
+/// Default held-state ledger path.
+pub const DEFAULT_HELD_FILE: &str = "data/model_held_state.json";
+
+/// What startup restore decided.
+#[derive(Debug)]
+pub enum StartupRestore {
+    /// No ledger: clean start.
+    Clean,
+    /// Positions/orders rebuilt (pending orders are UNCERTAIN).
+    Restored(pump_quant_app::held_state::RestoreReport),
+    /// The ledger exists but cannot be applied. The daemon MUST NOT start trading: starting would orphan
+    /// real exposure. The file is untouched; an operator reconciles it.
+    Refused(String),
+}
+
+/// Attach the held-state ledger and restore it into a FRESH engine (before the first tick).
+pub fn restore_held_state(engine: &mut Engine, path: &Path) -> StartupRestore {
+    engine.model_held_attach(path);
+    match engine.model_held_restore() {
+        Ok(None) => StartupRestore::Clean,
+        Ok(Some(r)) => StartupRestore::Restored(r),
+        Err(e) => StartupRestore::Refused(format!("{e:?}")),
+    }
+}
+
+/// Mints whose reserve/print feeds the daemon must (re)subscribe after a restore, independently of
+/// new-opportunity discovery.
+#[must_use]
+pub fn mints_needing_feeds(engine: &Engine) -> Vec<[u8; 32]> {
+    engine.model_held_mints()
+}
+
+/// Edge-triggered callout for held positions whose management data is stale or missing.
+///
+/// Emits: ONSET (first time a position degrades, naming the component), REMINDER (every `remind_ms` while
+/// it stays degraded, with how long), RECOVERED (when management is ready again, with the outage length),
+/// and UNPROTECTED (degraded AND prints silent: neither management nor the print-driven rug precursor /
+/// hard stop can act). It never loosens the 60 s bound and never trades; it only tells the operator.
+#[derive(Debug, Default)]
+pub struct StaleCallout {
+    state: std::collections::BTreeMap<[u8; 32], (i64, i64, bool)>, // (since_ms, last_alert_ms, unprotected_said)
+}
+
+/// One line to print, with whether it is an alert.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CalloutLine {
+    /// Text.
+    pub text: String,
+    /// ALERT-level (operator action may be needed).
+    pub alert: bool,
+}
+
+/// Print silence beyond which the print-driven safeguards are treated as unable to act: the existing
+/// pricing bound, not a new threshold.
+const PRINT_SILENT_MS: i64 = pump_quant_app::curve_annotation::PRICING_BUDGET_MS;
+
+impl StaleCallout {
+    /// Evaluate the engine's measured status at wire clock `now_ms`.
+    pub fn evaluate(&mut self, engine: &Engine, now_ms: i64, remind_ms: i64) -> Vec<CalloutLine> {
+        let hex = |m: &[u8; 32]| m.iter().take(4).map(|b| format!("{b:02x}")).collect::<String>();
+        let mut out = Vec::new();
+        let status = engine.model_held_data_status();
+        let live: std::collections::BTreeSet<[u8; 32]> = status.iter().map(|s| s.mint).collect();
+        for s in &status {
+            let silent = s.last_print_age_ms.is_none_or(|a| a > PRINT_SILENT_MS);
+            match &s.management_ready {
+                Err(why) => {
+                    let e = self.state.entry(s.mint).or_insert((now_ms, i64::MIN / 2, false));
+                    let first = e.1 == i64::MIN / 2;
+                    if first || now_ms - e.1 >= remind_ms {
+                        e.1 = now_ms;
+                        out.push(CalloutLine {
+                            text: format!(
+                                "{} held {} venue={} MANAGEMENT UNAVAILABLE: {why} (reserve_age={} print_age={}) degraded_for={}s",
+                                if first { "ONSET" } else { "REMINDER" },
+                                hex(&s.mint),
+                                if s.amm { "amm" } else { "curve" },
+                                s.reserve_age_ms.map_or("none".into(), |a| format!("{a}ms")),
+                                s.last_print_age_ms.map_or("none".into(), |a| format!("{a}ms")),
+                                (now_ms - e.0).max(0) / 1000
+                            ),
+                            alert: true,
+                        });
+                    }
+                    if silent && !e.2 {
+                        e.2 = true;
+                        out.push(CalloutLine {
+                            text: format!(
+                                "UNPROTECTED held {}: management data unavailable AND no print within {}ms - the rug precursor / hard stop \
+                                 are print-driven and cannot act until prints resume; the connection being up does not change this",
+                                hex(&s.mint),
+                                PRINT_SILENT_MS
+                            ),
+                            alert: true,
+                        });
+                    } else if !silent {
+                        e.2 = false;
+                    }
+                }
+                Ok(()) => {
+                    if let Some((since, _, _)) = self.state.remove(&s.mint) {
+                        out.push(CalloutLine {
+                            text: format!(
+                                "RECOVERED held {}: management data fresh again after {}s degraded",
+                                hex(&s.mint),
+                                (now_ms - since).max(0) / 1000
+                            ),
+                            alert: false,
+                        });
+                    }
+                }
+            }
+        }
+        // A position that closed while degraded is forgotten (no stale RECOVERED later).
+        self.state.retain(|m, _| live.contains(m));
+        out
+    }
+
+    /// Positions currently degraded.
+    #[must_use]
+    pub fn degraded_count(&self) -> usize {
+        self.state.len()
+    }
+}

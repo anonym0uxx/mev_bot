@@ -80,6 +80,7 @@ pub mod model_worker;
 pub mod parse;
 pub mod portfolio;
 pub mod position;
+pub mod held_state;
 pub mod safety_off;
 pub mod priced_move;
 pub mod reflect;

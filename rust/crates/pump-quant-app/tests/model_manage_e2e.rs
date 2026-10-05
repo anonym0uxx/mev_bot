@@ -692,3 +692,224 @@ fn held_data_readiness_is_measured_and_a_stale_reserve_degrades_while_protection
     assert!(!r.e.model_position_open(&MINT), "independent protection still works while degraded");
     // Recovery: a fresh reserve observation restores readiness without any threshold change.
 }
+
+// ===================== HELD-STATE RESTORE =====================
+
+fn held_path(tag: &str) -> std::path::PathBuf {
+    let d = std::env::temp_dir().join(format!("pq_held_e2e_{tag}_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    d.join("held.json")
+}
+
+/// A brand-new engine, same config, armed the same way, NOTHING carried over except the file.
+fn fresh_engine(bankroll: u64, held: &std::path::Path) -> Engine {
+    let mut c = cfg();
+    c.bankroll_initial_lamports = bankroll;
+    c.floor_fraction_bps = 2_500;
+    let mut e = Engine::new(c, RunMode::Paper);
+    e.enable_paper_model(Script {
+        prompts: Arc::new(Mutex::new(Vec::new())),
+        calls: Arc::new(AtomicUsize::new(0)),
+        answer: |_| HOLD,
+    });
+    e.model_held_attach(held);
+    e
+}
+
+#[test]
+fn a_restart_rebuilds_the_position_the_wallet_and_the_management_history_from_the_file_alone() {
+    let hp = held_path("a");
+    let mut r = rig(|_| HOLD);
+    r.e.model_held_attach(&hp);
+    r.advance(130_000);
+    assert!(r.e.model_held_persist_now());
+    let before = r.e.model_accounting_view(&MINT);
+    let inv = r.e.model_inventory_tokens(&MINT).unwrap();
+    let basis = before.remaining_cost_basis;
+    let led = r.e.model_held_ledger();
+    assert_eq!(led.held.len(), 1);
+    assert!(led.held[0].step >= 1, "management history exists to be preserved: {:?}", led.held[0]);
+    drop(r);
+
+    let mut e2 = fresh_engine(2_000_000_000, &hp);
+    let rep = e2.model_held_restore().expect("restore").expect("a ledger existed");
+    assert_eq!(rep.positions, 1);
+    assert_eq!(rep.inventory_unknown, 0);
+    assert!(e2.model_position_open(&MINT));
+    assert_eq!(e2.model_inventory_tokens(&MINT), Some(inv), "inventory restored exactly");
+    let after = e2.model_accounting_view(&MINT);
+    assert_eq!(after.seed, before.seed);
+    assert_eq!(after.realized, before.realized);
+    assert_eq!(after.committed, before.committed, "committed capital restored");
+    assert_eq!(after.remaining_cost_basis, basis, "remaining cost basis restored");
+    assert_eq!(after.attribution_entry_spend, before.attribution_entry_spend);
+    assert_eq!(after.balance, before.balance);
+    // The restored ledger is identical to the one written: nothing was invented or dropped.
+    let mut a = e2.model_held_ledger();
+    let mut b = led;
+    a.written_wall_ms = 0;
+    b.written_wall_ms = 0;
+    assert_eq!(a, b);
+    // True history kept: the fill time and step were not reset.
+    assert_eq!(a.held[0].fill_ms, b.held[0].fill_ms);
+    assert_eq!(a.held[0].step, b.held[0].step);
+}
+
+#[test]
+fn a_restored_position_is_still_managed_by_the_model_and_still_closes_only_through_a_fill() {
+    let hp = held_path("b");
+    let mut r = rig(|_| HOLD);
+    r.e.model_held_attach(&hp);
+    r.advance(100_000);
+    assert!(r.e.model_held_persist_now());
+    let (fill_ms, clock) = (r.e.model_held_ledger().held[0].fill_ms, r.clock);
+    drop(r);
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut c = cfg();
+    c.floor_fraction_bps = 2_500;
+    let mut e2 = Engine::new(c, RunMode::Paper);
+    e2.enable_paper_model(Script {
+        prompts: Arc::new(Mutex::new(Vec::new())),
+        calls: Arc::clone(&calls),
+        answer: |_| EXIT,
+    });
+    e2.model_held_attach(&hp);
+    e2.model_held_restore().unwrap().unwrap();
+    // Restore rebuilds the BOOKS; the prompt's launch/flow history is not in the ledger. Until history
+    // recovery supplies it, management REFUSES by name instead of inventing it.
+    e2.tick(AppEvent::Tick);
+    let deg = e2.model_held_degraded();
+    assert_eq!(deg.len(), 1, "a restored position with no recovered history is DEGRADED, by name");
+    assert!(deg[0].management_ready.is_err());
+    // History recovery: replay the captured launch + flow for the held mint (the same feed a restart
+    // re-reads), then the live curve resumes.
+    for ev in &events(40) {
+        e2.tick(ev.clone());
+    }
+    for _ in 0..8 {
+        e2.tick(AppEvent::Tick);
+    }
+    let mut rr = Rig { e: e2, prompts: Arc::new(Mutex::new(Vec::new())), calls, clock, slot: 2_600, n: 500 };
+    // The curve plane must be fresh again before management can ask (the stale-reserve gate stays).
+    curve(&mut rr.e, rr.clock + 1_000, 2_600, 200_000_000);
+    rr.clock += 1_000;
+    rr.advance_to_order(180_000);
+    let (id, kind, _, _) = rr.e.model_mgmt_pending(&MINT).unwrap_or_else(|| panic!("{:?}", rr.e.model_lane_report()));
+    assert_eq!(format!("{kind:?}"), "Exit");
+    assert!(rr.e.model_position_open(&MINT), "an instruction is not a fill");
+    assert!(rr.clock - fill_ms > 60_000, "the position kept its TRUE age through the restart");
+    rr.landing(250_000_000);
+    assert!(!rr.e.model_position_open(&MINT), "{:?}", rr.e.model_lane_report());
+    assert!(rr.e.model_mgmt_fills().iter().any(|f| f.order_id == id && f.closed));
+}
+
+#[test]
+fn pending_orders_restore_as_uncertain_and_only_a_reconciled_report_resolves_them() {
+    let hp = held_path("c");
+    let mut r = rig(|step| if step == 0 { REDUCE } else { HOLD });
+    r.e.model_held_attach(&hp);
+    r.advance_to_order(120_000);
+    let (id, _, intended, _) = r.e.model_mgmt_pending(&MINT).expect("REDUCE pending");
+    assert!(r.e.model_held_persist_now());
+    drop(r);
+
+    let mut e2 = fresh_engine(2_000_000_000, &hp);
+    let rep = e2.model_held_restore().unwrap().unwrap();
+    assert_eq!(rep.pending_uncertain, 1);
+    let (id2, kind, int2, filled) = e2.model_mgmt_pending(&MINT).expect("order restored");
+    assert_eq!((id2, int2, filled), (id, intended, 0));
+    assert_eq!(format!("{kind:?}"), "Reduce");
+    let a = e2.model_stop_assessment();
+    assert!(a.uncertain_orders >= 1 && !a.is_flat_and_reconciled(), "unresolved stays unresolved: {a:?}");
+    assert!(e2.model_safety_rearm("alon").is_err() || !e2.model_safety_blocked());
+    // The simulator must not settle an order whose acknowledgement died with the old process.
+    let inv0 = e2.model_inventory_tokens(&MINT).unwrap();
+    e2.model_mgmt_apply_reconciled_fill(MINT, id, intended, 22_000).unwrap();
+    assert_eq!(e2.model_inventory_tokens(&MINT), Some(inv0 - intended), "exactly the filled quantity");
+    assert!(e2.model_mgmt_pending(&MINT).is_none());
+    // A duplicate report cannot repeat it.
+    assert!(e2.model_mgmt_apply_reconciled_fill(MINT, id, intended, 22_000).is_err());
+    assert_eq!(e2.model_inventory_tokens(&MINT), Some(inv0 - intended));
+}
+
+#[test]
+fn restore_refuses_the_whole_file_by_name_and_applies_nothing() {
+    let hp = held_path("d");
+    let mut r = rig(|_| HOLD);
+    r.e.model_held_attach(&hp);
+    assert!(r.e.model_held_persist_now());
+    drop(r);
+
+    // (1) Different seed bankroll: the books were kept under another wallet.
+    let mut e = fresh_engine(1_500_000_000, &hp);
+    let err = e.model_held_restore().unwrap_err();
+    assert!(format!("{err:?}").contains("SeedMismatch"), "{err:?}");
+    assert!(!e.model_position_open(&MINT), "nothing applied");
+    assert_eq!(e.model_accounting_view(&MINT).committed, 0);
+
+    // (2) A corrupted file is untrusted, never repaired.
+    let raw = std::fs::read_to_string(&hp).unwrap();
+    std::fs::write(&hp, raw.replace("\"entry_spend\"", "\"entry_spendX\"")).unwrap();
+    let mut e = fresh_engine(2_000_000_000, &hp);
+    assert!(matches!(
+        e.model_held_restore(),
+        Err(pump_quant_app::engine::model_restore::RestoreOutcomeError::Untrusted(_))
+    ));
+    assert!(!e.model_position_open(&MINT));
+    std::fs::write(&hp, "{ not json").unwrap();
+    let mut e = fresh_engine(2_000_000_000, &hp);
+    assert!(e.model_held_restore().is_err());
+
+    // (3) A second restore on an engine that already restored is refused (never double-applied).
+    std::fs::write(&hp, raw).unwrap();
+    let mut e = fresh_engine(2_000_000_000, &hp);
+    e.model_held_restore().unwrap().unwrap();
+    let again = e.model_held_restore().unwrap_err();
+    assert!(format!("{again:?}").contains("EngineNotFresh"), "{again:?}");
+    assert_eq!(e.model_accounting_view(&MINT).committed, e.model_accounting_view(&MINT).attribution_entry_spend.unwrap());
+
+    // (4) No file at all is a clean start, not an error.
+    let mut e = fresh_engine(2_000_000_000, &held_path("nofile"));
+    assert!(e.model_held_restore().unwrap().is_none());
+}
+
+#[test]
+fn an_unpersistable_held_state_trips_safety_off_and_a_flat_engine_writes_nothing_spurious() {
+    // Exposure exists but the ledger cannot be written: fail closed.
+    let mut r = rig(|_| HOLD);
+    r.e.model_held_attach(std::path::Path::new("/nonexistent_dir_pq/held.json"));
+    r.advance(20_000);
+    assert!(r.e.model_held_persist_failures() >= 1);
+    assert!(r.e.model_safety_blocked(), "unrecoverable exposure => entries blocked");
+    assert_eq!(r.rep("safety:tripped:held_state_unpersistable"), 1, "{:?}", r.e.model_lane_report());
+    // Held positions are still monitored and managed (REDUCE/EXIT unaffected).
+    assert!(r.e.model_position_open(&MINT));
+}
+
+#[test]
+fn the_ledger_follows_the_exposure_through_reduce_and_exit_and_a_restart_after_the_exit_restores_flat() {
+    let hp = held_path("e");
+    let mut r = rig(|step| if step == 0 { REDUCE } else if step == 1 { EXIT } else { HOLD });
+    r.e.model_held_attach(&hp);
+    r.advance_to_order(120_000);
+    r.landing(250_000_000);
+    r.advance(120_000);
+    // Persist happens on change during ticks; one more now covers the last quiet interval.
+    assert!(r.e.model_held_persist_now());
+    let l = r.e.model_held_ledger();
+    let closed = !r.e.model_position_open(&MINT);
+    let realized = r.e.model_accounting_view(&MINT).realized;
+    drop(r);
+    let mut e2 = fresh_engine(2_000_000_000, &hp);
+    let rep = e2.model_held_restore().unwrap().unwrap();
+    assert_eq!(rep.positions, l.held.len());
+    assert_eq!(e2.model_accounting_view(&MINT).realized, realized, "realized survives the restart");
+    if closed {
+        assert!(!e2.model_position_open(&MINT), "an exited position is not resurrected");
+        assert!(e2.model_stop_assessment().is_flat_and_reconciled());
+    } else {
+        assert!(e2.model_position_open(&MINT));
+    }
+}

@@ -187,7 +187,12 @@ impl Engine {
     pub fn model_controlled_shutdown(&mut self) -> ShutdownReport {
         let invalidated = self.model_safety_trip(REASON_SHUTDOWN);
         let (held, pending) = self.model_safety_records();
-        let persisted = self.model_safety.persist(&held, &pending);
+        let mut persisted = self.model_safety.persist(&held, &pending);
+        // The held-state ledger is flushed too: a shutdown that leaves exposure must leave the means to
+        // restore it. With a ledger attached, a failed flush means the shutdown is NOT durably complete.
+        if self.model_held.path.is_some() && !self.model_held_persist_now() {
+            persisted = false;
+        }
         ShutdownReport {
             held: held.len(),
             entry_orders_invalidated: invalidated,
