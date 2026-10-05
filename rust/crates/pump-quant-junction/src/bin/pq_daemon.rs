@@ -43,7 +43,6 @@ use pump_quant_core::config::Creds;
 use pump_quant_domain::ids::Mint;
 use pump_quant_junction::autonomous_bridge::{
     check_auto_revert, try_reload_config, write_auto_revert_state, AutoRevertState, DefenseState,
-    RefinerSpawner,
 };
 use pump_quant_junction::decode::decode_onchain_confirm_with_curve;
 use pump_quant_junction::event_stream::EventStreamWriter;
@@ -2291,11 +2290,12 @@ fn main() -> ExitCode {
     // The bridge connects the evaluator/refiner framework to the live daemon.
     // G2: hot-reload CONFIG_PROMOTION.json (written by pq-refiner)
     // G4: defense-in-depth — cliff veto, circuit breaker, kill switch
-    // G1: periodic refiner spawn (evaluator tape → promotion file)
+    // RETIRED: G1 automatic refiner spawn. The daemon no longer spawns the
+    // evaluator/refiner promotion loop; strategy promotion is operator-gated
+    // (a promotion file must be placed deliberately) so the obsolete strategy
+    // authority is isolated from the production runtime.
     let mut defense_state = DefenseState::default();
     let mut config_mtime: Option<u64> = None;
-    let mut last_refiner_spawn_tick: u64 = 0;
-    let mut refiner_spawner = RefinerSpawner::new();
     // ── GAP B: auto-revert state ─────────────────────────────────────────
     // Tracks the config fingerprint + PnL at the moment of each promotion.
     // If post-promotion PnL deteriorates beyond a threshold within the grace
@@ -2304,7 +2304,15 @@ fn main() -> ExitCode {
     let mut promotion_tick: u64 = 0; // tick at which the last promotion was applied
     let mut pre_promotion_fingerprint: u64 = 0; // fingerprint before the promotion
     let mut trades_at_promotion: u64 = 0; // cumulative trade count at promotion time
-    eprintln!("[pq-daemon] autonomous bridge: defense-in-depth + config hot-reload + refiner scheduling + auto-revert ACTIVE");
+    eprintln!(
+        "[pq-daemon] autonomous bridge: defense-in-depth + config hot-reload + auto-revert ACTIVE; \
+         automatic refiner promotion RETIRED (operator-gated){}",
+        if args.refiner_every_ticks > 0 {
+            " [--refiner-every-ticks ignored]"
+        } else {
+            ""
+        }
+    );
 
     // Phase 2: tape exporter — drains engine trades to evaluator JSONL format.
     let mut tape_exporter = TapeExporter::new(TAPE_PATH);
@@ -4489,34 +4497,6 @@ fn main() -> ExitCode {
                     }
                     return ExitCode::from(EXIT_EMERGENCY);
                 }
-            }
-
-            // ── Autonomous bridge: periodic refiner spawn (G1) ────────
-            // Spawn pq-refiner as a child process to analyze accumulated
-            // tape and emit promotion/demotion decisions. The refiner
-            // writes CONFIG_PROMOTION.json which we hot-reload above.
-            if args.refiner_every_ticks > 0
-                && tick_counter - last_refiner_spawn_tick >= args.refiner_every_ticks
-            {
-                eprintln!(
-                    "[pq-daemon] spawning pq-refiner (tick={tick_counter}, tape={TAPE_PATH})"
-                );
-                // S8: Append reflection state metadata to the champion config
-                // dump so the refiner can make reflection-aware decisions.
-                let mut config_text = cfg.dump_to_text();
-                let snap = engine.reflection_snapshot();
-                config_text.push_str(&format!(
-                    "\n# S8 reflection_snapshot: tick={} reflect_every_ticks={} brain_reflect_enable={} retired=[{},{},{},{}]\n",
-                    snap.tick,
-                    snap.reflect_every_ticks,
-                    snap.brain_reflect_enable,
-                    snap.retired[0], snap.retired[1], snap.retired[2], snap.retired[3],
-                ));
-                match refiner_spawner.spawn(tick_counter, &config_text) {
-                    Ok(pid) => eprintln!("[pq-daemon] pq-refiner spawned: pid={pid}"),
-                    Err(e) => eprintln!("[pq-daemon] pq-refiner spawn FAILED: {e}"),
-                }
-                last_refiner_spawn_tick = tick_counter;
             }
         }
 
