@@ -882,10 +882,30 @@ pub fn decide_management<S: ModelSource + ?Sized>(
     req: &ManagementRequest<'_>,
     ledger: &mut DriftLedger,
 ) -> ManagementAuthority {
-    let completion = match source.complete(req.system_prompt, req.user_prompt) {
+    let completion = source
+        .complete(req.system_prompt, req.user_prompt)
+        .map(|text| Completion {
+            text,
+            finish_reason: None,
+        });
+    resolve_management(completion, req, ledger)
+}
+
+/// Judge a management completion that has ALREADY been fetched (by a worker, off the engine
+/// thread). Everything [`decide_management`] does after the network call: same freshness law,
+/// same contract parse, same fail-closed HOLD direction.
+pub fn resolve_management(
+    completion: Result<Completion, InferenceError>,
+    req: &ManagementRequest<'_>,
+    ledger: &mut DriftLedger,
+) -> ManagementAuthority {
+    let completion = match completion {
         Ok(c) => c,
         Err(_) => return ManagementAuthority::NoAction(ManagementNoAction::ModelUnreachable),
     };
+    if completion.truncated() {
+        ledger.record_truncated();
+    }
 
     // The same freshness law as the entry path, and it matters more here: a late EXIT holds
     // inventory past the premise's death, and a late ADD adds to a position on evidence that has
@@ -894,7 +914,7 @@ pub fn decide_management<S: ModelSource + ?Sized>(
         return ManagementAuthority::NoAction(ManagementNoAction::StaleDecision(veto));
     }
 
-    let decision: Decision = match parse_decision_payload(&completion) {
+    let decision: Decision = match parse_decision_payload(&completion.text) {
         Ok(d) => d,
         Err(e) => {
             ledger.record_error(&e);

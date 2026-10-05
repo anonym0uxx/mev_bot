@@ -46,9 +46,9 @@ const MODEL_DEADLINE_MS: i64 = CHAMPION_MAX_DECISION_AGE_MS as i64;
 const MODEL_REASK_MS: i64 = 15_000;
 /// One slot (~400 ms): a fill is evaluated at LANDING state, never at the observation state
 /// (criterion 103 -- see `curve_fill`).
-const MODEL_FILL_LANDING_MS: i64 = 400;
+pub(super) const MODEL_FILL_LANDING_MS: i64 = 400;
 /// A pending order with no landing state by then expires unfilled.
-const MODEL_ORDER_TTL_MS: i64 = 5_000;
+pub(super) const MODEL_ORDER_TTL_MS: i64 = 5_000;
 const FIRST_CAND_CAP: usize = 100_000;
 /// Bound on stream-registered markets.
 const REGISTRY_CAP: usize = 100_000;
@@ -249,11 +249,11 @@ fn warm_bucket(n: u64) -> &'static str {
 }
 
 impl Engine {
-    fn mrep(&mut self, key: impl Into<String>) {
+    pub(super) fn mrep(&mut self, key: impl Into<String>) {
         *self.model_report.entry(key.into()).or_insert(0) += 1;
     }
 
-    fn mrep_add(&mut self, key: impl Into<String>, n: u64) {
+    pub(super) fn mrep_add(&mut self, key: impl Into<String>, n: u64) {
         *self.model_report.entry(key.into()).or_insert(0) += n;
     }
 
@@ -463,6 +463,7 @@ impl Engine {
         if a.token_amount > 0 && a.quote_lamports > 0 {
             let price_fp =
                 (i128::from(a.quote_lamports) * 1_000_000_000) / i128::from(a.token_amount);
+            self.model_mgmt_note_price(&mint, price_fp);
             let signed = i64::try_from(a.token_amount).unwrap_or(i64::MAX);
             let entity =
                 pump_quant_wallet_graph::tracked_wallet_matcher::wallet_entity_id(&a.trader);
@@ -501,6 +502,7 @@ impl Engine {
         let c = self.model_clock_ms;
         self.model_swap_ctx = Some((ts_ms, a.slot));
         self.model_try_fills(c);
+        self.model_mgmt_try_fills(c);
         self.model_swap_ctx = None;
     }
 
@@ -641,12 +643,20 @@ impl Engine {
             }
         }
         for v in done {
-            self.model_accept(v, clock);
+            if v.id.0 >= super::model_manage::MGMT_ID_BASE {
+                self.model_mgmt_accept(v, clock);
+            } else {
+                self.model_accept(v, clock);
+            }
         }
         for _id in self.model_table.expire(clock) {
             self.mrep("request_abandoned_deadline");
         }
+        for _id in self.model_mgmt.table.expire(clock) {
+            self.mrep("mgmt:request_abandoned_deadline");
+        }
         self.model_try_fills(clock);
+        self.model_mgmt_try_fills(clock);
     }
 
     fn model_accept(&mut self, v: crate::model_worker::Verdict, clock: i64) {
@@ -904,7 +914,7 @@ impl Engine {
     /// Open the position for an order whose fill price/liquidity are established. The ONLY place a
     /// model order becomes inventory, so a fill is applied at most once (the caller has already
     /// removed the order; a second report finds none).
-    fn model_open_filled(
+    pub(super) fn model_open_filled(
         &mut self,
         mint: [u8; 32],
         order: ModelOrder,
@@ -974,6 +984,13 @@ impl Engine {
                 rec.filled_clip_lamports = order.clip_lamports;
             }
             self.model_position_order.insert(mint, order.id);
+            // The fill is the ONLY source of inventory: tokens delivered at the fill price.
+            let tokens = u64::try_from(
+                u128::from(size) * 1_000_000_000 / u128::from(entry_price.max(1)),
+            )
+            .ok()
+            .filter(|t| *t > 0);
+            self.model_mgmt_on_fill(mint, tokens, entry_price, order.id);
             self.model_fills.push(ModelFillRecord {
                 order_id: order.id,
                 mint,
@@ -1027,6 +1044,7 @@ impl Engine {
     /// The held position on `mint` was closed: its opening order is `Closed` and the mint no longer
     /// maps to an order. Settled history is not touched.
     pub(super) fn model_on_position_closed(&mut self, mint: &[u8; 32]) {
+        self.model_mgmt_forget(mint);
         if let Some(id) = self.model_position_order.remove(mint) {
             if let Some(rec) = self.model_order_log.get_mut(&id) {
                 if rec.state == OrderState::Filled {

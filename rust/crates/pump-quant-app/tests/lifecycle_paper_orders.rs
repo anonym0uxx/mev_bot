@@ -380,6 +380,24 @@ fn lifecycle_o_closed_position_conflict_stays_blocked_with_durable_evidence() {
     // Close it through the normal path.
     let mut ts = T_LAND + 1_000;
     let mut slot = 2_200;
+    // The agreed HARD safeguard (a single-print collapse -> hard stop / rug precursor). The legacy
+    // time-stop used to stand in for "protection" here; it no longer governs a model-managed
+    // position, so protection is exercised through the safeguard that does.
+    e.tick(AppEvent::MarketTrade {
+        mint: mint(),
+        price_fp: 1,
+        quote_lamports: 900_000_000,
+        liquidity_lamports: VSOL,
+        signed_base: -90_000_000_000,
+        buyer_entity: 777,
+        age_slots: 30,
+        recv_unix_ms: Some(T_LAND + 900),
+        trader_pubkey: Some([9u8; 32]),
+        slot: Some(2_150),
+        fee_lamports: Some(70_000),
+        cu_consumed: Some(95_000),
+        venue: Some(pump_quant_app::event::TradeVenue::PumpFun),
+    });
     for _ in 0..200 {
         e.tick(AppEvent::CurveObserved {
             mint: mint(),
@@ -471,6 +489,24 @@ fn lifecycle_l_held_position_is_monitored_while_new_exposure_on_the_mint_is_bloc
     // Protective exit still fires on the held position while the fault stands.
     let mut ts = T_LAND + 1_000;
     let mut slot = 2_200;
+    // The agreed HARD safeguard (a single-print collapse -> hard stop / rug precursor). The legacy
+    // time-stop used to stand in for "protection" here; it no longer governs a model-managed
+    // position, so protection is exercised through the safeguard that does.
+    e.tick(AppEvent::MarketTrade {
+        mint: mint(),
+        price_fp: 1,
+        quote_lamports: 900_000_000,
+        liquidity_lamports: VSOL,
+        signed_base: -90_000_000_000,
+        buyer_entity: 777,
+        age_slots: 30,
+        recv_unix_ms: Some(T_LAND + 900),
+        trader_pubkey: Some([9u8; 32]),
+        slot: Some(2_150),
+        fee_lamports: Some(70_000),
+        cu_consumed: Some(95_000),
+        venue: Some(pump_quant_app::event::TradeVenue::PumpFun),
+    });
     for _ in 0..200 {
         e.tick(AppEvent::CurveObserved {
             mint: mint(),
@@ -631,6 +667,24 @@ fn lifecycle_j_operational_reconciliation_and_protection_are_not_skipped_for_rou
     // (no report()/finalize), i.e. management and safety see it.
     let mut ts = T_LAND + 1_000;
     let mut slot = 2_200;
+    // The agreed HARD safeguard (a single-print collapse -> hard stop / rug precursor). The legacy
+    // time-stop used to stand in for "protection" here; it no longer governs a model-managed
+    // position, so protection is exercised through the safeguard that does.
+    e.tick(AppEvent::MarketTrade {
+        mint: mint(),
+        price_fp: 1,
+        quote_lamports: 900_000_000,
+        liquidity_lamports: VSOL,
+        signed_base: -90_000_000_000,
+        buyer_entity: 777,
+        age_slots: 30,
+        recv_unix_ms: Some(T_LAND + 900),
+        trader_pubkey: Some([9u8; 32]),
+        slot: Some(2_150),
+        fee_lamports: Some(70_000),
+        cu_consumed: Some(95_000),
+        venue: Some(pump_quant_app::event::TradeVenue::PumpFun),
+    });
     for _ in 0..200 {
         e.tick(AppEvent::CurveObserved {
             mint: mint(),

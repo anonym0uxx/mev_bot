@@ -22,6 +22,8 @@ use pump_quant_market_state::flow_reducer::{FlowOutcome, FlowReducer};
 use pump_quant_proposal::bundle_gate::BundlePolicy;
 use pump_quant_proposal::decision::{AmmState, CurveState};
 use pump_quant_proposal::render_decision;
+use pump_quant_proposal::PyNum;
+use crate::bundle_assemble::py_round;
 use pump_quant_proposal::system::{system_prompt, PromptFamily};
 
 use crate::bundle_assemble::{assemble, AssemblyRefusal, BundleInputs};
@@ -106,6 +108,8 @@ pub enum JoinRefusal {
     /// More than one pool was bound to the mint and the observation's pool is not the bound one.
     AmmPoolAmbiguous,
     Assembly(AssemblyRefusal),
+    /// The pool depth or mark could not be priced, so the management prompt's cost line cannot be stated.
+    DepthUnknown,
 }
 
 impl JoinRefusal {
@@ -126,6 +130,7 @@ impl JoinRefusal {
             JoinRefusal::AmmAbsent(_) => "join_amm_absent",
             JoinRefusal::AmmPoolAmbiguous => "join_amm_pool_ambiguous",
             JoinRefusal::Assembly(a) => a.as_str(),
+            JoinRefusal::DepthUnknown => "join_depth_unknown",
         }
     }
 }
@@ -153,6 +158,57 @@ pub struct PromptSnapshot {
 pub struct StateMarker {
     pub last_recv_ms: i64,
     pub n_accepted: u64,
+}
+
+
+/// Everything `prepare` read from the producers, shared by the entry and management snapshots.
+struct Prepared {
+    state: crate::state_ledger::StateSnapshot,
+    enriched: crate::enrichment::EnrichedSnapshot,
+    flow: pump_quant_proposal::FlowState,
+    view: crate::curve_annotation::ReserveView,
+    dev: pump_quant_proposal::decision::DevHistoryDecision,
+    venue: String,
+    last_recv_ms: i64,
+    n_accepted: u64,
+}
+
+/// The position-side inputs of one management prompt, in the TRAINED renderer's units.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MgmtPositionInputs {
+    /// Step index of this decision for the position (continues past the corpus's 16-step cap).
+    pub step: i64,
+    /// Entry price, lamports per raw token.
+    pub entry_px: f64,
+    /// Inventory in the corpus unit: raw tokens / 1e9, so `qty_scaled * mark_lamports` is SOL.
+    pub qty_scaled: f64,
+    /// Free cash, SOL.
+    pub cash_sol: f64,
+    /// Seconds held.
+    pub held_s: f64,
+    /// Causal max favourable excursion since the fill, bp.
+    pub mfe_bp: f64,
+    /// Causal max adverse excursion since the fill, bp.
+    pub mae_bp: f64,
+}
+
+/// The immutable management prompt a request is bound to.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MgmtSnapshot {
+    pub mint: [u8; 32],
+    pub t_dec_ms: i64,
+    pub system_prompt: String,
+    pub user_prompt: String,
+    pub venue: String,
+    pub size_amm: bool,
+    pub mark_price_lamports_per_raw_token: f64,
+    pub prompt_digest: u64,
+    pub marker: StateMarker,
+}
+
+/// The corpus's mint label (base58). Hex is NOT it: the prompt carries the base58 address.
+fn mint_label(mint: &[u8; 32]) -> String {
+    pump_quant_ingest::base58::encode(mint)
 }
 
 #[derive(Debug, Default)]
@@ -395,6 +451,16 @@ impl DecisionCache {
         })
     }
 
+    /// Whether the cache's latest view of `mint` is the AMM plane (a sell would land on the pool).
+    #[must_use]
+    pub fn snapshot_venue_is_amm(&self, mint: &[u8; 32]) -> bool {
+        self.amm_obs(mint).is_some()
+            && self
+                .mints
+                .get(mint)
+                .is_some_and(|m| matches!(m.venue, VenueLabel::Pumpswap))
+    }
+
     /// Forget a mint that left the watchlist (bounded state, §99).
     pub fn forget(&mut self, mint: &[u8; 32]) {
         self.ledger.forget(mint);
@@ -408,7 +474,7 @@ impl DecisionCache {
     /// Order of refusals is the order of cheapness and of blame: identity of the mint, launch
     /// provenance, causality, corpus eligibility, then each plane. Every plane is read from its
     /// existing producer; nothing here computes a market quantity.
-    pub fn snapshot(&self, mint: &[u8; 32], t_dec_ms: i64) -> Result<PromptSnapshot, JoinRefusal> {
+    fn prepare(&self, mint: &[u8; 32], t_dec_ms: i64) -> Result<Prepared, JoinRefusal> {
         let Some(mc) = self.mints.get(mint) else {
             return Err(JoinRefusal::NoMint);
         };
@@ -482,6 +548,23 @@ impl DecisionCache {
             }
         }
 
+        Ok(Prepared {
+            state,
+            enriched,
+            flow,
+            view,
+            dev,
+            venue,
+            last_recv_ms: mc.last_recv_ms,
+            n_accepted: mc.n_accepted,
+        })
+    }
+
+    pub fn snapshot(&self, mint: &[u8; 32], t_dec_ms: i64) -> Result<PromptSnapshot, JoinRefusal> {
+        let Prepared { state, enriched, flow, view, dev, venue, last_recv_ms, n_accepted } =
+            self.prepare(mint, t_dec_ms)?;
+        let mc_last_recv_ms = last_recv_ms;
+        let mc_n_accepted = n_accepted;
         let inputs = BundleInputs {
             snapshot: &state,
             enriched: &enriched,
@@ -517,11 +600,83 @@ impl DecisionCache {
             price_lamports_per_raw_token: state.price_lamports_per_raw_token,
             n_prior_trades: state.n_prior_trades,
             marker: StateMarker {
-                last_recv_ms: mc.last_recv_ms,
-                n_accepted: mc.n_accepted,
+                last_recv_ms: mc_last_recv_ms,
+                n_accepted: mc_n_accepted,
             },
         })
     }
+
+    /// Cut an immutable MANAGEMENT prompt for a held position. Every market-side input comes from
+    /// the same producers as the entry snapshot (one `prepare`); the position-side inputs are the
+    /// caller's and are passed through the trained renderer unchanged.
+    pub fn management_snapshot(
+        &self,
+        mint: &[u8; 32],
+        t_dec_ms: i64,
+        pos: &MgmtPositionInputs,
+    ) -> Result<MgmtSnapshot, JoinRefusal> {
+        let Prepared { state, enriched, flow, view, dev, venue, last_recv_ms, n_accepted } =
+            self.prepare(mint, t_dec_ms)?;
+        let depth_sol = view
+            .size_depth_sol
+            .filter(|d| d.is_finite() && *d > 0.0)
+            .ok_or(JoinRefusal::DepthUnknown)?;
+        let mark = state.price_lamports_per_raw_token;
+        if !(mark.is_finite() && mark > 0.0) {
+            return Err(JoinRefusal::DepthUnknown);
+        }
+        let market = if venue == "pumpswap" { "graduated_amm" } else { "bonding_curve" };
+        let known = dev.creator_known == 1;
+        let r6 = |v: f64| PyNum::Float(py_round(v, 6));
+        let bundle = pump_quant_proposal::ManagementBundle {
+            mint: mint_label(mint),
+            t_dec: t_dec_ms,
+            step: pos.step,
+            venue: venue.clone(),
+            market: market.to_string(),
+            depth_sol,
+            mark,
+            entry_px: pos.entry_px,
+            upnl_bp: (mark / pos.entry_px - 1.0) * 1e4,
+            held_s: pos.held_s,
+            mfe_bp: pos.mfe_bp,
+            mae_bp: pos.mae_bp,
+            qty_pre: pos.qty_scaled,
+            cash_pre: pos.cash_sol,
+            enriched: pump_quant_proposal::management::EnrichedManagement {
+                holders_at_t: Some(PyNum::Int(enriched.holders_at_t as i64)),
+                top1_float_share: Some(r6(enriched.top1_float_share)),
+                holder_hhi: Some(r6(enriched.holder_hhi)),
+                mcap_sol_at_t: view.mcap_sol_at_t.map(r6),
+                bundle_wallets: Some(PyNum::Int(enriched.bundle_wallets as i64)),
+                round_trip_wallets: Some(PyNum::Int(enriched.round_trip_wallets as i64)),
+                creator_past_launches: dev.creator_past_launches.map(PyNum::Int),
+                creator_known: Some(PyNum::Bool(known)),
+                wash_ratio: Some(r6(enriched.wash_ratio)),
+            },
+            dev: pump_quant_proposal::management::DevHistoryManagement {
+                creator_past_launches: dev.creator_past_launches.map(PyNum::Int),
+                creator_known: Some(PyNum::Bool(known)),
+                bundle_wallets: Some(PyNum::Int(enriched.bundle_wallets as i64)),
+                wash_ratio: Some(r6(enriched.wash_ratio)),
+            },
+            flow,
+            flow_no_prior: false,
+        };
+        let user_prompt = pump_quant_proposal::render_management(&bundle);
+        Ok(MgmtSnapshot {
+            mint: *mint,
+            t_dec_ms,
+            system_prompt: system_prompt(PromptFamily::Management).to_string(),
+            prompt_digest: fnv1a(&user_prompt),
+            user_prompt,
+            venue,
+            size_amm: view.size_amm,
+            mark_price_lamports_per_raw_token: mark,
+            marker: StateMarker { last_recv_ms, n_accepted },
+        })
+    }
+
 }
 
 #[cfg(test)]

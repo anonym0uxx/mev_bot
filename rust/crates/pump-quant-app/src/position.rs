@@ -707,6 +707,12 @@ impl ScalpLifecycle {
         self.open.get(mint).map(HeldPosition::excursions_bps)
     }
 
+    /// (peak, trough) price in fixed point since the open: the causal extremes behind MFE/MAE.
+    #[must_use]
+    pub fn price_extremes(&self, mint: &[u8; 32]) -> Option<(u64, u64)> {
+        self.open.get(mint).map(|p| (p.peak_price_fp, p.trough_price_fp))
+    }
+
     /// Entry price (fixed point) of a held position.
     #[must_use]
     pub fn entry_price_fp(&self, mint: &[u8; 32]) -> Option<u64> {

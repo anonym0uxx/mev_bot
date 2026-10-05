@@ -16,6 +16,7 @@
 use std::time::Instant;
 
 pub mod model_admit;
+pub mod model_manage;
 use crate::analytics::ReflectionAnalytics;
 use crate::brain::{
     burst_phase_of, discovery_lane_of, exit_reason_of, narrative_class_of, platform_of,
@@ -856,6 +857,8 @@ pub struct Engine {
     model_pool: Option<crate::model_worker::InferencePool>,
     model_meta: BTreeMap<crate::model_lane::RequestId, model_admit::ModelReqMeta>,
     model_orders: BTreeMap<[u8; 32], model_admit::ModelOrder>,
+    /// Model-managed position lane (HOLD/REDUCE/EXIT). Inert unless the paper-model lane is armed.
+    model_mgmt: model_manage::MgmtLane,
     model_last_ask: BTreeMap<[u8; 32], i64>,
     model_first_cand: BTreeMap<[u8; 32], i64>,
     model_drift: pump_quant_inference::seam::DriftLedger,
@@ -1485,6 +1488,7 @@ impl Engine {
             model_pool: None,
             model_meta: BTreeMap::new(),
             model_orders: BTreeMap::new(),
+            model_mgmt: model_manage::MgmtLane::new(),
             model_last_ask: BTreeMap::new(),
             model_first_cand: BTreeMap::new(),
             model_registry: BTreeSet::new(),
@@ -1993,6 +1997,9 @@ impl Engine {
                 if self.paper_model_mode {
                     if let Some(ms) = recv_unix_ms {
                         self.model_note_clock(ms);
+                    }
+                    if price_fp > 0 {
+                        self.model_mgmt_note_price(mint.as_bytes(), price_fp);
                     }
                     let venue = match venue {
                         Some(crate::event::TradeVenue::PumpFun) => {
@@ -3039,6 +3046,7 @@ impl Engine {
         if self.paper_model_mode {
             self.model_poll();
             self.model_stream_schedule();
+            self.model_mgmt_schedule();
         }
 
         // §Quant-Rev-7: prune expired re-entry cooldown entries. The set is bounded

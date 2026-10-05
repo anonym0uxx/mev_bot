@@ -128,6 +128,15 @@ impl RequestTable {
         }
     }
 
+    /// A table whose ids start at `id_base`, so two tables sharing one worker pool can never issue
+    /// the same [`RequestId`] (entry ids vs management ids).
+    #[must_use]
+    pub fn with_id_base(capacity: usize, id_base: u64) -> Self {
+        let mut t = Self::new(capacity);
+        t.next_id = id_base.max(1);
+        t
+    }
+
     /// Block or unblock new entries (SAFETY_OFF). Blocking does not drop in-flight entries — their
     /// results are consumed and discarded on arrival, so a worker's slot is always reclaimed.
     pub fn set_entries_blocked(&mut self, blocked: bool) {
