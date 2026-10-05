@@ -191,13 +191,16 @@ pub enum ExitReason {
     /// §24(d) exit-into-strength — sold the remainder INTO an authentic buy-side
     /// burst climax while in profit (harvest the buyers, not the exhaustion).
     IntoStrength,
+    /// The model's own EXIT / REDUCE instruction, executed through fill accounting. Distinct from
+    /// every legacy reason so attribution never mixes discretionary management with the ladder.
+    ModelManaged,
 }
 
 impl ExitReason {
     /// Whether this exit closes the whole remaining position (vs a partial tranche).
     #[must_use]
     pub const fn is_terminal(self) -> bool {
-        !matches!(self, ExitReason::TakeProfitLadder)
+        !matches!(self, ExitReason::TakeProfitLadder | ExitReason::ModelManaged)
     }
 
     /// A stable small code for the decision journal.
@@ -213,6 +216,8 @@ impl ExitReason {
             ExitReason::ForceClose => 7,
             ExitReason::CreatorDump => 8,
             ExitReason::IntoStrength => 9,
+            // APPEND-ONLY: codes 1..=9 are persisted in journals/digests and never renumbered.
+            ExitReason::ModelManaged => 10,
         }
     }
 }
@@ -256,6 +261,24 @@ pub fn exit_token_amount(size_lamports: u64, frac_bps: u32, entry_price_fp: u64)
     let notional_frac = u128::from(size_lamports).saturating_mul(u128::from(frac_bps)) / 10_000;
     let tokens = notional_frac.saturating_mul(1_000_000_000) / u128::from(entry_price_fp);
     u64::try_from(tokens).unwrap_or(0)
+}
+
+/// Why a token-quantity sell was refused. Every variant leaves the position untouched.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SellRefusal {
+    /// No open position on the mint.
+    NotHeld,
+    /// Inventory was never established by a fill; selling a derived quantity would be inventing it.
+    InventoryUnknown,
+    /// The quantity rounds to zero.
+    ZeroQuantity,
+    /// More than is held.
+    ExceedsInventory {
+        /// Tokens actually held.
+        held: u64,
+    },
+    /// Entry or fill price missing.
+    NoPrice,
 }
 
 /// One realized (partial or full) exit event.
@@ -311,6 +334,12 @@ struct HeldPosition {
     cost_lamports: u64,
     /// Fraction of the original position still held, in bps (10_000 = full).
     remaining_bps: u32,
+    /// Raw tokens actually held. Authoritative inventory for model management: set from the fill
+    /// (`set_inventory_tokens`) and reduced only by reconciled sells. Derived from
+    /// size/entry-price at open as a placeholder for legacy opens that never report a fill.
+    inventory_tokens: u64,
+    /// Whether `inventory_tokens` came from a fill (true) or the open-time derivation (false).
+    inventory_from_fill: bool,
     cvd: i128,
     cvd_peak: i128,
     entry_tick: u64,
@@ -620,6 +649,122 @@ impl ScalpLifecycle {
             .collect()
     }
 
+
+    /// Record the tokens a reconciled FILL actually delivered. Only a fill may call this.
+    pub fn set_inventory_tokens(&mut self, mint: &[u8; 32], tokens: u64) -> bool {
+        match self.open.get_mut(mint) {
+            Some(p) => {
+                p.inventory_tokens = tokens;
+                p.inventory_from_fill = true;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Authoritative inventory, or `None` when it was never established by a fill (unknown is not zero).
+    #[must_use]
+    pub fn inventory_tokens(&self, mint: &[u8; 32]) -> Option<u64> {
+        self.open
+            .get(mint)
+            .filter(|p| p.inventory_from_fill)
+            .map(|p| p.inventory_tokens)
+    }
+
+    /// Entry price and cost-basis lamports still attached to the remaining inventory.
+    #[must_use]
+    pub fn remaining_cost_basis(&self, mint: &[u8; 32]) -> Option<u64> {
+        self.open.get(mint).map(|p| {
+            u64::try_from(u128::from(p.cost_lamports) * u128::from(p.remaining_bps) / 10_000)
+                .unwrap_or(u64::MAX)
+        })
+    }
+
+    /// Causal MFE/MAE in bps of entry (peak/trough since the open), or `None` if not held.
+    #[must_use]
+    pub fn excursions(&self, mint: &[u8; 32]) -> Option<(i64, i64)> {
+        self.open.get(mint).map(HeldPosition::excursions_bps)
+    }
+
+    /// Entry price (fixed point) of a held position.
+    #[must_use]
+    pub fn entry_price_fp(&self, mint: &[u8; 32]) -> Option<u64> {
+        self.open.get(mint).map(|p| p.entry_price_fp)
+    }
+
+    /// Logical tick the position was opened on.
+    #[must_use]
+    pub fn entry_tick(&self, mint: &[u8; 32]) -> Option<u64> {
+        self.open.get(mint).map(|p| p.entry_tick)
+    }
+
+    /// Sell exactly `tokens` of the held inventory at `price_fp`, as a PARTIAL (or, when `tokens`
+    /// equals the inventory, a full) reconciled fill. The quantity is the caller's, in raw tokens:
+    /// no fraction-of-original or notional sizing is borrowed from the legacy ladder.
+    ///
+    /// Refusals are named and leave the position untouched.
+    pub fn sell_tokens(
+        &mut self,
+        mint: &[u8; 32],
+        tokens: u64,
+        price_fp: u64,
+        reason: ExitReason,
+    ) -> Result<Exit, SellRefusal> {
+        let params = self.params;
+        let Some(pos) = self.open.get_mut(mint) else {
+            return Err(SellRefusal::NotHeld);
+        };
+        if !pos.inventory_from_fill {
+            return Err(SellRefusal::InventoryUnknown);
+        }
+        if tokens == 0 {
+            return Err(SellRefusal::ZeroQuantity);
+        }
+        if tokens > pos.inventory_tokens {
+            return Err(SellRefusal::ExceedsInventory {
+                held: pos.inventory_tokens,
+            });
+        }
+        if pos.entry_price_fp == 0 || price_fp == 0 {
+            return Err(SellRefusal::NoPrice);
+        }
+        let (mfe_bps, mae_bps) = pos.excursions_bps();
+        let mult = pos.mult_bps(price_fp);
+        let full = tokens == pos.inventory_tokens;
+        let frac_bps = if full {
+            pos.remaining_bps
+        } else {
+            // Floor: the unsold remainder carries the rounding, never a phantom sale.
+            u32::try_from(
+                u128::from(tokens) * u128::from(pos.remaining_bps)
+                    / u128::from(pos.inventory_tokens),
+            )
+            .unwrap_or(pos.remaining_bps)
+            .min(pos.remaining_bps)
+        };
+        let net = pos.realize(frac_bps, mult, &params);
+        pos.inventory_tokens -= tokens;
+        let exit_px = u64::try_from(u128::from(pos.entry_price_fp) * u128::from(mult) / 10_000)
+            .unwrap_or(pos.entry_price_fp);
+        let exit = Exit {
+            mint: *mint,
+            net_lamports: net,
+            reason,
+            closed: full,
+            mfe_bps,
+            mae_bps,
+            entry_price_fp: pos.entry_price_fp,
+            exit_price_fp: exit_px,
+            size_lamports: pos.size_lamports,
+            entry_tick: pos.entry_tick,
+            token_amount: tokens,
+        };
+        if full {
+            self.open.remove(mint);
+        }
+        Ok(exit)
+    }
+
     /// The incumbent exit parameters this manager runs under (read-only).
     ///
     /// The §48 tournament and the LAW B8 proposal derivation both need to diff
@@ -673,6 +818,8 @@ impl ScalpLifecycle {
                 size_lamports,
                 cost_lamports: entry_cost_lamports,
                 remaining_bps: 10_000,
+                inventory_tokens: exit_token_amount(size_lamports, 10_000, entry_price_fp),
+                inventory_from_fill: false,
                 cvd: 0,
                 cvd_peak: 0,
                 entry_tick: tick,
@@ -1620,5 +1767,96 @@ mod tests {
             .expect("thesis fires");
         // Decelerating → moon bag NOT retained → full close.
         assert!(e.closed, "decelerating SOL → full close, no moon bag");
+    }
+
+    // ---- model-managed token-quantity sells (management slice) ----------------------------
+
+    const PX: u64 = 1_000_000_000; // 1 lamport per raw token, PRICE_SCALE units
+
+    fn held_with_fill(tokens: u64) -> ScalpLifecycle {
+        let mut lc = open_one(tokens, PX);
+        assert!(lc.set_inventory_tokens(&[1u8; 32], tokens));
+        lc
+    }
+
+    #[test]
+    fn exit_reason_code_is_append_only() {
+        assert_eq!(ExitReason::IntoStrength.code(), 9);
+        assert_eq!(ExitReason::ModelManaged.code(), 10);
+        assert!(!ExitReason::ModelManaged.is_terminal(), "a model REDUCE is partial");
+    }
+
+    #[test]
+    fn inventory_is_unknown_until_a_fill_establishes_it() {
+        let lc = open_one(1_000_000, PX);
+        assert_eq!(lc.inventory_tokens(&[1u8; 32]), None, "unknown is not zero");
+        let mut lc = lc;
+        assert_eq!(
+            lc.sell_tokens(&[1u8; 32], 10, PX, ExitReason::ModelManaged),
+            Err(SellRefusal::InventoryUnknown)
+        );
+        assert!(lc.has(&[1u8; 32]));
+    }
+
+    #[test]
+    fn a_half_reduction_sells_exactly_half_the_tokens_and_keeps_the_rest() {
+        let mut lc = held_with_fill(1_000_001);
+        let half = 1_000_001 / 2;
+        let ex = lc
+            .sell_tokens(&[1u8; 32], half, PX, ExitReason::ModelManaged)
+            .expect("partial sell");
+        assert!(!ex.closed);
+        assert_eq!(ex.token_amount, half);
+        assert_eq!(lc.inventory_tokens(&[1u8; 32]), Some(1_000_001 - half));
+        assert!(lc.has(&[1u8; 32]), "the remainder stays held and monitored");
+    }
+
+    #[test]
+    fn selling_all_inventory_closes_and_dust_remainders_are_not_phantom_sold() {
+        let mut lc = held_with_fill(1_000);
+        let ex = lc
+            .sell_tokens(&[1u8; 32], 1_000, PX, ExitReason::ModelManaged)
+            .expect("full sell");
+        assert!(ex.closed);
+        assert!(!lc.has(&[1u8; 32]));
+        // 1 token of dust left: held, not silently dropped.
+        let mut lc = held_with_fill(1_000);
+        let ex = lc
+            .sell_tokens(&[1u8; 32], 999, PX, ExitReason::ModelManaged)
+            .expect("sell");
+        assert!(!ex.closed);
+        assert_eq!(lc.inventory_tokens(&[1u8; 32]), Some(1));
+    }
+
+    #[test]
+    fn oversell_zero_and_unheld_are_named_refusals_that_change_nothing() {
+        let mut lc = held_with_fill(1_000);
+        assert_eq!(
+            lc.sell_tokens(&[1u8; 32], 1_001, PX, ExitReason::ModelManaged),
+            Err(SellRefusal::ExceedsInventory { held: 1_000 })
+        );
+        assert_eq!(
+            lc.sell_tokens(&[1u8; 32], 0, PX, ExitReason::ModelManaged),
+            Err(SellRefusal::ZeroQuantity)
+        );
+        assert_eq!(
+            lc.sell_tokens(&[9u8; 32], 1, PX, ExitReason::ModelManaged),
+            Err(SellRefusal::NotHeld)
+        );
+        assert_eq!(lc.inventory_tokens(&[1u8; 32]), Some(1_000));
+    }
+
+    #[test]
+    fn two_partials_then_the_remainder_conserve_cost_basis() {
+        // Selling at the entry price: net is -(fees+fixed) only; basis released pro-rata sums to
+        // the whole basis, never more.
+        let mut lc = held_with_fill(1_000_000);
+        let basis0 = lc.remaining_cost_basis(&[1u8; 32]).unwrap();
+        lc.sell_tokens(&[1u8; 32], 500_000, PX, ExitReason::ModelManaged).unwrap();
+        let basis1 = lc.remaining_cost_basis(&[1u8; 32]).unwrap();
+        assert!(basis1 <= basis0 / 2 + 1 && basis1 + 1 >= basis0 / 2, "{basis0} -> {basis1}");
+        lc.sell_tokens(&[1u8; 32], 250_000, PX, ExitReason::ModelManaged).unwrap();
+        let last = lc.sell_tokens(&[1u8; 32], 250_000, PX, ExitReason::ModelManaged).unwrap();
+        assert!(last.closed && !lc.has(&[1u8; 32]));
     }
 }

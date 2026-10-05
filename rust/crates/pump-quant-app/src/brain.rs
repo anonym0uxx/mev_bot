@@ -1170,6 +1170,7 @@ pub const fn exit_reason_of(reason: crate::position::ExitReason) -> BrainExit {
         AppExit::TrailingStop => BrainExit::TrailingStop,
         AppExit::TimeStop | AppExit::ForceClose => BrainExit::TimeStop,
         AppExit::CreatorDump => BrainExit::ManualKill,
+        AppExit::ModelManaged => BrainExit::ModelManaged,
     }
 }
 

@@ -108,6 +108,10 @@ pub enum ExitReason {
     LiquidityFail,
     /// Operator or governance kill-switch.
     ManualKill,
+    /// The model's own REDUCE/EXIT instruction. APPEND-ONLY ordinal 8: ordinals 0..=7 are unchanged,
+    /// so every previously persisted episode still decodes; an older reader refuses (never
+    /// reinterprets) a record carrying 8.
+    ModelManaged,
 }
 
 impl ExitReason {
@@ -123,6 +127,7 @@ impl ExitReason {
             Self::StructureBreak => 5,
             Self::LiquidityFail => 6,
             Self::ManualKill => 7,
+            Self::ModelManaged => 8,
         }
     }
 
@@ -138,6 +143,7 @@ impl ExitReason {
             5 => Some(Self::StructureBreak),
             6 => Some(Self::LiquidityFail),
             7 => Some(Self::ManualKill),
+            8 => Some(Self::ModelManaged),
             _ => None,
         }
     }
@@ -415,11 +421,14 @@ mod tests {
             assert_eq!(lane.ordinal(), o);
         }
         assert!(DiscoveryLane::from_ordinal(6).is_none());
-        for o in 0u8..8 {
+        for o in 0u8..9 {
             let r = ExitReason::from_ordinal(o).expect("in range");
             assert_eq!(r.ordinal(), o);
         }
-        assert!(ExitReason::from_ordinal(8).is_none());
+        assert!(ExitReason::from_ordinal(9).is_none());
+        // Compatibility pin: the legacy ordinals never moved.
+        assert_eq!(ExitReason::ManualKill.ordinal(), 7);
+        assert_eq!(ExitReason::ModelManaged.ordinal(), 8);
     }
 
     #[test]
