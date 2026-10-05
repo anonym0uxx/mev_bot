@@ -205,9 +205,15 @@ Replacements (each mutant-checked where marked):
 - Tested toolchain on the final head: `rustc`/`cargo` **1.99.0** (stable-x86_64-unknown-linux-gnu).
 - MSRV **1.85 remains pre-existing unsupported** (deps need ≥1.86 `idna_adapter`; `pump-quant-core/src/reducer.rs` uses `is_multiple_of`=1.87). Declared MSRV not raised; deps not downgraded.
 
-### Acceptance on the final code head `63a80511`
-- **Local CI-equivalent (Linux, 1.99.0):** `fmt --check` clean; `clippy --workspace --all-targets -- -D warnings` exit 0; `build --workspace` exit 0; `test --workspace` exit 0, 0 failed.
-- **Hosted GitHub:** workflow `rust-ci` run `37382000618` → **success**, steps Format check / Clippy (deny warnings) / Build / Tests all green. (Prior runs on earlier heads failed at Format check.)
+### Acceptance
+- **Local CI-equivalent (Linux, rustc/cargo 1.99.0):**
+  - code head `63a80511`: `fmt --check` clean; `clippy --workspace --all-targets -- -D warnings` exit 0; `build --workspace` exit 0; `test --workspace` exit 0, 0 failed.
+  - docs head `b737c2d9`: `fmt --check` clean; `clippy --workspace --all-targets -- -D warnings` exit 0 (code identical to `63a80511`; the commit is docs-only).
+- **Hosted GitHub (`rust-ci`, `.github/workflows/gate.yml`, `pull_request` event -> checks the merge of head into `main`):**
+  - run 15 on `63a80511` -> **success** (Format check / Clippy deny-warnings / Build / Tests all green).
+  - run 16 on `b737c2d9` -> **failure at the Clippy step** (Build and Tests SKIPPED), reproduced on attempts 2 and 3.
+  - **Cause is environmental, not a lint error:** the Clippy step ends `error: could not compile pump-quant-inference (test "management_parity") ... (signal: 4, SIGILL: illegal instruction)` with `-C target-cpu=znver5`. The pin is `rust/.cargo/config.toml` `rustflags = ["-C","target-cpu=znver5"]` (operator §24 criterion 109); GitHub `ubuntu-latest` runners are not Zen5, so a compiled artifact executes a Zen5-only instruction. The docs-only diff between `63a80511` and `b737c2d9` cannot change the lint content, so the pass/fail flip is runner-CPU dependent.
+  - **Not fixed here** (would weaken/alter the §24 CPU pin — an operator decision, not lint cleanup). Options: a CI-only override (`RUSTFLAGS`/`--config` to a baseline CPU for the gate), or accept a nondeterministic hosted gate. Action needed from the operator.
 
 ### Current entry document
 - `docs/ENTRY.md` is now the single current operating entry (runtime, pipelines, Qwen interface vs tooling, configuration, Windows handoff, ops, historical-alternatives index). Dated `docs/*` files are marked historical there.
