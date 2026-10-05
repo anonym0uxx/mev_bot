@@ -384,6 +384,10 @@ pub struct RpcLiveStateFetcher {
     shutdown: Arc<AtomicBool>,
 }
 
+/// Largest reserve the trade derivation can represent (both reserves are widened to
+/// i128, but the per-snapshot comparison is against the i64-derived delta path).
+pub const MAX_REPRESENTABLE_RESERVE: u64 = i64::MAX as u64;
+
 impl RpcLiveStateFetcher {
     /// Construct from an RPC URL. The transport is owned internally.
     pub fn new(rpc_url: String) -> Self {
@@ -457,6 +461,14 @@ impl RpcLiveStateFetcher {
         // STREAM, and the hot read uses it to decide how far to trust a cached entry.
         // Recorded before any early return.
         self.last_stream_slot.fetch_max(slot, Ordering::Relaxed);
+        // A reserve the trade derivation cannot represent (either side > i64::MAX) is not
+        // usable state: publishing it would make the entry look FRESH while pricing can
+        // only fail closed on it. Refuse to publish, so the observation ages out and the
+        // readiness mechanism reports the position degraded rather than falsely fresh.
+        // (No real curve reserve approaches 9.2e18 lamports = ~9.2 billion SOL.)
+        if virtual_sol > MAX_REPRESENTABLE_RESERVE || virtual_token > MAX_REPRESENTABLE_RESERVE {
+            return false;
+        }
         let mut cache = self.curve_cache.write().unwrap();
         let Some(entry) = cache.entries.get_mut(mint) else {
             return false;
@@ -1306,6 +1318,25 @@ mod c1_stream_fed_cache {
         // Nothing was learned, so the hot read must fall through to the RPC, which
         // here is an unreachable port: an error, never a fabricated state.
         assert!(f.fetch_state_hot(&[2u8; 32], &[0u8; 32]).is_err());
+    }
+
+    /// An unrepresentable reserve is NOT published as a fresh observation: the entry
+    /// keeps its previous state (and ages out), so the readiness mechanism reports the
+    /// position degraded rather than falsely fresh.
+    #[test]
+    fn an_unrepresentable_reserve_is_not_published_as_fresh() {
+        let f = fetcher();
+        f.seed_curve_for_test(state(9, 1_000, 2_000, 100));
+        let too_big = (i64::MAX as u64) + 1;
+        assert!(
+            !f.note_stream_reserves(&[9u8; 32], too_big, 2_000, false, 110),
+            "a reserve the derivation cannot represent must not be published as fresh"
+        );
+        let s = f.fetch_state_hot(&[9u8; 32], &[0xAAu8; 32]).unwrap();
+        assert_eq!(
+            s.virtual_sol_reserves, 1_000,
+            "the previous state is retained"
+        );
     }
 
     #[test]

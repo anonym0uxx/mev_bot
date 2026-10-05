@@ -373,12 +373,17 @@ impl DefenseState {
     }
 
     /// Update drawdown tracking from the current net realized P&L.
-    #[allow(clippy::arithmetic_side_effects)] // LINT-ALLOW(hot_arith,hot_cast): peak updated >= net first, dd non-negative; i64
+    /// `peak_net_lamports` is the running maximum, so `peak >= net` and the drop is
+    /// non-negative. Both are cumulative realized-P&L aggregates in lamports; the
+    /// magnitude bound is a PRACTICAL domain bound (any real account's realized P&L is
+    /// far below i64::MAX lamports), not a type proof. `saturating_sub` makes the
+    /// subtraction type-safe regardless; if it ever saturated it would err toward a
+    /// LARGER drawdown, i.e. an earlier circuit-breaker trip (fail-safe).
     pub fn update_drawdown(&mut self, net_realized_lamports: i64) {
         if net_realized_lamports > self.peak_net_lamports {
             self.peak_net_lamports = net_realized_lamports;
         }
-        let dd = self.peak_net_lamports - net_realized_lamports;
+        let dd = self.peak_net_lamports.saturating_sub(net_realized_lamports);
         if dd > self.max_dd_lamports {
             self.max_dd_lamports = dd;
         }

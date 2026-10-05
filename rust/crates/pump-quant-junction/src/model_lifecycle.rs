@@ -395,26 +395,27 @@ impl StaleCallout {
                         .entry(s.mint)
                         .or_insert((now_ms, i64::MIN / 2, false));
                     let first = e.1 == i64::MIN / 2;
-                    #[allow(clippy::arithmetic_side_effects)]
-                    // LINT-ALLOW(hot_arith,hot_cast): now_ms,e.1 i64 ms; diff fits i64
-                    if first || now_ms - e.1 >= remind_ms {
+                    // `now_ms` and `e.1`/`e.0` are readings of the same i64 millisecond wire
+                    // clock; the i64::MIN/2 sentinel stored at insert is never subtracted
+                    // (guarded by `first`). `saturating_sub` keeps the age type-safe at the
+                    // i64 extremes: identical to `-` for any same-clock pair a live process
+                    // produces, and it errs toward "very stale" (fail-safe for a degradation
+                    // callout) otherwise. This is a practical clock-domain bound, not a type
+                    // proof that the raw subtraction fits.
+                    if first || now_ms.saturating_sub(e.1) >= remind_ms {
                         e.1 = now_ms;
-                        #[allow(clippy::arithmetic_side_effects)]
-                        // LINT-ALLOW(hot_arith,hot_cast): now_ms,e.0 i64 ms; diff fits i64
-                        {
-                            out.push(CalloutLine {
-                                text: format!(
-                                    "{} held {} venue={} MANAGEMENT UNAVAILABLE: {why} (reserve_age={} print_age={}) degraded_for={}s",
-                                    if first { "ONSET" } else { "REMINDER" },
-                                    hex(&s.mint),
-                                    if s.amm { "amm" } else { "curve" },
-                                    s.reserve_age_ms.map_or("none".into(), |a| format!("{a}ms")),
-                                    s.last_print_age_ms.map_or("none".into(), |a| format!("{a}ms")),
-                                    (now_ms - e.0).max(0) / 1000
-                                ),
-                                alert: true,
-                            });
-                        }
+                        out.push(CalloutLine {
+                            text: format!(
+                                "{} held {} venue={} MANAGEMENT UNAVAILABLE: {why} (reserve_age={} print_age={}) degraded_for={}s",
+                                if first { "ONSET" } else { "REMINDER" },
+                                hex(&s.mint),
+                                if s.amm { "amm" } else { "curve" },
+                                s.reserve_age_ms.map_or("none".into(), |a| format!("{a}ms")),
+                                s.last_print_age_ms.map_or("none".into(), |a| format!("{a}ms")),
+                                now_ms.saturating_sub(e.0).max(0) / 1000
+                            ),
+                            alert: true,
+                        });
                     }
                     if silent && !e.2 {
                         e.2 = true;
@@ -433,18 +434,15 @@ impl StaleCallout {
                 }
                 Ok(()) => {
                     if let Some((since, _, _)) = self.state.remove(&s.mint) {
-                        #[allow(clippy::arithmetic_side_effects)]
-                        // LINT-ALLOW(hot_arith,hot_cast): now_ms,since i64 ms; diff fits i64
-                        {
-                            out.push(CalloutLine {
-                                text: format!(
-                                    "RECOVERED held {}: management data fresh again after {}s degraded",
-                                    hex(&s.mint),
-                                    (now_ms - since).max(0) / 1000
-                                ),
-                                alert: false,
-                            });
-                        }
+                        // `since` is the same-clock reading stored at ONSET; see the note above.
+                        out.push(CalloutLine {
+                            text: format!(
+                                "RECOVERED held {}: management data fresh again after {}s degraded",
+                                hex(&s.mint),
+                                now_ms.saturating_sub(since).max(0) / 1000
+                            ),
+                            alert: false,
+                        });
                     }
                 }
             }

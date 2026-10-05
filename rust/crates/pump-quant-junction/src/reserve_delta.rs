@@ -83,14 +83,16 @@ pub fn derive_market_trade_from_delta(
 ) -> Option<ProvenancedEvent> {
     let prev = previous?;
 
-    // u64 reserves are externally supplied; a checked conversion + checked
-    // subtraction rejects an out-of-range value instead of wrapping.
-    let delta_vsol: i64 = i64::try_from(current.virtual_sol)
-        .ok()?
-        .checked_sub(i64::try_from(prev.virtual_sol).ok()?)?;
-    let delta_vtoken: i64 = i64::try_from(current.virtual_token)
-        .ok()?
-        .checked_sub(i64::try_from(prev.virtual_token).ok()?)?;
+    // Reserves are u64. Compute the DIFFERENCE in i128 (both widened values are exact,
+    // and a u64 - u64 difference always fits i128) so that two VALID large reserves with
+    // a small delta are not rejected merely because an individual reserve exceeds
+    // i64::MAX. Only a delta that genuinely cannot be represented as i64 is rejected.
+    let delta_vsol: i64 = i128::from(current.virtual_sol)
+        .checked_sub(i128::from(prev.virtual_sol))
+        .and_then(|d| i64::try_from(d).ok())?;
+    let delta_vtoken: i64 = i128::from(current.virtual_token)
+        .checked_sub(i128::from(prev.virtual_token))
+        .and_then(|d| i64::try_from(d).ok())?;
 
     // No SOL moved → no trade (could be a `complete` flag flip on migration,
     // or a spurious notification). Fail-closed: emit nothing.
@@ -110,7 +112,7 @@ pub fn derive_market_trade_from_delta(
             // Inconsistent: vsol up AND vtoken up — not a valid trade.
             return None;
         }
-        delta_vtoken.unsigned_abs() as i64
+        i64::try_from(delta_vtoken.unsigned_abs()).ok()?
     } else {
         // Sell: token reserve increased. signed_base = -|delta_vtoken|.
         // delta_vtoken should be positive — the absolute value is the volume.
@@ -199,6 +201,54 @@ mod tests {
             derive_market_trade_from_delta(&[0xAB; 32], Some(prev), &cur, 1000, true, None)
                 .is_none()
         );
+    }
+
+    /// Two VALID reserves that each exceed i64::MAX with a small POSITIVE delta must
+    /// still produce a trade — the delta is computed in i128, so the narrowness of an
+    /// individual reserve is irrelevant.
+    #[test]
+    fn large_reserves_small_positive_delta_preserved() {
+        let big = i64::MAX as u64 + 1000;
+        let prev = ReserveSnapshot {
+            virtual_sol: big,
+            virtual_token: big + 5000,
+            slot: 900,
+        };
+        // Buy: vsol +500, vtoken -10 (both reserves still > i64::MAX)
+        let curve = make_curve(big + 500, big + 4990);
+        let pe = derive_market_trade_from_delta(&[0xAB; 32], Some(prev), &curve, 1000, true, None)
+            .expect("valid large reserves with a small delta must not be rejected");
+        if let AppEvent::MarketTrade {
+            signed_base,
+            quote_lamports,
+            ..
+        } = pe.event
+        {
+            assert_eq!(signed_base, 10, "|delta_vtoken| = 10");
+            assert_eq!(quote_lamports, 500, "|delta_vsol| = 500");
+        } else {
+            panic!("expected MarketTrade");
+        }
+    }
+
+    /// Same, with a small NEGATIVE delta (sell).
+    #[test]
+    fn large_reserves_small_negative_delta_preserved() {
+        let big = i64::MAX as u64 + 1000;
+        let prev = ReserveSnapshot {
+            virtual_sol: big + 500,
+            virtual_token: big + 4990,
+            slot: 900,
+        };
+        // Sell: vsol -500, vtoken +10
+        let curve = make_curve(big, big + 5000);
+        let pe = derive_market_trade_from_delta(&[0xAB; 32], Some(prev), &curve, 1000, true, None)
+            .expect("valid large reserves with a small negative delta must not be rejected");
+        if let AppEvent::MarketTrade { signed_base, .. } = pe.event {
+            assert_eq!(signed_base, -10, "-|delta_vtoken| = -10");
+        } else {
+            panic!("expected MarketTrade");
+        }
     }
 
     fn make_curve(vsol: u64, vtoken: u64) -> PumpCurve {
