@@ -98,11 +98,12 @@ impl Engine {
             kind: match o.kind {
                 model_manage::MgmtKind::Reduce => "reduce",
                 model_manage::MgmtKind::Exit => "exit",
+                model_manage::MgmtKind::Add => "add",
             },
             id: o.id,
             mint: *m,
             quantity: o.intended - o.filled,
-            uncertain: false,
+            uncertain: o.uncertain,
         }));
         (held, pending)
     }
@@ -134,10 +135,12 @@ impl Engine {
             self.model_retire_order(m);
             self.mrep("safety:entry_order_invalidated");
         }
+        // Risk-increasing management intents (ADD) are invalidated too; REDUCE/EXIT stay.
+        let add_cancelled = self.model_mgmt_cancel_adds();
         if !self.model_safety_persist() {
             self.mrep("safety:persist_failed");
         }
-        victims.len()
+        victims.len() + add_cancelled
     }
 
     /// Explicit re-arm. Refused while evidence is unresolved, and refused if it cannot be made durable.
@@ -158,6 +161,7 @@ impl Engine {
             .model_orders
             .values()
             .any(|o| o.uncertain && o.confirmed.is_none())
+            || self.model_mgmt.orders.values().any(|o| o.uncertain)
         {
             return Err(RearmRefusal::UncertainOrderPending);
         }

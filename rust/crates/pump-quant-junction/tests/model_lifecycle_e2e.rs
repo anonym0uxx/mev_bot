@@ -362,17 +362,14 @@ fn hold_reduce_exit_travel_over_the_production_client_and_only_fills_change_stat
 }
 
 #[test]
-fn add_over_the_wire_stays_unsupported_and_substitutes_nothing() {
+fn add_over_the_wire_targets_half_inventory_and_is_not_endpoint_failure() {
     let ep = Endpoint::start(|_| ADD);
     let mut r = rig(&ep, "add");
     let inv0 = r.e.model_inventory_tokens(&MINT).unwrap();
-    let cash0 = r.e.model_free_cash_lamports();
-    r.advance(75_000);
-    assert!(r.rep("mgmt:add_unsupported") >= 1, "{:?}", r.e.model_lane_report());
-    assert!(r.e.model_mgmt_pending(&MINT).is_none());
-    assert_eq!(r.e.model_inventory_tokens(&MINT), Some(inv0));
-    assert_eq!(r.e.model_free_cash_lamports(), cash0);
-    assert!(!r.e.model_management_complete());
+    r.advance_to_order(120_000);
+    let (_, _, intended, _) = r.e.model_mgmt_pending(&MINT).expect("ADD order pending");
+    assert_eq!(intended, inv0 / 2, "inventory-based target, never account capital");
+    assert_eq!(r.rep("mgmt:add_unsupported"), 0);
     assert_eq!(r.rep("endpoint:"), 0, "a valid ADD is a valid decision, not endpoint failure");
 }
 

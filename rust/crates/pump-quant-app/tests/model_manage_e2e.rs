@@ -178,9 +178,20 @@ struct Rig {
 }
 
 fn rig(answer: fn(i64) -> &'static str) -> Rig {
+    rig_with(2_000_000_000, answer)
+}
+
+fn rig_with(bankroll: u64, answer: fn(i64) -> &'static str) -> Rig {
+    rig_floor(bankroll, 2_500, answer)
+}
+
+fn rig_floor(bankroll: u64, floor_bps: u32, answer: fn(i64) -> &'static str) -> Rig {
     let prompts = Arc::new(Mutex::new(Vec::new()));
     let calls = Arc::new(AtomicUsize::new(0));
-    let mut e = Engine::new(cfg(), RunMode::Paper);
+    let mut c = cfg();
+    c.bankroll_initial_lamports = bankroll;
+    c.floor_fraction_bps = floor_bps;
+    let mut e = Engine::new(c, RunMode::Paper);
     e.enable_paper_model(Script {
         prompts: Arc::clone(&prompts),
         calls: Arc::clone(&calls),
@@ -319,17 +330,120 @@ fn exit_closes_through_the_fill_and_a_late_duplicate_cannot_repeat_it() {
 }
 
 #[test]
-fn add_is_a_named_unsupported_result_and_never_substitutes_an_amount() {
+fn add_targets_half_the_reconciled_inventory_and_only_the_fill_changes_state() {
     let mut r = rig(|step| if step == 0 { ADD } else { HOLD });
     let inv0 = r.e.model_inventory_tokens(&MINT).unwrap();
     let cash0 = r.e.model_free_cash_lamports();
-    r.advance(70_000);
+    r.advance_to_order(120_000);
+    let (id, kind, intended, filled) = r.e.model_mgmt_pending(&MINT).expect("ADD order pending");
+    assert_eq!(format!("{kind:?}"), "Add");
+    assert_eq!(intended, inv0 / 2, "target = floor(50% of reconciled inventory), NOT account capital");
+    assert_eq!(filled, 0);
+    assert_eq!(r.e.model_inventory_tokens(&MINT), Some(inv0), "an intent is not a fill");
+    assert!(r.e.model_free_cash_lamports() <= cash0, "the reservation can only reduce free cash");
     r.landing(250_000_000);
-    assert!(r.rep("mgmt:add_unsupported") >= 1, "{:?}", r.e.model_lane_report());
+    r.landing(260_000_000);
+    let fills = r.e.model_mgmt_fills().to_vec();
+    assert_eq!(fills.len(), 1, "{:?}", r.e.model_lane_report());
+    assert!(fills[0].is_add);
+    assert!(fills[0].tokens >= intended, "minimal notional that delivers at least the target");
+    assert_eq!(r.e.model_inventory_tokens(&MINT), Some(inv0 + fills[0].tokens));
+    assert_eq!(fills[0].cost_lamports, fills[0].spent_lamports
+        + fills[0].spent_lamports * u64::from(pump_quant_app::cost_model::venue_fee_bps_per_leg(VSOL + 260_000_000)) / 10_000
+        + pump_quant_app::cost_model::FIXED_LAMPORTS_PER_LEG, "all-in cost = notional + landing-venue fee + fixed leg");
+    assert_eq!(r.e.model_free_cash_lamports(), cash0.saturating_sub(fills[0].cost_lamports),
+        "cash fell by exactly the all-in cost of the fill");
+    assert!(r.e.model_mgmt_pending(&MINT).is_none());
+    assert!(r.e.model_management_complete());
+}
+
+/// NOTE: this only shows determinism given the executable state. That entry price never enters the
+/// amount is STRUCTURAL: `model_mgmt_add_plan_at` takes (need tokens, venue state, cash bounds) and has no
+/// entry-price parameter at all (unit-tested in `add_planner_tests`).
+#[test]
+fn add_amount_is_deterministic_given_the_executable_state() {
+    let run = || {
+        let mut r = rig(|step| if step == 0 { ADD } else { HOLD });
+        r.advance_to_order(120_000);
+        r.landing(250_000_000);
+        r.landing(260_000_000);
+        r.e.model_mgmt_fills().first().map(|f| (f.tokens, f.spent_lamports))
+    };
+    assert_eq!(run(), run());
+    assert!(run().is_some());
+}
+
+#[test]
+fn a_safety_off_trip_cancels_a_pending_add_but_never_a_reduce_or_exit() {
+    let mut r = rig(|step| if step == 0 { ADD } else { HOLD });
+    r.advance_to_order(120_000);
+    assert!(r.e.model_mgmt_pending(&MINT).is_some());
+    r.e.model_safety_trip_operator();
+    assert!(r.e.model_mgmt_pending(&MINT).is_none(), "risk-increasing ADD is invalidated");
+    assert!(r.rep("safety:add_order_invalidated") >= 1);
+    assert!(r.e.model_mgmt_fills().is_empty(), "nothing was booked");
+    // REDUCE under a trip is still permitted and still fills.
+    let mut r2 = rig(|step| if step == 0 { REDUCE } else { HOLD });
+    r2.advance_to_order(120_000);
+    r2.e.model_safety_trip_operator();
+    assert!(r2.e.model_mgmt_pending(&MINT).is_some(), "REDUCE survives the trip");
+    r2.landing(250_000_000);
+    r2.landing(260_000_000);
+    assert_eq!(r2.e.model_mgmt_fills().len(), 1);
+}
+
+#[test]
+fn a_new_add_is_refused_by_name_while_safety_off_holds() {
+    let mut r = rig(|step| if step == 0 { ADD } else { HOLD });
+    r.e.model_safety_trip_operator();
+    let inv0 = r.e.model_inventory_tokens(&MINT).unwrap();
+    r.advance(100_000);
+    assert!(r.rep("mgmt:refuse:add_blocked_safety_off") >= 1, "{:?}", r.e.model_lane_report());
+    assert!(r.e.model_mgmt_pending(&MINT).is_none());
     assert_eq!(r.e.model_inventory_tokens(&MINT), Some(inv0));
-    assert!(r.e.model_mgmt_pending(&MINT).is_none(), "no order of any size");
-    assert_eq!(r.e.model_free_cash_lamports(), cash0, "no cash moved");
-    assert!(!r.e.model_management_complete(), "management is reported INCOMPLETE");
+}
+
+#[test]
+fn an_uncertain_management_order_stays_pending_survives_a_trip_and_blocks_rearm_until_resolved() {
+    let mut r = rig(|step| if step == 0 { EXIT } else { HOLD });
+    r.advance_to_order(120_000);
+    let (id, _, _, _) = r.e.model_mgmt_pending(&MINT).expect("EXIT pending");
+    assert!(r.e.model_mgmt_mark_ack_uncertain(&MINT, id));
+    r.e.model_safety_trip_operator();
+    // The simulator must NOT fill or expire an order whose acknowledgement is unknown.
+    r.landing(250_000_000);
+    r.landing(260_000_000);
+    r.advance(60_000);
+    assert!(r.e.model_mgmt_pending(&MINT).is_some(), "unresolved stays pending");
+    assert!(r.e.model_mgmt_fills().is_empty());
+    assert!(r.e.model_position_open(&MINT));
+    assert!(r.e.model_safety_rearm("alon").is_err(), "re-arm refused with an uncertain order");
+    let a = r.e.model_stop_assessment();
+    assert!(a.uncertain_orders >= 1 && !a.is_flat_and_reconciled());
+    // Only a reconciled report resolves it: exactly the filled quantity, nothing more.
+    let (_, _, intended, _) = r.e.model_mgmt_pending(&MINT).unwrap();
+    r.e.model_mgmt_apply_reconciled_fill(MINT, id, intended, 22_000).unwrap();
+    assert!(!r.e.model_position_open(&MINT));
+}
+#[test]
+fn a_late_or_duplicate_add_report_cannot_repeat_the_add() {
+    let mut r = rig(|step| if step == 0 { ADD } else { HOLD });
+    let inv0 = r.e.model_inventory_tokens(&MINT).unwrap();
+    r.advance_to_order(120_000);
+    let (id, _, intended, _) = r.e.model_mgmt_pending(&MINT).expect("ADD pending");
+    let part = intended / 3;
+    // a partial reconciled fill changes ONLY the filled quantity and the spend
+    r.e.model_mgmt_apply_reconciled_add_fill(MINT, id, part, 1_000_000).unwrap();
+    assert_eq!(r.e.model_inventory_tokens(&MINT), Some(inv0 + part));
+    let (_, _, i2, f2) = r.e.model_mgmt_pending(&MINT).expect("remainder still pending");
+    assert_eq!((i2, f2), (intended, part));
+    // an over-sized report and a SELL-shaped report for an ADD order are refused
+    assert!(r.e.model_mgmt_apply_reconciled_add_fill(MINT, id, intended, 1_000_000).is_err());
+    assert!(r.e.model_mgmt_apply_reconciled_fill(MINT, id, 1, 22_000).is_err(), "wrong kind");
+    // the remainder completes it; a further report finds nothing pending
+    r.e.model_mgmt_apply_reconciled_add_fill(MINT, id, intended - part, 1_000_000).unwrap();
+    assert!(r.e.model_mgmt_apply_reconciled_add_fill(MINT, id, 1, 1_000_000).is_err());
+    assert_eq!(r.e.model_inventory_tokens(&MINT), Some(inv0 + intended));
 }
 
 #[test]

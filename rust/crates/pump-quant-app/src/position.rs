@@ -281,6 +281,21 @@ pub enum SellRefusal {
     NoPrice,
 }
 
+/// Why an inventory-increasing fill was refused. Every variant leaves the position untouched.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AddRefusal {
+    /// No open position on the mint.
+    NotHeld,
+    /// Inventory was never established by a fill.
+    InventoryUnknown,
+    /// Zero tokens or zero notional.
+    ZeroQuantity,
+    /// Fill price missing.
+    NoPrice,
+    /// Arithmetic does not fit the carriers.
+    Overflow,
+}
+
 /// One realized (partial or full) exit event.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Exit {
@@ -804,6 +819,66 @@ impl ScalpLifecycle {
             self.open.remove(mint);
         }
         Ok(exit)
+    }
+
+    /// Book a RECONCILED buy fill on a held, model-managed position: `tokens` delivered for
+    /// `add_notional` lamports (all-in cost `add_cost`, which carries fee and fixed leg cost).
+    ///
+    /// Re-bases the lot ledger instead of borrowing the legacy probe->scale ladder: the notional still
+    /// held (`size * remaining`) and the added notional are blended at the HARMONIC mean (notionals are
+    /// not unit counts, see `scale_in`), cost basis carries the remaining pro-rata cost plus `add_cost`,
+    /// and `remaining_bps` returns to 10_000 of the new lot. Realized results already booked live in the
+    /// engine's attribution, so nothing realized is rewritten.
+    pub fn add_filled(
+        &mut self,
+        mint: &[u8; 32],
+        tokens: u64,
+        add_notional: u64,
+        add_cost: u64,
+        fill_price_fp: u64,
+    ) -> Result<(), AddRefusal> {
+        let Some(pos) = self.open.get_mut(mint) else {
+            return Err(AddRefusal::NotHeld);
+        };
+        if !pos.inventory_from_fill {
+            return Err(AddRefusal::InventoryUnknown);
+        }
+        if tokens == 0 || add_notional == 0 {
+            return Err(AddRefusal::ZeroQuantity);
+        }
+        if fill_price_fp == 0 || pos.entry_price_fp == 0 || pos.remaining_bps == 0 {
+            return Err(AddRefusal::NoPrice);
+        }
+        let s1 = u128::from(pos.size_lamports) * u128::from(pos.remaining_bps) / 10_000;
+        let s2 = u128::from(add_notional);
+        let (p1, p2) = (u128::from(pos.entry_price_fp), u128::from(fill_price_fp));
+        let den = s1
+            .checked_mul(p2)
+            .and_then(|a| s2.checked_mul(p1).and_then(|b| a.checked_add(b)))
+            .ok_or(AddRefusal::Overflow)?;
+        let num = s1
+            .checked_add(s2)
+            .and_then(|x| x.checked_mul(p1))
+            .and_then(|x| x.checked_mul(p2))
+            .ok_or(AddRefusal::Overflow)?;
+        if den == 0 {
+            return Err(AddRefusal::Overflow);
+        }
+        let blended = u64::try_from(num.div_ceil(den)).map_err(|_| AddRefusal::Overflow)?;
+        let new_size = u64::try_from(s1 + s2).map_err(|_| AddRefusal::Overflow)?;
+        let cost_rem = u128::from(pos.cost_lamports) * u128::from(pos.remaining_bps) / 10_000;
+        let new_cost =
+            u64::try_from(cost_rem + u128::from(add_cost)).map_err(|_| AddRefusal::Overflow)?;
+        let new_inv = pos
+            .inventory_tokens
+            .checked_add(tokens)
+            .ok_or(AddRefusal::Overflow)?;
+        pos.entry_price_fp = blended.max(1);
+        pos.size_lamports = new_size;
+        pos.cost_lamports = new_cost;
+        pos.remaining_bps = 10_000;
+        pos.inventory_tokens = new_inv;
+        Ok(())
     }
 
     /// The incumbent exit parameters this manager runs under (read-only).

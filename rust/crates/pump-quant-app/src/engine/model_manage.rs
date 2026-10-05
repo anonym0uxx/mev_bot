@@ -10,10 +10,16 @@
 //! * REDUCE = `floor(inventory * 5000 / 10000)` RAW TOKENS of the inventory held NOW; EXIT = all of it.
 //!   Inventory is the fill-established quantity; pending sells are not inventory and only one order per
 //!   mint may be pending, so a pending quantity can never be double-spent.
-//! * ADD is NOT executed. The corpus has two incompatible definitions (see `ManagementAuthority::ScaleIn`
-//!   = capital-based, versus the c11 state transitions = +50% of inventory). Until one is pinned the
-//!   result is the named `mgmt:add_unsupported` and management is reported incomplete. No amount is
-//!   ever substituted.
+//! * ADD (operator contract choice for paper, NOT a claim about the corpus's cash transitions):
+//!   TARGET = `floor(inventory * 5000 / 10000)` RAW TOKENS of the reconciled inventory held at decision
+//!   time, bound to the decision's position version. The seam's capital-based `ScaleIn.account_fraction_bps`
+//!   is deliberately IGNORED here and never used as a size. The NOTIONAL is not copied from the corpus:
+//!   at the landing state it is the minimal gross that the venue's CURRENT executable economics turn into
+//!   at least the target (curve: constant product; AMM: verified `buy_exact_quote_in` with the landing
+//!   event's fee parts and virtual quote). Entry price never enters the amount. Bounds, all refusals
+//!   named, nothing resized: own-impact veto, free cash above the survival floor, venue economics present.
+//!   One order per mint (a pending ADD/REDUCE/EXIT blocks any other); partial fills change only filled
+//!   quantities and spend; SAFETY_OFF cancels any unfilled ADD remainder.
 //! * the corpus caps an episode at 16 steps. Beyond it the lane keeps asking with the REAL step index,
 //!   real hold time and the real fill-anchored MFE/MAE: nothing is reset and no fresh entry is invented.
 //!   That is an UNVALIDATED deployment extension and is counted (`mgmt:beyond_corpus_step_cap`).
@@ -52,6 +58,8 @@ pub enum MgmtKind {
     Reduce,
     /// All of it.
     Exit,
+    /// Buy `floor(inventory/2)` more tokens at current executable economics (risk-increasing).
+    Add,
 }
 
 /// A pending management sell intent. Not inventory; becomes one only through a fill.
@@ -69,7 +77,19 @@ pub struct MgmtOrder {
     pub(super) created_slot: u64,
     pub(super) version: u64,
     pub(super) amm: bool,
+    /// ADD only: the most notional lamports this order may spend in total (set at landing).
+    pub max_spend: u64,
+    /// ADD only: notional lamports already spent by reconciled fills.
+    pub spent: u64,
+    /// ADD only: the venue fee rate (bp of notional) the reservation was sized with.
+    pub fee_bps: u32,
+    /// Acknowledgement unknown: stays pending and unresolved; never expired, filled by the simulator,
+    /// or cancelled by a trip. Only a reconciled report or operator evidence resolves it.
+    pub uncertain: bool,
 }
+
+/// Management ADD target: half of the reconciled inventory.
+pub const MGMT_ADD_INVENTORY_BPS: u32 = 5_000;
 
 /// One reconciled management fill.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,8 +104,14 @@ pub struct MgmtFill {
     pub price_fp: u64,
     /// Whether it closed the position.
     pub closed: bool,
-    /// Net realised lamports of this fill.
+    /// Net realised lamports of this fill (0 for an ADD: a buy realizes nothing).
     pub net_lamports: i128,
+    /// ADD fills only: notional lamports spent by this fill.
+    pub spent_lamports: u64,
+    /// ADD fills only: all-in cost (notional + fee + fixed leg cost) charged to cash.
+    pub cost_lamports: u64,
+    /// Whether this fill was an ADD.
+    pub is_add: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -204,7 +230,10 @@ impl Engine {
             .model_orders
             .values()
             .fold(0u64, |a, o| a.saturating_add(o.clip_lamports));
-        let cash = balance.saturating_sub(committed).saturating_sub(pending);
+        let cash = balance
+            .saturating_sub(committed)
+            .saturating_sub(pending)
+            .saturating_sub(self.model_mgmt_reserved(None));
         Ok(MgmtPositionInputs {
             step: mp.step,
             entry_px: entry / LAMPORTS,
@@ -361,9 +390,9 @@ impl Engine {
         self.model_drift = ledger;
         match verdict {
             ManagementAuthority::Hold => self.mrep("mgmt:verdict:hold"),
+            // The seam's capital-based field is intentionally unused: ADD is inventory-based here.
             ManagementAuthority::ScaleIn { .. } => {
-                // Unsupported by design, never substituted. Management stays reported incomplete.
-                self.mrep("mgmt:add_unsupported");
+                self.model_mgmt_place(mint, MgmtKind::Add, MGMT_ADD_INVENTORY_BPS, clock)
             }
             ManagementAuthority::Trim {
                 inventory_fraction_bps,
@@ -384,6 +413,11 @@ impl Engine {
     }
 
     fn model_mgmt_place(&mut self, mint: [u8; 32], kind: MgmtKind, bps: u32, clock: i64) {
+        if kind == MgmtKind::Add && self.model_safety_blocked() {
+            // Risk-increasing: never while SAFETY_OFF holds. REDUCE/EXIT stay permitted.
+            self.mrep("mgmt:refuse:add_blocked_safety_off");
+            return;
+        }
         let Some(inv) = self.positions.inventory_tokens(&mint) else {
             self.mrep("mgmt:refuse:inventory_unknown");
             return;
@@ -396,6 +430,21 @@ impl Engine {
         let Some(mp) = self.model_mgmt.pos.get(&mint).copied() else {
             return;
         };
+        let (mut add_bound, mut add_fee_bps) = (0u64, 0u32);
+        if kind == MgmtKind::Add {
+            // Executable-economics plan against the LATEST observed state (not entry price): a refusal
+            // here is named and creates no order.
+            match self.model_mgmt_add_plan(&mint, tokens, None, None) {
+                Ok(plan) => {
+                    add_bound = plan.hi;
+                    add_fee_bps = plan.fee_bps;
+                }
+                Err(r) => {
+                    self.mrep(r);
+                    return;
+                }
+            }
+        }
         self.model_mgmt.seq += 1;
         let id = self.model_mgmt.seq;
         let amm = self.model_cache.snapshot_venue_is_amm(&mint);
@@ -410,11 +459,16 @@ impl Engine {
                 created_slot: self.model_slot,
                 version: mp.version,
                 amm,
+                max_spend: add_bound,
+                spent: 0,
+                fee_bps: add_fee_bps,
+                uncertain: false,
             },
         );
         self.mrep(match kind {
             MgmtKind::Reduce => "mgmt:order:reduce",
             MgmtKind::Exit => "mgmt:order:exit",
+            MgmtKind::Add => "mgmt:order:add",
         });
     }
 
@@ -427,6 +481,15 @@ impl Engine {
             };
             if !self.positions.has(&mint) {
                 self.model_mgmt_forget(&mint);
+                continue;
+            }
+            if order.uncertain {
+                // Acknowledgement unknown: unresolved intent. Neither expired nor simulated-filled.
+                self.mrep("mgmt:pending_uncertain_held");
+                continue;
+            }
+            if order.kind == MgmtKind::Add {
+                self.model_mgmt_try_add(mint, order, clock);
                 continue;
             }
             let landing = order.created_ms + MODEL_FILL_LANDING_MS;
@@ -502,10 +565,15 @@ impl Engine {
             self.mrep("mgmt:recon:rejected:order_id_mismatch");
             return Err("order_id_mismatch");
         }
+        if order.kind == MgmtKind::Add {
+            self.mrep("mgmt:recon:rejected:wrong_kind");
+            return Err("wrong_kind");
+        }
         if tokens == 0 || tokens > order.intended - order.filled {
             self.mrep("mgmt:recon:rejected:quantity");
             return Err("quantity");
         }
+        self.model_mgmt_clear_uncertain(&mint);
         self.model_mgmt_book(mint, order, tokens, price_fp);
         Ok(())
     }
@@ -552,6 +620,9 @@ impl Engine {
             price_fp,
             closed,
             net_lamports: net,
+            spent_lamports: 0,
+            cost_lamports: 0,
+            is_add: false,
         });
         if closed {
             self.model_mgmt_forget(&mint);
@@ -608,11 +679,498 @@ impl Engine {
         self.bankroll_balance()
             .saturating_sub(committed)
             .saturating_sub(pending)
+            .saturating_sub(self.model_mgmt_reserved(None))
     }
 
-    /// Whether management is complete. It is NOT while ADD is unsupported.
+    /// Whether the management ACTION SET is implemented (HOLD/REDUCE/EXIT/ADD). It says nothing about
+    /// profitability, AMM sell-economics validation, or held-state restoration.
     #[must_use]
     pub fn model_management_complete(&self) -> bool {
-        false
+        true
+    }
+}
+
+/// Executable state an ADD is planned against.
+#[derive(Debug, Clone, Copy)]
+enum AddState {
+    Curve { vsol: u64, vtok: u64 },
+    Amm { base: u64, quote: u64, vq: u64, lp: u32, pr: u32, cr: u32 },
+}
+
+/// A feasible ADD: the minimal notional that delivers the target, and the spend ceiling.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct AddPlan {
+    pub n: u64,
+    pub tokens: u64,
+    pub hi: u64,
+    pub fee_bps: u32,
+}
+
+impl AddState {
+    fn depth(self) -> u64 {
+        match self {
+            AddState::Curve { vsol, .. } => vsol,
+            AddState::Amm { quote, .. } => quote,
+        }
+    }
+    fn fee_bps(self) -> u32 {
+        match self {
+            AddState::Curve { vsol, .. } => crate::cost_model::venue_fee_bps_per_leg(vsol),
+            AddState::Amm { .. } => 0, // the pool takes its fee from the input: tokens out are net
+        }
+    }
+    /// Tokens delivered for a notional of `n` lamports, by the venue's own arithmetic.
+    fn tokens_for(self, n: u64) -> Option<u64> {
+        match self {
+            AddState::Curve { vsol, vtok } => crate::curve_fill::buy_tokens_out(vsol, vtok, n),
+            AddState::Amm { base, quote, vq, lp, pr, cr } => {
+                let f = pump_quant_protocol::pumpswap_event::buy_exact_quote_in(
+                    u128::from(base),
+                    u128::from(quote),
+                    u128::from(vq),
+                    u128::from(n),
+                    u128::from(lp),
+                    u128::from(pr),
+                    u128::from(cr),
+                )?;
+                u64::try_from(f.base_out).ok()
+            }
+        }
+    }
+}
+
+/// Largest `n` in `[0, hi]` with `ok(n)` true, for a predicate monotone-decreasing in `n`.
+fn largest_ok(hi: u64, ok: impl Fn(u64) -> bool) -> u64 {
+    let (mut lo, mut hi) = (0u64, hi);
+    while lo < hi {
+        let mid = lo + (hi - lo).div_ceil(2);
+        if ok(mid) {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    lo
+}
+
+impl Engine {
+    /// Lamports held back for pending ADD orders (remaining notional + fee + fixed leg cost), so a second
+    /// order cannot double-spend the same cash. `except` leaves one mint's own reservation out.
+    pub(super) fn model_mgmt_reserved(&self, except: Option<&[u8; 32]>) -> u64 {
+        self.model_mgmt
+            .orders
+            .iter()
+            .filter(|(m, o)| o.kind == MgmtKind::Add && Some(*m) != except)
+            .fold(0u64, |acc, (_, o)| {
+                let rem = o.max_spend.saturating_sub(o.spent);
+                let fee = (u128::from(rem) * u128::from(o.fee_bps)).div_ceil(10_000);
+                acc.saturating_add(rem)
+                    .saturating_add(u64::try_from(fee).unwrap_or(u64::MAX))
+                    .saturating_add(crate::cost_model::FIXED_LAMPORTS_PER_LEG)
+            })
+    }
+
+    fn model_mgmt_add_state(&self, mint: &[u8; 32], amm: bool, landing: Option<(i64, i64, u64)>) -> Result<AddState, &'static str> {
+        if amm {
+            let obs = self.model_cache.amm_obs(mint).filter(|o| match landing {
+                Some((lo, hi, slot)) => {
+                    o.ts_ms >= lo
+                        && o.ts_ms <= hi
+                        && o.slot > slot
+                        && self.model_swap_ctx == Some((o.ts_ms, o.slot))
+                }
+                None => true,
+            });
+            let Some(o) = obs else {
+                return Err("mgmt:refuse:add_no_executable_state");
+            };
+            let Some((Some((lp, pr, cr)), Some(vq), t)) = self.model_amm_econ.get(mint).copied() else {
+                return Err("mgmt:refuse:add_amm_economics_missing");
+            };
+            if landing.is_some() && t != o.ts_ms {
+                return Err("mgmt:refuse:add_amm_economics_missing");
+            }
+            Ok(AddState::Amm {
+                base: o.base_reserves_raw,
+                quote: o.quote_reserves_lamports,
+                vq,
+                lp,
+                pr,
+                cr,
+            })
+        } else {
+            let obs = self.model_cache.curve_obs(mint).filter(|o| match landing {
+                Some((lo, hi, slot)) => o.ts_ms >= lo && o.ts_ms <= hi && o.slot > slot,
+                None => true,
+            });
+            let Some(o) = obs else {
+                return Err("mgmt:refuse:add_no_executable_state");
+            };
+            Ok(AddState::Curve { vsol: o.v_sol_lamports, vtok: o.v_tokens })
+        }
+    }
+
+    /// Plan an ADD of `need` tokens against `state`: spend ceiling = min(free cash above the survival floor
+    /// net of this order's own reservation, own-impact limit, the order's own bound), minimal notional that
+    /// delivers `need`. Every refusal is a NAMED label; nothing is resized to fit.
+    fn model_mgmt_add_plan_at(
+        &self,
+        mint: &[u8; 32],
+        need: u64,
+        state: AddState,
+        order_bound: Option<u64>,
+    ) -> Result<AddPlan, &'static str> {
+        let fixed = crate::cost_model::FIXED_LAMPORTS_PER_LEG;
+        let fee_bps = state.fee_bps();
+        let floor = derive_survival_floor(
+            self.bankroll_origin.seed_lamports(),
+            self.cfg.floor_fraction_bps,
+        );
+        let balance = self.bankroll_balance();
+        let committed = u64::try_from(self.bankroll_committed).unwrap_or(u64::MAX);
+        let pending_entries: u64 = self
+            .model_orders
+            .values()
+            .fold(0u64, |a, o| a.saturating_add(o.clip_lamports));
+        let free = balance
+            .saturating_sub(committed)
+            .saturating_sub(pending_entries)
+            .saturating_sub(self.model_mgmt_reserved(Some(mint)));
+        // The survival floor applies to what is FREE after committed capital, pending entries and every
+        // other pending ADD reservation: total at-risk capital never eats into the floor. (Stricter than
+        // the entry gate's balance-based headroom, on purpose: an add increases risk on a held position.)
+        let avail = free.saturating_sub(floor);
+        let hi_cash = if avail <= fixed {
+            0
+        } else {
+            u64::try_from(
+                u128::from(avail - fixed) * 10_000 / (10_000 + u128::from(fee_bps)),
+            )
+            .unwrap_or(0)
+        };
+        let depth = state.depth();
+        let hi_impact = largest_ok(depth, |n| {
+            crate::impact_cap::own_impact_veto(
+                Some(depth),
+                n,
+                crate::impact_cap::CHAMPION_MAX_OWN_IMPACT_BPS,
+            )
+            .is_ok()
+        });
+        let bound = order_bound.unwrap_or(u64::MAX);
+        let hi = hi_cash.min(hi_impact).min(bound);
+        let feasible = state.tokens_for(hi).is_some_and(|t| t >= need);
+        if hi == 0 || !feasible {
+            return Err(if hi_cash <= hi_impact && hi_cash <= bound {
+                "mgmt:refuse:add_insufficient_funds"
+            } else if hi_impact <= bound {
+                "mgmt:refuse:add_own_impact_limit"
+            } else {
+                "mgmt:refuse:add_spend_bound"
+            });
+        }
+        // Minimal notional whose delivered tokens reach the target (tokens_for is non-decreasing).
+        let (mut lo, mut up) = (1u64, hi);
+        while lo < up {
+            let mid = lo + (up - lo) / 2;
+            if state.tokens_for(mid).is_some_and(|t| t >= need) {
+                up = mid;
+            } else {
+                lo = mid + 1;
+            }
+        }
+        let tokens = state.tokens_for(lo).ok_or("mgmt:refuse:add_unpriceable")?;
+        Ok(AddPlan { n: lo, tokens, hi, fee_bps })
+    }
+
+    /// Plan against the latest observed state (order placement).
+    pub(super) fn model_mgmt_add_plan(
+        &self,
+        mint: &[u8; 32],
+        need: u64,
+        order_bound: Option<u64>,
+        landing: Option<(i64, i64, u64)>,
+    ) -> Result<AddPlan, &'static str> {
+        let amm = self.model_cache.snapshot_venue_is_amm(mint);
+        let state = self.model_mgmt_add_state(mint, amm, landing)?;
+        self.model_mgmt_add_plan_at(mint, need, state, order_bound)
+    }
+
+    /// Fill a pending ADD against LANDING state: current executable economics, never entry price.
+    fn model_mgmt_try_add(&mut self, mint: [u8; 32], order: MgmtOrder, clock: i64) {
+        let landing = order.created_ms + MODEL_FILL_LANDING_MS;
+        let need = order.intended - order.filled;
+        if self.model_safety_blocked() {
+            // Defence in depth: the trip already removes unfilled ADDs.
+            self.model_mgmt.orders.remove(&mint);
+            self.mrep("mgmt:add_cancelled_safety_off");
+            return;
+        }
+        let state = match self.model_mgmt_add_state(
+            &mint,
+            order.amm,
+            Some((landing, clock, order.created_slot)),
+        ) {
+            Ok(s) => s,
+            Err(r) => {
+                if r == "mgmt:refuse:add_amm_economics_missing" {
+                    self.model_mgmt.orders.remove(&mint);
+                    self.mrep(r);
+                } else if clock - order.created_ms > MODEL_ORDER_TTL_MS {
+                    self.model_mgmt.orders.remove(&mint);
+                    self.mrep("mgmt:order_expired_unfilled");
+                }
+                return;
+            }
+        };
+        let remaining_bound = order.max_spend.saturating_sub(order.spent);
+        match self.model_mgmt_add_plan_at(&mint, need, state, Some(remaining_bound)) {
+            Ok(plan) => {
+                self.mrep(if order.amm {
+                    "mgmt:fill_amm_buy"
+                } else {
+                    "mgmt:fill_curve_buy"
+                });
+                let px = (u128::from(plan.n) * 1_000_000_000).div_ceil(u128::from(plan.tokens.max(1)));
+                let px = u64::try_from(px).unwrap_or(u64::MAX);
+                self.model_mgmt_book_add(mint, order, plan.tokens, plan.n, px, plan.fee_bps);
+            }
+            Err(r) => {
+                self.model_mgmt.orders.remove(&mint);
+                self.mrep(r);
+            }
+        }
+    }
+
+    fn model_mgmt_book_add(
+        &mut self,
+        mint: [u8; 32],
+        order: MgmtOrder,
+        tokens: u64,
+        spent: u64,
+        price_fp: u64,
+        fee_bps: u32,
+    ) {
+        let fee = u64::try_from(u128::from(spent) * u128::from(fee_bps) / 10_000).unwrap_or(0);
+        let cost = spent
+            .saturating_add(fee)
+            .saturating_add(crate::cost_model::FIXED_LAMPORTS_PER_LEG);
+        if let Err(r) = self
+            .positions
+            .add_filled(&mint, tokens, spent, cost, price_fp)
+        {
+            self.mrep(match r {
+                crate::position::AddRefusal::NotHeld => "mgmt:refuse:not_held",
+                crate::position::AddRefusal::InventoryUnknown => "mgmt:refuse:inventory_unknown",
+                crate::position::AddRefusal::ZeroQuantity => "mgmt:refuse:zero_quantity",
+                crate::position::AddRefusal::NoPrice => "mgmt:refuse:no_price",
+                crate::position::AddRefusal::Overflow => "mgmt:refuse:add_overflow",
+            });
+            self.model_mgmt.orders.remove(&mint);
+            return;
+        }
+        // Cash: the all-in cost joins the committed capital and the attribution, so a later close releases
+        // exactly what was committed. Nothing realized changes on a buy.
+        self.bankroll_committed = self.bankroll_committed.saturating_add(u128::from(cost));
+        if let Some(att) = self.open_lane.get_mut(&mint) {
+            att.entry_spend = att.entry_spend.saturating_add(cost);
+        }
+        self.model_mgmt.fills.push(MgmtFill {
+            order_id: order.id,
+            mint,
+            tokens,
+            price_fp,
+            closed: false,
+            net_lamports: 0,
+            spent_lamports: spent,
+            cost_lamports: cost,
+            is_add: true,
+        });
+        if let Some(mp) = self.model_mgmt.pos.get_mut(&mint) {
+            mp.version += 1;
+        }
+        let mut done = false;
+        if let Some(o) = self.model_mgmt.orders.get_mut(&mint) {
+            o.filled += tokens;
+            o.spent += spent;
+            o.version += 1;
+            done = o.filled >= o.intended;
+        }
+        if done {
+            self.model_mgmt.orders.remove(&mint);
+            self.mrep("mgmt:fill:add_complete");
+        } else {
+            self.mrep("mgmt:fill:add_partial_remainder_pending");
+        }
+    }
+
+    /// Apply a RECONCILED ADD fill: `tokens` delivered for `spent` notional lamports. Matched by order id;
+    /// quantity and spend are checked against what the order still allows. The fee is the venue's rate at
+    /// the latest observed state (unknown => refused, never zero).
+    ///
+    /// # Errors
+    /// A named refusal; nothing changes.
+    pub fn model_mgmt_apply_reconciled_add_fill(
+        &mut self,
+        mint: [u8; 32],
+        order_id: u64,
+        tokens: u64,
+        spent: u64,
+    ) -> Result<(), &'static str> {
+        let Some(order) = self.model_mgmt.orders.get(&mint).copied() else {
+            self.mrep("mgmt:recon:rejected:no_pending_order");
+            return Err("no_pending_order");
+        };
+        if order.id != order_id {
+            self.mrep("mgmt:recon:rejected:order_id_mismatch");
+            return Err("order_id_mismatch");
+        }
+        if order.kind != MgmtKind::Add {
+            self.mrep("mgmt:recon:rejected:wrong_kind");
+            return Err("wrong_kind");
+        }
+        if tokens == 0 || spent == 0 || tokens > order.intended - order.filled {
+            self.mrep("mgmt:recon:rejected:quantity");
+            return Err("quantity");
+        }
+        if spent > order.max_spend.saturating_sub(order.spent) {
+            self.mrep("mgmt:recon:rejected:spend_bound");
+            return Err("spend_bound");
+        }
+        let px = u64::try_from((u128::from(spent) * 1_000_000_000).div_ceil(u128::from(tokens)))
+            .map_err(|_| "price_overflow")?;
+        self.model_mgmt_clear_uncertain(&mint);
+        self.model_mgmt_book_add(mint, order, tokens, spent, px, order.fee_bps);
+        Ok(())
+    }
+
+    /// Mark a pending management order's acknowledgement UNCERTAIN: it stays pending and unresolved.
+    pub fn model_mgmt_mark_ack_uncertain(&mut self, mint: &[u8; 32], order_id: u64) -> bool {
+        match self.model_mgmt.orders.get_mut(mint) {
+            Some(o) if o.id == order_id => {
+                o.uncertain = true;
+                self.mrep("mgmt:ack_uncertain");
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Operator/chain evidence that an uncertain order did NOT execute: it is removed, nothing booked.
+    pub fn model_mgmt_resolve_uncertain_not_executed(&mut self, mint: &[u8; 32], order_id: u64) -> bool {
+        if self
+            .model_mgmt
+            .orders
+            .get(mint)
+            .is_some_and(|o| o.id == order_id && o.uncertain)
+        {
+            self.model_mgmt.orders.remove(mint);
+            self.mrep("mgmt:uncertain_resolved_not_executed");
+            true
+        } else {
+            false
+        }
+    }
+
+    /// A reconciled report (fill) resolves uncertainty for the order it names.
+    pub(super) fn model_mgmt_clear_uncertain(&mut self, mint: &[u8; 32]) {
+        if let Some(o) = self.model_mgmt.orders.get_mut(mint) {
+            o.uncertain = false;
+        }
+    }
+
+    /// Unfilled/partially-filled ADD remainders cancelled by a SAFETY_OFF trip (risk-increasing intents).
+    /// Uncertain orders are preserved for reconciliation. Returns how many were cancelled.
+    pub(super) fn model_mgmt_cancel_adds(&mut self) -> usize {
+        let victims: Vec<[u8; 32]> = self
+            .model_mgmt
+            .orders
+            .iter()
+            .filter(|(_, o)| o.kind == MgmtKind::Add && !o.uncertain)
+            .map(|(m, _)| *m)
+            .collect();
+        for m in &victims {
+            self.model_mgmt.orders.remove(m);
+            self.mrep("safety:add_order_invalidated");
+        }
+        victims.len()
+    }
+}
+
+#[cfg(test)]
+mod add_planner_tests {
+    use super::*;
+    use crate::config::Config;
+
+    fn engine(bankroll: u64) -> Engine {
+        let mut c = Config::dev_portable();
+        c.bankroll_initial_lamports = bankroll;
+        Engine::new(c, RunMode::Paper)
+    }
+    const M: [u8; 32] = [7; 32];
+    // A deep, realistic curve: vsol 37.9 SOL, vtok 849e12.
+    fn curve(vsol: u64) -> AddState {
+        AddState::Curve { vsol, vtok: 849_000_000_000_000 }
+    }
+
+    #[test]
+    fn minimal_notional_reaches_the_target_and_is_independent_of_any_entry_price() {
+        let e = engine(2_000_000_000);
+        let st = curve(37_900_000_000);
+        let need = 5_000_000_000_000; // ~0.22 SOL on this book, inside the 90 bp impact limit
+        let p = e.model_mgmt_add_plan_at(&M, need, st, None).expect("feasible");
+        assert!(p.tokens >= need);
+        // minimal: one lamport less does NOT reach the target
+        assert!(st.tokens_for(p.n - 1).map_or(true, |t| t < need));
+        // no entry price is an input at all: same state, same result
+        let q = e.model_mgmt_add_plan_at(&M, need, st, None).unwrap();
+        assert_eq!((p.n, p.tokens), (q.n, q.tokens));
+    }
+
+    #[test]
+    fn insufficient_funds_is_a_named_refusal_and_nothing_is_resized() {
+        // 1 SOL bankroll, 25% floor => 0.75 SOL spendable. A target that needs more than that on a
+        // very deep book (impact not binding) must REFUSE, not shrink to what cash allows.
+        let e = engine(1_000_000_000);
+        let deep = curve(10_000_000_000_000);
+        let need = 800_000_000_000_000_u64.min(849_000_000_000_000 / 2);
+        let r = e.model_mgmt_add_plan_at(&M, need, deep, None);
+        assert_eq!(r.unwrap_err(), "mgmt:refuse:add_insufficient_funds");
+    }
+
+    #[test]
+    fn own_impact_limit_is_a_named_refusal() {
+        // Thin 10 SOL book: the 90 bp impact limit admits ~0.09 SOL; a half-inventory target needs more.
+        let e = engine(2_000_000_000);
+        let thin = curve(10_000_000_000);
+        let r = e.model_mgmt_add_plan_at(&M, 100_000_000_000_000, thin, None);
+        assert_eq!(r.unwrap_err(), "mgmt:refuse:add_own_impact_limit");
+    }
+
+    #[test]
+    fn a_remaining_spend_bound_is_a_named_refusal_not_a_silent_cap() {
+        let e = engine(2_000_000_000);
+        let st = curve(37_900_000_000);
+        let r = e.model_mgmt_add_plan_at(&M, 5_000_000_000_000, st, Some(1_000));
+        assert_eq!(r.unwrap_err(), "mgmt:refuse:add_spend_bound");
+    }
+
+    #[test]
+    fn a_pending_add_reserves_cash_so_a_second_order_cannot_double_spend() {
+        let mut e = engine(1_000_000_000);
+        let deep = curve(10_000_000_000_000);
+        let need = 42_000_000_000; // ~0.5 SOL on the 10,000 SOL book: one fits in 0.75 SOL, two do not
+        let first = e.model_mgmt_add_plan_at(&M, need, deep, None).expect("fits alone");
+        e.model_mgmt.orders.insert(
+            M,
+            MgmtOrder {
+                id: 1, kind: MgmtKind::Add, intended: need, filled: 0, created_ms: 0, created_slot: 0,
+                version: 1, amm: false, max_spend: first.hi, spent: 0, fee_bps: first.fee_bps, uncertain: false,
+            },
+        );
+        assert!(e.model_mgmt_reserved(None) >= first.hi, "the reservation is held back");
+        let other = [8u8; 32];
+        let r = e.model_mgmt_add_plan_at(&other, need, deep, None);
+        assert_eq!(r.unwrap_err(), "mgmt:refuse:add_insufficient_funds", "second order sees the reservation");
     }
 }
