@@ -155,9 +155,13 @@ pub struct BuyEvent {
     pub virtual_quote_reserves: Option<u64>,
 }
 
-/// Payload offset of `virtual_quote_reserves` for the event layouts VERIFIED against real transactions
-/// (buy 472 and 457 bytes, sell 409 bytes: 27 on-chain events, every value equal to the pool's own
-/// account field). Any other length is `None` -> the quote is unsupported, not guessed.
+/// Payload offset of `virtual_quote_reserves`, keyed by (event kind, payload length). The kind is the
+/// 8-byte Anchor event discriminator already checked by `decode_buy_event`/`decode_sell_event`
+/// (`BUY_EVENT_DISCRIMINATOR` / `SELL_EVENT_DISCRIMINATOR`), so an offset is never applied on length
+/// alone. The chain exposes NO program-version field on an event: the layout is identified only by
+/// discriminator + length, and the three layouts below are the ONLY ones observed (see the validation
+/// ledger `tests/validation_ledger.json`). Unknown length => `None` => the quote is unsupported,
+/// never guessed. Evidence: 27 on-chain events, each equal to the pool account's own field.
 #[must_use]
 pub const fn virtual_quote_offset(is_buy: bool, payload_len: usize) -> Option<usize> {
     match (is_buy, payload_len) {
@@ -177,7 +181,10 @@ pub struct ExactQuoteInFill {
     pub base_out: u128,
 }
 
-/// `buy_exact_quote_in` arithmetic, derived from verified program semantics (not fitted):
+/// `buy_exact_quote_in` arithmetic. EVIDENCE STATUS: an EMPIRICALLY INFERRED integer rule, not source
+/// verified: no authoritative program implementation was available to check it against. It matched
+/// 14 of the 15 real `buy_exact_quote_in` transactions in the ledger (8 discovery + 6 held-out; the
+/// 15th is refused by the fee identity). Treat as: fee-ordering and `net - 1` are inferred.
 ///
 /// 1. fees are charged ON TOP of the net input, each rounded up:
 ///    `gross = net + ceil(net*lp/1e4) + ceil(net*protocol/1e4) + ceil(net*creator/1e4)`;
@@ -185,9 +192,9 @@ pub struct ExactQuoteInFill {
 /// 2. the pool prices against `effective_quote = quote_vault + virtual_quote_reserves`;
 /// 3. `base_out = floor(base_reserve * (net - 1) / (effective_quote + net - 1))`.
 ///
-/// Step 3's `net - 1` is an OBSERVED program behaviour: it reproduced all 14 of 15 real buys
-/// (the 15th carries an extra fee component this model does not decompose and is refused by the
-/// caller via the event's fee identity). Returns `None` for any non-positive or overflowing input.
+/// Step 3's `net - 1` is an OBSERVED behaviour inferred from matching outputs (not renamed as source
+/// verification). Matching the ORIGINAL swap amount is necessary, not sufficient, for quoting a
+/// different size: see the amount-boundary / monotonicity / independent-reference tests. Returns `None` for any non-positive or overflowing input.
 #[must_use]
 pub fn buy_exact_quote_in(
     base_reserve: u128,

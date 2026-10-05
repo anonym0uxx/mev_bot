@@ -204,6 +204,24 @@ pub fn decode_amm_swaps(tx: &LaserStreamTx) -> (Vec<AmmSwapFacts>, u32) {
         // (quote). The mint is the non-WSOL one; `canonical` additionally requires the pool to be
         // the PDA derived for that mint with WSOL as QUOTE (so reversed / USDC / other-index pools
         // are never mistaken for the migration pool).
+        // ASSOCIATION GUARD: an event carries its pool but no instruction index. If more than one
+        // swap instruction in this transaction names the same pool (or the transaction holds more
+        // than one swap event for it), which event belongs to which instruction is ambiguous, so
+        // the event is EXCLUDED and counted. Another instruction's economics are never attached.
+        let swap_ixs_on_pool = tx
+            .instructions
+            .iter()
+            .filter(|sib| {
+                sib.program_id == PUMP_SWAP_PROGRAM
+                    && sib.data.get(0..8)
+                        != Some(&[0xe4, 0x45, 0xa5, 0x2e, 0x51, 0xcb, 0x9a, 0x1d][..])
+                    && account_key_at(sib, tx, 0) == Some(pool)
+            })
+            .count();
+        if swap_ixs_on_pool > 1 {
+            excluded += 1;
+            continue;
+        }
         let mut found: Option<([u8; 32], bool, bool)> = None;
         for sib in &tx.instructions {
             if sib.program_id != PUMP_SWAP_PROGRAM
@@ -1688,5 +1706,29 @@ mod tests {
             }
             other => panic!("not a trade: {other:?}"),
         }
+    }
+
+    /// SYNTHETIC failure-handling test (not a real multi-swap transaction): a real single-swap fixture
+    /// with its swap instruction + event duplicated. Association is then ambiguous, so the events are
+    /// excluded and counted rather than attached to either instruction.
+    #[test]
+    fn ambiguous_multi_swap_association_is_excluded_not_guessed() {
+        let raw = include_str!("../tests/fixtures/pumpswap_rpc_txs.json");
+        let v: pq_stream_capture::json::Value = pq_stream_capture::json::parse(raw).unwrap();
+        let item = &v.as_array().unwrap()[0];
+        let line = pq_stream_capture::json::serialize(item.get("line").unwrap());
+        let Some(LaserStreamUpdate::Transaction(mut tx)) = parse_ndjson_line(&line) else {
+            panic!("fixture line must parse");
+        };
+        let (single, _) = decode_amm_swaps(&tx);
+        assert_eq!(single.len(), 1);
+        let dup: Vec<_> = tx.instructions.clone();
+        tx.instructions.extend(dup);
+        let (facts, excluded) = decode_amm_swaps(&tx);
+        assert!(
+            facts.is_empty(),
+            "no economics may be attached under ambiguity"
+        );
+        assert!(excluded >= 1, "the ambiguity is counted");
     }
 }

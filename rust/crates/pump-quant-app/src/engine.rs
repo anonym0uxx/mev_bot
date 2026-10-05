@@ -871,6 +871,11 @@ pub struct Engine {
     model_terminal: BTreeMap<[u8; 32], model_admit::ReconcileOutcome>,
     /// Every paper-model fill with its validation status (routing simulation vs assessable).
     model_fills: Vec<model_admit::ModelFillRecord>,
+    /// Mints whose open position is a paper-model routing fill that is NOT assessable. Their exits
+    /// settle cash but feed no assessment consumer (see `book_exit`).
+    model_quarantine: std::collections::BTreeSet<[u8; 32]>,
+    /// Exits excluded from every economic assessment, with the reason. Visible, never zero-filled.
+    model_excluded_exits: Vec<model_admit::ExcludedExit>,
     model_recon_faults: BTreeMap<[u8; 32], Vec<model_admit::ReconcileOutcome>>,
     /// Per-mint (fee parts, virtual quote, swap time) of the latest swap: executable economics.
     model_amm_econ: BTreeMap<[u8; 32], (Option<(u32, u32, u32)>, Option<u64>, i64)>,
@@ -1480,6 +1485,8 @@ impl Engine {
             model_amm_fee: BTreeMap::new(),
             model_terminal: BTreeMap::new(),
             model_fills: Vec::new(),
+            model_quarantine: std::collections::BTreeSet::new(),
+            model_excluded_exits: Vec::new(),
             model_recon_faults: BTreeMap::new(),
             model_amm_econ: BTreeMap::new(),
             model_other_pools: BTreeMap::new(),
@@ -5452,10 +5459,17 @@ impl Engine {
                 crate::cost_model::ATA_RENT_LAMPORTS - crate::cost_model::ATA_CLOSE_LAMPORTS,
             ));
         }
-        let attribution = self
-            .open_lane
-            .get(&e.mint)
-            .map(|a| (a.lane, a.discovery_lane, a.archetype, a.latency));
+        // ASSESSABILITY GUARD: a paper-model routing fill (quote or landing unvalidated) settles cash
+        // but must not reach lane/disc performance, reconciliation, tape, analytics, markouts, the
+        // tournament, expected-move, edge or brain memory. Those are the assessment/promotion feeds.
+        let quarantined = self.model_quarantine.contains(&e.mint);
+        let attribution = if quarantined {
+            None
+        } else {
+            self.open_lane
+                .get(&e.mint)
+                .map(|a| (a.lane, a.discovery_lane, a.archetype, a.latency))
+        };
         if let Some((lane, discovery_lane, archetype, mut latency)) = attribution {
             // Saturate in the CORRECT DIRECTION: `try_from` fails at BOTH ends, so
             // `unwrap_or(i64::MAX)` would turn an out-of-range LOSS into a maximal
@@ -5502,7 +5516,10 @@ impl Engine {
         // §47/§54 LAW 17: register this exit for post-exit markout sampling at its
         // fill mark; the forward samples are taken at the mandated ns horizons on
         // the reflection cadence. Report-only — never touches the journal digest.
-        if let Some(exit_px) = self.numeric.latest_price_fp(DomainMint::from_bytes(e.mint)) {
+        if let (false, Some(exit_px)) = (
+            quarantined,
+            self.numeric.latest_price_fp(DomainMint::from_bytes(e.mint)),
+        ) {
             self.analytics
                 .record_exit_markout(e.mint, exit_px, self.now, e.reason.code());
         }
@@ -5536,7 +5553,7 @@ impl Engine {
                 // lives in the gate. The realized net also becomes a markout for
                 // every author who called this mint (§82), which is what turns
                 // "who called it" into "who actually earns".
-                if let Some(be) = &att.brain {
+                if let (false, Some(be)) = (quarantined, &att.brain) {
                     self.brain.record_exit(
                         be,
                         total,
@@ -5551,6 +5568,21 @@ impl Engine {
                 self.bankroll_committed = self
                     .bankroll_committed
                     .saturating_sub(u128::from(entry_spend));
+                if quarantined {
+                    self.model_quarantine.remove(&e.mint);
+                    self.model_excluded_exits.push(model_admit::ExcludedExit {
+                        mint: e.mint,
+                        net_lamports: e.net_lamports,
+                        reason: "routing_fill:landing_unvalidated",
+                    });
+                    self.theses.remove(&e.mint);
+                    self.thesis_adverse.remove(&e.mint);
+                    let balance = self.bankroll_balance();
+                    if balance > self.bankroll_hwm {
+                        self.bankroll_hwm = balance;
+                    }
+                    return;
+                }
                 self.social_earn.record_outcome(&e.mint, total);
                 // LAW D5: fold the whole position's realized net into the paid
                 // Discord room that surfaced this mint — the per-source outcome

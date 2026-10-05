@@ -84,6 +84,15 @@ pub struct FillReport {
     pub reserve_sol_lamports: u64,
 }
 
+/// A routing-fill exit kept OUT of every economic assessment (visible, with its reason).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExcludedExit {
+    pub mint: [u8; 32],
+    /// Recorded for audit only; never summed into PnL and never treated as a zero return.
+    pub net_lamports: i128,
+    pub reason: &'static str,
+}
+
 /// One paper-model fill and what is (not) established about it. Assessment, evaluation and
 /// promotion consumers MUST read [`Engine::model_assessable_fills`], never positions directly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -808,11 +817,15 @@ impl Engine {
         };
         self.open_pending(&pe);
         if self.open_lane.contains_key(&mint) {
+            let (quote_validated, landing_validated) = (order.amm, false);
+            if !(quote_validated && landing_validated) {
+                self.model_quarantine.insert(mint);
+            }
             self.model_fills.push(ModelFillRecord {
                 mint,
                 amm: order.amm,
-                quote_validated: order.amm,
-                landing_validated: false,
+                quote_validated,
+                landing_validated,
                 from_reconcile: order.confirmed.is_some(),
             });
             self.mrep(if order.amm {
@@ -906,6 +919,12 @@ impl Engine {
             .filter(|f| f.quote_validated && f.landing_validated)
             .copied()
             .collect()
+    }
+
+    /// Exits excluded from assessment, with reasons (routing visibility; not a return series).
+    #[must_use]
+    pub fn model_excluded_exits(&self) -> &[ExcludedExit] {
+        &self.model_excluded_exits
     }
 
     /// Every model fill with its validation flags (routing simulation included, labelled).

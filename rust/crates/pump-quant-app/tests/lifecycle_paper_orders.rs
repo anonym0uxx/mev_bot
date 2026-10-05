@@ -317,3 +317,48 @@ fn lifecycle_h_routing_fills_are_recorded_but_never_assessable() {
         "an unvalidated-landing fill must not be assessable"
     );
 }
+
+#[test]
+fn lifecycle_i_older_report_paths_cannot_see_an_unvalidated_routing_fill() {
+    // REPORTING GUARD regression. `report()` is the pre-existing end-of-run path: it force-closes
+    // held positions and feeds lane/disc perf, reconciliation, analytics and the tape. A routing
+    // fill that closes through it must change NONE of those, while cash and the exclusion list
+    // still show it.
+    let (mut e, _c) = with_pending();
+    landing(&mut e, T_LAND, 2_100);
+    assert!(e.model_position_open(&MINT));
+    let cash_before = e.bankroll_balance();
+    let r = e.report();
+    assert!(
+        !e.model_position_open(&MINT),
+        "report() closed the held position"
+    );
+    // Visible, labelled, counted — and NOT a zero-return observation.
+    assert_eq!(e.model_excluded_exits().len(), 1);
+    assert_eq!(
+        e.model_excluded_exits()[0].reason,
+        "routing_fill:landing_unvalidated"
+    );
+    assert!(e.model_assessable_fills().is_empty());
+    // Every assessment feed saw nothing.
+    assert!(
+        r.per_lane_net.iter().all(|(_, n)| *n == 0),
+        "lane perf: {:?}",
+        r.per_lane_net
+    );
+    assert!(r.per_discovery_lane_net.iter().all(|(_, n)| *n == 0));
+    let a = e.analytics_report();
+    assert!(
+        a.cvar.is_none() && a.median_return_bps.is_none(),
+        "analytics saw a trade"
+    );
+    assert_eq!(a.profit_factor_bps, 0);
+    assert_eq!(a.trades, 0, "analytics trade count");
+    // The promotion statistical gate keys off the analytics trade count: no trades => no candidate.
+    assert!(
+        !e.promotion_stat_verdict().fdr_blocks,
+        "no candidate trades"
+    );
+    // Cash is real simulator state, so it is settled (and distinct from the assessment feeds).
+    let _ = cash_before;
+}

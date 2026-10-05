@@ -86,3 +86,82 @@ fn legacy_buy_instruction_is_unsupported_here() {
         .count();
     assert!(n >= 10, "{n}");
 }
+
+// ---- QUOTE ARITHMETIC at sizes other than the observed swap. The independent reference is a plain
+// linear scan for the net input; it shares no code with the binary-search implementation. This is a
+// self-consistency check of the INFERRED rule at other amounts, NOT program equivalence.
+mod boundaries {
+    use pump_quant_protocol::pumpswap_event::buy_exact_quote_in;
+    fn ceil(n: u128, bps: u128) -> u128 {
+        (n * bps + 9_999) / 10_000
+    }
+    fn ref_quote(
+        base: u128,
+        vault: u128,
+        vq: u128,
+        gross: u128,
+        l: u128,
+        p: u128,
+        c: u128,
+    ) -> Option<(u128, u128)> {
+        let mut net = 0u128;
+        for n in 1..=gross {
+            if n + ceil(n, l) + ceil(n, p) + ceil(n, c) <= gross {
+                net = n
+            }
+        }
+        if net < 2 {
+            return None;
+        }
+        let out = base * (net - 1) / (vault + vq + net - 1);
+        if out == 0 {
+            None
+        } else {
+            Some((net, out))
+        }
+    }
+    const BASE: u128 = 3_000_000_000_000;
+    const VAULT: u128 = 40_000_000_000;
+    const VQ: u128 = 17_584_505_288;
+
+    #[test]
+    fn agrees_with_the_independent_reference_on_small_and_boundary_inputs() {
+        for &(l, p, c) in &[(20u128, 5, 0), (20, 5, 30), (25, 5, 95), (0, 0, 0)] {
+            for gross in (1u128..=400).chain([9_999, 10_000, 10_001, 12_345, 99_999, 100_000]) {
+                let got = buy_exact_quote_in(BASE, VAULT, VQ, gross, l, p, c)
+                    .map(|f| (f.net_quote_in, f.base_out));
+                assert_eq!(
+                    got,
+                    ref_quote(BASE, VAULT, VQ, gross, l, p, c),
+                    "gross={gross} fees=({l},{p},{c})"
+                );
+            }
+        }
+    }
+    #[test]
+    fn spend_never_exceeds_gross_and_output_is_monotonic_and_bounded() {
+        let mut prev = 0u128;
+        for k in 0..400u128 {
+            let gross = 1 + k * 7_919_000;
+            if let Some(f) = buy_exact_quote_in(BASE, VAULT, VQ, gross, 20, 5, 30) {
+                let n = f.net_quote_in;
+                let spent = n
+                    + (n * 20).div_ceil(10_000)
+                    + (n * 5).div_ceil(10_000)
+                    + (n * 30).div_ceil(10_000);
+                assert!(spent <= gross, "overspend at {gross}");
+                assert!(f.base_out >= prev, "non-monotonic at {gross}");
+                assert!(f.base_out < BASE, "drains the whole base reserve");
+                prev = f.base_out;
+            }
+        }
+    }
+    #[test]
+    fn reserve_limits_overflow_and_degenerate_inputs_refuse() {
+        assert!(buy_exact_quote_in(BASE, VAULT, VQ, 0, 20, 5, 30).is_none());
+        assert!(buy_exact_quote_in(BASE, VAULT, VQ, 1, 20, 5, 30).is_none());
+        assert!(buy_exact_quote_in(0, VAULT, VQ, 1_000_000, 20, 5, 30).is_none());
+        assert!(buy_exact_quote_in(u128::MAX, VAULT, VQ, 1_000_000_000, 20, 5, 30).is_none());
+        assert!(buy_exact_quote_in(BASE, VAULT, VQ, u128::MAX, 20, 5, 30).is_none());
+    }
+}
