@@ -454,3 +454,72 @@ fn amm_fixture_funnel_pools_discovered_ready_dispatched() {
     // market that migrates curve -> pool appears under both venues there. That is why this assertion
     // uses the registry funnel.
 }
+
+
+// ---- AMM MANAGEMENT plumbing (labelled: ROUTING/ACCOUNTING only, never profitability evidence).
+// AMM sell-side fee economics are UNVERIFIED, so every fill here stays `assessable == false` and no PnL
+// from it may be cited. What is exercised: identity/state from the captured pool plane, order intent,
+// reconciled fill, partial inventory change, and the wallet identity.
+
+struct MgmtStub {
+    asks: Arc<AtomicUsize>,
+}
+impl ModelSource for MgmtStub {
+    fn complete(&self, _s: &str, u: &str) -> Result<String, InferenceError> {
+        if u.starts_with("Decide the next action for a position you already hold") {
+            let n = self.asks.fetch_add(1, Ordering::SeqCst);
+            return Ok(if n == 0 {
+                "DECISION: REDUCE\nINVALIDATION: none\nEVIDENCE: stub".to_string()
+            } else if n == 1 {
+                "DECISION: EXIT\nINVALIDATION: none\nEVIDENCE: stub".to_string()
+            } else {
+                "DECISION: HOLD\nINVALIDATION: none\nEVIDENCE: stub".to_string()
+            });
+        }
+        if u.contains("venue=pumpswap") {
+            Ok(BUY.to_string())
+        } else {
+            Ok("DECISION: SKIP\nSIZE: NONE\nINVALIDATION: none\nEVIDENCE: stub".to_string())
+        }
+    }
+}
+
+#[test]
+fn amm_management_reduce_then_exit_runs_through_the_real_engine_with_unassessed_economics() {
+    let mut cfg = Config::dev_portable();
+    cfg.bankroll_initial_lamports = 2_000_000_000;
+    let asks = Arc::new(AtomicUsize::new(0));
+    let mut e = Engine::new(cfg, RunMode::Paper);
+    e.enable_paper_model(MgmtStub { asks: Arc::clone(&asks) });
+    let mut last_tick = 0i64;
+    for line in FIXTURE.lines() {
+        let v: serde_json::Value = serde_json::from_str(line).unwrap();
+        let m = DomainMint::from_bytes(hex32(v["m"].as_str().unwrap()));
+        let t = v["t"].as_i64().unwrap();
+        feed_line(&mut e, &v, m, t);
+        if t - last_tick >= 1_000 {
+            last_tick = t;
+            e.tick(AppEvent::Tick);
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    }
+    for _ in 0..60 {
+        e.tick(AppEvent::Tick);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let r = e.model_lane_report().clone();
+    assert!(rep(&e, "fill:position_opened_amm") >= 1, "{r:?}");
+    // Every fill on this path is an AMM fill with UNVALIDATED landing: nothing is assessable.
+    assert!(e.model_assessable_fills().is_empty());
+    assert!(e.model_all_fills().iter().all(|f| f.amm));
+    // Management asked at least once on the AMM position and the answers came back as valid verdicts.
+    assert!(rep(&e, "mgmt:dispatched") >= 1, "management was never asked on the AMM position: {r:?}");
+    // REDUCE then EXIT each created ONE order and were each booked from a reconciled fill; the position closed
+    // only on the EXIT fill. The replay is time-compressed, so some answers land late and are DISCARDED
+    // (counted) - they never execute.
+    assert_eq!(rep(&e, "mgmt:order:reduce"), 1, "{r:?}");
+    assert_eq!(rep(&e, "mgmt:order:exit"), 1, "{r:?}");
+    assert_eq!(rep(&e, "mgmt:fill:closed"), 1, "{r:?}");
+    // The unverified AMM sell economics are FLAGGED on every AMM sell fill, so no PnL from them is citable.
+    assert_eq!(rep(&e, "mgmt:fill_amm_sell_fee_unverified"), 2, "{r:?}");
+}
