@@ -2001,6 +2001,19 @@ fn main() -> ExitCode {
         std::collections::HashMap::new();
 
     let mut reserve_tracker: HashMap<[u8; 32], ReserveSnapshot> = HashMap::new();
+    // Who owns pump.fun CURVE trade history. `events` (default): verified-successful TradeEvents
+    // only; snapshot deltas then supply reserve state and reconciliation, never trades, and the
+    // instruction-arg prints (no price, net quantities) are not queued as curve trades. A feed that
+    // cannot supply `meta.tx_ok` therefore yields named gaps, not silent snapshot-fed history.
+    let curve_trade_source = match std::env::var("PQ_CURVE_TRADE_SOURCE").as_deref() {
+        Ok("snapshot_delta") => pump_quant_junction::curve_trade_events::CurveTradeSource::SnapshotDelta,
+        _ => pump_quant_junction::curve_trade_events::CurveTradeSource::Events,
+    };
+    let mut curve_dedup = pump_quant_junction::curve_trade_events::EventDedup::new(65_536);
+    let mut curve_ev_produced: u64 = 0;
+    let mut curve_ev_duplicates: u64 = 0;
+    let mut curve_ev_incomplete: u64 = 0;
+    let mut curve_ev_incomplete_unnamed: u64 = 0;
     // The instruction prints' wallets, waiting for their reserve prints (see `trade_join`).
     let mut trade_join = TradeJoin::new(TRADE_JOIN_CAP, TRADE_JOIN_HORIZON_SLOTS);
     // Wangr Rev-14: tracks which mints we've already emitted MarketAuxiliary
@@ -2697,6 +2710,66 @@ fn main() -> ExitCode {
                         tx.fee_lamports,
                         tx.cu_consumed,
                     );
+                    use pump_quant_junction::curve_trade_events::{ingest_curve_tx, EventIngest};
+                    let events_mode = curve_trade_source
+                        == pump_quant_junction::curve_trade_events::CurveTradeSource::Events;
+                    let events: Vec<_> = if events_mode {
+                        // Curve instruction-arg prints are NOT curve trades in event mode.
+                        events
+                            .into_iter()
+                            .filter(|e| {
+                                !(e.source == ProvenanceSource::LaserStream
+                                    && matches!(
+                                        e.event,
+                                        AppEvent::MarketTrade {
+                                            venue: Some(pump_quant_app::event::TradeVenue::PumpFun),
+                                            ..
+                                        }
+                                    ))
+                            })
+                            .collect()
+                    } else {
+                        events
+                    };
+                    if events_mode {
+                        let mut ev_out = Vec::new();
+                        match ingest_curve_tx(&tx, &mut curve_dedup, &mut ev_out) {
+                            EventIngest::Nothing => {}
+                            EventIngest::Produced { events: n, duplicates: d } => {
+                                curve_ev_produced += n as u64;
+                                curve_ev_duplicates += d as u64;
+                            }
+                            EventIngest::Incomplete(reason) => {
+                                curve_ev_incomplete += 1;
+                                // Named gap per affected mint; no snapshot fallback.
+                                let mut named = false;
+                                for c in &classified {
+                                    let m = match c {
+                                        pump_quant_junction::laserstream::PumpInstruction::Buy { mint, .. }
+                                        | pump_quant_junction::laserstream::PumpInstruction::Sell { mint, .. } => Some(*mint),
+                                        _ => None,
+                                    };
+                                    if let (Some(m), Some(ms)) = (m, tx.recv_unix_ms) {
+                                        engine.note_missing_observation(
+                                            m,
+                                            ms,
+                                            pump_quant_app::decision_join::MissingKind::PossibleTrade,
+                                            format!("tx_event:{reason}:{}", tx.slot),
+                                        );
+                                        named = true;
+                                    }
+                                }
+                                if !named {
+                                    curve_ev_incomplete_unnamed += 1;
+                                }
+                            }
+                        }
+                        for pe in ev_out {
+                            if !queue.push(pe, tx.slot) {
+                                stats.junction_overflow_dropped += 1;
+                            }
+                        }
+                    }
                     // The instruction print is the ONLY one that knows the wallet. Note it
                     // against (mint, slot) so the reserve-delta print — which knows the price —
                     // can claim it when it is derived.
@@ -2809,14 +2882,23 @@ fn main() -> ExitCode {
                             // The account notification's wire receive time is the print's
                             // clock: this is the only producer with a real `price_fp`, so it
                             // is the feed the live state ledger's windows key on.
-                            if let Some(mut trade_pe) = derive_market_trade_from_delta(
-                                &mb,
-                                prev,
-                                &curve,
-                                slot,
-                                true,
-                                recv_unix_ms,
-                            ) {
+                            // In event mode the snapshot is state/reconciliation ONLY: it neither
+                            // derives a trade nor records a drop (a net delta over several trades is
+                            // not a gap — the events own the history).
+                            let snapshot_trades = curve_trade_source.snapshot_may_feed_trades();
+                            let derived = if snapshot_trades {
+                                derive_market_trade_from_delta(
+                                    &mb,
+                                    prev,
+                                    &curve,
+                                    slot,
+                                    true,
+                                    recv_unix_ms,
+                                )
+                            } else {
+                                None
+                            };
+                            if let Some(mut trade_pe) = derived {
                                 // Join the two halves: this producer knows the price and both
                                 // legs, the instruction print knows the trader. An ambiguous or
                                 // missing match leaves `buyer_entity: 0` — the ledger reports
@@ -2857,7 +2939,7 @@ fn main() -> ExitCode {
                                 }
                                 queue.push(trade_pe, slot);
                                 stats.delta_trades_derived += 1;
-                            } else {
+                            } else if snapshot_trades {
                                 stats.delta_no_trade += 1;
 
                                 if !pump_quant_junction::reserve_delta::delta_representable(

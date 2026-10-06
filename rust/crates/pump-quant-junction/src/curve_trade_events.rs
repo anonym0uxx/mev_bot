@@ -135,8 +135,16 @@ pub fn decode_curve_trade_events(tx: &LaserStreamTx) -> TxDecode {
     if !saw_pump {
         return TxDecode::NotPump;
     }
-    if tx.tx_ok != Some(true) {
-        return TxDecode::NotVerifiedSuccess;
+    match tx.tx_ok {
+        Some(true) => {}
+        // A FAILED transaction moved no state: not a trade, and not a gap.
+        Some(false) => return TxDecode::NotVerifiedSuccess,
+        // Unknown status on a line that carries pump buy/sell evidence is NOT "nothing": an
+        // older sidecar that omits `meta.tx_ok` would otherwise erase every trade silently.
+        None if saw_buy_sell || !events.is_empty() => {
+            return TxDecode::Incomplete("tx_status_unknown")
+        }
+        None => return TxDecode::NotVerifiedSuccess,
     }
     if let Some(r) = malformed {
         return TxDecode::Incomplete(r);
@@ -468,16 +476,18 @@ mod tests {
     }
 
     #[test]
-    fn failed_and_unverified_transactions_produce_nothing() {
+    fn failed_transactions_produce_nothing_and_unknown_status_is_a_named_gap() {
         let evs = vec![buy_ix(), ix(ev_data(MINT, 1, true, 10, 100, 1_000, 5_000))];
-        for ok in [Some(false), None] {
-            let mut out = Vec::new();
-            assert_eq!(
-                ingest_curve_tx(&tx(3, ok, evs.clone()), &mut EventDedup::new(4), &mut out),
-                EventIngest::Nothing
-            );
-            assert!(out.is_empty());
-        }
+        let mut out = Vec::new();
+        assert_eq!(
+            ingest_curve_tx(&tx(3, Some(false), evs.clone()), &mut EventDedup::new(4), &mut out),
+            EventIngest::Nothing
+        );
+        assert_eq!(
+            ingest_curve_tx(&tx(3, None, evs), &mut EventDedup::new(4), &mut out),
+            EventIngest::Incomplete("tx_status_unknown")
+        );
+        assert!(out.is_empty());
     }
 
     #[test]
