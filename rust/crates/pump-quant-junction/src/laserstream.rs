@@ -92,6 +92,9 @@ pub struct LaserStreamTx {
     /// line's `meta.tx_ok` (1/0). `None` = the line does not say, which is NOT success: the
     /// curve trade-event path refuses it. A sidecar subscription filter is not per-line evidence.
     pub tx_ok: Option<bool>,
+    /// Native + token balances before/after, from `meta` (processed-commitment data). `None` = the line does not
+    /// carry them (an older sidecar, or no meta): the corpus-definition rows are then REFUSED, never zero-filled.
+    pub balances: Option<crate::corpus_rows::BalanceMeta>,
 }
 
 /// pump.fun `create` instruction discriminator (`sha256("global:create")[..8]`).
@@ -834,9 +837,15 @@ pub fn parse_ndjson_line(line: &str) -> Option<LaserStreamUpdate> {
                 .get("account_keys")
                 .and_then(|a| a.as_array())
                 .map(|arr| {
+                    // INDEX ALIGNMENT IS LOAD-BEARING: instruction accounts and balance arrays index into this
+                    // list, so an unparseable key must keep its slot (zero placeholder, which matches no real
+                    // owner) rather than be dropped, which silently shifted every later index by one.
                     arr.iter()
-                        .filter_map(|k| k.as_str())
-                        .filter_map(|s| Pubkey::from_str(s).ok().map(|p| p.to_bytes()))
+                        .map(|k| {
+                            k.as_str()
+                                .and_then(|s| Pubkey::from_str(s).ok())
+                                .map_or([0u8; 32], |p| p.to_bytes())
+                        })
                         .collect()
                 })
                 .unwrap_or_default();
@@ -891,6 +900,7 @@ pub fn parse_ndjson_line(line: &str) -> Option<LaserStreamUpdate> {
             let fee_lamports = meta_u64("fee", "fee_lamports");
             let cu_consumed = meta_u64("compute_units_consumed", "cu_consumed");
             let tx_ok = meta_u64("tx_ok", "tx_ok").map(|n| n != 0);
+            let balances = parse_balance_meta(&v);
 
             Some(LaserStreamUpdate::Transaction(LaserStreamTx {
                 slot,
@@ -900,6 +910,7 @@ pub fn parse_ndjson_line(line: &str) -> Option<LaserStreamUpdate> {
                 fee_lamports,
                 cu_consumed,
                 tx_ok,
+                balances,
                 is_live: true, // gRPC stream is always live (§65)
                 // Straight off the wire, into the event: this is the clock the corpus's
                 // causal windows are keyed on, and it is never re-derived.
@@ -930,6 +941,39 @@ pub fn parse_ndjson_line(line: &str) -> Option<LaserStreamUpdate> {
         }
         _ => None,
     }
+}
+
+/// Parse `meta.{pre,post}_balances` and `meta.{pre,post}_token_balances`. All four must be present and well formed,
+/// else `None`: a partial balance set would yield a wrong trader delta, so it is refused as a whole.
+fn parse_balance_meta(
+    v: &pq_stream_capture::json::Value,
+) -> Option<crate::corpus_rows::BalanceMeta> {
+    use crate::corpus_rows::{BalanceMeta, TokBal};
+    use solana_program::pubkey::Pubkey;
+    use std::str::FromStr;
+    let m = v.get("meta")?;
+    let nums = |k: &str| -> Option<Vec<u64>> {
+        m.get(k)?.as_array()?.iter().map(|n| n.as_u64()).collect()
+    };
+    let toks = |k: &str| -> Option<Vec<TokBal>> {
+        m.get(k)?
+            .as_array()?
+            .iter()
+            .map(|e| {
+                Some(TokBal {
+                    mint: Pubkey::from_str(e.get("mint")?.as_str()?).ok()?.to_bytes(),
+                    owner: Pubkey::from_str(e.get("owner")?.as_str()?).ok()?.to_bytes(),
+                    amount: e.get("amount")?.as_str()?.parse::<u128>().ok()?,
+                })
+            })
+            .collect()
+    };
+    Some(BalanceMeta {
+        pre_sol: nums("pre_balances")?,
+        post_sol: nums("post_balances")?,
+        pre_tok: toks("pre_token_balances")?,
+        post_tok: toks("post_token_balances")?,
+    })
 }
 
 /// Minimal base58 (Bitcoin alphabet) decoder.
@@ -1041,6 +1085,7 @@ mod tests {
             fee_lamports: None,
             cu_consumed: None,
             tx_ok: None,
+            balances: None,
         }
     }
 
@@ -1671,6 +1716,19 @@ mod tests {
             r#","meta":{"fee":null,"compute_units_consumed":null,"tx_ok":null}"#,
         ));
         assert_eq!(nometa.tx_ok, None, "null status is unknown, not success");
+    }
+
+    #[test]
+    fn an_unparseable_account_key_keeps_its_slot_so_later_indices_stay_aligned() {
+        let k1 = "11111111111111111111111111111111";
+        let line = format!(
+            r#"{{"kind":"transaction","slot":1,"recv_unix_ms":5,"signature_b58":"{}","account_keys":["{}","not-a-key!!","{}"],"instructions":[]}}"#,
+            "1".repeat(88),
+            k1,
+            k1
+        );
+        let t = parsed(&line);
+        assert_eq!(t.account_keys.len(), 3, "no key may be dropped");
     }
 
     #[test]

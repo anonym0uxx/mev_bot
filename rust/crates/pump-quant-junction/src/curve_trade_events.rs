@@ -444,6 +444,7 @@ mod tests {
             fee_lamports: Some(5_000),
             cu_consumed: Some(90_000),
             tx_ok: ok,
+            balances: None,
         }
     }
 

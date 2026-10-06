@@ -80,6 +80,22 @@ async fn run_production(config: LaserstreamConfig) -> Result<(), Box<dyn std::er
 }
 
 
+/// Compact token-balance list for the daemon line: `[{"mint","owner","amount"}]` in wire order, `amount` a
+/// decimal string (u64 raw units, never a float).
+fn tb_json(
+    v: &[helius_laserstream::solana::storage::confirmed_block::TokenBalance],
+) -> Vec<serde_json::Value> {
+    v.iter()
+        .map(|t| {
+            serde_json::json!({
+                "mint": t.mint,
+                "owner": t.owner,
+                "amount": t.ui_token_amount.as_ref().map(|u| u.amount.clone()).unwrap_or_default(),
+            })
+        })
+        .collect()
+}
+
 /// One daemon-facing transaction line. Carries what the engine's decoders need and the old emitter
 /// dropped: INNER (CPI) instructions (PumpSwap swap events live there), loaded ALT addresses (so
 /// instruction account indices resolve), and `meta.fee` / `meta.compute_units_consumed`.
@@ -137,6 +153,12 @@ fn daemon_tx_line(
             "compute_units_consumed": meta.and_then(|m| m.compute_units_consumed),
             // Per-line success evidence: `meta.err` absent. Absent meta => field omitted (unknown).
             "tx_ok": meta.map(|m| u64::from(m.err.is_none())),
+            // Corpus-definition trader balance delta inputs (processed `meta` carries them): native pre/post
+            // balances (indexed like `account_keys`) and SPL token balances. Absent meta => omitted (unknown).
+            "pre_balances": meta.map(|m| m.pre_balances.clone()),
+            "post_balances": meta.map(|m| m.post_balances.clone()),
+            "pre_token_balances": meta.map(|m| tb_json(&m.pre_token_balances)),
+            "post_token_balances": meta.map(|m| tb_json(&m.post_token_balances)),
         },
     })
     .to_string()
@@ -340,7 +362,11 @@ mod emitted_line_acceptance {
             assert_eq!(got["meta"]["fee"], line["meta"]["fee"]);
             assert_eq!(got["meta"]["compute_units_consumed"], line["meta"]["compute_units_consumed"]);
             assert_eq!(got["meta"]["tx_ok"], 1, "no-error tx must serialize tx_ok=1");
-            assert_eq!(got["meta"].as_object().unwrap().len(), 3, "meta must carry exactly fee, CU, tx_ok");
+            for k in ["pre_balances", "post_balances", "pre_token_balances", "post_token_balances"] {
+                assert!(got["meta"][k].is_array(), "balance field {k} must be serialized");
+            }
+            assert_eq!(got["meta"]["pre_balances"].as_array().unwrap().len(), got["account_keys"].as_array().unwrap().len().min(got["meta"]["pre_balances"].as_array().unwrap().len()));
+            assert_eq!(got["meta"].as_object().unwrap().len(), 7, "meta = fee, CU, tx_ok + four balance fields");
             assert!(got["recv_unix_ms"].as_u64().unwrap() > 1_700_000_000_000, "the emitter stamps its own receive clock");
         }
     }
