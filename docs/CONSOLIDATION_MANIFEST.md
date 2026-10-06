@@ -6,11 +6,16 @@ addenda that used to live here; that earlier text is preserved verbatim, warts a
 contains decisions later reversed. Where the two disagree, this file wins. Operating entry
 points, commands and the historical-alternatives index are in [`ENTRY.md`](ENTRY.md).
 
-Last updated: 2026-10-06. **Accepted code head: `0a962d55`** (tested merge
-`439726896f3f51117cfdb97bf8d0b49f40a6539f`; the preceding code head `7e227ee3` was tested as
-merge `0a62b3d2`, and `d7596114` as merge `2fabc312`). The
-branch tip may be a later docs-only commit; the acceptance in section 2 is bound to the code
-head, not to the tip SHA.
+Last updated: 2026-10-06. **Merged to `main`: `a02a11a3`** (merge commit of reviewed head
+`3a16f5ae` into base `09e9194b`). The head roles are DISTINCT and must not be conflated:
+- **tested code head:** `0a962d55` - the code the hosted tests actually ran on (tested merge
+  `439726896f3f51117cfdb97bf8d0b49f40a6539f`);
+- **reviewed head:** `3a16f5ae` - the reviewed PR tree (docs-only after `0a962d55`), tree `0b4e4410`;
+- **merged main:** `a02a11a3` - the merge commit now on `main`, tree byte-identical to `3a16f5ae`;
+- **deployment acceptance: OPEN** - consolidation acceptance is cleanup/tests only (ENTRY §8).
+`a02a11a3` is **not** the commit the earlier tests ran on; the test evidence stays bound to tested
+code head `0a962d55` / tested merge `4397268` (section 2b). Earlier code heads: `7e227ee3` (tested
+merge `0a62b3d2`), `d7596114` (tested merge `2fabc312`).
 
 ---
 
@@ -19,11 +24,14 @@ head, not to the tip SHA.
 | Item | Value |
 |---|---|
 | Consolidated branch | `task/main-consolidation` |
-| Accepted code head | `0a962d55` (docs-only commits may follow it) |
+| Tested code head | `0a962d55` (hosted tests; tested merge `4397268`) |
+| Reviewed head | `3a16f5ae` (docs-only after `0a962d55`) |
+| Merged main | `a02a11a3` (merge of `3a16f5ae` into `09e9194b`) |
+| Deployment acceptance | **OPEN** - not closed by consolidation (ENTRY §8) |
 | Base (`main`) | `09e9194b` (2026-09-26) |
 | Rollback ref | tag `rollback/pre-consolidation-959cee8c` (local + remote) |
-| PR | **#10** - `main consolidation: Qwen-first main` - **DRAFT, not merged** |
-| Open PRs in the repo | #10 only |
+| PR | **#10** - `main consolidation: Qwen-first main` - **MERGED** (`a02a11a3`) |
+| Open PRs in the repo | none |
 
 ## 2. Acceptance (recorded, with tested SHAs)
 
@@ -198,7 +206,7 @@ sweep. `cargo build`/`clippy` do not prove the absence of unused code.
 
 | Ref | Date | Head | Disposition |
 |---|---|---|---|
-| `task/main-consolidation` | 2026-10-05 | `d7596114` | **RETAIN** - PR #10 draft; the consolidation line |
+| `task/main-consolidation` | 2026-10-05 | `3a16f5ae` | **RETAIN (merged)** - merged to `main` as `a02a11a3` (PR #10); branch preserved, not deleted. |
 | `main` | 2026-09-26 | `09e9194b` | **RETAIN** - base |
 | `task/p6-management-slice` | 2026-10-05 | `959cee8c` | **RETAIN (rollback anchor)** - held-state restore + stale-held callout (suite 1443/0). Tagged `rollback/pre-consolidation-959cee8c`. Unique work: durable held-state ledger + edge-triggered stale callout. |
 | `task/p6-price-limit-threading` | 2026-10-04 | `6209624c` | **CONTAINED (reporting error corrected)** - `6209624c` is an **ANCESTOR** of the head with **0 unique commits** (`git merge-base --is-ancestor`; `git log <head>..6209624c` empty). Its capabilities are PRESENT and TESTED in the head (section 5b). |

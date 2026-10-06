@@ -4,7 +4,9 @@
 > that describe earlier designs. Where an earlier file conflicts with this one, **this file wins**;
 > the earlier file is marked historical in §9. Disposition evidence: `docs/CONSOLIDATION_MANIFEST.md`.
 
-- Branch: `task/main-consolidation` (PR **#10, draft**). Base of `main`: `09e9194b`.
+- Branch: `task/main-consolidation` — **merged** to `main` as `a02a11a3` (PR **#10**). Base of `main`: `09e9194b`.
+- Head roles (do not conflate): **tested code head** `0a962d55` (hosted tests, tested merge `4397268`); **reviewed head** `3a16f5ae`; **merged main** `a02a11a3`. The merge SHA is not the commit the earlier tests ran on.
+- **Deployment acceptance is OPEN** — consolidation acceptance covers cleanup and tests only (§8).
 - Rollback ref: tag `rollback/pre-consolidation-959cee8c`.
 - Workspace root: `rust/`. Crate root: `rust/crates/`.
 - Declared MSRV: `1.85` (`rust-version`). **See §7 — the workspace does not currently build on 1.85.**
@@ -105,6 +107,8 @@ kill switch, SAFETY_OFF), data collection (tape export, memory bank), enrichment
 
 Real-Qwen/feed integration; Windows serving parity & latency; live restart recovery; AMM sell economics;
 north-star validation. Cleanup, synthetic tests and a green CI do **not** close these.
+
+**Status: OPEN.** Deployment acceptance is not granted by the consolidation merge (`a02a11a3`).
 
 ## 9. Historical / superseded documents
 
