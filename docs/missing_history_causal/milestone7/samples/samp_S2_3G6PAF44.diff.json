@@ -1,0 +1,250 @@
+[
+ {
+  "t": 1788976103926,
+  "split": "validation",
+  "n_fields": 61,
+  "n_diff": 1,
+  "identical_lines": 20,
+  "total_lines": 21,
+  "diffs": [
+   {
+    "field": "staleness_ms",
+    "rust": "316",
+    "corpus": "315",
+    "rel": 0.0031746031746031746
+   }
+  ]
+ },
+ {
+  "t": 1788976133926,
+  "split": "validation",
+  "n_fields": 61,
+  "n_diff": 9,
+  "identical_lines": 16,
+  "total_lines": 21,
+  "diffs": [
+   {
+    "field": "buy_count",
+    "rust": "155",
+    "corpus": "154",
+    "rel": 0.006493506493506494
+   },
+   {
+    "field": "buy_volume_lamports",
+    "rust": "64235176738",
+    "corpus": "64231161621",
+    "rel": 6.251042171230609e-05
+   },
+   {
+    "field": "buyer_seller_ratio",
+    "rust": "1.26016",
+    "corpus": "1.25203",
+    "rel": 0.006493454629681374
+   },
+   {
+    "field": "n_prior_trades",
+    "rust": "278",
+    "corpus": "277",
+    "rel": 0.0036101083032490976
+   },
+   {
+    "field": "net_flow_lamports",
+    "rust": "8906758984",
+    "corpus": "8902743867",
+    "rel": 0.0004509976991344123
+   },
+   {
+    "field": "staleness_ms",
+    "rust": "1103",
+    "corpus": "1102",
+    "rel": 0.0009074410163339383
+   },
+   {
+    "field": "top5_trader_share",
+    "rust": "0.2854",
+    "corpus": "0.28541",
+    "rel": -3.503731474023335e-05
+   },
+   {
+    "field": "unique_traders",
+    "rust": "129",
+    "corpus": "128",
+    "rel": 0.0078125
+   },
+   {
+    "field": "vol_30s_bp",
+    "rust": "7537",
+    "corpus": "742.087",
+    "rel": 9.156491085277064
+   }
+  ]
+ },
+ {
+  "t": 1788976163926,
+  "split": "validation",
+  "n_fields": 61,
+  "n_diff": 8,
+  "identical_lines": 17,
+  "total_lines": 21,
+  "diffs": [
+   {
+    "field": "buy_count",
+    "rust": "167",
+    "corpus": "166",
+    "rel": 0.006024096385542169
+   },
+   {
+    "field": "buy_volume_lamports",
+    "rust": "66509400153",
+    "corpus": "66505385036",
+    "rel": 6.037281037958924e-05
+   },
+   {
+    "field": "buyer_seller_ratio",
+    "rust": "1.24627",
+    "corpus": "1.23881",
+    "rel": 0.006021908121503719
+   },
+   {
+    "field": "n_prior_trades",
+    "rust": "301",
+    "corpus": "300",
+    "rel": 0.0033333333333333335
+   },
+   {
+    "field": "net_flow_lamports",
+    "rust": "7927355598",
+    "corpus": "7923340481",
+    "rel": 0.0005067454831239632
+   },
+   {
+    "field": "staleness_ms",
+    "rust": "2535",
+    "corpus": "2534",
+    "rel": 0.0003946329913180742
+   },
+   {
+    "field": "top5_trader_share",
+    "rust": "0.27279",
+    "corpus": "0.2728",
+    "rel": -3.665689149563783e-05
+   },
+   {
+    "field": "unique_traders",
+    "rust": "139",
+    "corpus": "138",
+    "rel": 0.007246376811594203
+   }
+  ]
+ },
+ {
+  "t": 1788976193926,
+  "split": "validation",
+  "n_fields": 61,
+  "n_diff": 8,
+  "identical_lines": 18,
+  "total_lines": 21,
+  "diffs": [
+   {
+    "field": "buy_count",
+    "rust": "178",
+    "corpus": "177",
+    "rel": 0.005649717514124294
+   },
+   {
+    "field": "buy_volume_lamports",
+    "rust": "67389344908",
+    "corpus": "67385329791",
+    "rel": 5.958443792518561e-05
+   },
+   {
+    "field": "buyer_seller_ratio",
+    "rust": "1.23611",
+    "corpus": "1.22917",
+    "rel": 0.005646086383494509
+   },
+   {
+    "field": "n_prior_trades",
+    "rust": "322",
+    "corpus": "321",
+    "rel": 0.003115264797507788
+   },
+   {
+    "field": "net_flow_lamports",
+    "rust": "4680868856",
+    "corpus": "4676853739",
+    "rel": 0.0008585081390333382
+   },
+   {
+    "field": "top1_trader_share",
+    "rust": "0.10256",
+    "corpus": "0.10257",
+    "rel": -9.749439407230305e-05
+   },
+   {
+    "field": "top5_trader_share",
+    "rust": "0.26229",
+    "corpus": "0.2623",
+    "rel": -3.8124285169479566e-05
+   },
+   {
+    "field": "unique_traders",
+    "rust": "144",
+    "corpus": "143",
+    "rel": 0.006993006993006993
+   }
+  ]
+ },
+ {
+  "t": 1788976223926,
+  "split": "validation",
+  "n_fields": 61,
+  "n_diff": 7,
+  "identical_lines": 18,
+  "total_lines": 21,
+  "diffs": [
+   {
+    "field": "buy_count",
+    "rust": "179",
+    "corpus": "178",
+    "rel": 0.0056179775280898875
+   },
+   {
+    "field": "buy_volume_lamports",
+    "rust": "67892489188",
+    "corpus": "67888474071",
+    "rel": 5.914283764576677e-05
+   },
+   {
+    "field": "buyer_seller_ratio",
+    "rust": "1.05917",
+    "corpus": "1.05325",
+    "rel": 0.005620697840018918
+   },
+   {
+    "field": "n_prior_trades",
+    "rust": "348",
+    "corpus": "347",
+    "rel": 0.002881844380403458
+   },
+   {
+    "field": "net_flow_lamports",
+    "rust": "412299229",
+    "corpus": "408284112",
+    "rel": 0.009834125017335967
+   },
+   {
+    "field": "top5_trader_share",
+    "rust": "0.25207",
+    "corpus": "0.25208",
+    "rel": -3.9669946048913046e-05
+   },
+   {
+    "field": "unique_traders",
+    "rust": "153",
+    "corpus": "152",
+    "rel": 0.006578947368421052
+   }
+  ]
+ }
+]

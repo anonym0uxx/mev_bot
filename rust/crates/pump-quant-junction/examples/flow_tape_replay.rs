@@ -47,7 +47,10 @@ fn main() {
         while ci < clocks.len() && clocks[ci] <= t {
             let o = r.serve(&mint, clocks[ci]);
             match o {
-                FlowOutcome::NoPriorFlow => println!("{}", serde_json::json!({"t": clocks[ci], "no_prior_flow": true})),
+                FlowOutcome::NoPriorFlow => println!(
+                    "{}",
+                    serde_json::json!({"t": clocks[ci], "no_prior_flow": true})
+                ),
                 FlowOutcome::Aggregates(g) => {
                     let c = g.to_corpus_values();
                     println!(

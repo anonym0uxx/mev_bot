@@ -1016,4 +1016,133 @@ mod tests {
         );
         let _ = decode_curve_trade_events(&t2);
     }
+
+    /// One transaction, TWO corpus-known buys on the SAME mint and side by two DIFFERENT traders, each followed by
+    /// its own TradeEvent. Attribution must be one-to-one: each event gets its own instruction's row (own trader
+    /// and own balance delta), each instruction is used once, and swapping the event order swaps the rows.
+    #[test]
+    fn repeated_same_mint_same_side_instructions_are_attributed_one_to_one() {
+        use crate::corpus_rows::{BalanceMeta, TokBal};
+        let key = |b: u8| [b; 32];
+        // account keys: 0..=9. Traders are keys 7 and 8 (the TradeEvent `user` bytes are [7;32] and [8;32]).
+        let keys: Vec<[u8; 32]> = (0u8..10).map(key).collect();
+        let mint = MINT;
+        let tb = |owner: u8, amt: u128| TokBal {
+            mint,
+            owner: key(owner),
+            amount: amt,
+        };
+        let bal = BalanceMeta {
+            pre_sol: vec![1000; 10],
+            // trader 7 pays 300, trader 8 pays 700 (balance deltas, not swap amounts)
+            post_sol: vec![1000, 1000, 1000, 1000, 1000, 1000, 1000, 700, 300, 1000],
+            pre_tok: vec![tb(7, 0), tb(8, 0), tb(9, 1000)],
+            post_tok: vec![tb(7, 30), tb(8, 70), tb(9, 900)],
+        };
+        let buy_ix_for = |trader_key: u8| {
+            let mut d = BUY_SELL_DISCS[0].to_vec();
+            d.extend_from_slice(&[0u8; 16]);
+            LaserStreamInstruction {
+                program_id: PUMP_FUN_PROGRAM,
+                data: d,
+                accounts: vec![trader_key],
+            }
+        };
+        let build = |first: u8, second: u8| {
+            let mut t = tx(
+                9,
+                Some(true),
+                vec![
+                    buy_ix_for(first),
+                    ix(ev_data(mint, first, true, 11, 5, 10, 10)),
+                    buy_ix_for(second),
+                    ix(ev_data(mint, second, true, 22, 5, 10, 10)),
+                ],
+            );
+            t.account_keys = keys.clone();
+            t.balances = Some(bal.clone());
+            t
+        };
+        for (first, second, exp_first, exp_second) in
+            [(7u8, 8u8, -300i64, -700i64), (8, 7, -700, -300)]
+        {
+            let t = build(first, second);
+            let mut dd = EventDedup::new(16);
+            let mut out = Vec::new();
+            let _ = ingest_curve_tx(&t, &mut dd, &mut out);
+            assert_eq!(out.len(), 2);
+            let basis = |i: usize| match out[i].event {
+                AppEvent::MarketTrade {
+                    feature: Some(f), ..
+                } => f,
+                _ => panic!("both events must resolve a basis"),
+            };
+            assert_eq!(basis(0).trader, key(first));
+            assert_eq!(basis(0).sol_lamports, exp_first);
+            assert_eq!(basis(1).trader, key(second));
+            assert_eq!(basis(1).sol_lamports, exp_second);
+            assert_eq!(dd.corpus_basis_resolved, 2);
+            assert!(dd.outside_corpus.is_empty());
+        }
+    }
+
+    /// An instruction with NO matching TradeEvent never lends its row to another event, and a third event with no
+    /// unused instruction is refused by name instead of reusing a row.
+    #[test]
+    fn an_event_without_an_unused_matching_instruction_is_refused_not_reassigned() {
+        use crate::corpus_rows::{BalanceMeta, TokBal};
+        let key = |b: u8| [b; 32];
+        let keys: Vec<[u8; 32]> = (0u8..10).map(key).collect();
+        let tb = |owner: u8, amt: u128| TokBal {
+            mint: MINT,
+            owner: key(owner),
+            amount: amt,
+        };
+        let bal = BalanceMeta {
+            pre_sol: vec![1000; 10],
+            post_sol: vec![1000, 1000, 1000, 1000, 1000, 1000, 1000, 700, 1000, 1000],
+            pre_tok: vec![tb(7, 0), tb(9, 100)],
+            post_tok: vec![tb(7, 30), tb(9, 70)],
+        };
+        let mut d = BUY_SELL_DISCS[0].to_vec();
+        d.extend_from_slice(&[0u8; 16]);
+        let one_ix = LaserStreamInstruction {
+            program_id: PUMP_FUN_PROGRAM,
+            data: d,
+            accounts: vec![7],
+        };
+        let mut t = tx(
+            10,
+            Some(true),
+            vec![
+                one_ix,
+                ix(ev_data(MINT, 7, true, 11, 5, 10, 10)),
+                ix(ev_data(MINT, 7, true, 22, 5, 10, 10)),
+            ],
+        );
+        t.account_keys = keys;
+        t.balances = Some(bal);
+        let mut dd = EventDedup::new(16);
+        let mut out = Vec::new();
+        let _ = ingest_curve_tx(&t, &mut dd, &mut out);
+        assert_eq!(out.len(), 2, "both events are admitted");
+        let with_basis = out
+            .iter()
+            .filter(|p| {
+                matches!(
+                    p.event,
+                    AppEvent::MarketTrade {
+                        feature: Some(_),
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert_eq!(
+            with_basis, 1,
+            "the single instruction's row is used exactly once"
+        );
+        assert_eq!(dd.corpus_basis_resolved, 1);
+        assert_eq!(dd.outside_corpus.values().sum::<u64>(), 1);
+    }
 }
