@@ -46,13 +46,14 @@ fn main() {
         let TxDecode::Events(evs) = decode_curve_trade_events(&tx) else {
             continue;
         };
+        let mut used_rows: Vec<usize> = Vec::new();
         for e in evs {
             let q = match e.quote {
                 QuoteIdentity::Sol => "SOL".to_string(),
                 QuoteIdentity::Other(m) => format!("OTHER:{}", b58(&m)),
                 QuoteIdentity::Unknown => "UNKNOWN".to_string(),
             };
-            let (basis, sl) = match corpus_basis_for(&tx, &e, &not_launch) {
+            let (basis, sl) = match corpus_basis_for(&tx, &e, &not_launch, &mut used_rows) {
                 Ok(f) => ("ok".to_string(), f.sol_lamports.to_string()),
                 Err(w) => (w.to_string(), "-".to_string()),
             };

@@ -292,7 +292,15 @@ mod tests {
             vec![tb(k(MINT), k(TRADER), 0), tb(k(MINT), k(POOL), 500)],
             vec![tb(k(MINT), k(TRADER), 200), tb(k(MINT), k(POOL), 300)],
         );
-        let r = resolve_row(true, &[0, 1, 2, 3, 4, 5, 7], &keys, &[], &m, &not_a_launch_set()).unwrap();
+        let r = resolve_row(
+            true,
+            &[0, 1, 2, 3, 4, 5, 7],
+            &keys,
+            &[],
+            &m,
+            &not_a_launch_set(),
+        )
+        .unwrap();
         assert_eq!(r.trader, k(TRADER));
         assert_eq!(
             r.sol_lamports, -105,

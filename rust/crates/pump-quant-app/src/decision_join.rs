@@ -737,15 +737,21 @@ impl DecisionCache {
             return Ingest::Accepted;
         }
 
-        if let Some(st) = StateTrade::from_market_trade(
-            recv,
-            w_price,
-            w_quote,
-            w_base,
-            w_entity,
-            t.venue,
-            Some(w_base),
-        ) {
+        let st = match t.feature {
+            Some(f) => {
+                StateTrade::from_corpus_basis(recv, f.sol_lamports, f.tokens_raw, w_entity, t.venue)
+            }
+            None => StateTrade::from_market_trade(
+                recv,
+                w_price,
+                w_quote,
+                w_base,
+                w_entity,
+                t.venue,
+                Some(w_base),
+            ),
+        };
+        if let Some(st) = st {
             self.ledger.on_trade(&t.mint, st);
         }
 

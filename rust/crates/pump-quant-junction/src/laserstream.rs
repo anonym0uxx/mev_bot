@@ -1764,7 +1764,11 @@ mod tests {
         );
         let t = parsed(&line);
         assert_eq!(t.account_keys.len(), 3, "no key may be dropped");
-        assert_eq!(t.invalid_key_idx, vec![1], "the bad key is explicitly invalid");
+        assert_eq!(
+            t.invalid_key_idx,
+            vec![1],
+            "the bad key is explicitly invalid"
+        );
         assert_eq!(t.repaired_zero_keys, 0);
     }
 
@@ -1777,11 +1781,26 @@ mod tests {
             good,
             "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
         ));
-        let ix = LaserStreamInstruction { program_id: [0; 32], data: vec![], accounts: vec![1, 2, 0] };
+        let ix = LaserStreamInstruction {
+            program_id: [0; 32],
+            data: vec![],
+            accounts: vec![1, 2, 0],
+        };
         t.instructions.clear();
-        assert!(account_key_at(&ix, &t, 0).is_none(), "invalid key must not resolve (not a zero System key)");
-        assert_eq!(account_key_at(&ix, &t, 1), Some(PUMP_FUN_PROGRAM), "later index unchanged");
-        assert_eq!(account_key_at(&ix, &t, 2), Some([0u8; 32]), "a REAL System Program key still resolves");
+        assert!(
+            account_key_at(&ix, &t, 0).is_none(),
+            "invalid key must not resolve (not a zero System key)"
+        );
+        assert_eq!(
+            account_key_at(&ix, &t, 1),
+            Some(PUMP_FUN_PROGRAM),
+            "later index unchanged"
+        );
+        assert_eq!(
+            account_key_at(&ix, &t, 2),
+            Some([0u8; 32]),
+            "a REAL System Program key still resolves"
+        );
     }
 
     #[test]
@@ -1793,7 +1812,11 @@ mod tests {
             "1".repeat(34)
         ));
         assert_eq!(t.repaired_zero_keys, 1);
-        assert_eq!(t.invalid_key_idx, vec![1], "34 ones is not the documented defect: stays invalid");
+        assert_eq!(
+            t.invalid_key_idx,
+            vec![1],
+            "34 ones is not the documented defect: stays invalid"
+        );
         assert_eq!(t.account_keys[0], [0u8; 32]);
     }
 

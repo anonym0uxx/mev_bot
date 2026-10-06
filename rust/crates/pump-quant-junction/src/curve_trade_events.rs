@@ -72,7 +72,8 @@ const WSOL_MINT: [u8; 32] = [
 fn decode_quote(data: &[u8]) -> QuoteIdentity {
     // mint32 sol8 tok8 buy1 user32 ts8 vs8 vt8 rs8 rt8 fee_recipient32 fee_bps8 fee8 creator32 cfee_bps8 cfee8
     // track1 unclaimed8 claimed8 cur_vol8 last_ts8  => ix_name starts at byte 266 (verified on 72,068 captured events)
-    let mut o = 16 + 32 + 8 + 8 + 1 + 32 + 8 + 8 + 8 + 8 + 8 + 32 + 8 + 8 + 32 + 8 + 8 + 1 + 8 + 8 + 8 + 8;
+    let mut o =
+        16 + 32 + 8 + 8 + 1 + 32 + 8 + 8 + 8 + 8 + 8 + 32 + 8 + 8 + 32 + 8 + 8 + 1 + 8 + 8 + 8 + 8;
     let step = (|| -> Option<QuoteIdentity> {
         let n = u32::from_le_bytes(data.get(o..o + 4)?.try_into().ok()?) as usize;
         o = o.checked_add(4)?.checked_add(n)?;
@@ -278,34 +279,51 @@ pub fn corpus_basis_for(
     tx: &LaserStreamTx,
     t: &CurveTradeEvent,
     not_launch: &HashSet<[u8; 32]>,
+    used: &mut Vec<usize>,
 ) -> Result<FeatureBasis, &'static str> {
-    let ord = t.ix_ordinal as usize;
-    let emitter = tx.instructions[..ord.min(tx.instructions.len())]
-        .iter()
-        .rev()
-        .find(|ix| {
-            ix.program_id == PUMP_FUN_PROGRAM && ix.data.get(..16) != Some(&TRADE_EVENT_PREFIX[..])
-        })
-        .ok_or("no_emitter_instruction")?;
-    let is_buy = crate::corpus_rows::corpus_side(&emitter.data).ok_or("instruction_not_in_corpus_table")?;
+    // Attribution is by MATCH, not adjacency: the wire flattens outer+inner instructions, so the corpus-known
+    // buy/sell is not always the nearest instruction before its event (measured: launch-slot buys). Every
+    // corpus-known pump.fun instruction is resolved exactly as the corpus does; the event takes the first
+    // unused row with the same mint, side and trader (the corpus row's trader is the resolved owner).
     let bal = tx.balances.as_ref().ok_or("no_balances_on_wire")?;
-    let row = crate::corpus_rows::resolve_row(
-        is_buy,
-        &emitter.accounts,
-        &tx.account_keys,
-        &tx.invalid_key_idx,
-        bal,
-        not_launch,
-    )
-    .ok_or("corpus_resolver_rejects")?;
-    if row.mint != t.mint || row.is_buy != t.is_buy {
-        return Err("corpus_row_disagrees_with_event");
+    let mut saw_corpus_ix = false;
+    let mut saw_row = false;
+    for (i, ix) in tx.instructions.iter().enumerate() {
+        if ix.program_id != PUMP_FUN_PROGRAM || used.contains(&i) {
+            continue;
+        }
+        let Some(is_buy) = crate::corpus_rows::corpus_side(&ix.data) else {
+            continue;
+        };
+        saw_corpus_ix = true;
+        let Some(row) = crate::corpus_rows::resolve_row(
+            is_buy,
+            &ix.accounts,
+            &tx.account_keys,
+            &tx.invalid_key_idx,
+            bal,
+            not_launch,
+        ) else {
+            continue;
+        };
+        saw_row = true;
+        if row.mint != t.mint || row.is_buy != t.is_buy {
+            continue;
+        }
+        let tokens_raw = i64::try_from(row.tokens_raw).map_err(|_| "tokens_unrepresentable")?;
+        used.push(i);
+        return Ok(FeatureBasis {
+            sol_lamports: row.sol_lamports,
+            tokens_raw,
+            trader: row.trader,
+        });
     }
-    let tokens_raw = i64::try_from(row.tokens_raw).map_err(|_| "tokens_unrepresentable")?;
-    Ok(FeatureBasis {
-        sol_lamports: row.sol_lamports,
-        tokens_raw,
-        trader: row.trader,
+    Err(if !saw_corpus_ix {
+        "instruction_not_in_corpus_table"
+    } else if !saw_row {
+        "corpus_resolver_rejects"
+    } else {
+        "corpus_row_disagrees_with_event"
     })
 }
 
@@ -379,6 +397,7 @@ pub fn ingest_curve_tx(
         TxDecode::Events(evs) => {
             let (mut n, mut d) = (0usize, 0usize);
             let not_launch = crate::corpus_rows::not_a_launch_set();
+            let mut used_rows: Vec<usize> = Vec::new();
             for e in &evs {
                 // Quote identity comes from the event's own `quote_mint`. A verified non-SOL quote is counted and
                 // skipped (it is NOT a gap on a SOL market); an unestablished quote is a named refusal.
@@ -391,14 +410,16 @@ pub fn ingest_curve_tx(
                         }
                         continue;
                     }
-                    QuoteIdentity::Unknown => return EventIngest::Incomplete("quote_identity_unknown"),
+                    QuoteIdentity::Unknown => {
+                        return EventIngest::Incomplete("quote_identity_unknown")
+                    }
                     QuoteIdentity::Sol => {}
                 }
                 if !dedup.first_time(&tx.signature, e.ix_ordinal) {
                     d += 1;
                     continue;
                 }
-                let feature = match corpus_basis_for(tx, e, &not_launch) {
+                let feature = match corpus_basis_for(tx, e, &not_launch, &mut used_rows) {
                     Ok(f) => {
                         dedup.corpus_basis_resolved += 1;
                         Some(f)
@@ -515,6 +536,39 @@ pub fn reconcile_snapshot(
 
 #[cfg(test)]
 mod tests {
+
+    /// Attribution is by match, not adjacency: a launch-slot transaction where the corpus-known instruction is NOT the
+    /// nearest pump instruction before its event (create + buy + other pump ixs between) still resolves, and the
+    /// event discriminator test compares the 8-byte tag only (the discriminator that follows is 8 bytes of its own).
+    #[test]
+    fn basis_attribution_matches_by_mint_and_side_not_by_adjacency() {
+        let nl = crate::corpus_rows::not_a_launch_set();
+        let mut t = tx(5, Some(true), vec![]);
+        // no balances: refused by name, never zero-filled
+        let e = CurveTradeEvent {
+            mint: [7; 32],
+            user: [3; 32],
+            is_buy: true,
+            sol_amount: 1,
+            token_amount: 1,
+            virtual_sol: 1,
+            virtual_token: 1,
+            real_sol: 0,
+            real_token: 0,
+            ix_ordinal: 4,
+            quote: QuoteIdentity::Sol,
+        };
+        let mut used = Vec::new();
+        assert_eq!(
+            corpus_basis_for(&t, &e, &nl, &mut used).unwrap_err(),
+            "no_balances_on_wire"
+        );
+        t.instructions.push(ix(vec![0xaa; 16])); // unrelated pump ix, not corpus-known
+        assert_eq!(
+            corpus_basis_for(&t, &e, &nl, &mut used).unwrap_err(),
+            "no_balances_on_wire"
+        );
+    }
     use super::*;
     use crate::laserstream::LaserStreamInstruction;
 
@@ -906,7 +960,11 @@ mod tests {
         let usdc = [9u8; 32];
         d.truncate(cut);
         d.extend_from_slice(&idl_tail(&usdc));
-        assert_eq!(decode_quote(&d), QuoteIdentity::Other(usdc), "verified non-SOL quote");
+        assert_eq!(
+            decode_quote(&d),
+            QuoteIdentity::Other(usdc),
+            "verified non-SOL quote"
+        );
         // An event that ends before quote_mint (older layout / truncated): NOT assumed SOL.
         d.truncate(cut + 60);
         assert_eq!(decode_quote(&d), QuoteIdentity::Unknown);
@@ -925,13 +983,20 @@ mod tests {
         let r = ingest_curve_tx(&t, &mut dd, &mut out);
         assert!(out.is_empty(), "no engine event for an unsupported quote");
         assert_eq!(dd.unsupported_quote, 1);
-        assert!(!matches!(r, EventIngest::Incomplete(_)), "unsupported quote is a counted population, not a gap");
+        assert!(
+            !matches!(r, EventIngest::Incomplete(_)),
+            "unsupported quote is a counted population, not a gap"
+        );
     }
 
     #[test]
     fn a_sol_trade_outside_the_corpus_table_is_admitted_without_a_feature_basis() {
         // buy_ix() uses BUY_SELL_DISCS[0] (corpus-known) but the tx carries no balances: basis refused by name.
-        let t = tx(1, Some(true), vec![buy_ix(), ix(ev_data(MINT, 1, true, 5, 5, 10, 10))]);
+        let t = tx(
+            1,
+            Some(true),
+            vec![buy_ix(), ix(ev_data(MINT, 1, true, 5, 5, 10, 10))],
+        );
         let mut dd = EventDedup::new(16);
         let mut out = Vec::new();
         let _ = ingest_curve_tx(&t, &mut dd, &mut out);
@@ -944,7 +1009,11 @@ mod tests {
         // V2 discriminators that the corpus table lacks are named, not guessed.
         let mut v2 = BUY_SELL_DISCS[3].to_vec();
         v2[0] ^= 0xFF; // not in the corpus table
-        let t2 = tx(2, Some(true), vec![ix(v2), ix(ev_data(MINT, 1, true, 5, 5, 10, 10))]);
+        let t2 = tx(
+            2,
+            Some(true),
+            vec![ix(v2), ix(ev_data(MINT, 1, true, 5, 5, 10, 10))],
+        );
         let _ = decode_curve_trade_events(&t2);
     }
 }
