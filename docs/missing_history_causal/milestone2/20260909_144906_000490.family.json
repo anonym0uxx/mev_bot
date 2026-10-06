@@ -1,0 +1,16 @@
+{
+ "corpus_known_buy_sell|events": 29364,
+ "corpus_known_buy_sell|tx": 27972,
+ "NOT_in_corpus_DISC|events": 3222,
+ "NOT_in_corpus_DISC|tx": 3222,
+ "uncovered_instruction_names": {
+  "BuyExactQuoteInV2": 3222,
+  "V2BuyExactInPumpFun": 659,
+  "PumpBuyV2": 45,
+  "CreateCoinAndBuyBondingCurveV3": 19,
+  "V2BuyExactInPumpFunWsol": 9,
+  "SwapForPumpfunBuy": 6,
+  "Sell": 2,
+  "SwapAndBuyPumpUsdc": 1
+ }
+}
