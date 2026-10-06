@@ -418,6 +418,22 @@ fn fnv1a(s: &str) -> u64 {
     h
 }
 
+/// Bounded compaction that NEVER discards an unresolved cumulative gap: when the ring is full,
+/// an unresolved record being evicted folds its earliest instant into the incoming record, so the
+/// gap survives compaction as a single earliest observation instead of vanishing.
+fn push_missing_bounded(ring: &mut VecDeque<MissingObservation>, mut new: MissingObservation) {
+    while ring.len() >= FLOW_UPSTREAM_DROP_RING {
+        let Some(old) = ring.pop_front() else { break };
+        if old.receipt.is_none() {
+            new.drop_ms = new.drop_ms.min(old.drop_ms);
+            if new.source_id.is_empty() {
+                new.source_id = old.source_id;
+            }
+        }
+    }
+    ring.push_back(new);
+}
+
 impl DecisionCache {
     #[must_use]
     pub fn new() -> Self {
@@ -614,21 +630,21 @@ impl DecisionCache {
         source_id: String,
     ) {
         let mc = self.mints.entry(mint).or_default();
-        if mc.flow_drops.len() >= FLOW_UPSTREAM_DROP_RING {
-            mc.flow_drops.pop_front();
-        }
-        mc.flow_drops.push_back(MissingObservation {
-            drop_ms: drop_unix_ms,
-            source_id,
-            deps: MissingDeps {
-                rolling_300s: true,
-                cumulative_ledger: true,
-                // The refused derivation never resolved a trader, so the wallet-derived features
-                // CANNOT be shown unaffected: readiness carries that uncertainty explicitly.
-                wallet_derived_uncertain: true,
+        push_missing_bounded(
+            &mut mc.flow_drops,
+            MissingObservation {
+                drop_ms: drop_unix_ms,
+                source_id,
+                deps: MissingDeps {
+                    rolling_300s: true,
+                    cumulative_ledger: true,
+                    // The refused derivation never resolved a trader, so the wallet-derived
+                    // features CANNOT be shown unaffected: readiness carries that uncertainty.
+                    wallet_derived_uncertain: true,
+                },
+                receipt: None,
             },
-            receipt: None,
-        });
+        );
         self.counters.flow_upstream_drops += 1;
     }
 
@@ -707,10 +723,7 @@ impl DecisionCache {
         }
         for (mint, m) in records {
             let mc = self.mints.entry(*mint).or_default();
-            if mc.flow_drops.len() >= FLOW_UPSTREAM_DROP_RING {
-                mc.flow_drops.pop_front();
-            }
-            mc.flow_drops.push_back(m.clone());
+            push_missing_bounded(&mut mc.flow_drops, m.clone());
         }
         Ok(())
     }
@@ -1517,6 +1530,22 @@ mod tests {
             })
             .is_ok());
         assert!(!corrupt.history_continuity_unknown());
+    }
+
+    #[test]
+    fn compaction_never_discards_an_unresolved_gap() {
+        let mut c = ready(80);
+        let first = T0 + 1_000;
+        c.note_flow_upstream_drop(MINT, first);
+        for i in 0..(FLOW_UPSTREAM_DROP_RING + 5) {
+            c.note_flow_upstream_drop(MINT, first + 1_000 + i as i64);
+        }
+        let recs = c.missing_history_records();
+        assert!(
+            recs.iter().any(|(m, r)| *m == MINT && r.drop_ms == first),
+            "bounding the record must not discard an unresolved cumulative gap: {recs:?}"
+        );
+        assert!(c.unreconciled_drops(&MINT) >= 1);
     }
 
     #[test]
