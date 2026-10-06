@@ -450,8 +450,16 @@ fn an_upstream_dropped_print_refuses_the_window_end_to_end_and_does_not_disable_
     // Restoration is by RECONSTRUCTION (bounded replay/backfill or an operator reconciliation),
     // never by a timer.
     assert!(
-        e.model_reconcile_flow_history(&AFFECTED),
-        "the dropped mint's history must be reconcilable"
+        e.model_reconcile_flow_history(
+            &AFFECTED,
+            &pump_quant_app::decision_join::ReconstructionReceipt {
+                provenance: "capture:test".into(),
+                coverage_from_ms: DROP_MS - 1,
+                coverage_to_ms: DROP_MS + 1,
+            }
+        )
+        .is_ok(),
+        "the dropped mint's history must be reconcilable with a covering receipt"
     );
     let before_restore = rep(&e, "snapshot_ok");
     drive(
@@ -585,8 +593,16 @@ fn the_dropped_mints_own_management_is_unavailable_until_its_history_is_reconstr
 
     // ...only reconstruction does, and it resumes with the true history.
     assert!(
-        e.model_reconcile_flow_history(&AFFECTED),
-        "reconstruction must be possible for the dropped mint"
+        e.model_reconcile_flow_history(
+            &AFFECTED,
+            &pump_quant_app::decision_join::ReconstructionReceipt {
+                provenance: "capture:test".into(),
+                coverage_from_ms: DROP_MS - 1,
+                coverage_to_ms: DROP_MS + 1,
+            }
+        )
+        .is_ok(),
+        "a receipt whose coverage spans the drop must resolve the gap"
     );
     assert_eq!(
         e.model_flow_drop_summary().mints_history_unreconstructed,

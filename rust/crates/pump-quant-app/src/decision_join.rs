@@ -123,6 +123,10 @@ pub enum JoinRefusal {
     FlowHistoryUnreconstructable {
         drop_ms: i64,
     },
+    /// Continuity of the persisted missing-history record could not be established on startup
+    /// (the record was unreadable or incompatible). Refused by name rather than assuming no gap
+    /// occurred. Cleared only by a reconstruction receipt, never by a bare acknowledgement.
+    HistoryContinuityUnknown,
     CurveAbsent(String),
     AmmAbsent(String),
     /// More than one pool was bound to the mint and the observation's pool is not the bound one.
@@ -157,6 +161,7 @@ impl JoinRefusal {
             JoinRefusal::FlowHistoryUnreconstructable { .. } => {
                 "join_flow_history_unreconstructable"
             }
+            JoinRefusal::HistoryContinuityUnknown => "join_history_continuity_unknown",
             JoinRefusal::CurveAbsent(_) => "join_curve_absent",
             JoinRefusal::AmmAbsent(_) => "join_amm_absent",
             JoinRefusal::AmmPoolAmbiguous => "join_amm_pool_ambiguous",
@@ -313,12 +318,72 @@ pub struct FlowDropSummary {
 ///   gated on unrelated mints, because a blanket freeze would be a policy change.
 /// * A configured lookback (e.g. `lookback_ms` = 7 d, `flow_lookback_d`) is a LOOKBACK/eviction
 ///   horizon; it is NOT evidence that any given feature depends on this print for 7 d.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MissingDeps {
+    /// Rolling 300 s windows (flow block + ledger `ret_*`): bounded by the print's own window.
+    pub rolling_300s: bool,
+    /// CUMULATIVE ledger state, including a held position's age/inventory history: no timer
+    /// restores it.
+    pub cumulative_ledger: bool,
+    /// Wallet-derived features (`fresh_wallet_share`, `smart_*`, coentry). The refused derivation
+    /// never resolved a trader, so attribution is UNKNOWN — which is NOT proof of unaffectedness.
+    /// Carried as readiness UNCERTAINTY; it is not used to freeze unrelated mints.
+    pub wallet_derived_uncertain: bool,
+}
+
+/// Evidence that missing history was actually RECONSTRUCTED from an authoritative source and
+/// installed with a coverage boundary. A receipt is the ONLY way a cumulative gap is resolved:
+/// there is deliberately NO API that clears the gap without one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReconstructionReceipt {
+    /// Where the reconstructed events came from (capture path / replay run id). Must be non-empty.
+    pub provenance: String,
+    /// The reconstructed window must COVER the drop instant.
+    pub coverage_from_ms: i64,
+    pub coverage_to_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MissingObservation {
     /// Receive instant of the dropped print.
     pub drop_ms: i64,
-    /// Set once the missing history has been reconstructed/reconciled. NEVER set by a timer.
-    pub reconciled: bool,
+    /// Source/event identity where the producer has one (empty when it does not).
+    pub source_id: String,
+    pub deps: MissingDeps,
+    /// Installed reconstruction receipt; `None` until the history is genuinely repaired.
+    pub receipt: Option<ReconstructionReceipt>,
+}
+
+/// Per-mint readiness for the low-frequency status writer: what is unavailable, and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MissingHistoryStatus {
+    pub mint: [u8; 32],
+    pub drop_ms: i64,
+    pub source_id: String,
+    pub deps: MissingDeps,
+    pub entry_unavailable: bool,
+    pub management_unavailable: bool,
+    /// `rolling_pending` | `reconstruction_unsupported` | `reconstructed` | `continuity_unknown`
+    pub recovery: &'static str,
+}
+
+/// Why a reconstruction was refused. Never silently accepted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReconcileRefusal {
+    NoGap,
+    AlreadyReconstructed,
+    EmptyProvenance,
+    CoverageDoesNotSpanTheGap,
+    UnorderedCoverage,
+}
+
+/// Why restoring persisted missing-history state was refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RestoreRefusal {
+    /// The record could not be read/parsed: continuity is NOT assumed.
+    Unreadable,
+    /// The record is structurally incompatible with this build: continuity is NOT assumed.
+    Incompatible,
 }
 
 /// The decision-time cache. One owner (the engine); no interior mutability.
@@ -332,6 +397,10 @@ pub struct DecisionCache {
     pools: BTreeMap<[u8; 32], PoolBinding>,
     policy: BundlePolicy,
     counters: IngestCounters,
+    /// Set when startup continuity could NOT be established (unreadable or incompatible persisted
+    /// record). Refuses every prompt by [`JoinRefusal::HistoryContinuityUnknown`] until a
+    /// reconstruction receipt clears it — never by assuming no gap occurred.
+    history_continuity_unknown: bool,
 }
 
 impl Default for DecisionCache {
@@ -362,6 +431,7 @@ impl DecisionCache {
             pools: BTreeMap::new(),
             policy: BundlePolicy::trained_only(),
             counters: IngestCounters::default(),
+            history_continuity_unknown: false,
         }
     }
 
@@ -389,7 +459,7 @@ impl DecisionCache {
         let mints_history_unreconstructed = self
             .mints
             .values()
-            .filter(|mc| mc.flow_drops.iter().any(|m| !m.reconciled))
+            .filter(|mc| mc.flow_drops.iter().any(|m| m.receipt.is_none()))
             .count() as u64;
         FlowDropSummary {
             drops_total: self.counters.flow_upstream_drops,
@@ -532,41 +602,146 @@ impl DecisionCache {
     /// 300 s window for [`WINDOW_300_MS`], then the cumulative history until it is reconstructed
     /// or reconciled. Never served as complete or as a quietly idle market.
     pub fn note_flow_upstream_drop(&mut self, mint: [u8; 32], drop_unix_ms: i64) {
+        self.note_flow_upstream_drop_with_source(mint, drop_unix_ms, String::new());
+    }
+
+    /// As [`Self::note_flow_upstream_drop`], but carrying the source/event identity where the
+    /// producer has one (e.g. the LaserStream slot). Persisted so the gap survives a restart.
+    pub fn note_flow_upstream_drop_with_source(
+        &mut self,
+        mint: [u8; 32],
+        drop_unix_ms: i64,
+        source_id: String,
+    ) {
         let mc = self.mints.entry(mint).or_default();
         if mc.flow_drops.len() >= FLOW_UPSTREAM_DROP_RING {
             mc.flow_drops.pop_front();
         }
         mc.flow_drops.push_back(MissingObservation {
             drop_ms: drop_unix_ms,
-            reconciled: false,
+            source_id,
+            deps: MissingDeps {
+                rolling_300s: true,
+                cumulative_ledger: true,
+                // The refused derivation never resolved a trader, so the wallet-derived features
+                // CANNOT be shown unaffected: readiness carries that uncertainty explicitly.
+                wallet_derived_uncertain: true,
+            },
+            receipt: None,
         });
         self.counters.flow_upstream_drops += 1;
     }
 
-    /// Clear the CUMULATIVE block for `mint` after the missing history has genuinely been
-    /// reconstructed — a bounded replay/backfill from an authoritative capture preserving event
-    /// identity, order and dedup — or reconciled by an operator. NEVER called by a timer: a fresh
-    /// reserve snapshot does not restore missing trade history. Returns true when an
-    /// unreconciled observation was cleared.
-    pub fn reconcile_flow_history(&mut self, mint: &[u8; 32]) -> bool {
+    /// Resolve the CUMULATIVE gap for `mint` ONLY by installing a validated reconstruction
+    /// receipt whose coverage spans the drop. There is deliberately NO API that clears the gap
+    /// without one: an operator may INITIATE reconstruction, but acknowledgement alone is not
+    /// evidence. When no authoritative source exists, the gap is simply never resolved.
+    pub fn reconcile_flow_history(
+        &mut self,
+        mint: &[u8; 32],
+        receipt: &ReconstructionReceipt,
+    ) -> Result<(), ReconcileRefusal> {
+        if receipt.provenance.trim().is_empty() {
+            return Err(ReconcileRefusal::EmptyProvenance);
+        }
+        if receipt.coverage_from_ms > receipt.coverage_to_ms {
+            return Err(ReconcileRefusal::UnorderedCoverage);
+        }
         let Some(mc) = self.mints.get_mut(mint) else {
-            return false;
+            return Err(ReconcileRefusal::NoGap);
         };
-        let mut cleared = false;
-        for m in mc.flow_drops.iter_mut() {
-            if !m.reconciled {
-                m.reconciled = true;
-                cleared = true;
+        let Some(m) = mc.flow_drops.iter_mut().find(|m| m.receipt.is_none()) else {
+            return Err(ReconcileRefusal::AlreadyReconstructed);
+        };
+        if !(receipt.coverage_from_ms <= m.drop_ms && m.drop_ms <= receipt.coverage_to_ms) {
+            return Err(ReconcileRefusal::CoverageDoesNotSpanTheGap);
+        }
+        m.receipt = Some(receipt.clone());
+        Ok(())
+    }
+
+    /// Per-mint readiness for the status writer (never on the hot path).
+    #[must_use]
+    pub fn missing_history_status(&self, mint: &[u8; 32]) -> Option<MissingHistoryStatus> {
+        let m = self
+            .mints
+            .get(mint)?
+            .flow_drops
+            .iter()
+            .find(|m| m.receipt.is_none())?;
+        Some(MissingHistoryStatus {
+            mint: *mint,
+            drop_ms: m.drop_ms,
+            source_id: m.source_id.clone(),
+            deps: m.deps,
+            entry_unavailable: true,
+            management_unavailable: true,
+            recovery: "reconstruction_unsupported",
+        })
+    }
+
+    /// Every mint with an UNRESOLVED missing observation (for persistence and reporting).
+    #[must_use]
+    pub fn missing_history_records(&self) -> Vec<([u8; 32], MissingObservation)> {
+        let mut out = Vec::new();
+        for (mint, mc) in &self.mints {
+            for m in mc.flow_drops.iter().filter(|m| m.receipt.is_none()) {
+                out.push((*mint, m.clone()));
             }
         }
-        cleared
+        out
+    }
+
+    /// Restore persisted missing-history state BEFORE entry/management inference resumes.
+    /// `integrity_ok` is false when the record could not be read or is incompatible with this
+    /// build: the cache then raises the CONSERVATIVE named refusal
+    /// [`JoinRefusal::HistoryContinuityUnknown`] rather than assuming no gap occurred.
+    pub fn restore_missing_history(
+        &mut self,
+        records: &[([u8; 32], MissingObservation)],
+        integrity_ok: bool,
+    ) -> Result<(), RestoreRefusal> {
+        if !integrity_ok {
+            self.history_continuity_unknown = true;
+            return Err(RestoreRefusal::Unreadable);
+        }
+        for (mint, m) in records {
+            let mc = self.mints.entry(*mint).or_default();
+            if mc.flow_drops.len() >= FLOW_UPSTREAM_DROP_RING {
+                mc.flow_drops.pop_front();
+            }
+            mc.flow_drops.push_back(m.clone());
+        }
+        Ok(())
+    }
+
+    /// Clear a continuity failure ONLY with evidence: a reconstruction receipt. A bare operator
+    /// acknowledgement is not accepted.
+    pub fn clear_history_continuity(
+        &mut self,
+        receipt: &ReconstructionReceipt,
+    ) -> Result<(), ReconcileRefusal> {
+        if receipt.provenance.trim().is_empty() {
+            return Err(ReconcileRefusal::EmptyProvenance);
+        }
+        if receipt.coverage_from_ms > receipt.coverage_to_ms {
+            return Err(ReconcileRefusal::UnorderedCoverage);
+        }
+        self.history_continuity_unknown = false;
+        Ok(())
+    }
+
+    /// Whether startup continuity could not be established.
+    #[must_use]
+    pub fn history_continuity_unknown(&self) -> bool {
+        self.history_continuity_unknown
     }
 
     /// One mint's unreconciled drops (status writer only; never on the hot path).
     #[must_use]
     pub fn unreconciled_drops(&self, mint: &[u8; 32]) -> u64 {
         self.mints.get(mint).map_or(0, |mc| {
-            mc.flow_drops.iter().filter(|m| !m.reconciled).count() as u64
+            mc.flow_drops.iter().filter(|m| m.receipt.is_none()).count() as u64
         })
     }
 
@@ -648,6 +823,9 @@ impl DecisionCache {
                 newest_ms: mc.last_recv_ms,
             });
         }
+        if self.history_continuity_unknown {
+            return Err(JoinRefusal::HistoryContinuityUnknown);
+        }
         // UPSTREAM DROP — fail-closed, blamed before any "quiet"/"few trades" verdict, and
         // per-DEPENDENCY (see [`MissingObservation`]).
         // (A) ROLLING: this clock's 300 s flow window is missing a print the derivation refused.
@@ -663,7 +841,7 @@ impl DecisionCache {
         //     counters (n_prior_trades / volumes / unique traders / shares / age) are short.
         //     NO timer repairs that — a fresh reserve snapshot does not restore trade history —
         //     so it stays refused until reconstructed from a capture or reconciled.
-        if let Some(m) = mc.flow_drops.iter().find(|m| !m.reconciled) {
+        if let Some(m) = mc.flow_drops.iter().find(|m| m.receipt.is_none()) {
             return Err(JoinRefusal::FlowHistoryUnreconstructable { drop_ms: m.drop_ms });
         }
         self.ledger
@@ -1235,14 +1413,110 @@ mod tests {
 
         // RECOVERY is by RECONSTRUCTION only — a bounded replay/backfill or an operator
         // reconciliation — never by a timer.
+        // NO API clears the gap without a valid reconstruction receipt: an operator may initiate
+        // reconstruction, but an acknowledgement alone is not evidence.
+        assert_eq!(
+            c.reconcile_flow_history(
+                &MINT,
+                &ReconstructionReceipt {
+                    provenance: String::new(),
+                    coverage_from_ms: drop_ms - 1,
+                    coverage_to_ms: drop_ms + 1,
+                }
+            ),
+            Err(ReconcileRefusal::EmptyProvenance),
+            "an acknowledgement without provenance must not clear the gap"
+        );
+        assert_eq!(
+            c.reconcile_flow_history(
+                &MINT,
+                &ReconstructionReceipt {
+                    provenance: "capture:test".into(),
+                    coverage_from_ms: drop_ms + 1,
+                    coverage_to_ms: drop_ms + 2,
+                }
+            ),
+            Err(ReconcileRefusal::CoverageDoesNotSpanTheGap),
+            "a window that does not span the drop must not clear it"
+        );
         assert!(
-            c.reconcile_flow_history(&MINT),
-            "an unreconciled observation must be clearable by reconciliation"
+            c.reconcile_flow_history(
+                &MINT,
+                &ReconstructionReceipt {
+                    provenance: "capture:test".into(),
+                    coverage_from_ms: drop_ms - 1,
+                    coverage_to_ms: drop_ms + 1,
+                }
+            )
+            .is_ok(),
+            "a receipt whose coverage spans the drop resolves it"
         );
         assert!(
             c.snapshot(&MINT, t_recover).is_ok(),
             "after reconciliation the mint serves again"
         );
+    }
+
+    #[test]
+    fn persisted_missing_history_survives_a_restart_and_unreadable_state_never_reads_as_complete() {
+        // A live cache records the gap.
+        let mut live = ready(80);
+        let drop_ms = T0 + 1_000;
+        live.note_flow_upstream_drop(MINT, drop_ms);
+        for i in 80..155 {
+            let _ = live.observe_trade(&trade(i));
+        }
+        let t = t_dec(155);
+        assert_eq!(
+            live.snapshot(&MINT, t),
+            Err(JoinRefusal::FlowHistoryUnreconstructable { drop_ms }),
+            "the cumulative gap must refuse before any restart"
+        );
+        let records = live.missing_history_records();
+        assert_eq!(records.len(), 1, "the unresolved record must be exportable");
+
+        // RESTART: history is rebuilt independently and the persisted gap is restored BEFORE
+        // inference resumes — the restart must NOT erase the gap.
+        let mut restarted = ready(155);
+        assert!(restarted.restore_missing_history(&records, true).is_ok());
+        assert_eq!(
+            restarted.snapshot(&MINT, t),
+            Err(JoinRefusal::FlowHistoryUnreconstructable { drop_ms }),
+            "a restart must restore the gap, not lose it"
+        );
+        assert_eq!(restarted.unreconciled_drops(&MINT), 1);
+
+        // AN UNREADABLE / INCOMPATIBLE record must NOT silently become "complete": continuity is
+        // refused by name for every prompt.
+        let mut corrupt = ready(155);
+        assert_eq!(
+            corrupt.restore_missing_history(&[], false),
+            Err(RestoreRefusal::Unreadable)
+        );
+        assert!(corrupt.history_continuity_unknown());
+        assert_eq!(
+            corrupt.snapshot(&MINT, t),
+            Err(JoinRefusal::HistoryContinuityUnknown),
+            "unreadable persisted state must refuse, never assume no gap occurred"
+        );
+        // Only EVIDENCE clears continuity; a bare acknowledgement is not evidence.
+        assert_eq!(
+            corrupt.clear_history_continuity(&ReconstructionReceipt {
+                provenance: String::new(),
+                coverage_from_ms: 0,
+                coverage_to_ms: 1,
+            }),
+            Err(ReconcileRefusal::EmptyProvenance)
+        );
+        assert!(corrupt.history_continuity_unknown(), "still refused");
+        assert!(corrupt
+            .clear_history_continuity(&ReconstructionReceipt {
+                provenance: "capture:test".into(),
+                coverage_from_ms: 0,
+                coverage_to_ms: 1,
+            })
+            .is_ok());
+        assert!(!corrupt.history_continuity_unknown());
     }
 
     #[test]

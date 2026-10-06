@@ -302,12 +302,59 @@ impl Engine {
     /// identity/order/dedup) or explicitly reconciled by an operator. NEVER by a timer — a fresh
     /// reserve snapshot does not restore missing trade history. Returns true when an
     /// unreconciled observation was cleared. No-op unless the paper-model lane is armed.
-    pub fn model_reconcile_flow_history(&mut self, mint: &[u8; 32]) -> bool {
+    pub fn model_reconcile_flow_history(
+        &mut self,
+        mint: &[u8; 32],
+        receipt: &crate::decision_join::ReconstructionReceipt,
+    ) -> Result<(), crate::decision_join::ReconcileRefusal> {
         if self.paper_model_mode {
-            self.model_cache.reconcile_flow_history(mint)
+            self.model_cache.reconcile_flow_history(mint, receipt)
         } else {
-            false
+            Err(crate::decision_join::ReconcileRefusal::NoGap)
         }
+    }
+
+    /// Per-mint missing-history readiness for the status writer (never on the hot path).
+    #[must_use]
+    pub fn model_missing_history_status(
+        &self,
+        mint: &[u8; 32],
+    ) -> Option<crate::decision_join::MissingHistoryStatus> {
+        if self.paper_model_mode {
+            self.model_cache.missing_history_status(mint)
+        } else {
+            None
+        }
+    }
+
+    /// Every UNRESOLVED missing-history record, for durable persistence.
+    #[must_use]
+    pub fn model_missing_history_records(
+        &self,
+    ) -> Vec<([u8; 32], crate::decision_join::MissingObservation)> {
+        if self.paper_model_mode {
+            self.model_cache.missing_history_records()
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Restore persisted missing-history state BEFORE entry/management inference resumes.
+    /// `integrity_ok = false` (unreadable/incompatible record) raises the conservative
+    /// [`crate::decision_join::JoinRefusal::HistoryContinuityUnknown`] refusal.
+    pub fn model_restore_missing_history(
+        &mut self,
+        records: &[([u8; 32], crate::decision_join::MissingObservation)],
+        integrity_ok: bool,
+    ) -> Result<(), crate::decision_join::RestoreRefusal> {
+        self.model_cache
+            .restore_missing_history(records, integrity_ok)
+    }
+
+    /// Whether startup continuity could not be established.
+    #[must_use]
+    pub fn model_history_continuity_unknown(&self) -> bool {
+        self.model_cache.history_continuity_unknown()
     }
 
     pub fn model_lane_report(&self) -> &std::collections::BTreeMap<String, u64> {
