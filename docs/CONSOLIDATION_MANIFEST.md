@@ -6,7 +6,8 @@ addenda that used to live here; that earlier text is preserved verbatim, warts a
 contains decisions later reversed. Where the two disagree, this file wins. Operating entry
 points, commands and the historical-alternatives index are in [`ENTRY.md`](ENTRY.md).
 
-Last updated: 2026-10-05. **Accepted code head: `d7596114`** (tested merge `2fabc312`). The
+Last updated: 2026-10-06. **Accepted code head: `7e227ee3`** (tested merge `0a62b3d2`; the
+preceding code head `d7596114` was tested as merge `2fabc312`). The
 branch tip may be a later docs-only commit; the acceptance in section 2 is bound to the code
 head, not to the tip SHA.
 
@@ -17,7 +18,7 @@ head, not to the tip SHA.
 | Item | Value |
 |---|---|
 | Consolidated branch | `task/main-consolidation` |
-| Current code head | `d7596114` (docs-only commits may follow it) |
+| Accepted code head | `7e227ee3` (docs-only commits may follow it) |
 | Base (`main`) | `09e9194b` (2026-09-26) |
 | Rollback ref | tag `rollback/pre-consolidation-959cee8c` (local + remote) |
 | PR | **#10** - `main consolidation: Qwen-first main` - **DRAFT, not merged** |
@@ -40,11 +41,17 @@ into `main`, not the head alone):
 | 18 | `d7596114` | `2fabc31262712f2de8eea31b817efaced265df27` | AMD EPYC 7763 | SUCCESS |
 | 19 | `a69e7e6f` | (docs-only head) | - | SUCCESS |
 | 20 | `1811e5fb` | `b3ec6fad8111c1cf83756982defb659c2e8927f1` | AMD EPYC 9V45 | SUCCESS |
-| 21 | `161efe45` | `b3ec6fad8111c1cf83756982defb659c2e8927f1` (merge ref unchanged; run 21 re-tested the same merge for the docs-only tip) | AMD EPYC 9V45 | SUCCESS |
+| 21 | `161efe45` | `b3ec6fad8111c1cf83756982defb659c2e8927f1` (SAME tested merge as run 20 - GitHub's PR merge ref had not yet advanced for this docs-only head) | AMD EPYC 9V45 | SUCCESS |
+| 22 | `7e227ee3` | `0a62b3d28e028773f55883e745d195f65633c42c7` | AMD EPYC 7763 | SUCCESS |
 
 - all steps green each time: Record toolchain/runner CPU/effective flags · Portable gate ·
   Format check · Clippy (deny warnings) · Build (portable/dev profile) · Tests
-- runs 18-21 are the only runs on the finalised workflow; 18 and 20 used DIFFERENT runner CPUs
+- runs 18, 20 and 22 used DIFFERENT runner CPUs (7763, 9V45, 7763) and were green - the fix is
+  validated on the tested runners, not proven universal
+- **merge-ref lag observed:** runs 20 and 21 both report tested merge `b3ec6fad` although their
+  source heads differ (`1811e5fb` vs `161efe45`), i.e. one docs-only head was validated against a
+  merge tree that had not yet advanced. Treat "which merge was actually tested" as the log's
+  `git rev-parse HEAD` value, not the source head.
 - toolchain **rustc 1.99.0** (`b940084d7`) · effective `RUSTFLAGS=-C target-cpu=x86-64-v3` ·
   cache key separated by toolchain/arch/flag-hash (`Linux-X64-rust1.99.0-cargo-<lock>-<flags>`)
 - the CPU fix is **validated on the tested runners** (AMD EPYC 7763 and 9V45) - not claimed
