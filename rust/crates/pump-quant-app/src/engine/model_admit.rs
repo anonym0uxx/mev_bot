@@ -273,6 +273,43 @@ impl Engine {
         self.model_cache.counters()
     }
 
+    /// Record a print the feed derivation dropped before the flow reducer could see it (a
+    /// reserve delta it refused), so any 300 s flow window that contains it is refused by
+    /// name rather than served as complete or quietly idle. No-op unless the paper-model
+    /// lane is armed — nothing else serves flow.
+    pub fn note_flow_upstream_drop(&mut self, mint: [u8; 32], drop_unix_ms: i64) {
+        if self.paper_model_mode {
+            self.model_cache.note_flow_upstream_drop(mint, drop_unix_ms);
+        }
+    }
+
+    /// Low-frequency health view of upstream-dropped prints for the status writers: the
+    /// cumulative drop count and how many mints' 300 s flow windows are currently
+    /// incomplete (readiness refused by [`crate::decision_join::JoinRefusal::FlowUpstreamDrop`]).
+    /// All-zero unless the paper-model lane is armed, because nothing else serves flow.
+    /// Must only be called from a periodic writer — it scans per-mint rings.
+    #[must_use]
+    pub fn model_flow_drop_summary(&self) -> crate::decision_join::FlowDropSummary {
+        if self.paper_model_mode {
+            self.model_cache.flow_drop_summary(self.model_clock_ms)
+        } else {
+            crate::decision_join::FlowDropSummary::default()
+        }
+    }
+
+    /// Clear the CUMULATIVE incompleteness for `mint` after its missing history has been
+    /// reconstructed (a bounded replay/backfill from an authoritative capture, preserving event
+    /// identity/order/dedup) or explicitly reconciled by an operator. NEVER by a timer — a fresh
+    /// reserve snapshot does not restore missing trade history. Returns true when an
+    /// unreconciled observation was cleared. No-op unless the paper-model lane is armed.
+    pub fn model_reconcile_flow_history(&mut self, mint: &[u8; 32]) -> bool {
+        if self.paper_model_mode {
+            self.model_cache.reconcile_flow_history(mint)
+        } else {
+            false
+        }
+    }
+
     pub fn model_lane_report(&self) -> &std::collections::BTreeMap<String, u64> {
         &self.model_report
     }

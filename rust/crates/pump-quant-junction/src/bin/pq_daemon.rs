@@ -2591,6 +2591,9 @@ fn main() -> ExitCode {
             // and daemon uptime so the watchdog can detect a dead Helius WS
             // lane and restart the daemon to re-establish it.
             let uptime_secs = session_start.elapsed().as_secs();
+            // Low-frequency (status-heartbeat) dropped-print health: lets an operator tell an
+            // honestly QUIET market from one whose data is INCOMPLETE. Never on the hot path.
+            let flow_drop = engine.model_flow_drop_summary();
             let health_json = format!(
                 concat!(
                     "{{",
@@ -2606,6 +2609,9 @@ fn main() -> ExitCode {
                     "\"delta_trades_derived\":{},",
                     "\"delta_no_trade\":{},",
                     "\"delta_out_of_range\":{},",
+                    "\"flow_upstream_drops\":{},",
+                    "\"flow_windows_incomplete\":{},",
+                    "\"flow_missing_observations\":{},",
                     "\"uptime_secs\":{},",
                     "\"tick\":{},",
                     "\"account_subs_active\":{},",
@@ -2626,6 +2632,9 @@ fn main() -> ExitCode {
                 stats.delta_trades_derived,
                 stats.delta_no_trade,
                 stats.delta_out_of_range,
+                flow_drop.drops_total,
+                flow_drop.mints_incomplete_now,
+                flow_drop.mints_history_unreconstructed,
                 uptime_secs,
                 tick_counter,
                 sub_tracker.len(),
@@ -2824,6 +2833,21 @@ fn main() -> ExitCode {
                                 ) {
                                     stats.delta_out_of_range += 1;
                                 }
+                                // A print that moved the curve but the derivation refused never
+                                // reaches the flow reducer, so no received-print check can see
+                                // it. The shared producer->engine step classifies the miss and
+                                // records the drop (with its wire receive time) so the decision
+                                // join refuses any 300 s flow window that would otherwise be
+                                // served as complete or quietly idle; an ordinary no-trade
+                                // (`NoPrint`) is left alone.
+                                let _ =
+                                    pump_quant_junction::reserve_delta::note_curve_snapshot_outcome(
+                                        &mut engine,
+                                        mb,
+                                        prev.as_ref(),
+                                        &curve,
+                                        recv_unix_ms,
+                                    );
                             }
                             reserve_tracker.insert(
                                 mb,
