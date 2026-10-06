@@ -375,6 +375,10 @@ pub enum ReconcileRefusal {
     EmptyProvenance,
     CoverageDoesNotSpanTheGap,
     UnorderedCoverage,
+    /// Production recovery requires an INSTALLER that reconstructs aggregates with provenance and
+    /// a coverage boundary. Metadata alone cannot unlock inference over unchanged incomplete
+    /// state, so this is returned even for a syntactically valid, covering receipt.
+    ReconstructionUnsupported,
 }
 
 /// Why restoring persisted missing-history state was refused.
@@ -663,6 +667,38 @@ impl DecisionCache {
         if receipt.coverage_from_ms > receipt.coverage_to_ms {
             return Err(ReconcileRefusal::UnorderedCoverage);
         }
+        let Some(mc) = self.mints.get(mint) else {
+            return Err(ReconcileRefusal::NoGap);
+        };
+        let Some(m) = mc.flow_drops.iter().find(|m| m.receipt.is_none()) else {
+            return Err(ReconcileRefusal::AlreadyReconstructed);
+        };
+        if !(receipt.coverage_from_ms <= m.drop_ms && m.drop_ms <= receipt.coverage_to_ms) {
+            return Err(ReconcileRefusal::CoverageDoesNotSpanTheGap);
+        }
+        // Provenance and coverage are NECESSARY, not SUFFICIENT. While no reconstruction installer
+        // exists, no aggregates are installed, so inference over unchanged incomplete state must
+        // NOT be unlocked. Refuse.
+        let _ = m;
+        Err(ReconcileRefusal::ReconstructionUnsupported)
+    }
+
+    /// TEST-ONLY fixture restoration: installs a receipt WITHOUT reconstructing any aggregates, so
+    /// unit tests can exercise how the gate opens when reconstruction genuinely exists. Compiled
+    /// only under `cfg(test)`; never reachable from production code, and deliberately a different
+    /// name from [`Self::reconcile_flow_history`].
+    #[cfg(test)]
+    pub(crate) fn install_reconstructed_fixture(
+        &mut self,
+        mint: &[u8; 32],
+        receipt: &ReconstructionReceipt,
+    ) -> Result<(), ReconcileRefusal> {
+        if receipt.provenance.trim().is_empty() {
+            return Err(ReconcileRefusal::EmptyProvenance);
+        }
+        if receipt.coverage_from_ms > receipt.coverage_to_ms {
+            return Err(ReconcileRefusal::UnorderedCoverage);
+        }
         let Some(mc) = self.mints.get_mut(mint) else {
             return Err(ReconcileRefusal::NoGap);
         };
@@ -731,7 +767,7 @@ impl DecisionCache {
     /// Clear a continuity failure ONLY with evidence: a reconstruction receipt. A bare operator
     /// acknowledgement is not accepted.
     pub fn clear_history_continuity(
-        &mut self,
+        &self,
         receipt: &ReconstructionReceipt,
     ) -> Result<(), ReconcileRefusal> {
         if receipt.provenance.trim().is_empty() {
@@ -740,8 +776,15 @@ impl DecisionCache {
         if receipt.coverage_from_ms > receipt.coverage_to_ms {
             return Err(ReconcileRefusal::UnorderedCoverage);
         }
+        // Production continuity clearing needs a real reconstruction; a plausible receipt cannot
+        // clear it.
+        Err(ReconcileRefusal::ReconstructionUnsupported)
+    }
+
+    /// TEST-ONLY continuity clear (compiled under `cfg(test)` only).
+    #[cfg(test)]
+    pub(crate) fn clear_history_continuity_fixture(&mut self) {
         self.history_continuity_unknown = false;
-        Ok(())
     }
 
     /// Whether startup continuity could not be established.
@@ -1452,7 +1495,9 @@ mod tests {
             Err(ReconcileRefusal::CoverageDoesNotSpanTheGap),
             "a window that does not span the drop must not clear it"
         );
-        assert!(
+        // A PLAUSIBLE, covering receipt is NECESSARY but NOT SUFFICIENT: no aggregates have been
+        // reconstructed, so inference over unchanged incomplete state must stay refused.
+        assert_eq!(
             c.reconcile_flow_history(
                 &MINT,
                 &ReconstructionReceipt {
@@ -1460,13 +1505,29 @@ mod tests {
                     coverage_from_ms: drop_ms - 1,
                     coverage_to_ms: drop_ms + 1,
                 }
-            )
-            .is_ok(),
-            "a receipt whose coverage spans the drop resolves it"
+            ),
+            Err(ReconcileRefusal::ReconstructionUnsupported),
+            "metadata alone must not unlock inference"
         );
         assert!(
+            c.snapshot(&MINT, t_recover).is_err(),
+            "a plausible receipt must leave the incomplete state refused"
+        );
+        // TEST-ONLY fixture restoration, deliberately separate from production recovery
+        // (`reconcile_flow_history`), shows the gate opening only when state is installed.
+        assert!(c
+            .install_reconstructed_fixture(
+                &MINT,
+                &ReconstructionReceipt {
+                    provenance: "capture:test".into(),
+                    coverage_from_ms: drop_ms - 1,
+                    coverage_to_ms: drop_ms + 1,
+                }
+            )
+            .is_ok());
+        assert!(
             c.snapshot(&MINT, t_recover).is_ok(),
-            "after reconciliation the mint serves again"
+            "after a genuine reconstruction the mint serves again"
         );
     }
 
@@ -1522,13 +1583,17 @@ mod tests {
             Err(ReconcileRefusal::EmptyProvenance)
         );
         assert!(corrupt.history_continuity_unknown(), "still refused");
-        assert!(corrupt
-            .clear_history_continuity(&ReconstructionReceipt {
+        assert_eq!(
+            corrupt.clear_history_continuity(&ReconstructionReceipt {
                 provenance: "capture:test".into(),
                 coverage_from_ms: 0,
                 coverage_to_ms: 1,
-            })
-            .is_ok());
+            }),
+            Err(ReconcileRefusal::ReconstructionUnsupported),
+            "a plausible receipt must not clear continuity"
+        );
+        assert!(corrupt.history_continuity_unknown(), "still refused");
+        corrupt.clear_history_continuity_fixture();
         assert!(!corrupt.history_continuity_unknown());
     }
 

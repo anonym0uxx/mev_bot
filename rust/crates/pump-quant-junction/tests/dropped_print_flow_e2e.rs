@@ -447,9 +447,10 @@ fn an_upstream_dropped_print_refuses_the_window_end_to_end_and_does_not_disable_
         e.model_funnel()
     );
 
-    // Restoration is by RECONSTRUCTION (bounded replay/backfill or an operator reconciliation),
-    // never by a timer.
-    assert!(
+    // A PLAUSIBLE, covering receipt is NECESSARY but NOT SUFFICIENT. Production recovery is
+    // UNSUPPORTED until a reconstruction installer exists, so it must NOT unlock inference over
+    // unchanged incomplete state.
+    assert_eq!(
         e.model_reconcile_flow_history(
             &AFFECTED,
             &pump_quant_app::decision_join::ReconstructionReceipt {
@@ -457,9 +458,9 @@ fn an_upstream_dropped_print_refuses_the_window_end_to_end_and_does_not_disable_
                 coverage_from_ms: DROP_MS - 1,
                 coverage_to_ms: DROP_MS + 1,
             }
-        )
-        .is_ok(),
-        "the dropped mint's history must be reconcilable with a covering receipt"
+        ),
+        Err(pump_quant_app::decision_join::ReconcileRefusal::ReconstructionUnsupported),
+        "metadata alone must not unlock inference"
     );
     let before_restore = rep(&e, "snapshot_ok");
     drive(
@@ -467,10 +468,10 @@ fn an_upstream_dropped_print_refuses_the_window_end_to_end_and_does_not_disable_
         &tape(AFFECTED, 5, T0 + 253_000, false, true, 500, 22_000),
         8,
     );
-    assert!(
-        rep(&e, "snapshot_ok") > before_restore,
-        "after reconstruction AFFECTED must serve again: {:?}",
-        e.model_lane_report()
+    assert_eq!(
+        rep(&e, "snapshot_ok"),
+        before_restore,
+        "the mint must stay refused: production recovery is unsupported"
     );
 }
 
@@ -591,8 +592,8 @@ fn the_dropped_mints_own_management_is_unavailable_until_its_history_is_reconstr
         "the cumulative reason must survive the horizon"
     );
 
-    // ...only reconstruction does, and it resumes with the true history.
-    assert!(
+    // ...and in PRODUCTION no call resolves it: recovery is unsupported until an installer exists.
+    assert_eq!(
         e.model_reconcile_flow_history(
             &AFFECTED,
             &pump_quant_app::decision_join::ReconstructionReceipt {
@@ -600,14 +601,14 @@ fn the_dropped_mints_own_management_is_unavailable_until_its_history_is_reconstr
                 coverage_from_ms: DROP_MS - 1,
                 coverage_to_ms: DROP_MS + 1,
             }
-        )
-        .is_ok(),
-        "a receipt whose coverage spans the drop must resolve the gap"
+        ),
+        Err(pump_quant_app::decision_join::ReconcileRefusal::ReconstructionUnsupported),
+        "metadata alone must not resolve the gap"
     );
     assert_eq!(
         e.model_flow_drop_summary().mints_history_unreconstructed,
-        0,
-        "reconstruction must clear the cumulative reason"
+        1,
+        "the cumulative reason must survive even a plausible receipt"
     );
     let served_before_restore = rep(&e, "snapshot_ok") + rep(&e, "dispatched");
     drive(
@@ -615,9 +616,10 @@ fn the_dropped_mints_own_management_is_unavailable_until_its_history_is_reconstr
         &tape(AFFECTED, 5, T0 + 253_000, false, true, 300, 22_000),
         8,
     );
-    assert!(
-        rep(&e, "snapshot_ok") + rep(&e, "dispatched") > served_before_restore,
-        "after reconstruction the mint must be SERVED again (entry/management route resumes): {:?}",
+    assert_eq!(
+        rep(&e, "snapshot_ok") + rep(&e, "dispatched"),
+        served_before_restore,
+        "with recovery unsupported the held mint stays refused (Qwen management unavailable): {:?}",
         e.model_lane_report()
     );
 }
