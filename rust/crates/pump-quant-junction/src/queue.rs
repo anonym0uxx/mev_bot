@@ -51,9 +51,22 @@ impl BoundedJunctionQueue {
 
     /// Create a new bounded queue with a custom capacity (rounded up to
     /// the next power-of-2 for mask-based indexing).
+    ///
+    /// # Panics
+    /// Panics if `capacity > usize::MAX / 2 + 1` (no power-of-two capacity is
+    /// representable). In-tree callers pass small values (JUNCTION_QUEUE_CAP =
+    /// 4096, 16, 2, or a CLI `--junction-cap`).
     pub fn with_capacity(capacity: usize) -> Self {
-        // Round up to power-of-2.
-        let cap = capacity.next_power_of_two();
+        // `checked_next_power_of_two` returns None only when `capacity` exceeds the
+        // largest representable power of two. A ring buffer cannot honour that request,
+        // so fail loudly with a named reason rather than wrapping to a zero mask (which
+        // would corrupt the ring).
+        let cap = capacity
+            .checked_next_power_of_two()
+            .expect("junction queue capacity exceeds usize::MAX/2 + 1");
+        #[allow(clippy::arithmetic_side_effects)]
+        // LINT-ALLOW(hot_arith): cap is `checked_next_power_of_two()` = Some, hence a power
+        // of two >= 1 (capacity 0 rounds up to 1), so cap - 1 cannot underflow.
         let cap_mask = cap - 1;
 
         let mut buf = Vec::with_capacity(cap);

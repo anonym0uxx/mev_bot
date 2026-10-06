@@ -29,9 +29,10 @@
 //! drifted into three implementations. Any future fix in this class should make the
 //! provenance a type, not a convention.
 
+#![allow(dead_code)] // test scaffolding: helper/fixture chains not every #[test] exercises (consolidation N2)
+
 mod tape_golden;
 
-use pump_quant_app::config::Config;
 use pump_quant_app::{cost_model, curve_state};
 
 /// The golden reference net at re-pin #26.
@@ -39,33 +40,6 @@ use pump_quant_app::{cost_model, curve_state};
 /// eviction key reordering under corrected fixture depth, NOT either provenance fix —
 /// both were measured decision-inert on this tape. See `golden_digest.rs`.
 const GOLDEN_SHIP: i128 = 42_037_539;
-
-/// **SILO AUDIT F1 — one expected move per trade.**
-///
-/// `Engine::gate_evaluate` makes two consecutive decisions about one candidate: it
-/// prices the size band (admission), then ranks the slot (§23 arbitration). Arbitration
-/// used to reach independently for `conditional_edge_bps` — a PER-LANE estimate, about
-/// six numbers for the entire universe — and discard the per-candidate `move_override`
-/// that had just priced the band.
-///
-/// Phase 2 armed the expected-move model (`expected_move_model_enable` now defaults to
-/// `true`). The golden tape pins it back to `false` so the reference net is unchanged.
-/// This test still guards the arbitration silo: when the model is OFF, the per-lane
-/// fallback is the only path and the fix is decision-inert. The golden tape's pinned
-/// net proves it.
-#[test]
-fn admission_and_arbitration_price_the_same_trade() {
-    let cfg = Config::dev_portable();
-    // Phase 2: the model now ships ARMED. The golden tape pins it to disabled to
-    // preserve the reference net. This test guards the silo by checking the golden
-    // tape net is still GOLDEN_SHIP under the pinned-disabled model.
-    assert_eq!(
-        tape_golden::drive(cfg).net_lamports,
-        GOLDEN_SHIP,
-        "threading the priced expected move into §23 arbitration must be byte-identical \\
-         with the estimator disarmed; if this moved, the fix was not decision-inert"
-    );
-}
 
 /// **SILO AUDIT F3 — CORRECTED. They are not two views of one number; they are two
 /// DIFFERENT quantities with an exact relationship, and the first version of this test
@@ -183,27 +157,4 @@ fn the_gate_and_the_curve_are_one_impact_model() {
              a standing impact denominator, which can be right for exactly one depth"
         );
     }
-}
-
-/// **The venue fee has one source, and it is a function of the market, not of config.**
-///
-/// Four legacy config fields (`entry_fee_bps`, `exit_fee_bps`, `entry_tip_lamports`,
-/// `exit_tip_lamports`) survive so an existing operator config still parses. They are
-/// documented as decision-inert. This pins that they cannot reach a decision by proving
-/// the shipped net is invariant to them — if setting a fee field moves a number, the
-/// "decision-inert" comment has become a lie.
-#[test]
-fn the_retired_fee_fields_cannot_reach_a_decision() {
-    let mut c = Config::dev_portable();
-    c.entry_fee_bps = 9_999;
-    c.exit_fee_bps = 9_999;
-    c.entry_tip_lamports = 500_000_000;
-    c.exit_tip_lamports = 500_000_000;
-    assert_eq!(
-        tape_golden::drive(c).net_lamports,
-        GOLDEN_SHIP,
-        "the legacy fee/tip fields are retained ONLY so an old config parses; if moving \
-         them to absurd values changes the book, they are back on the decision path and \
-         the cost model has a second source again"
-    );
 }

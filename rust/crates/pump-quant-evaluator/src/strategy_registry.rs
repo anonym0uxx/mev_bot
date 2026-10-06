@@ -133,16 +133,13 @@ impl<'a> StrategyRegistry<'a> {
     /// Register a new strategy type at the ResearchCandidate stage.
     /// No-op if already registered.
     pub fn register(&mut self, type_id: u64, cycle: u64) {
-        if !self.states.contains_key(&type_id) {
-            self.states.insert(
-                type_id,
-                LifecycleState {
-                    stage: LifecycleStage::ResearchCandidate,
-                    stage_entered_cycle: cycle,
-                    evidence: LifecycleEvidence::default(),
-                },
-            );
-        }
+        self.states
+            .entry(type_id)
+            .or_insert_with(|| LifecycleState {
+                stage: LifecycleStage::ResearchCandidate,
+                stage_entered_cycle: cycle,
+                evidence: LifecycleEvidence::default(),
+            });
     }
 
     /// Get the current stage for a strategy type.
@@ -346,12 +343,6 @@ mod tests {
     use super::*;
     use crate::evaluator_state::LifecycleStage;
     use std::collections::HashMap;
-
-    fn make_registry() -> (StrategyRegistry<'static>, HashMap<u64, LifecycleState>) {
-        // We need a stable way to create a registry in tests.
-        // Since we can't do the borrow dance easily, we'll use a helper.
-        unreachable!("use make_registry_with_states instead")
-    }
 
     // Helper to create a registry from a fresh map.
     fn with_states<F: FnOnce(StrategyRegistry)>(f: F) {

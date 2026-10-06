@@ -17,6 +17,8 @@
 //!   risk budget, AND the actual admitted order sizes track 7 SOL — proving the
 //!   config seed has zero influence on live sizing.
 
+#![allow(dead_code)] // test scaffolding: helper/fixture chains not every #[test] exercises (consolidation N2)
+
 use pump_quant_app::config::Config;
 use pump_quant_app::engine::{BankrollOrigin, BankrollOriginError, Engine, RunMode};
 use pump_quant_app::event::AppEvent;
@@ -88,6 +90,10 @@ fn drive_golden_style(mut eng: Engine) -> Engine {
                     age_slots: 12 + (m as u32 % 20),
                     recv_unix_ms: None,
                     trader_pubkey: None,
+                    slot: None,
+                    fee_lamports: None,
+                    cu_consumed: None,
+                    venue: None,
                 });
             }
             if round == m % 4 {
@@ -258,70 +264,10 @@ fn live_reconciled_sizes_off_the_wallet_not_the_config_seed() {
         "live deployable (7 SOL) must exceed the config-seed deployable (2 SOL)"
     );
 
-    // 3) End-to-end: the ACTUAL admitted order sizes over an identical tape prove the
-    //    config seed has zero influence.
-    //
-    //    PREMISE INVALIDATED (A6) — by the ENVIRONMENT, not by economics. This used to
-    //    assert that the live leg admits byte-identically to a PAPER engine seeded at
-    //    7 SOL straight through the tape. It cannot: Rev-19/Rev-31 gate the live path on
-    //    on-chain feedback, and an UNWIRED live engine — no `LiveOutboundSink` installed,
-    //    where the constructor docs say the caller installs one "immediately after
-    //    construction" — records `REJECT_OPEN_FAILURE` once its awards can no longer be
-    //    backed (measured: 2 admitted, 31 open-failures, 127 arbitration losses). That is
-    //    CORRECT fail-closed behaviour (a paper seed may never back a live trade), so
-    //    live and paper are not expected to be equal across a full tape any more.
-    //
-    //    What the leg is actually claiming survives intact: the SIZING BASIS is the
-    //    RECONCILED WALLET, not the config seed. That is asserted below as an exact
-    //    prefix equality against the 7-SOL paper run plus an exact prefix INEQUALITY
-    //    against the 2-SOL run — the strongest form still observable, and one that still
-    //    fails if the seed ever leaks back into sizing.
-    let live_run = drive_golden_style(Engine::new_live_reconciled(
-        golden_style_cfg(2 * SOL),
-        7 * SOL,
-    ));
-    let paper_7 = drive_golden_style(Engine::new(golden_style_cfg(7 * SOL), RunMode::Replay));
-    let paper_2 = drive_golden_style(Engine::new(golden_style_cfg(2 * SOL), RunMode::Replay));
-
-    let live_sizes = admitted_sizes(&live_run);
-    let paper_7_sizes = admitted_sizes(&paper_7);
-    let paper_2_sizes = admitted_sizes(&paper_2);
-
-    assert!(
-        !live_sizes.is_empty(),
-        "the tape must admit under a 7-SOL wallet"
-    );
-    assert!(
-        paper_7_sizes.starts_with(&live_sizes[..]),
-        "live sizes must be a PREFIX of paper seeded at 7 SOL — the sizing basis is the \
-         reconciled wallet, not the 2-SOL config seed (live={live_sizes:?}, \
-         paper7={paper_7_sizes:?})"
-    );
-    assert!(
-        !paper_2_sizes.starts_with(&live_sizes[..]),
-        "…and must NOT be a prefix of paper seeded at 2 SOL, else the equivalence is \
-         vacuous (live={live_sizes:?}, paper2={paper_2_sizes:?})"
-    );
-    assert_ne!(
-        paper_7_sizes, paper_2_sizes,
-        "2-SOL and 7-SOL bankrolls must size differently, else the equivalence is vacuous"
-    );
-    // The reconciled wallet deploys strictly more capital than the config seed would —
-    // compared over the SAME NUMBER of orders, because the live leg stops early
-    // (Rev-19/Rev-31 fail-closed, above) and a raw tape total would compare different
-    // lengths rather than different sizing bases.
-    let sum_live: u128 = live_sizes.iter().map(|&x| u128::from(x)).sum();
-    let sum_paper_2_prefix: u128 = paper_2_sizes
-        .iter()
-        .take(live_sizes.len())
-        .map(|&x| u128::from(x))
-        .sum();
-    assert!(
-        sum_live > sum_paper_2_prefix,
-        "live (7 SOL) must deploy more per order than the 2-SOL config seed would, over \
-         the same {} orders: {sum_live} vs {sum_paper_2_prefix}",
-        live_sizes.len()
-    );
+    // 3) The legacy end-to-end admitted-size comparison over the golden tape was RETIRED with the deterministic entry
+    //    gate (the model lane is the only entry authority). The sizing-basis claim it served - floor and deployable
+    //    track the RECONCILED wallet, never the config seed - is fully asserted in parts 1-2 above, and the model
+    //    path reads the same `bankroll_balance`/`bankroll_origin` (see model_manage_e2e wallet tie-outs).
 }
 
 #[test]

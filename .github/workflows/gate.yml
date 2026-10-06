@@ -1,8 +1,8 @@
 name: rust-ci
 
 # Rust-only CI: every PR to main must fmt, clippy-clean, build, and pass tests on the
-# portable profile. (The retired supervisor/constitution gate steps — dossier verify via
-# materialize_tests.py and the ci_gate.py hot-path lint — were removed with the governance.)
+# portable profile. (The retired supervisor/constitution gate steps - dossier verify via
+# materialize_tests.py and the ci_gate.py hot-path lint - were removed with the governance.)
 
 on:
   pull_request:
@@ -12,6 +12,16 @@ on:
 permissions:
   contents: read
   pull-requests: write
+
+# CI-only CPU baseline. The DEPLOYMENT pin stays where it is:
+#   rust/.cargo/config.toml -> rustflags = ["-C","target-cpu=znver5"]   (operator SS24, criterion 109)
+# Hosted runners are NOT Zen5, and because cargo is invoked without --target the config
+# rustflags also apply to build scripts / proc-macros, whose compiled code then SIGILLs the
+# compiler. RUSTFLAGS overrides build.rustflags, so this replaces ONLY the CPU target for CI;
+# every other flag and `-D warnings` are unchanged. Nothing about the deployment build changes.
+env:
+  RUSTFLAGS: "-C target-cpu=x86-64-v3"
+  CARGO_TERM_COLOR: always
 
 jobs:
   portable-gate:
@@ -25,6 +35,23 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      - name: Record toolchain / runner CPU / effective flags
+        id: env
+        working-directory: rust
+        run: |
+          set -euo pipefail
+          rel="$(rustc -vV | sed -n 's/^release: //p')"
+          echo "rustc_release=${rel}" >> "$GITHUB_OUTPUT"
+          echo "--- toolchain ---"; rustc -vV
+          echo "--- runner CPU ---"; grep -m1 'model name' /proc/cpuinfo || echo "(model name unavailable)"
+          echo "--- runner CPU flags (first 400 chars) ---"; grep -m1 '^flags' /proc/cpuinfo | cut -c1-400 || true
+          echo "--- effective RUSTFLAGS ---"; echo "${RUSTFLAGS:-<unset>}"
+          echo "--- rust/.cargo/config.toml (deployment pin, unchanged) ---"; cat .cargo/config.toml
+          echo "--- tested merge sha ---"; git rev-parse HEAD
+
+      # Cache is separated by toolchain (rustc release), target (os/arch) and flags
+      # (config.toml + this workflow's hash), so a flag or toolchain change cannot reuse
+      # a stale build.
       - name: Cache cargo
         uses: actions/cache@v4
         with:
@@ -32,7 +59,14 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             rust/target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('rust/**/Cargo.lock') }}
+          key: ${{ runner.os }}-${{ runner.arch }}-rust${{ steps.env.outputs.rustc_release }}-cargo-${{ hashFiles('rust/**/Cargo.lock') }}-${{ hashFiles('rust/.cargo/config.toml','.github/workflows/gate.yml') }}
+
+      - name: Portable gate (no-stubs blocking; hot-path lint reported)
+        # Replaces the two retained checks of the retired scripts/ci_gate.py (deleted in
+        # 9c822551 with the supervisor/constitution machinery): no-stubs (blocking) and the
+        # §24/criterion-109 hot-path lint (reported with counts, not concealed). Runs from the
+        # repo root. See tools/gates/portable_gate.py for the obsolete-vs-retained classification.
+        run: python3 tools/gates/portable_gate.py --repo .
 
       - name: Format check
         working-directory: rust

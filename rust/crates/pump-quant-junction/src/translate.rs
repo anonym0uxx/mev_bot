@@ -60,25 +60,31 @@ pub fn canonical_tx_to_market_trade(
     const PRICE_SCALE: i128 = 1_000_000_000;
 
     let price_fp: i128 = if tx.vtoken_reserves > 0 {
-        // price = vsol * PRICE_SCALE / vtoken
-        // vsol is u128, but fits in i128 (SOL supply < 2^63 lamports).
-        (tx.vsol_reserves as i128) * PRICE_SCALE / (tx.vtoken_reserves as i128)
+        // price = vsol * PRICE_SCALE / vtoken. `CanonicalTx` reserves are u128 from
+        // an external feed, so convert with checked conversions (reject
+        // out-of-range) and a checked multiply — a malformed feed drops the trade
+        // instead of wrapping the money value.
+        let vsol = i128::try_from(tx.vsol_reserves).ok()?;
+        let vtoken = i128::try_from(tx.vtoken_reserves).ok()?;
+        vsol.checked_mul(PRICE_SCALE)?.checked_div(vtoken)?
     } else {
         0
     };
 
     // Quote volume = |sol_delta| in lamports.
-    let quote_lamports: u64 = tx.sol_delta.unsigned_abs() as u64;
+    let quote_lamports: u64 = u64::try_from(tx.sol_delta.unsigned_abs()).ok()?;
 
     // Liquidity = virtual SOL reserves after the trade (pool depth proxy).
-    let liquidity_lamports: u64 = tx.vsol_reserves as u64;
+    let liquidity_lamports: u64 = u64::try_from(tx.vsol_reserves).ok()?;
 
     // Signed base volume: positive = buy, negative = sell.
     // token_delta is signed from the trader's perspective: buy → positive,
     // sell → negative. We flip to the engine's convention.
     let signed_base: i64 = match tx.direction {
-        TradeDirection::Buy => tx.token_delta as i64,
-        TradeDirection::Sell => -(tx.token_delta.unsigned_abs() as i64),
+        TradeDirection::Buy => i64::try_from(tx.token_delta).ok()?,
+        TradeDirection::Sell => i64::try_from(tx.token_delta.unsigned_abs())
+            .ok()?
+            .checked_neg()?,
         _ => return None,
     };
 
@@ -92,7 +98,7 @@ pub fn canonical_tx_to_market_trade(
     // 0 — the engine treats this as "unknown age" which is safe (it only
     // affects hold-horizon, not entry authorization).
     let age_slots: u32 = if tx.slot > 0 && slot >= tx.slot {
-        (slot - tx.slot) as u32
+        u32::try_from(slot.checked_sub(tx.slot)?).ok()?
     } else {
         0
     };
@@ -110,6 +116,10 @@ pub fn canonical_tx_to_market_trade(
         // one. `None` is honest: the state ledger refuses to serve a tape whose clocks it
         // cannot key, rather than windowing on a time this path invented.
         recv_unix_ms: None,
+        slot: None,
+        fee_lamports: None,
+        cu_consumed: None,
+        venue: None,
     };
 
     Some(ProvenancedEvent {
@@ -228,6 +238,22 @@ fn stable_entity_id(pubkey: &[u8; 32]) -> u64 {
 mod tests {
     use super::*;
     use pump_quant_ingest::canonical::*;
+    /// A reserve value that cannot fit i128 is rejected (checked conversion), not
+    /// wrapped into a bogus price — the money path fails closed on a malformed feed.
+    #[test]
+    fn out_of_range_reserve_is_rejected() {
+        let mut tx = make_test_tx(TradeDirection::Buy);
+        tx.vsol_reserves = (i128::MAX as u128) + 1;
+        assert!(canonical_tx_to_market_trade(&tx, 1050, true).is_none());
+    }
+
+    /// A token delta that cannot fit i64 is rejected, not truncated.
+    #[test]
+    fn out_of_range_token_delta_is_rejected() {
+        let mut tx = make_test_tx(TradeDirection::Buy);
+        tx.token_delta = (i64::MAX as i128) + 1;
+        assert!(canonical_tx_to_market_trade(&tx, 1050, true).is_none());
+    }
 
     fn make_test_tx(direction: TradeDirection) -> CanonicalTx {
         CanonicalTx {
@@ -270,6 +296,10 @@ mod tests {
             age_slots,
             recv_unix_ms: None,
             trader_pubkey,
+            slot: None,
+            fee_lamports: None,
+            cu_consumed: None,
+            venue: None,
         } = result.event
         {
             // The PumpPortal path decodes the transaction, so it KNOWS the trader's address:

@@ -970,10 +970,6 @@ name = "pump-quant-brain"
 version = "0.1.0"
 
 [[package]]
-name = "pump-quant-clock"
-version = "0.1.0"
-
-[[package]]
 name = "pump-quant-core"
 version = "0.1.0"
 dependencies = [
@@ -1026,6 +1022,7 @@ name = "pump-quant-junction"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "libc",
  "pq-stream-capture",
  "pump-quant-app",
  "pump-quant-brain",
@@ -1033,12 +1030,15 @@ dependencies = [
  "pump-quant-domain",
  "pump-quant-evaluator",
  "pump-quant-execution",
+ "pump-quant-inference",
  "pump-quant-ingest",
  "pump-quant-market-state",
  "pump-quant-narrative",
  "pump-quant-proposal",
  "pump-quant-protocol",
  "pump-quant-wallet-graph",
+ "serde_json",
+ "sha2 0.10.9",
  "solana-program",
 ]
 
@@ -1082,10 +1082,6 @@ version = "0.1.0"
 
 [[package]]
 name = "pump-quant-strategy"
-version = "0.1.0"
-
-[[package]]
-name = "pump-quant-tape"
 version = "0.1.0"
 
 [[package]]

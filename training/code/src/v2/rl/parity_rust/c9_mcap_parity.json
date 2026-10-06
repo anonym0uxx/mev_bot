@@ -1,0 +1,1528 @@
+{
+ "cases": [
+  {
+   "amm": {
+    "amm_price_sol_per_raw_token": 1.2496e-14,
+    "base_reserves_raw": 734976934043641,
+    "pool": "JBum3NC6Uer1YqA98xVj2XDwWoPeYBZCmqzuPmah42bb",
+    "quote_reserves_lamports": 9184067683,
+    "reserve_slot": 445660038,
+    "staleness_ms": 18121,
+    "status": "present"
+   },
+   "curve": {
+    "reason": "older_than_annotation_cap",
+    "status": "absent"
+   },
+   "expected_depth_4g": 9.2,
+   "expected_depth_exact": 9.184067683,
+   "expected_mcap_sol": null,
+   "expected_source": "absent",
+   "mint": "9ddBkYDHiqVvxecCG7RM6Tmen9fTeTPPquhLLwTopump",
+   "row_index": 2584,
+   "split": "train",
+   "t_dec_ms": 1788972456283
+  },
+  {
+   "amm": {
+    "amm_price_sol_per_raw_token": 5.59e-15,
+    "base_reserves_raw": 853012779928572,
+    "pool": "C3DvGom4v8X3FCfrF74otwFcd3crq6AWDozfnaQFvv65",
+    "quote_reserves_lamports": 4768001607,
+    "reserve_slot": 445682781,
+    "staleness_ms": 47488,
+    "status": "present"
+   },
+   "curve": {
+    "reason": "older_than_annotation_cap",
+    "status": "absent"
+   },
+   "expected_depth_4g": 2.7,
+   "expected_depth_exact": 4.768001607,
+   "expected_mcap_sol": null,
+   "expected_source": "absent",
+   "mint": "HUPvAoT8ZPCwPY7om6n6Zp4YufunEhTLamLWzpv5pump",
+   "row_index": 3515,
+   "split": "train",
+   "t_dec_ms": 1788979684459
+  },
+  {
+   "amm": {
+    "amm_price_sol_per_raw_token": 5.97e-15,
+    "base_reserves_raw": 841771828433651,
+    "pool": "CoEogmud7sgi2ubojPFbCQbiVH9QQ3o5YRHEtKPspSNq",
+    "quote_reserves_lamports": 5025366040,
+    "reserve_slot": 445677308,
+    "staleness_ms": 29944,
+    "status": "present"
+   },
+   "curve": {
+    "reason": "older_than_annotation_cap",
+    "status": "absent"
+   },
+   "expected_depth_4g": 169.9,
+   "expected_depth_exact": 5.02536604,
+   "expected_mcap_sol": null,
+   "expected_source": "absent",
+   "mint": "C88xj9onk6JCStA8HQwqj8TeU2k6E3sP5Ji8RKMqpump",
+   "row_index": 4135,
+   "split": "train",
+   "t_dec_ms": 1788977939587
+  },
+  {
+   "amm": {
+    "amm_price_sol_per_raw_token": 4.334e-15,
+    "base_reserves_raw": 910992755301534,
+    "pool": "9zBC75YrbKpCo1voc2w4PVRVBg1RLxNWh3NyvAFn9nLU",
+    "quote_reserves_lamports": 3948204078,
+    "reserve_slot": 445684830,
+    "staleness_ms": 3471,
+    "status": "present"
+   },
+   "curve": {
+    "reason": "older_than_annotation_cap",
+    "status": "absent"
+   },
+   "expected_depth_4g": 2.8,
+   "expected_depth_exact": 3.948204078,
+   "expected_mcap_sol": null,
+   "expected_source": "absent",
+   "mint": "3LhExM1v9JFoM2ZHQnXvBbuthSWa96Yc2ubhPYw9pump",
+   "row_index": 4844,
+   "split": "train",
+   "t_dec_ms": 1788980289910
+  },
+  {
+   "amm": {
+    "amm_price_sol_per_raw_token": 4.255e-15,
+    "base_reserves_raw": 867205495324865,
+    "pool": "5tzTHfjEPymizuKfcsMhtzLfZgjm9GpG7MxES6YDNuiW",
+    "quote_reserves_lamports": 3690000436,
+    "reserve_slot": 445684107,
+    "staleness_ms": 31057,
+    "status": "present"
+   },
+   "curve": {
+    "reason": "older_than_annotation_cap",
+    "status": "absent"
+   },
+   "expected_depth_4g": 131.1,
+   "expected_depth_exact": 3.690000436,
+   "expected_mcap_sol": null,
+   "expected_source": "absent",
+   "mint": "3QEGoSsbERtBZDpQTZB3vWUeabBarqiAt4VmHZj2pump",
+   "row_index": 5087,
+   "split": "train",
+   "t_dec_ms": 1788980085536
+  },
+  {
+   "amm": {
+    "amm_price_sol_per_raw_token": 7.888e-15,
+    "base_reserves_raw": 817277365785609,
+    "pool": "9z3KXhfqpUgbhoeoDq6f9KUpE7akoYb2BubNPPHfyB5j",
+    "quote_reserves_lamports": 6446366973,
+    "reserve_slot": 445659378,
+    "staleness_ms": 1482,
+    "status": "present"
+   },
+   "curve": {
+    "reason": "older_than_annotation_cap",
+    "status": "absent"
+   },
+   "expected_depth_4g": null,
+   "expected_depth_exact": 6.446366973,
+   "expected_mcap_sol": null,
+   "expected_source": "absent",
+   "mint": "DAujm7LtjCoUGTu7MzVM51qHqM8CyNKYdEB7Qdrupump",
+   "row_index": 5719,
+   "split": "train",
+   "t_dec_ms": 1788972234399
+  },
+  {
+   "amm": {
+    "amm_price_sol_per_raw_token": 5.626e-15,
+    "base_reserves_raw": 853519887474571,
+    "pool": "BVepmad4zko5zNDjB24DHLG4xje4pCDjn3Xxa9odf87p",
+    "quote_reserves_lamports": 4802269655,
+    "reserve_slot": 445684317,
+    "staleness_ms": 15360,
+    "status": "present"
+   },
+   "curve": {
+    "reason": "older_than_annotation_cap",
+    "status": "absent"
+   },
+   "expected_depth_4g": null,
+   "expected_depth_exact": 4.802269655,
+   "expected_mcap_sol": null,
+   "expected_source": "absent",
+   "mint": "ErWFD2gFDxxvvo2bVY9PLS6cNqP5EZtRz8PjBp7Epump",
+   "row_index": 5943,
+   "split": "train",
+   "t_dec_ms": 1788980136719
+  },
+  {
+   "amm": {
+    "amm_price_sol_per_raw_token": 1.95136e-13,
+    "base_reserves_raw": 297634289408490,
+    "pool": "BZopKpddoJcuCF13zkzThs68oT9uHMD88qo6BteDsNqp",
+    "quote_reserves_lamports": 58079089189,
+    "reserve_slot": 445690696,
+    "staleness_ms": 12634,
+    "status": "present"
+   },
+   "curve": {
+    "reason": "older_than_annotation_cap",
+    "status": "absent"
+   },
+   "expected_depth_4g": 93.6,
+   "expected_depth_exact": 58.079089189,
+   "expected_mcap_sol": null,
+   "expected_source": "absent",
+   "mint": "CGmBrG4GRiMvFSGaEiB7cwEd9uDYiqrXzkoyR2Qa3KrC",
+   "row_index": 7255,
+   "split": "train",
+   "t_dec_ms": 1788982193837
+  },
+  {
+   "amm": {
+    "reason": "never_graduated",
+    "status": "absent"
+   },
+   "curve": {
+    "reason": "mint_absent",
+    "status": "absent"
+   },
+   "expected_depth_4g": null,
+   "expected_depth_exact": null,
+   "expected_mcap_sol": null,
+   "expected_source": "absent",
+   "mint": "C9iLUuft9t37ScDcYtFqm5nPRUm9kukKGtsJYMRCpump",
+   "row_index": 11697,
+   "split": "train",
+   "t_dec_ms": 1788966572798
+  },
+  {
+   "amm": {
+    "reason": "never_graduated",
+    "status": "absent"
+   },
+   "curve": {
+    "reason": "no_event_before_t_dec",
+    "status": "absent"
+   },
+   "expected_depth_4g": null,
+   "expected_depth_exact": null,
+   "expected_mcap_sol": null,
+   "expected_source": "absent",
+   "mint": "DeAWy8Cr5pxzeRBEC9DjBbGpgy5NhzYWYP6gT29vpump",
+   "row_index": 14730,
+   "split": "train",
+   "t_dec_ms": 1787492704298
+  },
+  {
+   "amm": {
+    "reason": "never_graduated",
+    "status": "absent"
+   },
+   "curve": {
+    "reason": "no_event_before_t_dec",
+    "status": "absent"
+   },
+   "expected_depth_4g": null,
+   "expected_depth_exact": null,
+   "expected_mcap_sol": null,
+   "expected_source": "absent",
+   "mint": "AzXx1ZqqLCVYP4FmLgS3YtYCLu9SRqRMABDndD7Qpump",
+   "row_index": 14742,
+   "split": "train",
+   "t_dec_ms": 1787492746602
+  },
+  {
+   "amm": {
+    "reason": "never_graduated",
+    "status": "absent"
+   },
+   "curve": {
+    "reason": "no_event_before_t_dec",
+    "status": "absent"
+   },
+   "expected_depth_4g": null,
+   "expected_depth_exact": null,
+   "expected_mcap_sol": null,
+   "expected_source": "absent",
+   "mint": "AiSpwshEx64YxJrucJLaU1ea5RU5m5B2XGSofpZVpump",
+   "row_index": 14908,
+   "split": "train",
+   "t_dec_ms": 1787492837908
+  },
+  {
+   "amm": {
+    "reason": "never_graduated",
+    "status": "absent"
+   },
+   "curve": {
+    "reason": "mint_absent",
+    "status": "absent"
+   },
+   "expected_depth_4g": null,
+   "expected_depth_exact": null,
+   "expected_mcap_sol": null,
+   "expected_source": "absent",
+   "mint": "Bn2Dww9FdiK3xbJgYuB5ce8iHwbZJS4EQABJaCUopump",
+   "row_index": 26840,
+   "split": "train",
+   "t_dec_ms": 1787567134701
+  },
+  {
+   "amm": {
+    "reason": "never_graduated",
+    "status": "absent"
+   },
+   "curve": {
+    "reason": "mint_absent",
+    "status": "absent"
+   },
+   "expected_depth_4g": null,
+   "expected_depth_exact": null,
+   "expected_mcap_sol": null,
+   "expected_source": "absent",
+   "mint": "2YJp2FAygQQDB3Kmkrm9SWgH2P5WyCc3XvVnf66rpump",
+   "row_index": 36114,
+   "split": "train",
+   "t_dec_ms": 1787506908170
+  },
+  {
+   "amm": {
+    "reason": "never_graduated",
+    "status": "absent"
+   },
+   "curve": {
+    "reason": "mint_absent",
+    "status": "absent"
+   },
+   "expected_depth_4g": null,
+   "expected_depth_exact": null,
+   "expected_mcap_sol": null,
+   "expected_source": "absent",
+   "mint": "2yFHfSk2BDoNybDXvcSEubvqjAexRgNA363nSmyapump",
+   "row_index": 39642,
+   "split": "train",
+   "t_dec_ms": 1787550320674
+  },
+  {
+   "amm": {
+    "amm_price_sol_per_raw_token": 5.58e-15,
+    "base_reserves_raw": 878505126520424,
+    "pool": "8v9xvSmbE1yvidSYDuwqA9mQFhDt3Ganntz9bunEv4mG",
+    "quote_reserves_lamports": 4901846214,
+    "reserve_slot": 445671942,
+    "staleness_ms": 21043,
+    "status": "present"
+   },
+   "curve": {
+    "reason": "older_than_annotation_cap",
+    "status": "absent"
+   },
+   "expected_depth_4g": null,
+   "expected_depth_exact": 4.901846214,
+   "expected_mcap_sol": null,
+   "expected_source": "absent",
+   "mint": "Dmv4iDf89mxkLh4kwSQ4wFs7VeHoEDADeRm9Rw5pump",
+   "row_index": 495,
+   "split": "examination",
+   "t_dec_ms": 1788976231168
+  },
+  {
+   "amm": {
+    "reason": "never_graduated",
+    "status": "absent"
+   },
+   "curve": {
+    "reason": "no_event_before_t_dec",
+    "status": "absent"
+   },
+   "expected_depth_4g": null,
+   "expected_depth_exact": null,
+   "expected_mcap_sol": null,
+   "expected_source": "absent",
+   "mint": "9L18wcnFNTAShTKw1VjMNr6EiWAWYTj8avSq3BKfPNN6",
+   "row_index": 2492,
+   "split": "examination",
+   "t_dec_ms": 1787492789544
+  },
+  {
+   "amm": {
+    "reason": "pool_not_authoritative_wsol",
+    "status": "absent"
+   },
+   "curve": {
+    "reason": "mint_absent",
+    "status": "absent"
+   },
+   "expected_depth_4g": null,
+   "expected_depth_exact": null,
+   "expected_mcap_sol": null,
+   "expected_source": "absent",
+   "mint": "A7bdiYdS5GjqGFtxf17ppRHtDKPkkRqbKtR27dxvQXaS",
+   "row_index": 27211,
+   "split": "examination",
+   "t_dec_ms": 1788967835576
+  },
+  {
+   "amm": {
+    "reason": "no_event_before_t_dec",
+    "status": "absent"
+   },
+   "curve": {
+    "reason": "mint_absent",
+    "status": "absent"
+   },
+   "expected_depth_4g": null,
+   "expected_depth_exact": null,
+   "expected_mcap_sol": null,
+   "expected_source": "absent",
+   "mint": "7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs",
+   "row_index": 27272,
+   "split": "examination",
+   "t_dec_ms": 1787509517474
+  },
+  {
+   "amm": {
+    "reason": "never_graduated",
+    "status": "absent"
+   },
+   "curve": {
+    "reason": "mint_absent",
+    "status": "absent"
+   },
+   "expected_depth_4g": null,
+   "expected_depth_exact": null,
+   "expected_mcap_sol": null,
+   "expected_source": "absent",
+   "mint": "6UpQcMAb5xMzxc7ZfPaVMgx3KqsvKZdT5U718BzD5We2",
+   "row_index": 27509,
+   "split": "examination",
+   "t_dec_ms": 1788981763111
+  },
+  {
+   "amm": {
+    "amm_price_sol_per_raw_token": 1.042345458e-09,
+    "base_reserves_raw": 4103523770432,
+    "pool": "DCWRaevTQYA3BRHXiwLZZgDDwK28m3qUb8kEC4WP48xL",
+    "quote_reserves_lamports": 4277289364175,
+    "reserve_slot": 445653654,
+    "staleness_ms": 610,
+    "status": "present"
+   },
+   "curve": {
+    "curve_price_sol_per_raw_token": 4.1088e-13,
+    "curve_progress": 1.0,
+    "curve_regime": "graduated",
+    "real_sol_lamports": 85005359057,
+    "real_tokens": 0,
+    "staleness_ms": 4804291,
+    "status": "present",
+    "v_sol_lamports": 115005359057,
+    "v_tokens": 279900000000000
+   },
+   "expected_depth_4g": 4277.3,
+   "expected_depth_exact": 4277.289364175,
+   "expected_mcap_sol": 1042345.458066,
+   "expected_source": "amm",
+   "mint": "BHnsBYhzNrsEowdAt2QQ7Z39bi4qNhKS54xDBvyApump",
+   "row_index": 0,
+   "split": "train",
+   "t_dec_ms": 1788970423162
+  },
+  {
+   "amm": {
+    "amm_price_sol_per_raw_token": 2.3594813e-11,
+    "base_reserves_raw": 26960522197507,
+    "pool": "9LmF8RoZyzsrXhmXPcaL4EyGte6gZUmsX8mRwoY9yuXw",
+    "quote_reserves_lamports": 636128469835,
+    "reserve_slot": 445654254,
+    "staleness_ms": 671,
+    "status": "present"
+   },
+   "curve": {
+    "curve_price_sol_per_raw_token": 4.1088e-13,
+    "curve_progress": 1.0,
+    "curve_regime": "graduated",
+    "real_sol_lamports": 85005359057,
+    "real_tokens": 0,
+    "staleness_ms": 360087,
+    "status": "present",
+    "v_sol_lamports": 115005359057,
+    "v_tokens": 279900000000000
+   },
+   "expected_depth_4g": null,
+   "expected_depth_exact": 636.128469835,
+   "expected_mcap_sol": 23594.812637,
+   "expected_source": "amm",
+   "mint": "ozuUP6r26BjZkgv8eGDR6ZPVLGqfDGvKF5MGKq4pump",
+   "row_index": 267,
+   "split": "train",
+   "t_dec_ms": 1788970613097
+  },
+  {
+   "amm": {
+    "amm_price_sol_per_raw_token": 8.893055e-11,
+    "base_reserves_raw": 13986305444499,
+    "pool": "H8FXDr5yH9uEWUxJQtduU56ffWnW8S5Mj8N55jUEePGc",
+    "quote_reserves_lamports": 1243809839929,
+    "reserve_slot": 445671774,
+    "staleness_ms": 806,
+    "status": "present"
+   },
+   "curve": {
+    "curve_price_sol_per_raw_token": 4.1088e-13,
+    "curve_progress": 1.0,
+    "curve_regime": "graduated",
+    "real_sol_lamports": 85005359057,
+    "real_tokens": 0,
+    "staleness_ms": 5790091,
+    "status": "present",
+    "v_sol_lamports": 115005359057,
+    "v_tokens": 279900000000000
+   },
+   "expected_depth_4g": 1243.8,
+   "expected_depth_exact": 1243.809839929,
+   "expected_mcap_sol": 88930.550306,
+   "expected_source": "amm",
+   "mint": "bZxwZnYRWGXakX2wHzpZDtu7nzPP6anEPKpvCzmpump",
+   "row_index": 435,
+   "split": "train",
+   "t_dec_ms": 1788976158128
+  },
+  {
+   "amm": {
+    "amm_price_sol_per_raw_token": 1.26765222e-10,
+    "base_reserves_raw": 11735333286691,
+    "pool": "Ekm9cnFftVzRf6yXSzQTTn1n2QEufvmTwQhfnXGjHVLM",
+    "quote_reserves_lamports": 1487632124257,
+    "reserve_slot": 445678066,
+    "staleness_ms": 287,
+    "status": "present"
+   },
+   "curve": {
+    "curve_price_sol_per_raw_token": 4.1088e-13,
+    "curve_progress": 1.0,
+    "curve_regime": "graduated",
+    "real_sol_lamports": 85005359057,
+    "real_tokens": 0,
+    "staleness_ms": 7020019,
+    "status": "present",
+    "v_sol_lamports": 115005359057,
+    "v_tokens": 279900000000000
+   },
+   "expected_depth_4g": 1487.6,
+   "expected_depth_exact": 1487.632124257,
+   "expected_mcap_sol": 126765.221568,
+   "expected_source": "amm",
+   "mint": "nH22x8sZF8GkDYVZ5Et4vxeAiDEEotfL3Ew18iFpump",
+   "row_index": 581,
+   "split": "train",
+   "t_dec_ms": 1788978147331
+  },
+  {
+   "amm": {
+    "amm_price_sol_per_raw_token": 1.80055704e-10,
+    "base_reserves_raw": 9851064482412,
+    "pool": "5TopQXd32HZ8gE7TMdBV9cW9J77GTKpp6sdn8115eR6P",
+    "quote_reserves_lamports": 1773740355302,
+    "reserve_slot": 445675138,
+    "staleness_ms": 53,
+    "status": "present"
+   },
+   "curve": {
+    "curve_price_sol_per_raw_token": 4.1088e-13,
+    "curve_progress": 1.0,
+    "curve_regime": "graduated",
+    "real_sol_lamports": 85005359057,
+    "real_tokens": 0,
+    "staleness_ms": 6480232,
+    "status": "present",
+    "v_sol_lamports": 115005359057,
+    "v_tokens": 279900000000000
+   },
+   "expected_depth_4g": 1773.7,
+   "expected_depth_exact": 1773.740355302,
+   "expected_mcap_sol": 180055.704484,
+   "expected_source": "amm",
+   "mint": "jLMCBuwcYo6TXvSwxw2zVCjxYCgCxM3G2FKAqeMpump",
+   "row_index": 782,
+   "split": "train",
+   "t_dec_ms": 1788977220101
+  },
+  {
+   "amm": {
+    "amm_price_sol_per_raw_token": 2.318822e-10,
+    "base_reserves_raw": 8682831821764,
+    "pool": "AdXkgcAPe43DdgjUoy9tNPj6e9vMwWxKy3RjLAQtE1tQ",
+    "quote_reserves_lamports": 2013394142465,
+    "reserve_slot": 445670201,
+    "staleness_ms": 252,
+    "status": "present"
+   },
+   "curve": {
+    "curve_price_sol_per_raw_token": 4.1088e-13,
+    "curve_progress": 1.0,
+    "curve_regime": "graduated",
+    "real_sol_lamports": 85005359057,
+    "real_tokens": 0,
+    "staleness_ms": 6390413,
+    "status": "present",
+    "v_sol_lamports": 115005359057,
+    "v_tokens": 279900000000000
+   },
+   "expected_depth_4g": 2013.4,
+   "expected_depth_exact": 2013.394142465,
+   "expected_mcap_sol": 231882.199701,
+   "expected_source": "amm",
+   "mint": "GAwo7QEsEkHr8ggoVAs5ZiZMVnXqCr7NMq1naSdpump",
+   "row_index": 931,
+   "split": "train",
+   "t_dec_ms": 1788975658365
+  },
+  {
+   "amm": {
+    "amm_price_sol_per_raw_token": 5.142672e-11,
+    "base_reserves_raw": 18338458690835,
+    "pool": "7yA6nZXUUW5fxmGnWainAhKfmokMwjsD4hpcSe4f7uXx",
+    "quote_reserves_lamports": 943086786306,
+    "reserve_slot": 445648068,
+    "staleness_ms": 11450,
+    "status": "present"
+   },
+   "curve": {
+    "curve_price_sol_per_raw_token": 4.1088e-13,
+    "curve_progress": 1.0,
+    "curve_regime": "graduated",
+    "real_sol_lamports": 85005359057,
+    "real_tokens": 0,
+    "staleness_ms": 780143,
+    "status": "present",
+    "v_sol_lamports": 115005359057,
+    "v_tokens": 279900000000000
+   },
+   "expected_depth_4g": null,
+   "expected_depth_exact": 943.086786306,
+   "expected_mcap_sol": 51426.720326,
+   "expected_source": "amm",
+   "mint": "mjus2zMiXyYb4di8txzfgxeC2cAEjkZ9XbkLmc1pump",
+   "row_index": 1082,
+   "split": "train",
+   "t_dec_ms": 1788968659629
+  },
+  {
+   "amm": {
+    "amm_price_sol_per_raw_token": 4.8839179e-11,
+    "base_reserves_raw": 18813594682495,
+    "pool": "BQMdipTWqWKGfCPce7eQYtN1umwdnMi5q7MiyRRq8wH4",
+    "quote_reserves_lamports": 918840524410,
+    "reserve_slot": 445659443,
+    "staleness_ms": 7653,
+    "status": "present"
+   },
+   "curve": {
+    "curve_price_sol_per_raw_token": 4.1088e-13,
+    "curve_progress": 1.0,
+    "curve_regime": "graduated",
+    "real_sol_lamports": 85005359057,
+    "real_tokens": 0,
+    "staleness_ms": 1380092,
+    "status": "present",
+    "v_sol_lamports": 115005359057,
+    "v_tokens": 279900000000000
+   },
+   "expected_depth_4g": null,
+   "expected_depth_exact": 918.84052441,
+   "expected_mcap_sol": 48839.179323,
+   "expected_source": "amm",
+   "mint": "xzEqGnUpucYXf5CiQZVer7ca15HKHkbugqvN2Gipump",
+   "row_index": 1257,
+   "split": "train",
+   "t_dec_ms": 1788972260193
+  },
+  {
+   "amm": {
+    "amm_price_sol_per_raw_token": 5.5164292e-11,
+    "base_reserves_raw": 17719906862777,
+    "pool": "EaxZyEq2MvLv92jPU4Sz5pZ32BHwhfzGps74dKb9Wdqa",
+    "quote_reserves_lamports": 977506112300,
+    "reserve_slot": 445647878,
+    "staleness_ms": 63,
+    "status": "present"
+   },
+   "curve": {
+    "curve_price_sol_per_raw_token": 4.1088e-13,
+    "curve_progress": 1.0,
+    "curve_regime": "graduated",
+    "real_sol_lamports": 85005359057,
+    "real_tokens": 0,
+    "staleness_ms": 1860463,
+    "status": "present",
+    "v_sol_lamports": 115005359057,
+    "v_tokens": 279900000000000
+   },
+   "expected_depth_4g": 977.5,
+   "expected_depth_exact": 977.5061123,
+   "expected_mcap_sol": 55164.291769,
+   "expected_source": "amm",
+   "mint": "xUS47WhZeQkBMCR92wDipxX74wzNcTrHNmjwpevpump",
+   "row_index": 1443,
+   "split": "train",
+   "t_dec_ms": 1788968586716
+  },
+  {
+   "amm": {
+    "amm_price_sol_per_raw_token": 3.6031141e-11,
+    "base_reserves_raw": 21869778196028,
+    "pool": "3owvNGuGWQWGWerCqFWecvMqMQgqBS7vMBg3srqSXL3P",
+    "quote_reserves_lamports": 787993055344,
+    "reserve_slot": 445651872,
+    "staleness_ms": 7257,
+    "status": "present"
+   },
+   "curve": {
+    "curve_price_sol_per_raw_token": 4.1088e-13,
+    "curve_progress": 1.0,
+    "curve_regime": "graduated",
+    "real_sol_lamports": 85005359057,
+    "real_tokens": 0,
+    "staleness_ms": 1740074,
+    "status": "present",
+    "v_sol_lamports": 115005359057,
+    "v_tokens": 279900000000000
+   },
+   "expected_depth_4g": null,
+   "expected_depth_exact": 787.993055344,
+   "expected_mcap_sol": 36031.140704,
+   "expected_source": "amm",
+   "mint": "FwC1oVksMdnZUoK8o3g8zpRiqvSnnZdRjxtuZttpump",
+   "row_index": 1786,
+   "split": "train",
+   "t_dec_ms": 1788969863937
+  },
+  {
+   "amm": {
+    "amm_price_sol_per_raw_token": 6.9210874e-11,
+    "base_reserves_raw": 15827963362677,
+    "pool": "7Eo4h9SquqNcp4oP2swmQ1vbU7a9Hmh9gtuFLjq711vv",
+    "quote_reserves_lamports": 1095467174525,
+    "reserve_slot": 445644629,
+    "staleness_ms": 5577,
+    "status": "present"
+   },
+   "curve": {
+    "curve_price_sol_per_raw_token": 4.1088e-13,
+    "curve_progress": 1.0,
+    "curve_regime": "graduated",
+    "real_sol_lamports": 85005359057,
+    "real_tokens": 0,
+    "staleness_ms": 750038,
+    "status": "present",
+    "v_sol_lamports": 115005359057,
+    "v_tokens": 279900000000000
+   },
+   "expected_depth_4g": null,
+   "expected_depth_exact": 1095.467174525,
+   "expected_mcap_sol": 69210.873782,
+   "expected_source": "amm",
+   "mint": "9n4mo8aoiaKCBUsYkpBMNPRVvh77EDfDbw8ppVNpump",
+   "row_index": 2046,
+   "split": "train",
+   "t_dec_ms": 1788967558361
+  },
+  {
+   "amm": {
+    "amm_price_sol_per_raw_token": 7.8525947e-11,
+    "base_reserves_raw": 14871832124049,
+    "pool": "2uKw7MkXv63AnuyrDspAKenGJuGSi4rB9gKBThw8ER8e",
+    "quote_reserves_lamports": 1167824706716,
+    "reserve_slot": 445672327,
+    "staleness_ms": 684,
+    "status": "present"
+   },
+   "curve": {
+    "curve_price_sol_per_raw_token": 4.1088e-13,
+    "curve_progress": 1.0,
+    "curve_regime": "graduated",
+    "real_sol_lamports": 85005359057,
+    "real_tokens": 0,
+    "staleness_ms": 9840065,
+    "status": "present",
+    "v_sol_lamports": 115005359057,
+    "v_tokens": 279900000000000
+   },
+   "expected_depth_4g": 1167.8,
+   "expected_depth_exact": 1167.824706716,
+   "expected_mcap_sol": 78525.947373,
+   "expected_source": "amm",
+   "mint": "auqsuXNh1aqRVonE2X5oMMnx99GHmzFZp2EVkNVpump",
+   "row_index": 2311,
+   "split": "train",
+   "t_dec_ms": 1788976332335
+  },
+  {
+   "amm": {
+    "amm_price_sol_per_raw_token": 7.3654687e-11,
+    "base_reserves_raw": 15346914453177,
+    "pool": "FPSjPoUJWwRs5PX55znMDnjoLZtmAk5tQ4dZTgozzWJr",
+    "quote_reserves_lamports": 1130372173910,
+    "reserve_slot": 445649047,
+    "staleness_ms": 5896,
+    "status": "present"
+   },
+   "curve": {
+    "curve_price_sol_per_raw_token": 4.1088e-13,
+    "curve_progress": 1.0,
+    "curve_regime": "graduated",
+    "real_sol_lamports": 85005359057,
+    "real_tokens": 0,
+    "staleness_ms": 1500329,
+    "status": "present",
+    "v_sol_lamports": 115005359057,
+    "v_tokens": 279900000000000
+   },
+   "expected_depth_4g": 1130.4,
+   "expected_depth_exact": 1130.37217391,
+   "expected_mcap_sol": 73654.686573,
+   "expected_source": "amm",
+   "mint": "Hi4AAwQbSWo4pXqvGQeSSYAoo7RG4cswRPLA7vZrpump",
+   "row_index": 3249,
+   "split": "train",
+   "t_dec_ms": 1788968962632
+  },
+  {
+   "amm": {
+    "amm_price_sol_per_raw_token": 9.28035e-13,
+    "base_reserves_raw": 132481809939935,
+    "pool": "C3DvGom4v8X3FCfrF74otwFcd3crq6AWDozfnaQFvv65",
+    "quote_reserves_lamports": 122947708133,
+    "reserve_slot": 441349924,
+    "staleness_ms": 396,
+    "status": "present"
+   },
+   "curve": {
+    "curve_price_sol_per_raw_token": 4.1088e-13,
+    "curve_progress": 1.0,
+    "curve_regime": "graduated",
+    "real_sol_lamports": 85005359305,
+    "real_tokens": 0,
+    "staleness_ms": 1988199,
+    "status": "present",
+    "v_sol_lamports": 115005359305,
+    "v_tokens": 279900000000000
+   },
+   "expected_depth_4g": 122.9,
+   "expected_depth_exact": 122.947708133,
+   "expected_mcap_sol": 928.034635,
+   "expected_source": "amm",
+   "mint": "HUPvAoT8ZPCwPY7om6n6Zp4YufunEhTLamLWzpv5pump",
+   "row_index": 3514,
+   "split": "train",
+   "t_dec_ms": 1787558344459
+  },
+  {
+   "amm": {
+    "amm_price_sol_per_raw_token": 6.9865458e-11,
+    "base_reserves_raw": 15756003690291,
+    "pool": "GeJ3TjzgK6V6ybBR2unCX3zHUZ4zbCxyhyb9Z8uMNBiV",
+    "quote_reserves_lamports": 1100800410504,
+    "reserve_slot": 445672296,
+    "staleness_ms": 27665,
+    "status": "present"
+   },
+   "curve": {
+    "curve_price_sol_per_raw_token": 4.1088e-13,
+    "curve_progress": 1.0,
+    "curve_regime": "graduated",
+    "real_sol_lamports": 85005359057,
+    "real_tokens": 0,
+    "staleness_ms": 8610501,
+    "status": "present",
+    "v_sol_lamports": 115005359057,
+    "v_tokens": 279900000000000
+   },
+   "expected_depth_4g": 1100.8,
+   "expected_depth_exact": 1100.800410504,
+   "expected_mcap_sol": 69865.457774,
+   "expected_source": "amm",
+   "mint": "B8dcZ2zTYzkZevJpcdhp7WXnr5MnjeNi333kNub2pump",
+   "row_index": 3652,
+   "split": "train",
+   "t_dec_ms": 1788976349582
+  },
+  {
+   "amm": {
+    "amm_price_sol_per_raw_token": 7.33636e-13,
+    "base_reserves_raw": 143919649212238,
+    "pool": "5WDcCb7hdoFEHqydbxKgStZvcKExzB9qBSNzhPhpTmuV",
+    "quote_reserves_lamports": 105584587534,
+    "reserve_slot": 445640307,
+    "staleness_ms": 23,
+    "status": "present"
+   },
+   "curve": {
+    "curve_price_sol_per_raw_token": 4.1088e-13,
+    "curve_progress": 1.0,
+    "curve_regime": "graduated",
+    "real_sol_lamports": 85005359061,
+    "real_tokens": 0,
+    "staleness_ms": 209965,
+    "status": "present",
+    "v_sol_lamports": 115005359061,
+    "v_tokens": 279900000000000
+   },
+   "expected_depth_4g": 105.6,
+   "expected_depth_exact": 105.584587534,
+   "expected_mcap_sol": 733.635665,
+   "expected_source": "amm",
+   "mint": "4Fu4vJ9CuD48ex2GDaCXf6BZBvmBfRxzRhALEhyFpump",
+   "row_index": 3921,
+   "split": "train",
+   "t_dec_ms": 1788966191476
+  },
+  {
+   "amm": {
+    "amm_price_sol_per_raw_token": 2.809e-14,
+    "base_reserves_raw": 548163877655678,
+    "pool": "7h8rMqgw7qsHSrcnWS6tU3Rjsrvr64tDrwxGyxjTYhSn",
+    "quote_reserves_lamports": 15397998091,
+    "reserve_slot": 445654981,
+    "staleness_ms": 2685,
+    "status": "present"
+   },
+   "curve": {
+    "curve_price_sol_per_raw_token": 4.1088e-13,
+    "curve_progress": 1.0,
+    "curve_regime": "graduated",
+    "real_sol_lamports": 85005360228,
+    "real_tokens": 0,
+    "staleness_ms": 2351214,
+    "status": "present",
+    "v_sol_lamports": 115005360228,
+    "v_tokens": 279900000000000
+   },
+   "expected_depth_4g": 14.4,
+   "expected_depth_exact": 15.397998091,
+   "expected_mcap_sol": 28.090136,
+   "expected_source": "amm",
+   "mint": "AHYY5nBfybmSX2BJEnKsirKwEABKNR2v9EHb3BFopump",
+   "row_index": 3983,
+   "split": "train",
+   "t_dec_ms": 1788970846331
+  },
+  {
+   "amm": {
+    "amm_price_sol_per_raw_token": 3.86198e-13,
+    "base_reserves_raw": 193623688671026,
+    "pool": "HUg5Q7oRHFcHHwj3Zq9zvskCvpAhdJqTo4zeHjViFgd5",
+    "quote_reserves_lamports": 74777071624,
+    "reserve_slot": 445652156,
+    "staleness_ms": 293,
+    "status": "present"
+   },
+   "curve": {
+    "curve_price_sol_per_raw_token": 4.1088e-13,
+    "curve_progress": 1.0,
+    "curve_regime": "graduated",
+    "real_sol_lamports": 85005359064,
+    "real_tokens": 0,
+    "staleness_ms": 149956,
+    "status": "present",
+    "v_sol_lamports": 115005359064,
+    "v_tokens": 279900000000000
+   },
+   "expected_depth_4g": 74.8,
+   "expected_depth_exact": 74.777071624,
+   "expected_mcap_sol": 386.19795,
+   "expected_source": "amm",
+   "mint": "D8JF1pT7tDYKhFdqznUvPSdayh5FFLrmLZTDKZ3Wpump",
+   "row_index": 4119,
+   "split": "train",
+   "t_dec_ms": 1788969949280
+  },
+  {
+   "amm": {
+    "amm_price_sol_per_raw_token": 1.80256e-12,
+    "base_reserves_raw": 96312866953872,
+    "pool": "CoEogmud7sgi2ubojPFbCQbiVH9QQ3o5YRHEtKPspSNq",
+    "quote_reserves_lamports": 173609675706,
+    "reserve_slot": 441374267,
+    "staleness_ms": 190,
+    "status": "present"
+   },
+   "curve": {
+    "curve_price_sol_per_raw_token": 4.1088e-13,
+    "curve_progress": 1.0,
+    "curve_regime": "graduated",
+    "real_sol_lamports": 85005359057,
+    "real_tokens": 0,
+    "staleness_ms": 2250000,
+    "status": "present",
+    "v_sol_lamports": 115005359057,
+    "v_tokens": 279900000000000
+   },
+   "expected_depth_4g": 173.6,
+   "expected_depth_exact": 173.609675706,
+   "expected_mcap_sol": 1802.559525,
+   "expected_source": "amm",
+   "mint": "C88xj9onk6JCStA8HQwqj8TeU2k6E3sP5Ji8RKMqpump",
+   "row_index": 4125,
+   "split": "train",
+   "t_dec_ms": 1787567219587
+  },
+  {
+   "amm": {
+    "amm_price_sol_per_raw_token": 3.4768e-14,
+    "base_reserves_raw": 503656733742925,
+    "pool": "5jqAJcB2sojJhyYKQymikhSWBCRo5FCw4nzJdfj3Vh9k",
+    "quote_reserves_lamports": 17511176478,
+    "reserve_slot": 445658078,
+    "staleness_ms": 55051,
+    "status": "present"
+   },
+   "curve": {
+    "curve_price_sol_per_raw_token": 4.1088e-13,
+    "curve_progress": 1.0,
+    "curve_regime": "graduated",
+    "real_sol_lamports": 85005360700,
+    "real_tokens": 0,
+    "staleness_ms": 4756118,
+    "status": "present",
+    "v_sol_lamports": 115005360700,
+    "v_tokens": 279900000000000
+   },
+   "expected_depth_4g": 17.5,
+   "expected_depth_exact": 17.511176478,
+   "expected_mcap_sol": 34.768078,
+   "expected_source": "amm",
+   "mint": "8b8irVTSCj29L4Yf56tg5xjVBHwpV7QkLY6sH3FHpump",
+   "row_index": 4588,
+   "split": "train",
+   "t_dec_ms": 1788971878092
+  },
+  {
+   "amm": {
+    "reason": "never_graduated",
+    "status": "absent"
+   },
+   "curve": {
+    "curve_price_sol_per_raw_token": 8.187e-14,
+    "curve_progress": 0.251014,
+    "curve_regime": "bonding",
+    "real_sol_lamports": 21336177780,
+    "real_tokens": 347143178716787,
+    "staleness_ms": 19004,
+    "status": "present",
+    "v_sol_lamports": 51336177780,
+    "v_tokens": 627043178716787
+   },
+   "expected_depth_4g": 51.3,
+   "expected_depth_exact": null,
+   "expected_mcap_sol": 81.870244,
+   "expected_source": "curve",
+   "mint": "A3axJLvQXKj2i2gEMkSq9gx7pC77CDYEcnZi6xPEpump",
+   "row_index": 1638,
+   "split": "train",
+   "t_dec_ms": 1788972286587
+  },
+  {
+   "amm": {
+    "reason": "never_graduated",
+    "status": "absent"
+   },
+   "curve": {
+    "curve_price_sol_per_raw_token": 1.40261e-13,
+    "curve_progress": 0.437573,
+    "curve_regime": "bonding",
+    "real_sol_lamports": 37193718152,
+    "real_tokens": 199162649643393,
+    "staleness_ms": 4485,
+    "status": "present",
+    "v_sol_lamports": 67193718152,
+    "v_tokens": 479062649643393
+   },
+   "expected_depth_4g": 67.2,
+   "expected_depth_exact": null,
+   "expected_mcap_sol": 140.260816,
+   "expected_source": "curve",
+   "mint": "DnjxjnV5XTDKq9nMzrSPer7zKpvBmLgmd27iDwXApump",
+   "row_index": 2743,
+   "split": "train",
+   "t_dec_ms": 1788975715173
+  },
+  {
+   "amm": {
+    "reason": "never_graduated",
+    "status": "absent"
+   },
+   "curve": {
+    "curve_price_sol_per_raw_token": 1.42969e-13,
+    "curve_progress": 0.445169,
+    "curve_regime": "bonding",
+    "real_sol_lamports": 37839354946,
+    "real_tokens": 194603346341363,
+    "staleness_ms": 13732,
+    "status": "present",
+    "v_sol_lamports": 67839354946,
+    "v_tokens": 474503346341363
+   },
+   "expected_depth_4g": 67.8,
+   "expected_depth_exact": null,
+   "expected_mcap_sol": 142.969181,
+   "expected_source": "curve",
+   "mint": "Dp9gxFemyiHfVMTLdFhjP7h1EnHTe4Ki6fEB6Mw3pump",
+   "row_index": 2980,
+   "split": "train",
+   "t_dec_ms": 1788975982301
+  },
+  {
+   "amm": {
+    "reason": "no_event_before_t_dec",
+    "status": "absent"
+   },
+   "curve": {
+    "curve_price_sol_per_raw_token": 2.73975e-13,
+    "curve_progress": 0.751893,
+    "curve_regime": "bonding",
+    "real_sol_lamports": 63910941809,
+    "real_tokens": 62871559995786,
+    "staleness_ms": 114,
+    "status": "present",
+    "v_sol_lamports": 93910941809,
+    "v_tokens": 342771559995786
+   },
+   "expected_depth_4g": 93.9,
+   "expected_depth_exact": null,
+   "expected_mcap_sol": 273.975302,
+   "expected_source": "curve",
+   "mint": "HUPvAoT8ZPCwPY7om6n6Zp4YufunEhTLamLWzpv5pump",
+   "row_index": 3558,
+   "split": "train",
+   "t_dec_ms": 1787556334459
+  },
+  {
+   "amm": {
+    "reason": "never_graduated",
+    "status": "absent"
+   },
+   "curve": {
+    "curve_price_sol_per_raw_token": 3.4092e-14,
+    "curve_progress": 0.03679,
+    "curve_regime": "bonding",
+    "real_sol_lamports": 3127181618,
+    "real_tokens": 691809602145104,
+    "staleness_ms": 14291,
+    "status": "present",
+    "v_sol_lamports": 33127181618,
+    "v_tokens": 971709602145104
+   },
+   "expected_depth_4g": 33.1,
+   "expected_depth_exact": null,
+   "expected_mcap_sol": 34.091648,
+   "expected_source": "curve",
+   "mint": "WRcmSij2aKCUwVTTS2F3QUX4dhpLVS5dVKMniL5WsJW",
+   "row_index": 3938,
+   "split": "train",
+   "t_dec_ms": 1788972509993
+  },
+  {
+   "amm": {
+    "amm_price_sol_per_raw_token": 1.4224e-14,
+    "base_reserves_raw": 656351880510783,
+    "pool": "7h8rMqgw7qsHSrcnWS6tU3Rjsrvr64tDrwxGyxjTYhSn",
+    "quote_reserves_lamports": 9335858893,
+    "reserve_slot": 445647231,
+    "staleness_ms": 95221,
+    "status": "present"
+   },
+   "curve": {
+    "curve_price_sol_per_raw_token": 2.90974e-13,
+    "curve_progress": 0.785652,
+    "curve_regime": "bonding",
+    "real_sol_lamports": 66780402430,
+    "real_tokens": 52708663522565,
+    "staleness_ms": 17,
+    "status": "present",
+    "v_sol_lamports": 96780402430,
+    "v_tokens": 332608663522565
+   },
+   "expected_depth_4g": 96.8,
+   "expected_depth_exact": 9.335858893,
+   "expected_mcap_sol": 290.973787,
+   "expected_source": "curve",
+   "mint": "AHYY5nBfybmSX2BJEnKsirKwEABKNR2v9EHb3BFopump",
+   "row_index": 4048,
+   "split": "train",
+   "t_dec_ms": 1788968476331
+  },
+  {
+   "amm": {
+    "reason": "never_graduated",
+    "status": "absent"
+   },
+   "curve": {
+    "curve_price_sol_per_raw_token": 2.9655e-14,
+    "curve_progress": 0.010549,
+    "curve_regime": "bonding",
+    "real_sol_lamports": 896691754,
+    "real_tokens": 761959134151293,
+    "staleness_ms": 13669,
+    "status": "present",
+    "v_sol_lamports": 30896691754,
+    "v_tokens": 1041859134151293
+   },
+   "expected_depth_4g": 30.9,
+   "expected_depth_exact": null,
+   "expected_mcap_sol": 29.655345,
+   "expected_source": "curve",
+   "mint": "Gvyh6tRGGuVweyWwpqpwQtHqKzaK4xRDYC7UQxQGpump",
+   "row_index": 4234,
+   "split": "train",
+   "t_dec_ms": 1788972434447
+  },
+  {
+   "amm": {
+    "reason": "never_graduated",
+    "status": "absent"
+   },
+   "curve": {
+    "curve_price_sol_per_raw_token": 4.3866e-14,
+    "curve_progress": 0.089144,
+    "curve_regime": "bonding",
+    "real_sol_lamports": 7577218617,
+    "real_tokens": 576736047986901,
+    "staleness_ms": 578,
+    "status": "present",
+    "v_sol_lamports": 37577218617,
+    "v_tokens": 856636047986901
+   },
+   "expected_depth_4g": 37.6,
+   "expected_depth_exact": null,
+   "expected_mcap_sol": 43.866025,
+   "expected_source": "curve",
+   "mint": "GT64PB7cJs3UJnc2GYW4VFTQRyKEbzwR7DCfKFyMjRrb",
+   "row_index": 4290,
+   "split": "train",
+   "t_dec_ms": 1788970368707
+  },
+  {
+   "amm": {
+    "reason": "never_graduated",
+    "status": "absent"
+   },
+   "curve": {
+    "curve_price_sol_per_raw_token": 3.7666e-14,
+    "curve_progress": 0.05671,
+    "curve_regime": "bonding",
+    "real_sol_lamports": 4820338123,
+    "real_tokens": 644559736036765,
+    "staleness_ms": 2740,
+    "status": "present",
+    "v_sol_lamports": 34820338123,
+    "v_tokens": 924459736036765
+   },
+   "expected_depth_4g": 34.8,
+   "expected_depth_exact": null,
+   "expected_mcap_sol": 37.665608,
+   "expected_source": "curve",
+   "mint": "EGU44PQhyyszMgjJcQ5K7VBxgKFLqQw1GZjMhsjWpump",
+   "row_index": 4508,
+   "split": "train",
+   "t_dec_ms": 1788970920667
+  },
+  {
+   "amm": {
+    "reason": "no_event_before_t_dec",
+    "status": "absent"
+   },
+   "curve": {
+    "curve_price_sol_per_raw_token": 1.62258e-13,
+    "curve_progress": 0.497304,
+    "curve_regime": "bonding",
+    "real_sol_lamports": 42270818277,
+    "real_tokens": 165507994200576,
+    "staleness_ms": 183,
+    "status": "present",
+    "v_sol_lamports": 72270818277,
+    "v_tokens": 445407994200576
+   },
+   "expected_depth_4g": 72.3,
+   "expected_depth_exact": null,
+   "expected_mcap_sol": 162.257569,
+   "expected_source": "curve",
+   "mint": "8b8irVTSCj29L4Yf56tg5xjVBHwpV7QkLY6sH3FHpump",
+   "row_index": 4589,
+   "split": "train",
+   "t_dec_ms": 1788966958092
+  },
+  {
+   "amm": {
+    "reason": "no_event_before_t_dec",
+    "status": "absent"
+   },
+   "curve": {
+    "curve_price_sol_per_raw_token": 1.65647e-13,
+    "curve_progress": 0.506138,
+    "curve_regime": "bonding",
+    "real_sol_lamports": 43021754659,
+    "real_tokens": 160927534821999,
+    "staleness_ms": 2091,
+    "status": "present",
+    "v_sol_lamports": 73021754659,
+    "v_tokens": 440827534821999
+   },
+   "expected_depth_4g": 73.0,
+   "expected_depth_exact": null,
+   "expected_mcap_sol": 165.646991,
+   "expected_source": "curve",
+   "mint": "2MDHVLYj5nhsyDwR4gX7cw89inaRDn2JogRpVenxh3S8",
+   "row_index": 5227,
+   "split": "train",
+   "t_dec_ms": 1788968877806
+  },
+  {
+   "amm": {
+    "reason": "no_event_before_t_dec",
+    "status": "absent"
+   },
+   "curve": {
+    "curve_price_sol_per_raw_token": 1.30836e-13,
+    "curve_progress": 0.410553,
+    "curve_regime": "bonding",
+    "real_sol_lamports": 34896964381,
+    "real_tokens": 216117038621297,
+    "staleness_ms": 4783,
+    "status": "present",
+    "v_sol_lamports": 64896964381,
+    "v_tokens": 496017038621297
+   },
+   "expected_depth_4g": 64.9,
+   "expected_depth_exact": null,
+   "expected_mcap_sol": 130.83616,
+   "expected_source": "curve",
+   "mint": "77wvPgk8otNJNsXbCs7nERU8fxh4sgGeouzEVP5Zpump",
+   "row_index": 5445,
+   "split": "train",
+   "t_dec_ms": 1787560589623
+  },
+  {
+   "amm": {
+    "reason": "no_event_before_t_dec",
+    "status": "absent"
+   },
+   "curve": {
+    "curve_price_sol_per_raw_token": 7.5545e-14,
+    "curve_progress": 0.227213,
+    "curve_regime": "bonding",
+    "real_sol_lamports": 19313082880,
+    "real_tokens": 372867950198229,
+    "staleness_ms": 53713,
+    "status": "present",
+    "v_sol_lamports": 49313082880,
+    "v_tokens": 652767950198229
+   },
+   "expected_depth_4g": 49.3,
+   "expected_depth_exact": null,
+   "expected_mcap_sol": 75.544583,
+   "expected_source": "curve",
+   "mint": "5c2dUt3MZTTqLGEBr28M9xLCiLxFvVQxgdr6ytLPpump",
+   "row_index": 5709,
+   "split": "train",
+   "t_dec_ms": 1788975804183
+  },
+  {
+   "amm": {
+    "reason": "never_graduated",
+    "status": "absent"
+   },
+   "curve": {
+    "curve_price_sol_per_raw_token": 3.2748e-14,
+    "curve_progress": 0.029031,
+    "curve_regime": "bonding",
+    "real_sol_lamports": 2467629807,
+    "real_tokens": 711549027948481,
+    "staleness_ms": 4863,
+    "status": "present",
+    "v_sol_lamports": 32467629807,
+    "v_tokens": 991449027948481
+   },
+   "expected_depth_4g": 32.5,
+   "expected_depth_exact": null,
+   "expected_mcap_sol": 32.747654,
+   "expected_source": "curve",
+   "mint": "3q3k1djtrgwWn9gi958PD9paZvGDyardYxXZqCWCpump",
+   "row_index": 5899,
+   "split": "train",
+   "t_dec_ms": 1788965501508
+  },
+  {
+   "amm": {
+    "reason": "never_graduated",
+    "status": "absent"
+   },
+   "curve": {
+    "curve_price_sol_per_raw_token": 6.4903e-14,
+    "curve_progress": 0.1848,
+    "curve_regime": "bonding",
+    "real_sol_lamports": 15707973400,
+    "real_tokens": 424353495240148,
+    "staleness_ms": 186,
+    "status": "present",
+    "v_sol_lamports": 45707973400,
+    "v_tokens": 704253495240148
+   },
+   "expected_depth_4g": 45.7,
+   "expected_depth_exact": null,
+   "expected_mcap_sol": 64.902729,
+   "expected_source": "curve",
+   "mint": "viZsU2QRm6kYyzdXLhvgP4poRLxfnVfQvg9BkD2pump",
+   "row_index": 6088,
+   "split": "train",
+   "t_dec_ms": 1788968120169
+  },
+  {
+   "amm": {
+    "reason": "never_graduated",
+    "status": "absent"
+   },
+   "curve": {
+    "curve_price_sol_per_raw_token": 3.6271e-14,
+    "curve_progress": 0.049055,
+    "curve_regime": "bonding",
+    "real_sol_lamports": 4169684976,
+    "real_tokens": 662163119727229,
+    "staleness_ms": 12303,
+    "status": "present",
+    "v_sol_lamports": 34169684976,
+    "v_tokens": 942063119727229
+   },
+   "expected_depth_4g": 34.2,
+   "expected_depth_exact": null,
+   "expected_mcap_sol": 36.271121,
+   "expected_source": "curve",
+   "mint": "LBUJCs63bTWGkVybXAKwA54qNcX9yVAHWJy7Y9mpump",
+   "row_index": 6116,
+   "split": "train",
+   "t_dec_ms": 1788970216431
+  },
+  {
+   "amm": {
+    "reason": "never_graduated",
+    "status": "absent"
+   },
+   "curve": {
+    "curve_price_sol_per_raw_token": 4.0069e-14,
+    "curve_progress": 0.069576,
+    "curve_regime": "bonding",
+    "real_sol_lamports": 5913998005,
+    "real_tokens": 616407897048069,
+    "staleness_ms": 2586,
+    "status": "present",
+    "v_sol_lamports": 35913998005,
+    "v_tokens": 896307897048069
+   },
+   "expected_depth_4g": 35.9,
+   "expected_depth_exact": null,
+   "expected_mcap_sol": 40.068818,
+   "expected_source": "curve",
+   "mint": "BEgfUyUQcqYZPktwY7tA5UP4DD5MdhznUpp9443cpump",
+   "row_index": 6141,
+   "split": "train",
+   "t_dec_ms": 1788968108156
+  },
+  {
+   "amm": {
+    "reason": "never_graduated",
+    "status": "absent"
+   },
+   "curve": {
+    "curve_price_sol_per_raw_token": 7.3985e-14,
+    "curve_progress": 0.221193,
+    "curve_regime": "bonding",
+    "real_sol_lamports": 18801402101,
+    "real_tokens": 379712196078478,
+    "staleness_ms": 8836,
+    "status": "present",
+    "v_sol_lamports": 48801402101,
+    "v_tokens": 659612196078478
+   },
+   "expected_depth_4g": 48.8,
+   "expected_depth_exact": null,
+   "expected_mcap_sol": 73.984991,
+   "expected_source": "curve",
+   "mint": "EQG5mUpbiNowPGQLzLmbAc6vNiPHXwC8VtvBmtgMpump",
+   "row_index": 6348,
+   "split": "train",
+   "t_dec_ms": 1787506615323
+  },
+  {
+   "amm": {
+    "reason": "never_graduated",
+    "status": "absent"
+   },
+   "curve": {
+    "curve_price_sol_per_raw_token": 4.0513e-14,
+    "curve_progress": 0.07191,
+    "curve_regime": "bonding",
+    "real_sol_lamports": 6112378339,
+    "real_tokens": 611484122795341,
+    "staleness_ms": 4684,
+    "status": "present",
+    "v_sol_lamports": 36112378339,
+    "v_tokens": 891384122795341
+   },
+   "expected_depth_4g": 36.1,
+   "expected_depth_exact": null,
+   "expected_mcap_sol": 40.512701,
+   "expected_source": "curve",
+   "mint": "FL75A9Qyp4LpmXKc2X3GWTvGgPd4mwWhVMiqwsj2tDwj",
+   "row_index": 6383,
+   "split": "train",
+   "t_dec_ms": 1788969041379
+  },
+  {
+   "amm": {
+    "reason": "never_graduated",
+    "status": "absent"
+   },
+   "curve": {
+    "curve_price_sol_per_raw_token": 4.3795e-14,
+    "curve_progress": 0.088785,
+    "curve_regime": "bonding",
+    "real_sol_lamports": 7546767462,
+    "real_tokens": 577430810321958,
+    "staleness_ms": 5335,
+    "status": "present",
+    "v_sol_lamports": 37546767462,
+    "v_tokens": 857330810321958
+   },
+   "expected_depth_4g": 37.5,
+   "expected_depth_exact": null,
+   "expected_mcap_sol": 43.794959,
+   "expected_source": "curve",
+   "mint": "Fyai4bH82JVUCVdgobVfu9hbYE88fym6hh7ujNgYpump",
+   "row_index": 6537,
+   "split": "train",
+   "t_dec_ms": 1788967789504
+  }
+ ],
+ "n_joined": 95654,
+ "n_rows_seen": 95654,
+ "producer": "candidate_sft_c8 rows x C9_ENRICHMENT_FULL.jsonl",
+ "schema": "c9-mcap-parity/1",
+ "source_counts_all": {
+  "absent": 1219,
+  "amm": 29527,
+  "curve": 64908
+ },
+ "source_counts_picked": {
+  "absent": 20,
+  "amm": 20,
+  "curve": 20
+ }
+}

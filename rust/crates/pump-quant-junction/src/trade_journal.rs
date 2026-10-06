@@ -115,10 +115,7 @@ impl TradeOutcome {
 
     /// True if the outcome is a terminal state (no further update expected).
     pub fn is_terminal(&self) -> bool {
-        match self {
-            TradeOutcome::Pending => false,
-            _ => true,
-        }
+        !matches!(self, TradeOutcome::Pending)
     }
 }
 
@@ -362,7 +359,10 @@ impl TradeJournal {
             let line = format!("{}\n", rec.to_jsonl());
             file.write_all(line.as_bytes())
                 .map_err(|e| format!("flush_jsonl: write: {e}"))?;
-            count += 1;
+            #[allow(clippy::arithmetic_side_effects)] // LINT-ALLOW(hot_arith): u64 line counter
+            {
+                count += 1;
+            }
         }
         file.flush()
             .map_err(|e| format!("flush_jsonl: flush: {e}"))?;
@@ -396,6 +396,7 @@ impl TradeJournal {
 
     /// Win rate in basis points (0..=10_000). Returns 0 if no trades.
     /// 5_000 = 50%, 10_000 = 100%.
+    #[allow(clippy::arithmetic_side_effects, clippy::cast_possible_truncation)] // LINT-ALLOW(hot_arith,hot_cast): total=wins+losses>=wins; num=wins*1e4<u128::MAX; num/den<=10000 fits u32
     pub fn win_rate_bps(&self) -> u32 {
         let total = self.wins.saturating_add(self.losses);
         if total == 0 {

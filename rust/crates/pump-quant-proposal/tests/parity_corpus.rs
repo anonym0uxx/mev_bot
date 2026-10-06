@@ -60,6 +60,7 @@ fn i64_of(v: &Value) -> i64 {
 }
 
 /// A flow field that the `no_prior_flow` variant does not carry.
+#[allow(dead_code)]
 fn i64_or0(v: &Value) -> i64 {
     if v.is_null() {
         0

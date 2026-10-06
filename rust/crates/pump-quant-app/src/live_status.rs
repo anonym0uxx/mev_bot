@@ -265,6 +265,10 @@ mod tests {
                     age_slots: 12,
                     recv_unix_ms: None,
                     trader_pubkey: None,
+                    slot: None,
+                    fee_lamports: None,
+                    cu_consumed: None,
+                    venue: None,
                 });
             }
             // RE-EXPRESSED (2026-07-28): this harness used to declare a 0.2 SOL

@@ -192,7 +192,7 @@ pub fn parse_pumpportal_create(
     // R-3: the PumpPortal create event's traderPublicKey IS the creator's Solana
     // wallet pubkey (base58). Decode it to raw bytes so the daemon-level R-3 veto
     // can query getSignaturesForAddress on this wallet before buying.
-    let creator_pubkey = trader_str.and_then(|s| base58::decode_pubkey(s));
+    let creator_pubkey = trader_str.and_then(base58::decode_pubkey);
     Some(crate::token_metadata_parse::RawTokenMetadata {
         mint,
         name,

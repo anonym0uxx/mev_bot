@@ -21,6 +21,15 @@ pub fn b58_encode(bytes: &[u8]) -> String {
             carry /= 58;
         }
     }
+    // `digits` is seeded with a single 0, which for an all-zero input stays as a spurious extra digit
+    // (the 32-byte System Program key came out as 33 '1's). Drop most-significant zero digits; the
+    // leading-zero BYTES are re-added as '1's below.
+    while digits.len() > 1 && digits.last() == Some(&0) {
+        digits.pop();
+    }
+    if bytes.iter().all(|&b| b == 0) {
+        digits.clear();
+    }
     let zeros = bytes.iter().take_while(|&&b| b == 0).count();
     let mut out = String::with_capacity(zeros + digits.len());
     out.extend(std::iter::repeat('1').take(zeros));
@@ -76,4 +85,67 @@ pub fn now_unix_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod b58_zero_and_fixture_tests {
+    use super::b58_encode;
+
+    #[test]
+    fn b58_empty_is_empty() {
+        assert_eq!(b58_encode(&[]), "");
+    }
+
+    #[test]
+    fn b58_one_zero_is_one_one() {
+        assert_eq!(b58_encode(&[0]), "1");
+    }
+
+    #[test]
+    fn b58_zero_pubkey_is_32_ones() {
+        assert_eq!(b58_encode(&[0; 32]), "1".repeat(32));
+    }
+
+    #[test]
+    fn b58_zero_signature_is_64_ones() {
+        assert_eq!(b58_encode(&[0; 64]), "1".repeat(64));
+    }
+
+    #[test]
+    fn b58_leading_zeros_preserve_nonzero_value() {
+        for (bytes, expected) in [
+            (&[0, 1][..], "12"),
+            (&[0, 0, 1][..], "112"),
+            (&[0, 58][..], "121"),
+            (&[0, 0, 255][..], "115Q"),
+            (&[0, 1, 0][..], "15R"),
+        ] {
+            assert_eq!(b58_encode(bytes), expected, "input: {bytes:?}");
+        }
+    }
+
+    #[test]
+    fn b58_known_bitcoin_alphabet_fixtures() {
+        for (bytes, expected) in [
+            (&[1][..], "2"),
+            (&[57][..], "z"),
+            (&[58][..], "21"),
+            (&[255][..], "5Q"),
+            (&[1, 0][..], "5R"),
+            (&b"a"[..], "2g"),
+            (&b"bbb"[..], "a3gV"),
+            (&b"ccc"[..], "aPEr"),
+            (&b"simply a long string"[..], "2cFupjhnEsSn59qHXstmK2ffpLv2"),
+            (&b"Hello World"[..], "JxF12TrwUP45BMd"),
+        ] {
+            assert_eq!(b58_encode(bytes), expected, "input: {bytes:?}");
+        }
+    }
+
+    #[test]
+    fn b58_all_zero_lengths_have_no_extra_digit() {
+        for len in 0..=256 {
+            assert_eq!(b58_encode(&vec![0; len]), "1".repeat(len), "length: {len}");
+        }
+    }
 }

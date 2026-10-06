@@ -40,13 +40,15 @@ use pump_quant_execution::ex_live_io_traits::{
 };
 use pump_quant_execution::ex_tip_compute::TipMarket;
 
-use pq_stream_capture::rpc::{Reply, Transport, UreqTransport};
-use pq_stream_capture::sender::{Accepted, SenderClient, SenderEndpoint, SenderError};
-use pq_stream_capture::signer::{SignerError, WalletSigner, SIGNATURE_BYTES};
+use pq_stream_capture::rpc::{Transport, UreqTransport};
+use pq_stream_capture::sender::{SenderClient, SenderEndpoint, SenderError};
+use pq_stream_capture::signer::{SignerError, WalletSigner};
 
 use base64::Engine as _;
 
 use crate::state_fetch::{RpcStateFetch, StateFetch, StateFetchError as JunctionStateFetchError};
+// `PumpCurveCtx` is referenced only by the `#[cfg(test)]` module via `use super::*`.
+#[allow(unused_imports)]
 use pump_quant_protocol::venue_accounts::PumpCurveCtx;
 
 // ---------------------------------------------------------------------------
@@ -172,7 +174,7 @@ impl HeliusSenderSubmitter {
 }
 
 impl LiveSubmitter for HeliusSenderSubmitter {
-    fn submit(&self, wire_tx: &[u8], is_buy: bool) -> Result<[u8; 64], SubmitError> {
+    fn submit(&self, wire_tx: &[u8], _is_buy: bool) -> Result<[u8; 64], SubmitError> {
         // 1. Base64-encode the wire bytes.
         let tx_b64 = base64::engine::general_purpose::STANDARD.encode(wire_tx);
 
@@ -219,6 +221,7 @@ fn map_sender_error(e: SenderError) -> SubmitError {
 /// Uses the first 8 bytes as a hex string — collision-resistant within the
 /// short window where two submits might overlap. Satisfies the Sender's
 /// validation: alphanumeric + '-' + '_', 1..=64 chars.
+#[allow(clippy::arithmetic_side_effects, clippy::cast_possible_truncation)] // LINT-ALLOW(hot_arith,hot_cast): n=wire_tx.len().min(8) so n*2<=16; hex bytes, no money
 fn make_request_id(wire_tx: &[u8]) -> String {
     let n = wire_tx.len().min(8);
     let mut id = String::with_capacity(n * 2);
@@ -236,6 +239,7 @@ fn make_request_id(wire_tx: &[u8]) -> String {
 /// byte-for-byte parity between stored pending signatures and on-chain
 /// signatures fetched via `getSignaturesForAddress`. Without this parity,
 /// the confirmation poll can never match stored sigs against on-chain sigs.
+#[allow(clippy::arithmetic_side_effects, clippy::cast_possible_truncation)] // LINT-ALLOW(hot_arith,hot_cast): base58 sig decode: B58 idx in 0..=57 fits u32; carry accumulator v<=14848 (255*58+14848>>8) in u32; &0xff mask exact
 fn decode_signature_bytes(sig_str: &str) -> Result<[u8; 64], SubmitError> {
     const B58: &[u8; 58] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
     if sig_str.is_empty() {
@@ -453,6 +457,10 @@ impl RpcLiveStateFetcher {
         // STREAM, and the hot read uses it to decide how far to trust a cached entry.
         // Recorded before any early return.
         self.last_stream_slot.fetch_max(slot, Ordering::Relaxed);
+        // NO magnitude gate here. The cache and the fetched state carry u64 reserves, and
+        // the trade derivation widens to i128 and rejects only a DELTA that cannot fit i64
+        // — so the full u64 reserve range is supported end to end. Rejecting a large-but-
+        // valid reserve would exclude supported inputs; no representation limit exists here.
         let mut cache = self.curve_cache.write().unwrap();
         let Some(entry) = cache.entries.get_mut(mint) else {
             return false;
@@ -608,7 +616,7 @@ impl RpcLiveStateFetcher {
         let reply = self
             .transport
             .post_json(&url, body)
-            .map_err(|e| StateFetchError::RpcError(e))?;
+            .map_err(StateFetchError::RpcError)?;
 
         // Parse the blockhash from the JSON response.
         let blockhash_str =
@@ -736,7 +744,7 @@ impl LiveStateFetcher for RpcLiveStateFetcher {
         let reply = self
             .transport
             .post_json(&self.rpc_url, &body)
-            .map_err(|e| StateFetchError::RpcError(e))?;
+            .map_err(StateFetchError::RpcError)?;
 
         // Parse the response. If value is null, the ATA doesn't exist → balance 0.
         let balance = extract_ata_balance(&reply.body)
@@ -775,6 +783,7 @@ fn map_state_fetch_error(e: JunctionStateFetchError) -> StateFetchError {
 
 /// Decode a base58 string into exactly 32 bytes. Uses the Bitcoin base58
 /// alphabet (same as pq_stream_capture::signer::decode_base58_32).
+#[allow(clippy::arithmetic_side_effects, clippy::cast_possible_truncation)] // LINT-ALLOW(hot_arith,hot_cast): base58 decode: ALPHABET idx in 0..=57 fits u32/i16; buffer sized s.len()*733/1000+1; (current%256) exact u8; zeros+buffer.len() guarded by >32 reject
 fn decode_base58_32(s: &str) -> Option<[u8; 32]> {
     const ALPHABET: &[u8] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 
@@ -793,10 +802,7 @@ fn decode_base58_32(s: &str) -> Option<[u8; 32]> {
     let mut written = 0;
 
     for &c in &bytes[zeros..] {
-        let mut carry = match ALPHABET.iter().position(|&a| a == c) {
-            Some(idx) => idx as u32,
-            None => return None,
-        };
+        let mut carry = ALPHABET.iter().position(|&a| a == c)? as u32;
 
         let mut i = 0;
         while i < written || carry != 0 {
@@ -828,6 +834,7 @@ fn decode_base58_32(s: &str) -> Option<[u8; 32]> {
 
 /// Extract the `"blockhash":"..."` field from a getLatestBlockhash JSON
 /// response. Pure string search (the JSON shape is fixed and tiny).
+#[allow(clippy::arithmetic_side_effects)] // LINT-ALLOW(hot_arith,hot_cast): string offsets: start+key.len() and colon+1 derive from find()? (<=len); slicing guarded by get()/find()
 fn extract_blockhash_from_response(body: &str) -> Option<String> {
     let key = "\"blockhash\"";
     let start = body.find(key)?;
@@ -841,6 +848,7 @@ fn extract_blockhash_from_response(body: &str) -> Option<String> {
 
 /// E7: extract `"lastValidBlockHeight":<number>` from a `getLatestBlockhash`
 /// response. The field sits inside `result.value`, next to the blockhash string.
+#[allow(clippy::arithmetic_side_effects)] // LINT-ALLOW(hot_arith,hot_cast): string offsets: start+key.len() and colon+1 derive from find()? (<=len); slicing guarded by get()/find()
 fn extract_last_valid_block_height_from_response(body: &str) -> Option<u64> {
     let key = "\"lastValidBlockHeight\"";
     let start = body.find(key)?;
@@ -854,6 +862,7 @@ fn extract_last_valid_block_height_from_response(body: &str) -> Option<u64> {
 }
 
 /// Extract the `"slot":<number>` field from a JSON-RPC response.
+#[allow(clippy::arithmetic_side_effects)] // LINT-ALLOW(hot_arith,hot_cast): string offsets: start+key.len() and colon+1 derive from find()? (<=len); slicing guarded by get()/find()
 fn extract_slot_from_response(body: &str) -> Option<u64> {
     let key = "\"slot\"";
     let start = body.find(key)?;
@@ -871,6 +880,7 @@ fn extract_slot_from_response(body: &str) -> Option<u64> {
 /// One entry per recent slot for the accounts queried — the priority fee that actually LANDED in
 /// that slot. Raw samples only; the percentiles are `TipMarket::from_fee_samples` (one law, one
 /// place, and the tests that pin the bid pin this feed too).
+#[allow(clippy::arithmetic_side_effects)] // LINT-ALLOW(hot_arith,hot_cast): string offsets: start+key.len() and colon+1 derive from find()? (<=len); slicing guarded by get()/find()
 pub fn extract_prioritization_fees(body: &str) -> Vec<u64> {
     let key = "\"prioritizationFee\"";
     let mut out = Vec::new();
@@ -896,6 +906,7 @@ pub fn tip_market_from_response(body: &str) -> Option<TipMarket> {
 }
 
 /// Encode a 32-byte pubkey into a base58 string (same alphabet as Solana).
+#[allow(clippy::arithmetic_side_effects, clippy::cast_possible_truncation)] // LINT-ALLOW(hot_arith,hot_cast): base58 encode: n=rem<<8|byte <= 255*58+255 in u32; n/58 and rem%58 in 0..=57 exact u8; leading_zeros<=32
 fn encode_base58_pubkey(pk: &[u8; 32]) -> String {
     const ALPHABET: &[u8] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
     let mut leading_zeros = 0;
@@ -937,6 +948,7 @@ fn encode_base58_pubkey(pk: &[u8; 32]) -> String {
 /// SPL token accounts (both spl-token and Token-2022) store the amount at
 /// offset 32 (after mint[32] + owner[32]). The amount is a little-endian u64.
 /// If the response value is null (account doesn't exist), returns 0 (balance 0).
+#[allow(clippy::arithmetic_side_effects)] // LINT-ALLOW(hot_arith,hot_cast): string offsets: start+key.len() and colon+1 derive from find()? (<=len); slicing guarded by get()/find()
 fn extract_ata_balance(body: &str) -> Option<u64> {
     // Check for "value":null → account doesn't exist → balance 0.
     if body.contains("\"value\":null") {
@@ -964,6 +976,7 @@ fn extract_ata_balance(body: &str) -> Option<u64> {
 }
 
 /// Standard base64 decode (A-Z, a-z, 0-9, +, /).
+#[allow(clippy::arithmetic_side_effects, clippy::cast_possible_truncation)] // LINT-ALLOW(hot_arith,hot_cast): base64 decode: TABLE idx in 0..=63 fits i16; bits accumulator in {6,12} then -8; capacity len*3/4; (buf>>bits) extracts one byte
 fn decode_base64_std(s: &str) -> Option<Vec<u8>> {
     const TABLE: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut decode_map = [-1i16; 256];
@@ -989,7 +1002,7 @@ fn decode_base64_std(s: &str) -> Option<Vec<u8>> {
                 bits += 6;
                 if bits >= 8 {
                     bits -= 8;
-                    out.push((buf >> bits) as u8 & 0xFF);
+                    out.push((buf >> bits) as u8);
                 }
             }
         }
@@ -1048,7 +1061,11 @@ pub fn spawn_blockhash_warmer(
             // 100ms tick — fine-grained enough to honour refresh_ms closely.
             while !fetcher.is_shutdown() {
                 std::thread::sleep(std::time::Duration::from_millis(100));
-                blockhash_timer += 100;
+                #[allow(clippy::arithmetic_side_effects)]
+                // LINT-ALLOW(hot_arith): u64 ms timer in 100ms sleep loop; overflow ~10^17 yr
+                {
+                    blockhash_timer += 100;
+                }
                 if blockhash_timer >= config.blockhash_refresh_ms {
                     blockhash_timer = 0;
                     let _ = fetcher.refresh_blockhash_inner();
@@ -1295,6 +1312,25 @@ mod c1_stream_fed_cache {
         assert!(f.fetch_state_hot(&[2u8; 32], &[0u8; 32]).is_err());
     }
 
+    /// A large-but-valid reserve is SUPPORTED end to end: the producer->cache path
+    /// publishes it (the cache is u64; the delta derivation widens to i128), so the hot
+    /// path must serve the stream's value rather than classify it as malformed.
+    #[test]
+    fn a_large_valid_reserve_flows_through_the_producer_cache_path() {
+        let f = fetcher();
+        f.seed_curve_for_test(state(9, 1_000, 2_000, 100));
+        let big = (i64::MAX as u64) + 1; // > i64::MAX, still a valid u64 reserve
+        assert!(
+            f.note_stream_reserves(&[9u8; 32], big, 2_000, false, 110),
+            "a large valid reserve must be published, not treated as malformed"
+        );
+        let s = f.fetch_state_hot(&[9u8; 32], &[0xAAu8; 32]).unwrap();
+        assert_eq!(
+            s.virtual_sol_reserves, big,
+            "the stream's large reserve wins"
+        );
+    }
+
     #[test]
     fn an_older_notification_never_moves_the_cache_backwards() {
         let f = fetcher();
@@ -1375,6 +1411,7 @@ mod e5_tip_market {
     use pump_quant_execution::ex_tip_compute::bid_per_send;
 
     /// A response in the shape the RPC actually returns.
+    #[allow(clippy::arithmetic_side_effects, clippy::cast_possible_truncation)] // LINT-ALLOW(hot_arith,hot_cast): test fixture: slot = 300_000_000 + enumerate idx
     fn body(fees: &[u64]) -> String {
         let entries = fees
             .iter()

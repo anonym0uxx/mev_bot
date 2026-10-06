@@ -19,7 +19,7 @@
 use std::collections::HashMap;
 
 /// Per-wallet tier in the tracking taxonomy.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum TrackedWalletTier {
     /// T0 — Proven whale with verified PnL edge via §28 lagged-shadow.
     Proven,
@@ -28,15 +28,10 @@ pub enum TrackedWalletTier {
     /// T2 — Suspected smart money (heuristically identified).
     SuspectedSmartMoney,
     /// T3 — Candidate whale from the curated list (default).
+    #[default]
     Candidate,
     /// T4 — Unverified. Activity logged, no signal weight.
     Unverified,
-}
-
-impl Default for TrackedWalletTier {
-    fn default() -> Self {
-        Self::Candidate
-    }
 }
 
 /// Metadata for a single tracked wallet.

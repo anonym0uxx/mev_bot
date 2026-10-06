@@ -38,7 +38,7 @@ use pump_quant_proposal::bundle_gate::{BundlePolicy, FieldFamily};
 use pump_quant_proposal::decision::{
     AmmState, CurveState, DecisionBundle, DevHistoryDecision, EnrichedCandidate, TokenIdentity,
 };
-use pump_quant_proposal::{render_decision, FlowState, PyNum};
+use pump_quant_proposal::{FlowState, PyNum};
 
 use crate::enrichment::EnrichedSnapshot;
 use crate::state_ledger::StateSnapshot;
@@ -243,8 +243,8 @@ pub fn assemble(inputs: &BundleInputs<'_>) -> Result<DecisionBundle, AssemblyRef
             volume_sol_at_t: PyNum::Float(py_round(inputs.enriched.volume_sol_at_t, 6)),
             wash_ratio: PyNum::Float(py_round(inputs.enriched.wash_ratio, 6)),
         },
-        dev: inputs.dev.clone(),
-        flow: inputs.flow.clone(),
+        dev: inputs.dev,
+        flow: *inputs.flow,
         flow_no_prior: inputs.flow_no_prior,
         curve: inputs.curve.clone(),
         amm: inputs.amm.clone(),
@@ -265,6 +265,7 @@ pub fn assemble(inputs: &BundleInputs<'_>) -> Result<DecisionBundle, AssemblyRef
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pump_quant_proposal::render_decision;
 
     fn snapshot() -> StateSnapshot {
         StateSnapshot {

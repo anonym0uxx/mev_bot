@@ -31,8 +31,7 @@
 
 use crate::evaluator_state::{
     CusumState, CusumVerdict, EvaluatorState, LifecycleStage, LifecycleState, SprtLedger,
-    SprtVerdict, ThompsonPosterior, MIN_SAMPLES_LEARNING_HORIZON, SPRT_LOWER_BOUND,
-    SPRT_TRUNCATION, SPRT_UPPER_BOUND,
+    SprtVerdict, ThompsonPosterior, MIN_SAMPLES_LEARNING_HORIZON,
 };
 
 // ============================================================================

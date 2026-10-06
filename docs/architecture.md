@@ -12,7 +12,7 @@ IO in any decision path. Live IO, real OS tuning, key signing, and fund movement
 ### Data & determinism spine
 - **pump-quant-domain** — core value/identity types (Mint, Lamports, Slot, lifecycle state
   machine, evidence stages). Dossier: `lifecycle`.
-- **pump-quant-clock** — the determinism seam: a `Clock` a live impl and a `ReplayClock` share,
+- **pump-quant-clock** (REMOVED in consolidation; see docs/CONSOLIDATION_MANIFEST.md)
   plus deterministic tie-breaking. Dossier: `clock`.
 - **pump-quant-journal** — durable event journal: framing, checksums, manifest, recovery/replay
   scan. Dossier: `manifest`.

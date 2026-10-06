@@ -67,6 +67,34 @@ pub fn decode_onchain_confirm_with_curve(
     Some((pe, curve))
 }
 
+/// The full reserve observation for a decoded curve, as the model lane's curve plane needs it:
+/// all four reserves plus the account update's wire receive time. Returns `None` when the update
+/// has no wire clock -- a reserve that cannot be ordered against a decision cutoff must not enter
+/// a prompt, and a local clock would be a different quantity.
+#[must_use]
+pub fn curve_observed_from_curve(
+    mint_bytes: &[u8; 32],
+    curve: &PumpCurve,
+    slot: u64,
+    recv_unix_ms: Option<i64>,
+) -> Option<ProvenancedEvent> {
+    let recv_unix_ms = recv_unix_ms?;
+    Some(ProvenancedEvent {
+        event: AppEvent::CurveObserved {
+            mint: Mint(*mint_bytes),
+            v_sol_lamports: curve.virtual_sol,
+            v_tokens: curve.virtual_token,
+            real_sol_lamports: curve.real_sol,
+            real_tokens: curve.real_token,
+            recv_unix_ms: Some(recv_unix_ms),
+            slot,
+        },
+        source: ProvenanceSource::LaserStreamAccount,
+        slot,
+        is_live: true,
+    })
+}
+
 /// Construct an `OnchainConfirm` from a decoded `PumpCurve` without re-decoding.
 ///
 /// This is the API the wire-up calls when it already has a `PumpCurve` from
@@ -278,5 +306,31 @@ mod tests {
         } else {
             panic!("expected OnchainConfirm");
         }
+    }
+
+    #[test]
+    fn a_curve_observation_carries_all_four_reserves_and_requires_a_wire_clock() {
+        let curve = PumpCurve {
+            virtual_sol: 37_900_000_000,
+            virtual_token: 849_000_000_000_000,
+            real_sol: 7_900_000_000,
+            real_token: 569_000_000_000_000,
+            complete: false,
+        };
+        let pe =
+            curve_observed_from_curve(&[3u8; 32], &curve, 77, Some(1_800_000_000_000)).unwrap();
+        assert!(matches!(
+            pe.event,
+            AppEvent::CurveObserved {
+                v_sol_lamports: 37_900_000_000,
+                v_tokens: 849_000_000_000_000,
+                real_sol_lamports: 7_900_000_000,
+                real_tokens: 569_000_000_000_000,
+                recv_unix_ms: Some(1_800_000_000_000),
+                slot: 77,
+                ..
+            }
+        ));
+        assert!(curve_observed_from_curve(&[3u8; 32], &curve, 77, None).is_none());
     }
 }

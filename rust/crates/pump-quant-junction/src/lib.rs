@@ -12,7 +12,7 @@
 
 #![warn(
     clippy::all,
-    clippy::integer_arithmetic,
+    clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation
 )]
 
@@ -120,6 +120,7 @@ pub mod laserstream;
 pub mod layout_fixtures;
 pub mod live_adapters;
 pub mod memory_bank;
+pub mod model_lifecycle;
 pub mod narrative_lexicon;
 pub mod outbound;
 pub mod pumpportal;

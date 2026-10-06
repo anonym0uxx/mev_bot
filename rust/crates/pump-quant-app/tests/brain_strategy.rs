@@ -151,6 +151,10 @@ fn drive(cfg: Config, decayed: bool) -> Engine {
                     age_slots: 10 + (m as u32 % 35),
                     recv_unix_ms: None,
                     trader_pubkey: None,
+                    slot: None,
+                    fee_lamports: None,
+                    cu_consumed: None,
+                    venue: None,
                 });
             }
             if round == m % 4 {
@@ -470,33 +474,6 @@ fn retirement_flags_retire_nothing() {
             .map(|f| (&f.key, f.reason, f.n))
             .collect::<Vec<_>>()
     );
-}
-
-/// **The boundary, structurally.** A flag hands governance a NOMINATION, and a
-/// nomination cannot become a retirement without the §51 statistical verdict AND
-/// the §52 baseline verdict. There is no function that turns episodic evidence
-/// alone into a retirement, and this proves the one bridge that exists does not.
-#[test]
-fn a_retirement_flag_is_a_nomination_not_a_retirement() {
-    use pump_quant_governance::retirement_review::{review, ReviewOutcome};
-
-    let mut e = drive(Config::dev_portable(), true);
-    let _ = e.report();
-    let flags = e.brain_analysis().retirement_flags;
-    assert!(!flags.is_empty(), "this tape must produce nominations");
-    for f in &flags {
-        let nom = f.as_nomination();
-        assert_eq!(nom.n, f.n);
-        assert_eq!(nom.realized_net_lamports, f.realized_net_lamports);
-        assert_eq!(nom.subject.name(), f.subject.name());
-        // Episodic evidence alone: KEEP, whatever the flag says.
-        assert_eq!(review(&nom, 1, false, false), ReviewOutcome::Keep);
-        assert_eq!(review(&nom, 1, true, false), ReviewOutcome::Keep);
-        assert_eq!(review(&nom, 1, false, true), ReviewOutcome::Keep);
-        assert!(!review(&nom, 1, true, false).retires());
-        // …and the governed path still works when both verdicts concur.
-        assert!(review(&nom, 1, true, true).retires());
-    }
 }
 
 // ===========================================================================
@@ -975,45 +952,6 @@ fn split_objects(s: &str) -> Vec<String> {
 // of that road — the vocabulary, the refusal discipline, and the nomination key.
 // ===========================================================================
 
-/// **The closed vocabulary, and the refusal.** Every exported class carries a
-/// `concentration_band` drawn from the brain's label table, and on a tape with no
-/// creation sightings — no `Exact` holder basis anywhere, which is the ordinary
-/// case — every one of them is `"unknown"`. Not `"broad"`, which is what a
-/// fingerprint field would have been forced to say.
-#[test]
-fn the_export_labels_every_class_with_its_concentration_band() {
-    const VOCAB: [&str; 5] = ["unknown", "broad", "moderate", "concentrated", "extreme"];
-
-    let mut e = drive(Config::dev_portable(), true);
-    let _ = e.report();
-    let a = e.brain_analysis();
-    assert!(
-        !a.setup_classes.is_empty(),
-        "this tape must produce classes, or the assertions below are vacuous"
-    );
-    for c in &a.setup_classes {
-        assert!(
-            VOCAB.contains(&c.concentration_band),
-            "band token {:?} is outside the closed vocabulary",
-            c.concentration_band
-        );
-        assert_eq!(
-            c.concentration_band, "unknown",
-            "no mint on this tape reaches an Exact holder basis, so every class \
-             must REFUSE a band rather than be assigned one"
-        );
-    }
-
-    let j = a.to_canonical_json();
-    assert!(j.contains("\"concentration_band\":\"unknown\""));
-    for band in ["broad", "moderate", "concentrated", "extreme"] {
-        assert!(
-            !j.contains(&format!("\"concentration_band\":\"{band}\"")),
-            "the artifact invented the band {band} on a tape that measured none"
-        );
-    }
-}
-
 /// **The renderer can emit a band, and cannot invent one.** Built directly from
 /// rows rather than from the engine, because the point under test is the render
 /// contract: a `Known` band prints its name, a refusal prints `"unknown"`, and the
@@ -1063,41 +1001,4 @@ fn a_class_row_renders_a_known_band_and_a_refusal_as_unknown() {
     // …and the field is never `null`: it is a LABEL, and the refusal token is a
     // label too, so a consumer branches on one type rather than two.
     assert!(!j.contains("\"concentration_band\":null"));
-}
-
-/// **The nomination key names the band its evidence came from.** Two classes can
-/// share a signature and differ only in the float shape they were entered under;
-/// handing governance one key for both would let a §56 reviewer retire the wrong
-/// scope. The suffix is unconditional, `unknown` included, so the key has one shape.
-#[test]
-fn retirement_flag_keys_carry_the_band_the_evidence_came_from() {
-    const VOCAB: [&str; 5] = ["unknown", "broad", "moderate", "concentrated", "extreme"];
-
-    let mut e = drive(Config::dev_portable(), true);
-    let _ = e.report();
-    let flags = e.brain_analysis().retirement_flags;
-    let mut seen_setup_class = false;
-    for f in &flags {
-        if f.subject != FlagSubject::SetupClass {
-            continue;
-        }
-        seen_setup_class = true;
-        let (sig, band) = f
-            .key
-            .split_once('@')
-            .unwrap_or_else(|| panic!("setup-class key {} carries no band", f.key));
-        assert!(
-            sig.parse::<u128>().is_ok(),
-            "the key must still lead with the signature: {}",
-            f.key
-        );
-        assert!(VOCAB.contains(&band), "band token {band} is not vocabulary");
-        // The nomination itself is unchanged — the key is metadata for the
-        // reviewer, and a nomination still cannot become a retirement.
-        assert_eq!(f.as_nomination().n, f.n);
-    }
-    assert!(
-        seen_setup_class,
-        "this tape must nominate at least one setup class"
-    );
 }

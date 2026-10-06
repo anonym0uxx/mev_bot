@@ -38,9 +38,7 @@ use pump_quant_inference::{
     resolve_clip_at_fraction_bps, Completion, EntryVenue, InferenceClient, InferenceError,
 };
 
-use crate::freshness::{
-    check_freshness, DecisionClock, StalenessVeto, CHAMPION_MAX_DECISION_AGE_MS,
-};
+use crate::freshness::{check_freshness, DecisionClock, StalenessVeto};
 use crate::portfolio::{Admission, AdmissionRefusal, PortfolioCap};
 
 /// Anything that can answer a completion request — the live llama-server client, or a
@@ -116,7 +114,7 @@ pub struct EntryRequest<'a> {
 }
 
 /// What the authority concluded. `Buy` is the only variant that may move capital.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum EntryAuthority {
     /// The model chose to buy; the clip is what the account can actually pay.
     Buy {
@@ -127,6 +125,11 @@ pub enum EntryAuthority {
         tier: SizeTier,
         /// Lamports to deploy, after payability capping.
         clip_lamports: u64,
+        /// The model's own worst-price bound (BUY only), lamports per raw token. `None` when the
+        /// completion carried no `PRICE LIMIT` (68% of trained BUYs — optional, not required).
+        /// Carried intact so the execution sink can honour it via
+        /// `price_anchor::resolve_min_tokens_out`; never dropped.
+        price_limit: Option<f64>,
     },
     /// The model asked to watch the mint; no capital.
     Watch,
@@ -187,7 +190,23 @@ pub fn decide_entry<S: ModelSource + ?Sized>(
     req: &EntryRequest<'_>,
     ledger: &mut DriftLedger,
 ) -> EntryAuthority {
-    let completion = match source.complete_meta(req.system_prompt, req.user_prompt) {
+    resolve_entry(
+        source.complete_meta(req.system_prompt, req.user_prompt),
+        req,
+        ledger,
+    )
+}
+
+/// Judge a completion that has ALREADY been fetched (by a worker, off the engine thread). This is
+/// the whole of [`decide_entry`] after the network call: same freshness check, same contract
+/// parse, same portfolio / payability / impact vetoes -- so the async path cannot drift from the
+/// blocking one. Takes the transport result so a failed call is the same named `ModelUnreachable`.
+pub fn resolve_entry(
+    completion: Result<Completion, InferenceError>,
+    req: &EntryRequest<'_>,
+    ledger: &mut DriftLedger,
+) -> EntryAuthority {
+    let completion = match completion {
         Ok(c) => c,
         // Unreachable model: no trade. A retry cannot help — temperature 0 returns the same
         // answer — so this is terminal for the decision, not a loop.
@@ -303,6 +322,7 @@ pub fn decide_entry<S: ModelSource + ?Sized>(
                     EntryAuthority::Buy {
                         tier,
                         clip_lamports,
+                        price_limit: decision.price_limit,
                     }
                 }
                 Err(e) => EntryAuthority::NoTrade(NoTradeReason::UnpayableClip(e)),
@@ -326,6 +346,7 @@ pub fn decide_entry<S: ModelSource + ?Sized>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::freshness::CHAMPION_MAX_DECISION_AGE_MS;
     use std::collections::BTreeSet;
     use std::time::Duration;
 
@@ -422,7 +443,8 @@ mod tests {
             a,
             EntryAuthority::Buy {
                 tier: SizeTier::Full,
-                clip_lamports: 666_666_666
+                clip_lamports: 666_666_666,
+                price_limit: Some(0.02445740498411998),
             }
         );
         assert_eq!(l.accepted(), 1);
@@ -443,7 +465,8 @@ mod tests {
             a,
             EntryAuthority::Buy {
                 tier: SizeTier::Small,
-                clip_lamports: 416_666_666
+                clip_lamports: 416_666_666,
+                price_limit: Some(0.02),
             }
         );
         // And the fee buffer is respected: 0.30 SOL free is split three ways, so FULL gets
@@ -453,7 +476,8 @@ mod tests {
             a,
             EntryAuthority::Buy {
                 tier: SizeTier::Full,
-                clip_lamports: 100_000_000
+                clip_lamports: 100_000_000,
+                price_limit: Some(0.02445740498411998),
             }
         );
     }
@@ -543,7 +567,8 @@ price_lamports_per_raw_token=0.02445740498411998  ret_5s_bp=120  ret_30s_bp=0  v
             a,
             EntryAuthority::Buy {
                 tier: SizeTier::Small,
-                clip_lamports: 166_666_666
+                clip_lamports: 166_666_666,
+                price_limit: Some(0.02),
             },
             "SMALL must deploy SMALL even though the AMM rule would say FULL"
         );
@@ -620,7 +645,8 @@ price_lamports_per_raw_token=0.02445740498411998  ret_5s_bp=120  ret_30s_bp=0  v
             empty,
             EntryAuthority::Buy {
                 tier: SizeTier::Full,
-                clip_lamports: 666_666_666
+                clip_lamports: 666_666_666,
+                price_limit: Some(0.02445740498411998),
             }
         );
         // When cash genuinely cannot cover the slot, PAYABILITY caps the clip. That is a
@@ -631,7 +657,8 @@ price_lamports_per_raw_token=0.02445740498411998  ret_5s_bp=120  ret_30s_bp=0  v
             decide_entry(&Stub(BUY_FULL), &short, &mut l),
             EntryAuthority::Buy {
                 tier: SizeTier::Full,
-                clip_lamports: 450_000_000
+                clip_lamports: 450_000_000,
+                price_limit: Some(0.02445740498411998),
             },
             "the payable cap binds; the notional does not move"
         );
@@ -687,7 +714,8 @@ price_lamports_per_raw_token=0.02445740498411998  ret_5s_bp=120  ret_30s_bp=0  v
             a,
             EntryAuthority::Buy {
                 tier: SizeTier::Small,
-                clip_lamports: 10_833_333
+                clip_lamports: 10_833_333,
+                price_limit: Some(0.02),
             }
         );
     }
@@ -731,7 +759,8 @@ price_lamports_per_raw_token=0.02445740498411998  ret_5s_bp=120  ret_30s_bp=0  v
             a,
             EntryAuthority::Buy {
                 tier: SizeTier::Full,
-                clip_lamports: 333_333_333
+                clip_lamports: 333_333_333,
+                price_limit: Some(0.02445740498411998),
             }
         );
     }
@@ -852,10 +881,30 @@ pub fn decide_management<S: ModelSource + ?Sized>(
     req: &ManagementRequest<'_>,
     ledger: &mut DriftLedger,
 ) -> ManagementAuthority {
-    let completion = match source.complete(req.system_prompt, req.user_prompt) {
+    let completion = source
+        .complete(req.system_prompt, req.user_prompt)
+        .map(|text| Completion {
+            text,
+            finish_reason: None,
+        });
+    resolve_management(completion, req, ledger)
+}
+
+/// Judge a management completion that has ALREADY been fetched (by a worker, off the engine
+/// thread). Everything [`decide_management`] does after the network call: same freshness law,
+/// same contract parse, same fail-closed HOLD direction.
+pub fn resolve_management(
+    completion: Result<Completion, InferenceError>,
+    req: &ManagementRequest<'_>,
+    ledger: &mut DriftLedger,
+) -> ManagementAuthority {
+    let completion = match completion {
         Ok(c) => c,
         Err(_) => return ManagementAuthority::NoAction(ManagementNoAction::ModelUnreachable),
     };
+    if completion.truncated() {
+        ledger.record_truncated();
+    }
 
     // The same freshness law as the entry path, and it matters more here: a late EXIT holds
     // inventory past the premise's death, and a late ADD adds to a position on evidence that has
@@ -864,7 +913,7 @@ pub fn decide_management<S: ModelSource + ?Sized>(
         return ManagementAuthority::NoAction(ManagementNoAction::StaleDecision(veto));
     }
 
-    let decision: Decision = match parse_decision_payload(&completion) {
+    let decision: Decision = match parse_decision_payload(&completion.text) {
         Ok(d) => d,
         Err(e) => {
             ledger.record_error(&e);
@@ -922,6 +971,7 @@ pub fn decide_management<S: ModelSource + ?Sized>(
 mod management_tests {
     use super::tests::*;
     use super::*;
+    use crate::freshness::CHAMPION_MAX_DECISION_AGE_MS;
 
     pub(super) fn mreq() -> ManagementRequest<'static> {
         ManagementRequest {
@@ -994,6 +1044,7 @@ mod impact_veto_tests {
     //! The own-impact veto, WIRED into the authority: the bound that replaces a size clamp.
 
     use super::*;
+    use crate::freshness::CHAMPION_MAX_DECISION_AGE_MS;
     use crate::impact_cap::ImpactVeto;
     use pump_quant_inference::InferenceError;
     use std::collections::BTreeSet;
@@ -1065,7 +1116,8 @@ mod impact_veto_tests {
             ),
             EntryAuthority::Buy {
                 tier: SizeTier::Full,
-                clip_lamports: 666_666_666
+                clip_lamports: 666_666_666,
+                price_limit: Some(0.02445740498411998),
             }
         );
         let mut l3 = DriftLedger::new();
@@ -1077,7 +1129,8 @@ mod impact_veto_tests {
             ),
             EntryAuthority::Buy {
                 tier: SizeTier::Small,
-                clip_lamports: 166_666_666
+                clip_lamports: 166_666_666,
+                price_limit: Some(0.02),
             }
         );
     }

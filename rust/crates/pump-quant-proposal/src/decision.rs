@@ -431,11 +431,9 @@ impl DecisionBundle {
     /// this match to be revisited at compile time rather than silently unguarded.
     #[must_use]
     pub fn carried_families(&self) -> Vec<FieldFamily> {
-        let mut families = Vec::new();
         // The bundle always renders a LIVE FLOW STATE line: either the thirteen aggregates
         // or the `no_prior_flow` marker. Both are the trained c11 family.
-        families.push(FieldFamily::LiveFlowState);
-        families
+        vec![FieldFamily::LiveFlowState]
     }
 }
 

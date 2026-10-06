@@ -27,14 +27,45 @@ use pump_quant_evaluator::evaluator_state::LifecycleStage;
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
-/// Path to the promotion file written by pq-refiner.
+/// Path to the promotion file. Its appearance alone does NOT authorize a config
+/// change - see [`PROMOTION_APPROVAL_FILE`].
 pub const PROMOTION_FILE: &str = "data/CONFIG_PROMOTION.json";
 
-/// Path to the refiner binary (relative to the workspace target dir).
-const REFINER_BIN: &str = "pq-refiner";
+/// Operator approval file. Must contain the lowercase-hex SHA-256 of the exact bytes
+/// of [`PROMOTION_FILE`]. A promotion is applied ONLY when this file exists AND its
+/// digest matches, so the operator's action is bound to one specific config/version:
+/// a stale file, a file produced by anything else, or any post-approval edit is
+/// refused. The approval is ONE-USE: it is deleted when the promotion is consumed, so
+/// recreating the same bytes (or restarting, which resets the in-memory mtime guard) needs
+/// a fresh approval.
+///
+/// LIMIT - this is not authentication. A filesystem marker cannot distinguish the operator
+/// from any other process with write access to `data/`. What it does establish is that no
+/// code path in this daemon self-approves, that an approval must be created out-of-band and
+/// bound to the exact content, and that it is spent once. Real authentication would need an
+/// out-of-process signer/key the daemon verifies.
+///
+/// Approve with:
+/// `sha256sum data/CONFIG_PROMOTION.json | cut -d' ' -f1 > data/CONFIG_PROMOTION.approved`
+pub const PROMOTION_APPROVAL_FILE: &str = "data/CONFIG_PROMOTION.approved";
 
-/// Path to the refiner state file.
-const REFINER_STATE_FILE: &str = "data/evaluator_state.json";
+/// Lowercase-hex SHA-256 of `bytes`.
+#[must_use]
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(bytes);
+    let mut out = String::with_capacity(64);
+    for b in h.finalize() {
+        out.push_str(&format!("{b:02x}"));
+    }
+    out
+}
+
+/// Promotion-file mtime whose refusal was last logged, so an unapproved file sitting
+/// in place does not re-log every tick.
+static LAST_REFUSED_MTIME: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(u64::MAX);
 
 /// Path to the tape file.
 const TAPE_FILE: &str = "data/tape.jsonl";
@@ -139,14 +170,46 @@ pub fn try_reload_config(cfg: &mut Config, last_mtime: &mut Option<u64>) -> Relo
         }
     }
 
-    // Read and parse the promotion file
-    let content = match fs::read_to_string(path) {
-        Ok(s) => s,
+    // ── OPERATOR AUTHORIZATION GATE ───────────────────────────────────────
+    // File appearance alone must not authorize a config change. Apply only when
+    // `data/CONFIG_PROMOTION.approved` holds the SHA-256 of the exact promotion
+    // bytes, binding the operator's approval to this one config/version. Nothing
+    // the evaluation pipeline emits can satisfy this by itself.
+    let bytes = match fs::read(path) {
+        Ok(b) => b,
         Err(e) => {
             return ReloadResult {
                 applied: false,
                 n_mutations: 0,
                 summary: format!("read error: {e}"),
+            }
+        }
+    };
+    let digest = sha256_hex(&bytes);
+    let approved = fs::read_to_string(PROMOTION_APPROVAL_FILE)
+        .map(|s| s.trim().to_ascii_lowercase())
+        .unwrap_or_default();
+    if approved != digest {
+        if LAST_REFUSED_MTIME.swap(mtime, std::sync::atomic::Ordering::Relaxed) != mtime {
+            eprintln!(
+                "[autonomous-bridge] CONFIG HOT-RELOAD REFUSED: {PROMOTION_FILE} is not operator-approved \
+                 (approval {} ; promotion sha256={digest}). Approve with: sha256sum {PROMOTION_FILE} | cut -d' ' -f1 > {PROMOTION_APPROVAL_FILE}",
+                if approved.is_empty() { "<missing>".to_string() } else { approved }
+            );
+        }
+        return ReloadResult {
+            applied: false,
+            n_mutations: 0,
+            summary: "refused: not operator-approved".to_string(),
+        };
+    }
+    let content = match String::from_utf8(bytes) {
+        Ok(s) => s,
+        Err(_) => {
+            return ReloadResult {
+                applied: false,
+                n_mutations: 0,
+                summary: "promotion file is not valid UTF-8".to_string(),
             }
         }
     };
@@ -158,7 +221,7 @@ pub fn try_reload_config(cfg: &mut Config, last_mtime: &mut Option<u64>) -> Relo
     // width) that the per-mutation apply() cannot detect because each apply()
     // only sees one key at a time.
     let mut snapshot = *cfg;
-    let mut snapshot_ok = true;
+    let snapshot_ok = true;
     let mut mutations_applied = 0usize;
     let mut summary_parts: Vec<String> = Vec::new();
     let mut apply_errors: Vec<String> = Vec::new();
@@ -183,7 +246,11 @@ pub fn try_reload_config(cfg: &mut Config, last_mtime: &mut Option<u64>) -> Relo
     ) {
         match snapshot.apply(name, to_val) {
             Ok(()) => {
-                *mutations_applied += 1;
+                #[allow(clippy::arithmetic_side_effects)]
+                // LINT-ALLOW(hot_arith,hot_cast): u64 counter
+                {
+                    *mutations_applied += 1;
+                }
                 summary_parts.push(format!("{name}={to_val}"));
             }
             Err(e) => {
@@ -258,8 +325,10 @@ pub fn try_reload_config(cfg: &mut Config, last_mtime: &mut Option<u64>) -> Relo
             eprintln!(
                 "[autonomous-bridge] CONFIG HOT-RELOAD REJECTED: validate() failed after {mutations_applied} mutations: {e}"
             );
-            // Delete the promotion file so we don't re-reject it forever.
+            // Consume BOTH files: the approval authorised exactly one application
+            // ATTEMPT, and this attempt is spent (see the one-use note above).
             let _ = fs::remove_file(path);
+            let _ = fs::remove_file(PROMOTION_APPROVAL_FILE);
             *last_mtime = Some(mtime);
             return ReloadResult {
                 applied: false,
@@ -275,8 +344,13 @@ pub fn try_reload_config(cfg: &mut Config, last_mtime: &mut Option<u64>) -> Relo
     // ── Commit: validation passed, copy snapshot into live config ─────────
     *cfg = snapshot;
 
-    // Delete the promotion file so we don't re-apply it
+    // Consume BOTH files. Deleting only the promotion file would leave the approval on
+    // disk, and a digest binds CONTENT, not a single use: recreating the identical bytes
+    // (or restarting the daemon, which resets the in-memory `last_mtime`) would then let
+    // the OLD approval authorise a second application. Deleting the approval makes it
+    // one-use - a replay needs a fresh operator approval.
     let _ = fs::remove_file(path);
+    let _ = fs::remove_file(PROMOTION_APPROVAL_FILE);
 
     *last_mtime = Some(mtime);
 
@@ -290,6 +364,7 @@ pub fn try_reload_config(cfg: &mut Config, last_mtime: &mut Option<u64>) -> Relo
 /// Extract a string value for a given key from a JSON fragment.
 /// Finds the LAST occurrence of `"key"` then reads the string after the
 /// colon that follows it. This handles lines with multiple key-value pairs.
+#[allow(clippy::arithmetic_side_effects)] // LINT-ALLOW(hot_arith,hot_cast): offsets from find()?, bounded by len
 fn extract_json_string(token: &str, key: &str) -> Option<String> {
     let needle = format!("\"{key}\"");
     let key_pos = token.rfind(&needle)?;
@@ -306,6 +381,7 @@ fn extract_json_string(token: &str, key: &str) -> Option<String> {
 /// Extract an i64 value for a given key from a JSON fragment.
 /// Finds the LAST occurrence of `"key"` then parses the number after the
 /// colon that follows it.
+#[allow(clippy::arithmetic_side_effects)] // LINT-ALLOW(hot_arith,hot_cast): offsets from find()?, bounded by len
 fn extract_json_i64(token: &str, key: &str) -> Option<i64> {
     let needle = format!("\"{key}\"");
     let key_pos = token.rfind(&needle)?;
@@ -373,11 +449,17 @@ impl DefenseState {
     }
 
     /// Update drawdown tracking from the current net realized P&L.
+    /// `peak_net_lamports` is the running maximum, so `peak >= net` and the drop is
+    /// non-negative. Both are cumulative realized-P&L aggregates in lamports; the
+    /// magnitude bound is a PRACTICAL domain bound (any real account's realized P&L is
+    /// far below i64::MAX lamports), not a type proof. `saturating_sub` makes the
+    /// subtraction type-safe regardless; if it ever saturated it would err toward a
+    /// LARGER drawdown, i.e. an earlier circuit-breaker trip (fail-safe).
     pub fn update_drawdown(&mut self, net_realized_lamports: i64) {
         if net_realized_lamports > self.peak_net_lamports {
             self.peak_net_lamports = net_realized_lamports;
         }
-        let dd = self.peak_net_lamports - net_realized_lamports;
+        let dd = self.peak_net_lamports.saturating_sub(net_realized_lamports);
         if dd > self.max_dd_lamports {
             self.max_dd_lamports = dd;
         }
@@ -391,7 +473,7 @@ impl DefenseState {
             &self.cliff_config,
             &self.breaker_state,
             &self.kill_switch,
-            self.stage.clone(),
+            self.stage,
         )
     }
 
@@ -596,7 +678,7 @@ pub fn spawn_refiner_cycle(config_text: &str) -> Result<String, String> {
 // pre-promotion rate, not just "slightly less profitable".
 
 /// State tracked for auto-revert decisions.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct AutoRevertState {
     /// Config fingerprint of the config that was promoted (the "new" config).
     pub promoted_fingerprint: u64,
@@ -611,19 +693,6 @@ pub struct AutoRevertState {
     pub trades_at_promotion: u64,
     /// Whether auto-revert has triggered for this promotion.
     pub reverted: bool,
-}
-
-impl Default for AutoRevertState {
-    fn default() -> Self {
-        Self {
-            promoted_fingerprint: 0,
-            prior_champion_fingerprint: 0,
-            pnl_at_promotion: 0,
-            ticks_since_promotion: 0,
-            trades_at_promotion: 0,
-            reverted: false,
-        }
-    }
 }
 
 /// Minimum trades before auto-revert evaluates post-promotion PnL.
@@ -676,6 +745,7 @@ pub fn write_auto_revert_state(state: &AutoRevertState) {
 /// Read the auto-revert state from disk. Returns None if the file doesn't
 /// exist or can't be parsed. Backward-compatible: if trades_at_promotion is
 /// missing (schema v1), defaults to 0.
+#[allow(clippy::arithmetic_side_effects)] // LINT-ALLOW(hot_arith,hot_cast): offset find()+len bounded
 pub fn read_auto_revert_state() -> Option<AutoRevertState> {
     let text = fs::read_to_string(AUTO_REVERT_STATE_FILE).ok()?;
     // Simple field extraction — no JSON parser in this crate's deps.
@@ -683,7 +753,7 @@ pub fn read_auto_revert_state() -> Option<AutoRevertState> {
         let needle = format!("\"{key}\":");
         let start = text.find(&needle)? + needle.len();
         let rest = &text[start..];
-        let end = rest.find(|c: char| c == ',' || c == '}')?;
+        let end = rest.find([',', '}'])?;
         Some(rest[..end].trim().to_string())
     };
     Some(AutoRevertState {
@@ -743,11 +813,15 @@ pub fn check_auto_revert(
 
     // Compute the variance-based threshold: max(FLOOR, k × σ × √n)
     let n = trades_since_promotion as f64;
+    #[allow(clippy::cast_possible_truncation)]
+    // LINT-ALLOW(hot_cast): f64 product then `as i128` saturates/truncates by design (variance threshold)
     let dynamic_threshold =
         (AUTO_REVERT_CONFIDENCE_K * AUTO_REVERT_PER_TRADE_SIGMA_LAMPORTS * n.sqrt()) as i128;
     let threshold = AUTO_REVERT_DRAWDOWN_FLOOR_LAMPORTS.max(dynamic_threshold);
 
     // Check deterioration: has PnL dropped below the threshold?
+    #[allow(clippy::arithmetic_side_effects)]
+    // LINT-ALLOW(hot_arith,hot_cast): i128 money diff; overflow needs ~i128::MAX
     let drawdown = state.pnl_at_promotion - current_cumulative_pnl;
     if drawdown > threshold {
         eprintln!(
@@ -831,7 +905,6 @@ fn archive_champion_config() {
     let _ = fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .write(true)
         .open(&manifest_path)
         .and_then(|mut f| {
             use std::io::Write;
@@ -963,6 +1036,111 @@ mod tests {
         assert_eq!(extract_json_i64(token, "to"), Some(60));
     }
 
+    /// Write the operator approval matching `content`.
+    fn approve(content: &str) {
+        let _ = fs::create_dir_all(Path::new("data"));
+        let _ = fs::write(PROMOTION_APPROVAL_FILE, sha256_hex(content.as_bytes()));
+    }
+
+    /// File appearance alone must NOT authorize a config change.
+    #[test]
+    fn test_reload_refuses_without_operator_approval() {
+        let _lock = promotion_lock();
+        let _ = fs::create_dir_all(Path::new("data"));
+        let _ = fs::remove_file(PROMOTION_FILE);
+        let _ = fs::remove_file(PROMOTION_APPROVAL_FILE);
+        let promotion_content = r#"{
+  "challenger_id": "unapproved",
+  "mutations": [
+    {"name": "gate_margin_bps", "from": 50, "to": 55}
+  ],
+  "verdict": "defeats",
+  "gate_verdict": "G1:pass",
+  "status": "READY_FOR_CONFIG_UPDATE"
+}"#;
+        let _ = fs::write(PROMOTION_FILE, promotion_content);
+        let mut cfg = Config::dev_portable().with_mcap_band();
+        let before = cfg.gate_margin_bps;
+
+        let mut last_mtime = None;
+        let r1 = try_reload_config(&mut cfg, &mut last_mtime);
+        assert!(!r1.applied, "an unapproved promotion must not apply");
+        assert_eq!(cfg.gate_margin_bps, before, "config must be untouched");
+        assert!(
+            Path::new(PROMOTION_FILE).exists(),
+            "an unapproved file must NOT be consumed"
+        );
+
+        // A present-but-wrong approval digest is refused as well.
+        let _ = fs::write(PROMOTION_APPROVAL_FILE, "deadbeef");
+        let r2 = try_reload_config(&mut cfg, &mut last_mtime);
+        assert!(!r2.applied);
+        assert_eq!(cfg.gate_margin_bps, before);
+
+        // Only the matching approval for THIS content authorizes it.
+        approve(promotion_content);
+        let r3 = try_reload_config(&mut cfg, &mut last_mtime);
+        assert!(r3.applied, "a matching operator approval applies");
+        assert_eq!(cfg.gate_margin_bps, 55);
+        let _ = fs::remove_file(PROMOTION_APPROVAL_FILE);
+    }
+
+    /// One-use approval. After an approved promotion is applied, recreating the IDENTICAL
+    /// bytes must NOT be authorised by the old approval - neither in the same process nor
+    /// after a restart (where `last_mtime` is fresh and the mtime guard is bypassed, so the
+    /// approval gate is the ONLY defence).
+    #[test]
+    fn an_old_approval_cannot_authorise_a_replay_of_the_same_content() {
+        let _lock = promotion_lock();
+        let _ = fs::create_dir_all(Path::new("data"));
+        let _ = fs::remove_file(PROMOTION_FILE);
+        let _ = fs::remove_file(PROMOTION_APPROVAL_FILE);
+        let content = r#"{
+  "challenger_id": "replay_probe",
+  "mutations": [
+    {"name": "gate_margin_bps", "from": 50, "to": 55}
+  ],
+  "verdict": "defeats",
+  "gate_verdict": "G1:pass",
+  "status": "READY_FOR_CONFIG_UPDATE"
+}"#;
+        let _ = fs::write(PROMOTION_FILE, content);
+        approve(content);
+
+        let mut cfg = Config::dev_portable().with_mcap_band();
+        let mut lm = None;
+        let r1 = try_reload_config(&mut cfg, &mut lm);
+        assert!(r1.applied, "the approved promotion applies once");
+        assert_eq!(cfg.gate_margin_bps, 55);
+        assert!(
+            !Path::new(PROMOTION_APPROVAL_FILE).exists(),
+            "the approval must be CONSUMED on apply, not merely the promotion file"
+        );
+
+        // Recreate the IDENTICAL bytes with NO new approval.
+        let _ = fs::write(PROMOTION_FILE, content);
+        let r2 = try_reload_config(&mut cfg, &mut lm);
+        assert!(!r2.applied, "same-process replay must be refused");
+
+        // RESTART: fresh last_mtime (the mtime guard is bypassed), same on-disk state.
+        let mut cfg2 = Config::dev_portable().with_mcap_band();
+        let mut lm2 = None;
+        let r3 = try_reload_config(&mut cfg2, &mut lm2);
+        assert!(!r3.applied, "post-restart replay must be refused");
+        assert_ne!(
+            cfg2.gate_margin_bps, 55,
+            "config must be untouched after restart"
+        );
+        assert!(
+            r3.summary.contains("approved"),
+            "refusal must name the missing approval, got: {}",
+            r3.summary
+        );
+
+        let _ = fs::remove_file(PROMOTION_FILE);
+        let _ = fs::remove_file(PROMOTION_APPROVAL_FILE);
+    }
+
     #[test]
     fn test_reload_no_file() {
         // S1: Serialize against other promotion-file tests.
@@ -1004,6 +1182,7 @@ mod tests {
   "status": "READY_FOR_CONFIG_UPDATE"
 }"#;
         let _ = fs::write(PROMOTION_FILE, promotion_content);
+        approve(promotion_content);
 
         let mut cfg = Config::dev_portable().with_mcap_band();
         let original_margin = cfg.gate_margin_bps;
@@ -1046,6 +1225,7 @@ mod tests {
   "status": "READY_FOR_CONFIG_UPDATE"
 }"#;
         let _ = fs::write(PROMOTION_FILE, promotion_content);
+        approve(promotion_content);
 
         let mut cfg = Config::dev_portable().with_mcap_band();
         let original_floor = cfg.reflect_weight_floor_bp;
@@ -1092,6 +1272,7 @@ mod tests {
   "status": "READY_FOR_CONFIG_UPDATE"
 }"#;
         let _ = fs::write(PROMOTION_FILE, promotion_content);
+        approve(promotion_content);
 
         let mut cfg = Config::dev_portable().with_mcap_band();
 

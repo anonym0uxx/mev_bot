@@ -41,8 +41,10 @@ pub enum PriceLimitError {
     /// Non-finite, zero or negative. The parser already refuses these on the live path; this is
     /// the same guard for any caller that did not.
     Unusable,
-    /// `size / limit` is larger than a `u64` token count can express — an absurdly small limit
-    /// (a price of a fraction of a lamport per raw token). Refused rather than wrapped.
+    /// `size / limit` exceeds `u64::MAX` tokens — a limit many orders of magnitude BELOW a
+    /// lamport per raw token (for a ~0.67 SOL size, below ~3.6e-11 lamports/token). It is NOT
+    /// "fractional": a merely sub-lamport limit like `0.5` (or the corpus's `0.02445740498`)
+    /// yields a finite, ordinary count and is accepted. Refused rather than wrapped.
     Overflow,
     /// The count rounds to zero. A `min_tokens_out` of zero is not a bound at all.
     RoundsToZero,
@@ -114,6 +116,50 @@ mod tests {
         assert!(
             one_fewer > limit,
             "one fewer token ({one_fewer}) would break the limit — the count is not minimal"
+        );
+    }
+
+    /// Sub-lamport *fractional* limits are the NORMAL case on the bonding curve — not an
+    /// overflow. Overflow is a distinct, far-away condition (`size/limit` exceeding `u64::MAX`,
+    /// below ~3.6e-11 lamports/token for a 0.667-SOL size), many orders of magnitude under any
+    /// realistic price.
+    #[test]
+    fn a_sub_lamport_fractional_limit_is_valid_the_overflow_is_far_lower() {
+        let size = 666_666_666u64; // 0.667 SOL
+                                   // 0.5 lamports/token -> 2x raw tokens. Accepted, exact.
+        assert_eq!(
+            min_tokens_from_price_limit(size, 0.5).unwrap(),
+            1_333_333_332
+        );
+        // 0.25 -> 4x. Both are exact powers of two, so the division+ceil is deterministic.
+        assert_eq!(
+            min_tokens_from_price_limit(size, 0.25).unwrap(),
+            2_666_666_664
+        );
+        // The corpus price itself (already pinned in the anchor test).
+        assert_eq!(
+            min_tokens_from_price_limit(size, 0.02445740498411998).unwrap(),
+            27_258_274_802
+        );
+        // A tiny-but-valid limit still resolves to a finite u64 count near the boundary, and
+        // the bound holds in the right direction.
+        let v = min_tokens_from_price_limit(size, 1e-9).unwrap();
+        assert!(
+            v > 1_000_000_000_000,
+            "1e-9 lamports/token for 0.667 SOL is ~6.7e17 tokens"
+        );
+        assert!(
+            (size as f64 / v as f64) <= 1e-9,
+            "achieved price must not exceed the limit"
+        );
+        // The overflow threshold is size/u64::MAX ≈ 3.6e-11, NOT "below one lamport".
+        assert_eq!(
+            min_tokens_from_price_limit(size, 1e-12),
+            Err(PriceLimitError::Overflow)
+        );
+        assert_eq!(
+            min_tokens_from_price_limit(size, 1e-20),
+            Err(PriceLimitError::Overflow)
         );
     }
 

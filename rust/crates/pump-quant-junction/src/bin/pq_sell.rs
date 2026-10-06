@@ -87,8 +87,8 @@ fn main() -> ExitCode {
     for line in creds.lines() {
         if let Some(v) = line.strip_prefix("HELIUS_WS_URL=") {
             let v = v.trim();
-            if v.starts_with("wss://") {
-                helius_rpc_url = format!("https://{}", &v[6..]);
+            if let Some(rest) = v.strip_prefix("wss://") {
+                helius_rpc_url = format!("https://{rest}");
             } else if v.starts_with("https://") {
                 helius_rpc_url = v.to_string();
             }
@@ -281,7 +281,7 @@ fn main() -> ExitCode {
 fn encode_base58_64(sig: &[u8; 64]) -> String {
     const B58: &[u8; 58] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
     // Copy into a mutable buffer so we can consume it digit-by-digit.
-    let mut buf = *sig;
+    let buf = *sig;
     // Count leading zero bytes → leading '1' chars.
     let leading_zeros = buf.iter().take_while(|&&b| b == 0).count();
     // Build digits in big-endian base-58.

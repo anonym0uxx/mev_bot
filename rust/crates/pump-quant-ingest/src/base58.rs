@@ -48,6 +48,33 @@ pub fn decode(s: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
+/// Encode bytes as base58 (Bitcoin / Solana alphabet): the exact inverse of [`decode`], including
+/// leading zero bytes as leading `'1'`s. Used to render a mint the way the corpus prints it.
+#[must_use]
+pub fn encode(bytes: &[u8]) -> String {
+    let zeros = bytes.iter().take_while(|&&b| b == 0).count();
+    // Base-58 digits, least significant first.
+    let mut digits: Vec<u8> = Vec::new();
+    for &b in &bytes[zeros..] {
+        let mut carry = u32::from(b);
+        for d in &mut digits {
+            let x = u32::from(*d) * 256 + carry;
+            *d = (x % 58) as u8;
+            carry = x / 58;
+        }
+        while carry > 0 {
+            digits.push((carry % 58) as u8);
+            carry /= 58;
+        }
+    }
+    let mut out = String::with_capacity(zeros + digits.len());
+    out.extend(std::iter::repeat_n('1', zeros));
+    for &d in digits.iter().rev() {
+        out.push(ALPHABET[d as usize] as char);
+    }
+    out
+}
+
 /// Decode a base58 string that must be exactly 32 bytes (a Solana pubkey/mint).
 /// Returns `None` on decode error or wrong length — same contract as the
 /// legacy `decode_pubkey`.
@@ -72,4 +99,21 @@ pub fn decode_signature(s: &str) -> Option<[u8; 64]> {
     let mut arr = [0u8; 64];
     arr.copy_from_slice(&v);
     Some(arr)
+}
+
+#[cfg(test)]
+mod encode_tests {
+    #[test]
+    fn encode_is_the_inverse_of_decode_including_zero_prefixes() {
+        for s in [
+            "11111111111111111111111111111111",
+            "8kHikWnr5jsKXEJoruR9omqwXskmKTmW6RuSabzLpump",
+            "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+        ] {
+            let b = super::decode(s).expect("decodes");
+            assert_eq!(super::encode(&b), s);
+        }
+        assert_eq!(super::encode(&[]), "");
+        assert_eq!(super::encode(&[0, 0, 1]), "112");
+    }
 }

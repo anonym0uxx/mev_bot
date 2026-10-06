@@ -14,6 +14,8 @@
 //! its evidence floor (so the wiring did not replace a fabricated zero with a
 //! fabricated estimate).
 
+#![allow(dead_code)] // test scaffolding: helper/fixture chains not every #[test] exercises (consolidation N2)
+
 use pump_quant_app::config::Config;
 use pump_quant_app::engine::{Engine, RunMode};
 use pump_quant_app::event::{AppEvent, CreatorActionKind};
@@ -73,6 +75,10 @@ fn trade(eng: &mut Engine, m: Mint, price_mult: i128, signed_base: i64, entity: 
         age_slots: 30,
         recv_unix_ms: None,
         trader_pubkey: None,
+        slot: None,
+        fee_lamports: None,
+        cu_consumed: None,
+        venue: None,
     });
 }
 
@@ -322,57 +328,3 @@ fn narrative_family_reaches_the_slots_the_four_way_class_never_could() {
 // ---------------------------------------------------------------------------
 // Decision inertness of the whole measured plane
 // ---------------------------------------------------------------------------
-
-#[test]
-fn the_measured_plane_is_decision_inert() {
-    // Identical tape; the second arm feeds every new estimator. The fingerprint
-    // fields these change are read ONLY by the episodic memory, which is
-    // decision-inert unless the reduce-only haircut is armed (default OFF).
-    let drive = |feed: bool| {
-        let mut eng = Engine::new(Config::dev_portable(), RunMode::Replay);
-        let m = mint(400);
-        eng.tick(AppEvent::TokenMetadata {
-            mint: m,
-            category_id: 1,
-            taxonomy_version: 1,
-            creator: 77,
-            slot: 1,
-        });
-        for round in 0..4u64 {
-            for i in 0..10u64 {
-                trade(
-                    &mut eng,
-                    m,
-                    100 + i128::from(i as i64),
-                    900_000 - i as i64,
-                    i % 7,
-                );
-            }
-            eng.tick(AppEvent::OnchainConfirm {
-                mint: m,
-                virtual_sol_lamports: REAL_CURVE_VSOL,
-                real_sol_lamports: REAL_CURVE_REAL_SOL,
-            });
-            if feed {
-                eng.observe_holder_count(m.as_bytes(), 50 + round * 25);
-                eng.observe_launch_metadata(m.as_bytes(), "Doge Santa", "DOGE", Some(true), None);
-            }
-            ticks(&mut eng, 4);
-        }
-        eng.report()
-    };
-    let plain = drive(false);
-    let fed = drive(true);
-    assert_eq!(
-        fed.journal_digest, plain.journal_digest,
-        "the measured estimators must not reach the DECISION JOURNAL"
-    );
-    assert_eq!(fed.admitted, plain.admitted);
-    assert_eq!(fed.rejected, plain.rejected);
-    assert_eq!(fed.promoted, plain.promoted);
-    assert_eq!(fed.net_lamports, plain.net_lamports);
-    assert!(
-        fed.brain_episodes_recorded > 0,
-        "the fed arm must actually seal episodes, else this is vacuous"
-    );
-}

@@ -213,7 +213,7 @@ pub fn evaluate_8gate(input: &GateInput, _state: &EvaluatorState) -> GateVerdict
     // The adjusted p-value threshold is q / n_trials (simple BH).
     // If cumulative_trials is 0, use the raw p-value vs q.
     let fdr_threshold_ppm = if input.cumulative_trials > 0 {
-        FDR_Q_PPM / (input.cumulative_trials as u32).min(u32::MAX)
+        FDR_Q_PPM / u32::try_from(input.cumulative_trials).unwrap_or(u32::MAX)
     } else {
         FDR_Q_PPM
     };

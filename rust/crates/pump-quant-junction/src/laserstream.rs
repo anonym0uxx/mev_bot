@@ -24,7 +24,7 @@
 
 #![warn(
     clippy::all,
-    clippy::integer_arithmetic,
+    clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation
 )]
 
@@ -81,6 +81,206 @@ pub struct LaserStreamTx {
     /// are keyed on. It is carried, never re-derived: a local clock would be a different
     /// quantity, and the engine's logical tick is not a wall clock at all.
     pub recv_unix_ms: Option<i64>,
+    /// TOTAL transaction fee in lamports (`meta.fee`: 5000/signature base + priority fee), a
+    /// TRANSACTION-level quantity. `None` when the wire line does not carry it — never `0`, which
+    /// would be a fabricated "free transaction". Same quantity as the corpus tape `fee_lamports`.
+    pub fee_lamports: Option<u64>,
+    /// Compute units CONSUMED (`meta.compute_units_consumed`), not requested/limit. `None` when
+    /// absent. Same quantity as the corpus tape `cu_consumed`.
+    pub cu_consumed: Option<u64>,
+}
+
+/// pump.fun `create` instruction discriminator (`sha256("global:create")[..8]`).
+pub const PUMP_CREATE_DISCRIMINATOR: [u8; 8] = [24, 30, 200, 40, 5, 28, 7, 119];
+/// pump.fun `create_v2` instruction discriminator (`sha256("global:create_v2")[..8]`).
+pub const PUMP_CREATE_V2_DISCRIMINATOR: [u8; 8] = [214, 144, 76, 236, 95, 139, 49, 180];
+
+/// The facts of one decoded, canonical-pool PumpSwap swap. All amounts are raw on-chain units.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AmmSwapFacts {
+    /// The token mint (base side of the canonical pool).
+    pub mint: [u8; 32],
+    /// The pool the swap executed in; equals the PDA derived from `mint`.
+    pub pool: [u8; 32],
+    /// Pool base (token) vault balance BEFORE the swap.
+    pub token_reserve_pre: u64,
+    /// Pool quote (WSOL) vault balance BEFORE the swap, lamports.
+    pub quote_reserve_pre: u64,
+    /// lp + protocol + creator fee rate, basis points; `None` if the creator-fee tail is absent.
+    pub fee_bps: Option<u32>,
+    /// (lp, protocol, creator) bps separately.
+    pub fee_parts: Option<(u32, u32, u32)>,
+    /// `Pool::virtual_quote_reserves` from the event; `None` when the layout is unverified.
+    pub virtual_quote: Option<u64>,
+    /// The trader bought the token.
+    pub is_buy: bool,
+    /// Tokens received (buy) / given (sell).
+    pub token_amount: u64,
+    /// Quote paid with all fees (buy) / received net of fees (sell), lamports.
+    pub quote_lamports: u64,
+    /// The trader wallet.
+    pub trader: [u8; 32],
+    /// `pool == canonical_pool_for(mint)` AND the quote account is WSOL. Reserve/amount fields are
+    /// token-oriented ONLY when this is true; otherwise the swap is counted, never used.
+    pub canonical: bool,
+    /// The pool's quote account (instruction account 4) is WSOL.
+    pub quote_is_wsol: bool,
+}
+
+/// WSOL mint, raw bytes.
+const WSOL_MINT_BYTES: [u8; 32] = [
+    6, 155, 136, 87, 254, 171, 129, 132, 251, 104, 127, 99, 70, 24, 192, 53, 218, 196, 57, 220, 26,
+    235, 59, 85, 152, 160, 240, 0, 0, 0, 0, 1,
+];
+
+/// The canonical pump.fun-migration PumpSwap pool for `mint`: the `pool` PDA of index 0, creator =
+/// the `pool-authority` PDA of the pump.fun program, base = `mint`, quote = WSOL. (Verified against
+/// 415 of 420 `pump`-suffix mints of the captured AMM history; the rest are other-index pools.)
+#[must_use]
+pub fn canonical_pool_for(mint: &[u8; 32]) -> [u8; 32] {
+    use solana_program::pubkey::Pubkey;
+    let pump = Pubkey::new_from_array(PUMP_FUN_PROGRAM);
+    let amm = Pubkey::new_from_array(PUMP_SWAP_PROGRAM);
+    let (authority, _) = Pubkey::find_program_address(&[b"pool-authority", mint], &pump);
+    let (pool, _) = Pubkey::find_program_address(
+        &[
+            b"pool",
+            &0u16.to_le_bytes(),
+            authority.as_ref(),
+            mint,
+            &WSOL_MINT_BYTES,
+        ],
+        &amm,
+    );
+    pool.to_bytes()
+}
+
+/// Decode every PumpSwap Buy/Sell event CPI in `tx`, resolving the mint from the pool's own swap
+/// instruction and checking it against the canonical-pool derivation. Returns the facts plus the
+/// number of events whose swap instruction was not in the transaction (unresolvable, counted).
+#[must_use]
+pub fn decode_amm_swaps(tx: &LaserStreamTx) -> (Vec<AmmSwapFacts>, u32) {
+    use pump_quant_protocol::pumpswap_event::{decode_pumpswap_event, PumpSwapEvent};
+    let mut out = Vec::new();
+    let mut excluded = 0u32;
+    for ix in &tx.instructions {
+        if ix.program_id != PUMP_SWAP_PROGRAM {
+            continue;
+        }
+        let Some(ev) = decode_pumpswap_event(&ix.data) else {
+            continue;
+        };
+        let (pool, user, buy, tok_res, quote_res, tok_amt, quote_amt, lp, prot, creator, vq) =
+            match ev {
+                PumpSwapEvent::Buy(b) => (
+                    b.pool,
+                    b.user,
+                    true,
+                    b.pool_base_token_reserves,
+                    b.pool_quote_token_reserves,
+                    b.base_amount_out,
+                    b.user_quote_amount_in,
+                    b.lp_fee_basis_points,
+                    b.protocol_fee_basis_points,
+                    b.coin_creator_fee_basis_points,
+                    b.virtual_quote_reserves,
+                ),
+                PumpSwapEvent::Sell(s) => (
+                    s.pool,
+                    s.user,
+                    false,
+                    s.pool_base_token_reserves,
+                    s.pool_quote_token_reserves,
+                    s.base_amount_in,
+                    s.user_quote_amount_out,
+                    s.lp_fee_basis_points,
+                    s.protocol_fee_basis_points,
+                    s.coin_creator_fee_basis_points,
+                    s.virtual_quote_reserves,
+                ),
+                PumpSwapEvent::CreatePool(_) => continue,
+            };
+        // The swap instruction naming this pool carries the mints at accounts [3] (base) and [4]
+        // (quote). The mint is the non-WSOL one; `canonical` additionally requires the pool to be
+        // the PDA derived for that mint with WSOL as QUOTE (so reversed / USDC / other-index pools
+        // are never mistaken for the migration pool).
+        // ASSOCIATION GUARD: an event carries its pool but no instruction index. If more than one
+        // swap instruction in this transaction names the same pool (or the transaction holds more
+        // than one swap event for it), which event belongs to which instruction is ambiguous, so
+        // the event is EXCLUDED and counted. Another instruction's economics are never attached.
+        let swap_ixs_on_pool = tx
+            .instructions
+            .iter()
+            .filter(|sib| {
+                sib.program_id == PUMP_SWAP_PROGRAM
+                    && sib.data.get(0..8)
+                        != Some(&[0xe4, 0x45, 0xa5, 0x2e, 0x51, 0xcb, 0x9a, 0x1d][..])
+                    && account_key_at(sib, tx, 0) == Some(pool)
+            })
+            .count();
+        if swap_ixs_on_pool > 1 {
+            #[allow(clippy::arithmetic_side_effects)]
+            // LINT-ALLOW(hot_arith,hot_cast): u64 excluded counter ×2
+            {
+                excluded += 1;
+            }
+            continue;
+        }
+        let mut found: Option<([u8; 32], bool, bool)> = None;
+        for sib in &tx.instructions {
+            if sib.program_id != PUMP_SWAP_PROGRAM
+                || sib.data.get(0..8) == Some(&[0xe4, 0x45, 0xa5, 0x2e, 0x51, 0xcb, 0x9a, 0x1d][..])
+            {
+                continue;
+            }
+            if account_key_at(sib, tx, 0) != Some(pool) {
+                continue;
+            }
+            if let (Some(base), Some(quote)) =
+                (account_key_at(sib, tx, 3), account_key_at(sib, tx, 4))
+            {
+                let token = if base != WSOL_MINT_BYTES { base } else { quote };
+                let quote_is_wsol = quote == WSOL_MINT_BYTES;
+                found = Some((
+                    token,
+                    quote_is_wsol,
+                    quote_is_wsol && canonical_pool_for(&token) == pool,
+                ));
+                break;
+            }
+        }
+        let Some((mint, quote_is_wsol, canonical)) = found else {
+            #[allow(clippy::arithmetic_side_effects)]
+            // LINT-ALLOW(hot_arith,hot_cast): u64 excluded counter ×2
+            {
+                excluded += 1;
+            }
+            continue;
+        };
+        out.push(AmmSwapFacts {
+            mint,
+            pool,
+            token_reserve_pre: tok_res,
+            quote_reserve_pre: quote_res,
+            fee_bps: creator
+                .and_then(|c| u32::try_from(lp.checked_add(prot)?.checked_add(c)?).ok()),
+            fee_parts: creator.and_then(|c| {
+                Some((
+                    u32::try_from(lp).ok()?,
+                    u32::try_from(prot).ok()?,
+                    u32::try_from(c).ok()?,
+                ))
+            }),
+            virtual_quote: vq,
+            is_buy: buy,
+            token_amount: tok_amt,
+            quote_lamports: quote_amt,
+            trader: user,
+            canonical,
+            quote_is_wsol,
+        });
+    }
+    (out, excluded)
 }
 
 /// Classification of a pump.fun instruction found in a LaserStream transaction.
@@ -128,6 +328,13 @@ pub enum PumpInstruction {
     CreatePool { pool: [u8; 32], base_mint: [u8; 32] },
     /// pump.fun → PumpSwap migration.
     Migrate { mint: [u8; 32] },
+    /// A PumpSwap swap decoded from the pool's event CPI, oriented to the TOKEN and bound to its
+    /// canonical pool by PDA derivation. Never constructed for a reversed, non-WSOL-quoted or
+    AmmSwap(AmmSwapFacts),
+    /// pump.fun token launch (`create` / `create_v2`). `creator` is the TRANSACTION SIGNER
+    /// (account key 0), verified against 29 of 30 sampled corpus launches: instruction account
+    /// [1] is NOT the creator on `create_v2`.
+    Launch { mint: [u8; 32], creator: [u8; 32] },
 }
 
 /// Decode a LaserStream transaction into classified pump.fun instructions.
@@ -161,6 +368,17 @@ pub fn classify_pump_instructions(tx: &LaserStreamTx) -> Vec<PumpInstruction> {
                             min_tokens,
                             buyer,
                         });
+                    }
+                } else if (disc == PUMP_CREATE_DISCRIMINATOR
+                    || disc == PUMP_CREATE_V2_DISCRIMINATOR)
+                    && ix.data.len() > 8
+                {
+                    // Launch: instruction account [0] is the mint; the creator is the first
+                    // signer (account key 0). Anything else is refused, never guessed.
+                    if let (Some(mint), Some(creator)) =
+                        (account_key_at(ix, tx, 0), tx.account_keys.first().copied())
+                    {
+                        out.push(PumpInstruction::Launch { mint, creator });
                     }
                 } else if disc == SELL_DISCRIMINATOR && ix.data.len() >= 8 + 8 + 8 {
                     // Account [2] = mint, Account [6] = user (signer — the seller's wallet)
@@ -228,6 +446,8 @@ pub fn classify_pump_instructions(tx: &LaserStreamTx) -> Vec<PumpInstruction> {
         }
     }
 
+    let (swaps, _excluded) = decode_amm_swaps(tx);
+    out.extend(swaps.into_iter().map(PumpInstruction::AmmSwap));
     out
 }
 
@@ -288,6 +508,20 @@ pub fn instructions_to_events(
     is_live: bool,
     recv_unix_ms: Option<i64>,
 ) -> Vec<ProvenancedEvent> {
+    instructions_to_events_with_meta(instructions, slot, is_live, recv_unix_ms, None, None)
+}
+
+/// As [`instructions_to_events`], additionally stamping the transaction's total fee and compute
+/// units consumed on EVERY trade row it yields (the corpus counts per trade row, not per
+/// signature). `None` stays `None`; the slot is always known here and is carried.
+pub fn instructions_to_events_with_meta(
+    instructions: &[PumpInstruction],
+    slot: u64,
+    is_live: bool,
+    recv_unix_ms: Option<i64>,
+    fee_lamports: Option<u64>,
+    cu_consumed: Option<u64>,
+) -> Vec<ProvenancedEvent> {
     let mut events = Vec::with_capacity(instructions.len());
 
     for ix in instructions {
@@ -309,6 +543,10 @@ pub fn instructions_to_events(
                         trader_pubkey: Some(*buyer),
                         age_slots: 0, // Not available from ix data alone
                         recv_unix_ms,
+                        slot: Some(slot),
+                        fee_lamports,
+                        cu_consumed,
+                        venue: Some(pump_quant_app::event::TradeVenue::PumpFun),
                     },
                     source: ProvenanceSource::LaserStream,
                     slot,
@@ -327,11 +565,18 @@ pub fn instructions_to_events(
                         price_fp: 0,
                         quote_lamports: 0, // Sell: quote_lamports = SOL received
                         liquidity_lamports: 0,
-                        signed_base: -i64::try_from(*amount_tokens).unwrap_or(i64::MAX),
+                        signed_base: i64::try_from(*amount_tokens)
+                            .ok()
+                            .and_then(i64::checked_neg)
+                            .unwrap_or(-i64::MAX),
                         buyer_entity: wallet_entity_id(seller),
                         trader_pubkey: Some(*seller),
                         age_slots: 0,
                         recv_unix_ms,
+                        slot: Some(slot),
+                        fee_lamports,
+                        cu_consumed,
+                        venue: Some(pump_quant_app::event::TradeVenue::PumpFun),
                     },
                     source: ProvenanceSource::LaserStream,
                     slot,
@@ -355,6 +600,10 @@ pub fn instructions_to_events(
                         trader_pubkey: Some(*buyer),
                         age_slots: 0,
                         recv_unix_ms,
+                        slot: Some(slot),
+                        fee_lamports,
+                        cu_consumed,
+                        venue: Some(pump_quant_app::event::TradeVenue::PumpSwap),
                     },
                     source: ProvenanceSource::LaserStream,
                     slot,
@@ -373,11 +622,44 @@ pub fn instructions_to_events(
                         price_fp: 0,
                         quote_lamports: 0,
                         liquidity_lamports: 0,
-                        signed_base: -i64::try_from(*amount_tokens).unwrap_or(i64::MAX),
+                        signed_base: i64::try_from(*amount_tokens)
+                            .ok()
+                            .and_then(i64::checked_neg)
+                            .unwrap_or(-i64::MAX),
                         buyer_entity: wallet_entity_id(seller),
                         trader_pubkey: Some(*seller),
                         age_slots: 0,
                         recv_unix_ms,
+                        slot: Some(slot),
+                        fee_lamports,
+                        cu_consumed,
+                        venue: Some(pump_quant_app::event::TradeVenue::PumpSwap),
+                    },
+                    source: ProvenanceSource::LaserStream,
+                    slot,
+                    is_live,
+                });
+            }
+            PumpInstruction::AmmSwap(f) => {
+                events.push(ProvenancedEvent {
+                    event: AppEvent::AmmSwap {
+                        mint: Mint(f.mint),
+                        pool: f.pool,
+                        pool_is_canonical: f.canonical,
+                        quote_is_wsol: f.quote_is_wsol,
+                        token_reserve_pre: f.token_reserve_pre,
+                        quote_reserve_pre: f.quote_reserve_pre,
+                        fee_bps: f.fee_bps,
+                        fee_parts: f.fee_parts,
+                        virtual_quote: f.virtual_quote,
+                        is_buy: f.is_buy,
+                        token_amount: f.token_amount,
+                        quote_lamports: f.quote_lamports,
+                        trader: f.trader,
+                        fee_lamports,
+                        cu_consumed,
+                        recv_unix_ms,
+                        slot,
                     },
                     source: ProvenanceSource::LaserStream,
                     slot,
@@ -406,6 +688,22 @@ pub fn instructions_to_events(
                     slot,
                     is_live,
                 });
+            }
+            PumpInstruction::Launch { mint, creator } => {
+                // A launch without a wire clock cannot be ordered against a decision cutoff, and
+                // the first trade's time must never stand in for it: emit nothing.
+                if let Some(launch_unix_ms) = recv_unix_ms {
+                    events.push(ProvenancedEvent {
+                        event: AppEvent::LaunchObserved {
+                            mint: Mint(*mint),
+                            creator: *creator,
+                            launch_unix_ms,
+                        },
+                        source: ProvenanceSource::LaserStream,
+                        slot,
+                        is_live,
+                    });
+                }
             }
         }
     }
@@ -553,16 +851,17 @@ pub fn parse_ndjson_line(line: &str) -> Option<LaserStreamUpdate> {
                                 .and_then(|v| v.as_str())
                                 .or_else(|| ix.get("data_b58").and_then(|v| v.as_str()))?;
                             let data = B64.decode(data_b64).ok()?;
-                            let accounts: Vec<u8> = ix
-                                .get("accounts")
-                                .and_then(|a| a.as_array())
-                                .map(|arr| {
-                                    arr.iter()
-                                        .filter_map(|n| n.as_u64())
-                                        .map(|n| n as u8)
-                                        .collect()
-                                })
-                                .unwrap_or_default();
+                            // Account-index array. Solana binds an index to u8; a value
+                            // outside 0..=255 is malformed input, so REJECT the whole
+                            // instruction rather than silently truncating the index.
+                            let accounts: Vec<u8> =
+                                match ix.get("accounts").and_then(|a| a.as_array()) {
+                                    Some(arr) => arr
+                                        .iter()
+                                        .map(|n| n.as_u64().and_then(|v| u8::try_from(v).ok()))
+                                        .collect::<Option<Vec<u8>>>()?,
+                                    None => Vec::new(),
+                                };
                             Some(LaserStreamInstruction {
                                 program_id,
                                 data,
@@ -573,11 +872,24 @@ pub fn parse_ndjson_line(line: &str) -> Option<LaserStreamUpdate> {
                 })
                 .unwrap_or_default();
 
+            // fee / CU: the raw-recorder form nests them under `meta`; accept a flat form too. A
+            // missing or non-integer value is `None` — never defaulted.
+            let meta_u64 = |key_meta: &str, key_flat: &str| -> Option<u64> {
+                v.get("meta")
+                    .and_then(|m| m.get(key_meta))
+                    .and_then(|n| n.as_u64())
+                    .or_else(|| v.get(key_flat).and_then(|n| n.as_u64()))
+            };
+            let fee_lamports = meta_u64("fee", "fee_lamports");
+            let cu_consumed = meta_u64("compute_units_consumed", "cu_consumed");
+
             Some(LaserStreamUpdate::Transaction(LaserStreamTx {
                 slot,
                 signature,
                 account_keys,
                 instructions,
+                fee_lamports,
+                cu_consumed,
                 is_live: true, // gRPC stream is always live (§65)
                 // Straight off the wire, into the event: this is the clock the corpus's
                 // causal windows are keyed on, and it is never re-derived.
@@ -612,6 +924,7 @@ pub fn parse_ndjson_line(line: &str) -> Option<LaserStreamUpdate> {
 
 /// Minimal base58 (Bitcoin alphabet) decoder.
 /// Returns None on invalid characters or overflow — fail-safe.
+#[allow(clippy::arithmetic_side_effects, clippy::cast_possible_truncation)] // LINT-ALLOW(hot_arith,hot_cast): base58: idx 0..=57; carry+=byte*58 bounded u32; masked u8 exact
 fn b58_decode(s: &str) -> Option<Vec<u8>> {
     const ALPHABET: &[u8] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
     let alphabet_map: [i16; 128] = {
@@ -642,7 +955,7 @@ fn b58_decode(s: &str) -> Option<Vec<u8>> {
 
     // Handle leading '1' → leading zero bytes
     let zeros = s.bytes().take_while(|&c| c == b'1').count();
-    result.extend(std::iter::repeat(0u8).take(zeros));
+    result.extend(std::iter::repeat_n(0u8, zeros));
     result.reverse();
     Some(result)
 }
@@ -651,7 +964,61 @@ fn b58_decode(s: &str) -> Option<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
+    /// REAL on-chain transactions (fetched via public RPC for corpus tape rows, then laid out as the
+    /// daemon-facing line: outer + inner instructions, `meta` fee/CU). This establishes the decoder
+    /// against genuine PumpSwap event CPIs; it does NOT establish the sidecar's own emitted line
+    /// (that capture is a named Windows acceptance item).
+    #[test]
+    fn real_pumpswap_txs_decode_to_token_oriented_facts_or_a_named_exclusion() {
+        let raw = include_str!("../tests/fixtures/pumpswap_rpc_txs.json");
+        let v: pq_stream_capture::json::Value = pq_stream_capture::json::parse(raw).unwrap();
+        let arr = v.as_array().unwrap();
+        assert_eq!(arr.len(), 3);
+        let mut canonical = 0;
+        let mut excluded_by_name = 0;
+        for item in arr {
+            let line = pq_stream_capture::json::serialize(item.get("line").unwrap());
+            let Some(LaserStreamUpdate::Transaction(tx)) = parse_ndjson_line(&line) else {
+                panic!("fixture line must parse");
+            };
+            let tape = item.get("tape").unwrap();
+            let (facts, unresolved) = decode_amm_swaps(&tx);
+            assert_eq!(unresolved, 0, "every event's swap instruction is in the tx");
+            assert_eq!(facts.len(), 1, "one swap event per fixture tx");
+            let f = &facts[0];
+            // Fee/CU come from the same tx: per trade row, and equal to the corpus tape's.
+            assert_eq!(
+                tx.fee_lamports,
+                tape.get("fee_lamports").and_then(|n| n.as_u64())
+            );
+            assert_eq!(
+                tx.cu_consumed,
+                tape.get("cu_consumed").and_then(|n| n.as_u64())
+            );
+            if f.canonical {
+                canonical += 1;
+                assert!(f.quote_is_wsol);
+                assert_eq!(canonical_pool_for(&f.mint), f.pool);
+                let want_buy = tape.get("side").and_then(|s| s.as_str()) == Some("buy");
+                assert_eq!(f.is_buy, want_buy);
+                // Token amount equals the corpus tape's token leg for the same trade.
+                assert_eq!(
+                    Some(f.token_amount),
+                    tape.get("tokens_raw").and_then(|n| n.as_u64())
+                );
+                assert!(f.token_reserve_pre > 0 && f.quote_reserve_pre > 0);
+            } else {
+                // A reversed / non-WSOL-quoted / non-canonical pool: carried flagged, never priced.
+                excluded_by_name += 1;
+            }
+        }
+        eprintln!("real-tx decode: canonical={canonical} excluded_by_name={excluded_by_name}");
+        assert_eq!(canonical + excluded_by_name, 3);
+    }
+
     use super::*;
+    use base64::engine::general_purpose::STANDARD as B64;
+    use base64::Engine as _;
 
     fn make_tx(slot: u64, is_live: bool) -> LaserStreamTx {
         LaserStreamTx {
@@ -661,6 +1028,8 @@ mod tests {
             instructions: vec![],
             is_live,
             recv_unix_ms: None,
+            fee_lamports: None,
+            cu_consumed: None,
         }
     }
 
@@ -818,6 +1187,49 @@ mod tests {
             }
             _ => panic!("Expected Migration event"),
         }
+    }
+
+    #[test]
+    fn a_create_v2_transaction_classifies_as_a_launch_with_the_signer_as_creator() {
+        let signer = [0x11u8; 32];
+        let mint = [0x22u8; 32];
+        let mut tx = make_tx(500, true);
+        tx.account_keys = vec![signer, mint, [0x33; 32]];
+        let mut data = PUMP_CREATE_V2_DISCRIMINATOR.to_vec();
+        data.extend_from_slice(&[0u8; 16]);
+        tx.instructions = vec![LaserStreamInstruction {
+            program_id: PUMP_FUN_PROGRAM,
+            data,
+            accounts: vec![1, 2, 0],
+        }];
+        let c = classify_pump_instructions(&tx);
+        assert_eq!(
+            c,
+            vec![PumpInstruction::Launch {
+                mint,
+                creator: signer
+            }]
+        );
+        // v1 `create` classifies identically.
+        tx.instructions[0].data[..8].copy_from_slice(&PUMP_CREATE_DISCRIMINATOR);
+        assert_eq!(classify_pump_instructions(&tx), c);
+    }
+
+    #[test]
+    fn a_launch_emits_its_own_receive_time_and_nothing_without_one() {
+        let ix = vec![PumpInstruction::Launch {
+            mint: [1; 32],
+            creator: [2; 32],
+        }];
+        let with = instructions_to_events(&ix, 9, true, Some(1_800_000_000_123));
+        assert!(matches!(
+            with[0].event,
+            AppEvent::LaunchObserved { launch_unix_ms: 1_800_000_000_123, creator, .. } if creator == [2; 32]
+        ));
+        assert!(
+            instructions_to_events(&ix, 9, true, None).is_empty(),
+            "no wire clock -> no launch event; the first trade's time is never substituted"
+        );
     }
 
     #[test]
@@ -1019,7 +1431,7 @@ mod tests {
         let user_b58 = "11111111111111111111111111111112";
         // BUY discriminator (8) + amount (8) + min_tokens (8) = 24 bytes.
         // Uses the REAL pump.fun BUY discriminator from pump-protocol ix.rs.
-        let ix_data = base64::encode(&{
+        let ix_data = B64.encode({
             let mut d = vec![0x66, 0x06, 0x3d, 0x12, 0x01, 0xda, 0xeb, 0xea]; // BUY_DISCRIMINATOR
             d.extend_from_slice(&0x05u64.to_le_bytes());
             d.extend_from_slice(&0x01u64.to_le_bytes());
@@ -1115,7 +1527,7 @@ mod tests {
         let mint_b58 = "11111111111111111111111111111111";
         // BUY discriminator (8) + amount (8) + min_tokens (8) = 24 bytes.
         // Uses the REAL pump.fun BUY discriminator from pump-protocol ix.rs.
-        let ix_data = base64::encode(&{
+        let ix_data = B64.encode({
             let mut d = vec![0x66, 0x06, 0x3d, 0x12, 0x01, 0xda, 0xeb, 0xea]; // BUY_DISCRIMINATOR
             d.extend_from_slice(&0x05u64.to_le_bytes()); // amount
             d.extend_from_slice(&0x01u64.to_le_bytes()); // min_tokens
@@ -1210,5 +1622,132 @@ mod tests {
             LaserStreamUpdate::Transaction(tx) => assert_eq!(tx.recv_unix_ms, None),
             other => panic!("wrong variant: {other:?}"),
         }
+    }
+
+    fn tx_line(extra: &str) -> String {
+        format!(
+            r#"{{"kind":"transaction","slot":77,"recv_unix_ms":1788975568457,"signature_b58":"{}","account_keys":[],"instructions":[]{}}}"#,
+            "1".repeat(88),
+            extra
+        )
+    }
+
+    fn parsed(line: &str) -> LaserStreamTx {
+        match parse_ndjson_line(line) {
+            Some(LaserStreamUpdate::Transaction(t)) => t,
+            other => panic!("expected a transaction, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fee_and_cu_are_read_from_nested_meta() {
+        let t = parsed(&tx_line(
+            r#","meta":{"fee":119000,"compute_units_consumed":57059}"#,
+        ));
+        assert_eq!(t.fee_lamports, Some(119_000));
+        assert_eq!(t.cu_consumed, Some(57_059));
+    }
+
+    #[test]
+    fn fee_and_cu_are_read_from_the_flat_tape_form() {
+        let t = parsed(&tx_line(r#","fee_lamports":45000,"cu_consumed":136861"#));
+        assert_eq!(
+            (t.fee_lamports, t.cu_consumed),
+            (Some(45_000), Some(136_861))
+        );
+    }
+
+    #[test]
+    fn absent_or_malformed_fee_and_cu_are_none_never_zero() {
+        let t = parsed(&tx_line(""));
+        assert_eq!((t.fee_lamports, t.cu_consumed), (None, None));
+        let t = parsed(&tx_line(
+            r#","meta":{"fee":"119000","compute_units_consumed":-5}"#,
+        ));
+        assert_eq!((t.fee_lamports, t.cu_consumed), (None, None));
+    }
+
+    #[test]
+    fn fee_cu_and_slot_are_stamped_on_every_trade_row_of_a_transaction() {
+        let ixs = vec![
+            PumpInstruction::Buy {
+                mint: [1; 32],
+                amount_lamports: 5,
+                min_tokens: 0,
+                buyer: [9; 32],
+            },
+            PumpInstruction::Sell {
+                mint: [2; 32],
+                amount_tokens: 7,
+                min_lamports: 0,
+                seller: [8; 32],
+            },
+        ];
+        let evs = instructions_to_events_with_meta(
+            &ixs,
+            4242,
+            true,
+            Some(10),
+            Some(119_000),
+            Some(57_059),
+        );
+        assert_eq!(evs.len(), 2);
+        for e in &evs {
+            match &e.event {
+                AppEvent::MarketTrade {
+                    slot,
+                    fee_lamports,
+                    cu_consumed,
+                    recv_unix_ms,
+                    ..
+                } => {
+                    assert_eq!(*slot, Some(4242));
+                    assert_eq!(*fee_lamports, Some(119_000)); // per ROW, as the corpus counts
+                    assert_eq!(*cu_consumed, Some(57_059));
+                    assert_eq!(*recv_unix_ms, Some(10));
+                }
+                other => panic!("not a trade: {other:?}"),
+            }
+        }
+        // the legacy entry point carries the slot but leaves fee/CU explicitly absent
+        let legacy = instructions_to_events(&ixs, 4242, true, Some(10));
+        match &legacy[0].event {
+            AppEvent::MarketTrade {
+                slot,
+                fee_lamports,
+                cu_consumed,
+                ..
+            } => {
+                assert_eq!(
+                    (*slot, *fee_lamports, *cu_consumed),
+                    (Some(4242), None, None)
+                );
+            }
+            other => panic!("not a trade: {other:?}"),
+        }
+    }
+
+    /// SYNTHETIC failure-handling test (not a real multi-swap transaction): a real single-swap fixture
+    /// with its swap instruction + event duplicated. Association is then ambiguous, so the events are
+    /// excluded and counted rather than attached to either instruction.
+    #[test]
+    fn ambiguous_multi_swap_association_is_excluded_not_guessed() {
+        let raw = include_str!("../tests/fixtures/pumpswap_rpc_txs.json");
+        let v: pq_stream_capture::json::Value = pq_stream_capture::json::parse(raw).unwrap();
+        let item = &v.as_array().unwrap()[0];
+        let line = pq_stream_capture::json::serialize(item.get("line").unwrap());
+        let Some(LaserStreamUpdate::Transaction(mut tx)) = parse_ndjson_line(&line) else {
+            panic!("fixture line must parse");
+        };
+        let (single, _) = decode_amm_swaps(&tx);
+        assert_eq!(single.len(), 1);
+        let dup: Vec<_> = tx.instructions.clone();
+        tx.instructions.extend(dup);
+        let (facts, excluded) = decode_amm_swaps(&tx);
+        assert!(
+            facts.is_empty(),
+            "no economics may be attached under ambiguity"
+        );
+        assert!(excluded >= 1, "the ambiguity is counted");
     }
 }

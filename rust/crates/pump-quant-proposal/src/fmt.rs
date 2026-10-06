@@ -39,7 +39,7 @@ pub fn py_float(v: f64) -> String {
     let e = format!("{:e}", v);
     let (mant, exp) = e.split_once('e').expect("LowerExp carries an exponent");
     let x: i32 = exp.parse().expect("exponent is an integer");
-    if x < -4 || x >= 16 {
+    if !(-4..16).contains(&x) {
         return format!("{}e{}{:02}", mant, if x < 0 { '-' } else { '+' }, x.abs());
     }
     let s = format!("{v}");
@@ -138,9 +138,8 @@ pub fn round_half_even(x: f64) -> f64 {
     let d = x - f;
     if d > 0.5 {
         f + 1.0
-    } else if d < 0.5 {
-        f
-    } else if (f / 2.0).fract() == 0.0 {
+    } else if d < 0.5 || (f / 2.0).fract() == 0.0 {
+        // below the tie, or exactly the tie with an even floor: round down
         f
     } else {
         f + 1.0
@@ -201,7 +200,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn round_half_even_nd_matches_python_where_the_TIE_IS_AN_ARTEFACT() {
+    fn round_half_even_nd_matches_python_where_the_tie_is_an_artefact() {
         // Every expectation here is CPython's own `round(x, nd)` output. The first three are the
         // values that separate the correct implementation from the scaled one: `3.865 * 100` is
         // exactly 386.5 (looks like a tie, is not — the double is above it), `2.675` and `1.005`

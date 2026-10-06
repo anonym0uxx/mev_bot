@@ -176,7 +176,7 @@ impl Sha256 {
         debug_assert_eq!(self.buffered, 0, "final block must be flushed");
 
         let mut out = [0u8; 32];
-        for (word, chunk) in self.state.iter().zip(out.chunks_exact_mut(4)) {
+        for (word, chunk) in self.state.iter().zip(out.chunks_mut(4)) {
             chunk.copy_from_slice(&word.to_be_bytes());
         }
         out
@@ -197,7 +197,7 @@ impl Sha256 {
     /// therefore uses `wrapping_add` deliberately.
     fn process_block(&mut self) {
         let mut w = [0u32; 64];
-        for (i, chunk) in self.block.chunks_exact(4).enumerate() {
+        for (i, chunk) in self.block.chunks(4).enumerate() {
             w[i] = u32::from_be_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
         }
         for i in 16..64 {

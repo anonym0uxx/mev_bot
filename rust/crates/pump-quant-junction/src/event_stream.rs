@@ -42,7 +42,11 @@ pub fn read_event_stream<P: AsRef<Path>>(path: P) -> io::Result<(Vec<AppEvent>, 
         match parse_event_line(line) {
             Ok(evt) => events.push(evt),
             Err(_) => {
-                skipped += 1;
+                #[allow(clippy::arithmetic_side_effects)]
+                // LINT-ALLOW(hot_arith): u64 skipped counter
+                {
+                    skipped += 1;
+                }
             }
         }
     }
@@ -65,16 +69,20 @@ fn parse_event_line(line: &str) -> Result<AppEvent, String> {
             Ok(AppEvent::MarketTrade {
                 mint,
                 price_fp: extract_int_field(line, "price_fp").ok_or("missing price_fp")? as i128,
-                quote_lamports: extract_int_field(line, "quote_lamports")
-                    .ok_or("missing quote_lamports")? as u64,
-                liquidity_lamports: extract_int_field(line, "liquidity_lamports")
-                    .ok_or("missing liquidity_lamports")?
-                    as u64,
-                signed_base: extract_int_field(line, "signed_base").ok_or("missing signed_base")?
-                    as i64,
-                buyer_entity: extract_int_field(line, "buyer_entity")
-                    .ok_or("missing buyer_entity")? as u64,
-                age_slots: extract_int_field(line, "age_slots").ok_or("missing age_slots")? as u32,
+                quote_lamports: u64_field(
+                    extract_int_field(line, "quote_lamports"),
+                    "quote_lamports",
+                )?,
+                liquidity_lamports: u64_field(
+                    extract_int_field(line, "liquidity_lamports"),
+                    "liquidity_lamports",
+                )?,
+                signed_base: extract_int_field(line, "signed_base").ok_or("missing signed_base")?,
+                buyer_entity: u64_field(extract_int_field(line, "buyer_entity"), "buyer_entity")?,
+                age_slots: u32::try_from(
+                    extract_int_field(line, "age_slots").ok_or("missing age_slots")?,
+                )
+                .map_err(|_| "age_slots out of range")?,
                 // OPTIONAL by design: every tape written before this field existed stays
                 // readable, and `read_event_stream` keeps skipping only genuinely malformed
                 // lines. Making this key REQUIRED would turn every legacy tape into a stream
@@ -85,6 +93,10 @@ fn parse_event_line(line: &str) -> Result<AppEvent, String> {
                 trader_pubkey: extract_string_field(line, "trader_pubkey")
                     .and_then(|s| parse_mint(&s).ok())
                     .map(|m| *m.as_bytes()),
+                slot: None,
+                fee_lamports: None,
+                cu_consumed: None,
+                venue: None,
             })
         }
         "OnchainConfirm" => {
@@ -92,11 +104,14 @@ fn parse_event_line(line: &str) -> Result<AppEvent, String> {
             let mint = parse_mint(&mint_str)?;
             Ok(AppEvent::OnchainConfirm {
                 mint,
-                virtual_sol_lamports: extract_int_field(line, "virtual_sol_lamports")
-                    .ok_or("missing virtual_sol_lamports")?
-                    as u64,
-                real_sol_lamports: extract_int_field(line, "real_sol_lamports")
-                    .ok_or("missing real_sol_lamports")? as u64,
+                virtual_sol_lamports: u64_field(
+                    extract_int_field(line, "virtual_sol_lamports"),
+                    "virtual_sol_lamports",
+                )?,
+                real_sol_lamports: u64_field(
+                    extract_int_field(line, "real_sol_lamports"),
+                    "real_sol_lamports",
+                )?,
             })
         }
         "NarrativeSample" => {
@@ -104,10 +119,8 @@ fn parse_event_line(line: &str) -> Result<AppEvent, String> {
             let mint = parse_mint(&mint_str)?;
             Ok(AppEvent::NarrativeSample {
                 mint,
-                prior_active: extract_int_field(line, "prior_active")
-                    .ok_or("missing prior_active")? as u64,
-                new_mentions: extract_int_field(line, "new_mentions")
-                    .ok_or("missing new_mentions")? as u64,
+                prior_active: u64_field(extract_int_field(line, "prior_active"), "prior_active")?,
+                new_mentions: u64_field(extract_int_field(line, "new_mentions"), "new_mentions")?,
             })
         }
         "SocialCall" => {
@@ -115,8 +128,11 @@ fn parse_event_line(line: &str) -> Result<AppEvent, String> {
             let mint = parse_mint(&mint_str)?;
             Ok(AppEvent::SocialCall {
                 mint,
-                source_quality_bp: extract_int_field(line, "source_quality_bp")
-                    .ok_or("missing source_quality_bp")? as u32,
+                source_quality_bp: u32::try_from(
+                    extract_int_field(line, "source_quality_bp")
+                        .ok_or("missing source_quality_bp")?,
+                )
+                .map_err(|_| "source_quality_bp out of range")?,
             })
         }
         "WalletAction" => {
@@ -125,8 +141,10 @@ fn parse_event_line(line: &str) -> Result<AppEvent, String> {
             Ok(AppEvent::WalletAction {
                 mint,
                 followable: extract_int_field(line, "followable").ok_or("missing followable")? != 0,
-                size_lamports: extract_int_field(line, "size_lamports")
-                    .ok_or("missing size_lamports")? as u64,
+                size_lamports: u64_field(
+                    extract_int_field(line, "size_lamports"),
+                    "size_lamports",
+                )?,
             })
         }
         "TokenMetadata" => {
@@ -134,44 +152,50 @@ fn parse_event_line(line: &str) -> Result<AppEvent, String> {
             let mint = parse_mint(&mint_str)?;
             Ok(AppEvent::TokenMetadata {
                 mint,
-                category_id: extract_int_field(line, "category_id").ok_or("missing category_id")?
-                    as u64,
-                taxonomy_version: extract_int_field(line, "taxonomy_version")
-                    .ok_or("missing taxonomy_version")? as u32,
-                creator: extract_int_field(line, "creator").ok_or("missing creator")? as u64,
-                slot: extract_int_field(line, "metadata_slot").ok_or("missing metadata_slot")?
-                    as u64,
+                category_id: u64_field(extract_int_field(line, "category_id"), "category_id")?,
+                taxonomy_version: u32::try_from(
+                    extract_int_field(line, "taxonomy_version")
+                        .ok_or("missing taxonomy_version")?,
+                )
+                .map_err(|_| "taxonomy_version out of range")?,
+                creator: u64_field(extract_int_field(line, "creator"), "creator")?,
+                slot: u64_field(extract_int_field(line, "metadata_slot"), "metadata_slot")?,
             })
         }
         "CreatorAction" => {
             let mint_str = extract_string_field(line, "mint").ok_or("missing mint")?;
             let mint = parse_mint(&mint_str)?;
-            let slot = extract_int_field(line, "action_slot").ok_or("missing action_slot")? as u64;
+            let slot = u64_field(extract_int_field(line, "action_slot"), "action_slot")?;
             // Parse the creator action kind from the nested JSON fragment.
             let kind_str = extract_creator_action_kind(line)?;
             let kind = match kind_str.as_str() {
                 "creator_init" => CreatorActionKind::Init {
-                    initial_tokens: extract_nested_int(line, "initial_tokens")
-                        .ok_or("missing initial_tokens")?
-                        as u64,
-                    total_supply: extract_nested_int(line, "total_supply")
-                        .ok_or("missing total_supply")? as u64,
+                    initial_tokens: u64_field(
+                        extract_nested_int(line, "initial_tokens"),
+                        "initial_tokens",
+                    )?,
+                    total_supply: u64_field(
+                        extract_nested_int(line, "total_supply"),
+                        "total_supply",
+                    )?,
                 },
                 "creator_buy" => CreatorActionKind::Buy {
-                    tokens: extract_nested_int(line, "tokens").ok_or("missing tokens")? as u64,
-                    quote_lamports: extract_nested_int(line, "quote_lamports")
-                        .ok_or("missing quote_lamports")?
-                        as u64,
+                    tokens: u64_field(extract_nested_int(line, "tokens"), "tokens")?,
+                    quote_lamports: u64_field(
+                        extract_nested_int(line, "quote_lamports"),
+                        "quote_lamports",
+                    )?,
                 },
                 "creator_sell" => CreatorActionKind::Sell {
-                    tokens: extract_nested_int(line, "tokens").ok_or("missing tokens")? as u64,
-                    quote_lamports: extract_nested_int(line, "quote_lamports")
-                        .ok_or("missing quote_lamports")?
-                        as u64,
+                    tokens: u64_field(extract_nested_int(line, "tokens"), "tokens")?,
+                    quote_lamports: u64_field(
+                        extract_nested_int(line, "quote_lamports"),
+                        "quote_lamports",
+                    )?,
                 },
                 "creator_linked_buy" => CreatorActionKind::LinkedBuy {
-                    cluster: extract_nested_int(line, "cluster").ok_or("missing cluster")? as u64,
-                    tokens: extract_nested_int(line, "tokens").ok_or("missing tokens")? as u64,
+                    cluster: u64_field(extract_nested_int(line, "cluster"), "cluster")?,
+                    tokens: u64_field(extract_nested_int(line, "tokens"), "tokens")?,
                 },
                 _ => return Err(format!("unknown creator action kind: {kind_str}")),
             };
@@ -182,8 +206,7 @@ fn parse_event_line(line: &str) -> Result<AppEvent, String> {
             let mint = parse_mint(&mint_str)?;
             Ok(AppEvent::Migration {
                 mint,
-                slot: extract_int_field(line, "migration_slot").ok_or("missing migration_slot")?
-                    as u64,
+                slot: u64_field(extract_int_field(line, "migration_slot"), "migration_slot")?,
             })
         }
         // Rev-14 wangr intelligence: parse auxiliary + time signal events.
@@ -192,15 +215,21 @@ fn parse_event_line(line: &str) -> Result<AppEvent, String> {
             let mint = parse_mint(&mint_str)?;
             Ok(AppEvent::MarketAuxiliary {
                 mint,
-                token_standard: extract_int_field(line, "token_standard")
-                    .ok_or("missing token_standard")? as u8,
-                symbol_len: extract_int_field(line, "symbol_len").ok_or("missing symbol_len")?
-                    as u8,
+                token_standard: u8::try_from(
+                    extract_int_field(line, "token_standard").ok_or("missing token_standard")?,
+                )
+                .map_err(|_| "token_standard out of range")?,
+                symbol_len: u8::try_from(
+                    extract_int_field(line, "symbol_len").ok_or("missing symbol_len")?,
+                )
+                .map_err(|_| "symbol_len out of range")?,
             })
         }
         "TimeSignal" => Ok(AppEvent::TimeSignal {
-            dow: extract_int_field(line, "dow").ok_or("missing dow")? as u8,
-            hour_utc: extract_int_field(line, "hour_utc").ok_or("missing hour_utc")? as u8,
+            dow: u8::try_from(extract_int_field(line, "dow").ok_or("missing dow")?)
+                .map_err(|_| "dow out of range")?,
+            hour_utc: u8::try_from(extract_int_field(line, "hour_utc").ok_or("missing hour_utc")?)
+                .map_err(|_| "hour_utc out of range")?,
         }),
         // Narrative precondition (operator ruling 2026-09-26): parse the resolved
         // narrative verdict so a replay reproduces the gate's decision exactly.
@@ -209,11 +238,16 @@ fn parse_event_line(line: &str) -> Result<AppEvent, String> {
             let mint = parse_mint(&mint_str)?;
             Ok(AppEvent::NarrativeResolved {
                 mint,
-                verdict: extract_int_field(line, "verdict").ok_or("missing verdict")? as u8,
-                stage: extract_int_field(line, "stage").ok_or("missing stage")? as u8,
-                family: extract_int_field(line, "family").ok_or("missing family")? as u8,
-                lexicon_version: extract_int_field(line, "lexicon_version")
-                    .ok_or("missing lexicon_version")? as u32,
+                verdict: u8::try_from(extract_int_field(line, "verdict").ok_or("missing verdict")?)
+                    .map_err(|_| "verdict out of range")?,
+                stage: u8::try_from(extract_int_field(line, "stage").ok_or("missing stage")?)
+                    .map_err(|_| "stage out of range")?,
+                family: u8::try_from(extract_int_field(line, "family").ok_or("missing family")?)
+                    .map_err(|_| "family out of range")?,
+                lexicon_version: u32::try_from(
+                    extract_int_field(line, "lexicon_version").ok_or("missing lexicon_version")?,
+                )
+                .map_err(|_| "lexicon_version out of range")?,
             })
         }
         // Rev-19 on-chain feedback: parse confirmation events.
@@ -225,7 +259,7 @@ fn parse_event_line(line: &str) -> Result<AppEvent, String> {
             Ok(AppEvent::OurBuyConfirmed {
                 mint,
                 signature,
-                slot: extract_int_field(line, "confirm_slot").ok_or("missing confirm_slot")? as u64,
+                slot: u64_field(extract_int_field(line, "confirm_slot"), "confirm_slot")?,
             })
         }
         "OurBuyFailed" => {
@@ -236,8 +270,11 @@ fn parse_event_line(line: &str) -> Result<AppEvent, String> {
             Ok(AppEvent::OurBuyFailed {
                 mint,
                 signature,
-                err_code: extract_int_field(line, "err_code").ok_or("missing err_code")? as u8,
-                slot: extract_int_field(line, "confirm_slot").ok_or("missing confirm_slot")? as u64,
+                err_code: u8::try_from(
+                    extract_int_field(line, "err_code").ok_or("missing err_code")?,
+                )
+                .map_err(|_| "err_code out of range")?,
+                slot: u64_field(extract_int_field(line, "confirm_slot"), "confirm_slot")?,
             })
         }
         "OurSellConfirmed" => {
@@ -248,7 +285,7 @@ fn parse_event_line(line: &str) -> Result<AppEvent, String> {
             Ok(AppEvent::OurSellConfirmed {
                 mint,
                 signature,
-                slot: extract_int_field(line, "confirm_slot").ok_or("missing confirm_slot")? as u64,
+                slot: u64_field(extract_int_field(line, "confirm_slot"), "confirm_slot")?,
             })
         }
         "OurSellFailed" => {
@@ -259,8 +296,11 @@ fn parse_event_line(line: &str) -> Result<AppEvent, String> {
             Ok(AppEvent::OurSellFailed {
                 mint,
                 signature,
-                err_code: extract_int_field(line, "err_code").ok_or("missing err_code")? as u8,
-                slot: extract_int_field(line, "confirm_slot").ok_or("missing confirm_slot")? as u64,
+                err_code: u8::try_from(
+                    extract_int_field(line, "err_code").ok_or("missing err_code")?,
+                )
+                .map_err(|_| "err_code out of range")?,
+                slot: u64_field(extract_int_field(line, "confirm_slot"), "confirm_slot")?,
             })
         }
         other => Err(format!("unknown event kind: {other}")),
@@ -268,6 +308,7 @@ fn parse_event_line(line: &str) -> Result<AppEvent, String> {
 }
 
 /// Extract a string field value from a JSON line: `"field":"value"`.
+#[allow(clippy::arithmetic_side_effects)] // LINT-ALLOW(hot_arith,hot_cast): offset start+needle.len() from find()?, slicing <=len
 fn extract_string_field(line: &str, field: &str) -> Option<String> {
     let needle = format!("\"{field}\":\"");
     let start = line.find(&needle)? + needle.len();
@@ -277,7 +318,17 @@ fn extract_string_field(line: &str, field: &str) -> Option<String> {
     Some(rest[..end].to_string())
 }
 
+/// Non-negative u64 from a tape field. Rejects a MISSING field and a NEGATIVE
+/// value: `i64 -> u64` via `as` would wrap a negative to a huge u64, silently
+/// corrupting a slot/lamport quantity. The field is externally supplied tape text,
+/// so it is validated here rather than assumed non-negative.
+fn u64_field(v: Option<i64>, key: &str) -> Result<u64, String> {
+    let v = v.ok_or_else(|| format!("missing {key}"))?;
+    u64::try_from(v).map_err(|_| format!("{key} negative: {v}"))
+}
+
 /// Extract an integer field value from a JSON line: `"field":N`.
+#[allow(clippy::arithmetic_side_effects)] // LINT-ALLOW(hot_arith,hot_cast): offset start+needle.len() from find()?, <=len
 fn extract_int_field(line: &str, field: &str) -> Option<i64> {
     let needle = format!("\"{field}\":");
     let start = line.find(&needle)? + needle.len();
@@ -291,6 +342,7 @@ fn extract_int_field(line: &str, field: &str) -> Option<i64> {
 }
 
 /// Extract a nested integer from a JSON fragment like `"creator_init":{"initial_tokens":N,...}`.
+#[allow(clippy::arithmetic_side_effects)] // LINT-ALLOW(hot_arith,hot_cast): offset start+needle.len() from find()?, <=len
 fn extract_nested_int(line: &str, field: &str) -> Option<i64> {
     let needle = format!("\"{field}\":");
     let start = line.find(&needle)? + needle.len();
@@ -363,7 +415,10 @@ impl EventStreamWriter {
         let json = event_to_json(event, slot);
         self.writer.write_all(json.as_bytes())?;
         self.writer.write_all(b"\n")?;
-        self.events_written += 1;
+        #[allow(clippy::arithmetic_side_effects)] // LINT-ALLOW(hot_arith): u64 events counter
+        {
+            self.events_written += 1;
+        }
         Ok(())
     }
 
@@ -409,6 +464,9 @@ fn event_kind(event: &AppEvent) -> &'static str {
         AppEvent::SocialCall { .. } => "SocialCall",
         AppEvent::WalletAction { .. } => "WalletAction",
         AppEvent::OnchainConfirm { .. } => "OnchainConfirm",
+        AppEvent::CurveObserved { .. } => "CurveObserved",
+        AppEvent::AmmSwap { .. } => "AmmSwap",
+        AppEvent::LaunchObserved { .. } => "LaunchObserved",
         AppEvent::TokenMetadata { .. } => "TokenMetadata",
         AppEvent::CreatorAction { .. } => "CreatorAction",
         AppEvent::Migration { .. } => "Migration",
@@ -417,6 +475,7 @@ fn event_kind(event: &AppEvent) -> &'static str {
         AppEvent::TimeSignal { .. } => "TimeSignal",
         AppEvent::NarrativeResolved { .. } => "NarrativeResolved",
         // Rev-19 on-chain feedback: new event variants.
+        AppEvent::ModelOrderEvidence { .. } => "ModelOrderEvidence",
         AppEvent::OurBuyConfirmed { .. } => "OurBuyConfirmed",
         AppEvent::OurBuyFailed { .. } => "OurBuyFailed",
         AppEvent::OurSellConfirmed { .. } => "OurSellConfirmed",
@@ -501,6 +560,47 @@ fn event_fields_json(event: &AppEvent) -> String {
             ));
             parts.push(format!(r#""real_sol_lamports":{}"#, real_sol_lamports));
         }
+        AppEvent::CurveObserved {
+            v_sol_lamports,
+            v_tokens,
+            real_sol_lamports,
+            real_tokens,
+            recv_unix_ms,
+            slot,
+            ..
+        } => {
+            parts.push(format!(r#""v_sol_lamports":{}"#, v_sol_lamports));
+            parts.push(format!(r#""v_tokens":{}"#, v_tokens));
+            parts.push(format!(r#""real_sol_lamports":{}"#, real_sol_lamports));
+            parts.push(format!(r#""real_tokens":{}"#, real_tokens));
+            if let Some(t) = recv_unix_ms {
+                parts.push(format!(r#""recv_unix_ms":{}"#, t));
+            }
+            parts.push(format!(r#""slot":{}"#, slot));
+        }
+        AppEvent::AmmSwap {
+            token_reserve_pre,
+            quote_reserve_pre,
+            is_buy,
+            token_amount,
+            quote_lamports,
+            recv_unix_ms,
+            slot,
+            ..
+        } => {
+            parts.push(format!(r#""token_reserve_pre":{}"#, token_reserve_pre));
+            parts.push(format!(r#""quote_reserve_pre":{}"#, quote_reserve_pre));
+            parts.push(format!(r#""is_buy":{}"#, is_buy));
+            parts.push(format!(r#""token_amount":{}"#, token_amount));
+            parts.push(format!(r#""quote_lamports":{}"#, quote_lamports));
+            if let Some(t) = recv_unix_ms {
+                parts.push(format!(r#""recv_unix_ms":{}"#, t));
+            }
+            parts.push(format!(r#""slot":{}"#, slot));
+        }
+        AppEvent::LaunchObserved { launch_unix_ms, .. } => {
+            parts.push(format!(r#""launch_unix_ms":{}"#, launch_unix_ms));
+        }
         AppEvent::TokenMetadata {
             category_id,
             taxonomy_version,
@@ -544,6 +644,26 @@ fn event_fields_json(event: &AppEvent) -> String {
             parts.push(format!(r#""stage":{}"#, stage));
             parts.push(format!(r#""family":{}"#, family));
             parts.push(format!(r#""lexicon_version":{}"#, lexicon_version));
+        }
+        // Paper-model execution evidence: order identity + quantity + outcome (no signature exists).
+        AppEvent::ModelOrderEvidence {
+            order_id,
+            attempt,
+            clip_lamports,
+            filled,
+            ..
+        } => {
+            parts.push(format!(r#""order_id":{order_id}"#));
+            parts.push(format!(r#""attempt":{attempt}"#));
+            parts.push(format!(r#""clip_lamports":{clip_lamports}"#));
+            match filled {
+                Some((px, res)) => {
+                    parts.push(format!(
+                        r#""filled":true,"entry_price_fp":{px},"reserve_sol_lamports":{res}"#
+                    ));
+                }
+                None => parts.push(r#""filled":false"#.to_string()),
+            }
         }
         // Rev-19 on-chain feedback: serialize signature + slot for confirmation events.
         AppEvent::OurBuyConfirmed {
@@ -634,6 +754,7 @@ fn sig_to_hex(sig: &[u8; 64]) -> String {
 }
 
 /// **Rev-19**: Decode a hex string back into a 64-byte signature.
+#[allow(clippy::arithmetic_side_effects)] // LINT-ALLOW(hot_arith,hot_cast): hex[i*2..i*2+2] over 0..64, i*2+2<=128=len of 64-byte sig
 fn hex_to_sig(hex: &str) -> Result<[u8; 64], String> {
     if hex.len() != 128 {
         return Err(format!("signature hex length {} != 128", hex.len()));
@@ -652,6 +773,33 @@ mod tests {
     use pump_quant_app::event::AppEvent;
     use pump_quant_domain::ids::Mint;
     use std::fs;
+    /// A tape field outside its target type's range is REJECTED (checked conversion),
+    /// not silently truncated.
+    #[test]
+    fn out_of_range_field_is_rejected_not_truncated() {
+        let good = r#"{"slot":1,"kind":"MarketTrade","mint":"US517G5965aydkZ46HS38QLi7UQiSojurfbQfKCELFx","price_fp":1,"quote_lamports":1,"liquidity_lamports":1,"signed_base":1,"buyer_entity":1,"age_slots":5}"#;
+        assert!(parse_event_line(good).is_ok(), "in-range age_slots parses");
+        let bad = good.replace("\"age_slots\":5", "\"age_slots\":4294967296");
+        assert!(
+            parse_event_line(&bad).is_err(),
+            "age_slots = 2^32 exceeds u32 and must be rejected"
+        );
+    }
+
+    /// A NEGATIVE tape value for a u64 field is rejected rather than wrapping to a huge
+    /// u64 via `as` (the enabled lint set does not flag i64 -> u64 sign loss).
+    #[test]
+    fn negative_u64_field_is_rejected_not_wrapped() {
+        let good = r#"{"slot":1,"kind":"MarketTrade","mint":"US517G5965aydkZ46HS38QLi7UQiSojurfbQfKCELFx","price_fp":1,"quote_lamports":1,"liquidity_lamports":1,"signed_base":1,"buyer_entity":1,"age_slots":5}"#;
+        let bad = good.replace("\"quote_lamports\":1", "\"quote_lamports\":-5");
+        let err = parse_event_line(&bad).expect_err("negative quote_lamports must be rejected");
+        assert!(err.contains("negative"), "error names the cause: {err}");
+        let bad_slot = good.replace("\"age_slots\":5", "\"age_slots\":-1");
+        assert!(
+            parse_event_line(&bad_slot).is_err(),
+            "negative age_slots rejected"
+        );
+    }
 
     #[test]
     fn write_and_read_event_stream() {
@@ -669,6 +817,10 @@ mod tests {
             age_slots: 100,
             recv_unix_ms: None,
             trader_pubkey: None,
+            slot: None,
+            fee_lamports: None,
+            cu_consumed: None,
+            venue: None,
         };
         writer.write_event(&event, 12345).expect("write");
         writer.flush().expect("flush");
@@ -798,6 +950,10 @@ mod tests {
             age_slots: 100,
             recv_unix_ms: None,
             trader_pubkey: None,
+            slot: None,
+            fee_lamports: None,
+            cu_consumed: None,
+            venue: None,
         };
         writer.write_event(&event, 12345).expect("write");
         writer.flush().expect("flush");
@@ -850,6 +1006,10 @@ mod tests {
                     age_slots: 20,
                     recv_unix_ms: None,
                     trader_pubkey: None,
+                    slot: None,
+                    fee_lamports: None,
+                    cu_consumed: None,
+                    venue: None,
                 },
                 2,
             )
@@ -896,12 +1056,11 @@ mod tests {
         let tmp = std::env::temp_dir().join("pq_event_stream_malformed_test.jsonl");
         let _ = fs::remove_file(&tmp);
         // One valid Tick line + two garbage lines + one valid Tick line.
-        let content = format!(
-            r#"{{"slot":1,"kind":"Tick"}}
+        let content = r#"{"slot":1,"kind":"Tick"}
 garbage line 1
 garbage line 2
-{{"slot":2,"kind":"Tick"}}"#,
-        );
+{"slot":2,"kind":"Tick"}"#
+            .to_string();
         fs::write(&tmp, &content).expect("write");
         let (events, skipped) = read_event_stream(&tmp).expect("read");
         assert_eq!(events.len(), 2, "two valid Tick events");
@@ -924,6 +1083,10 @@ garbage line 2
             age_slots: 12,
             recv_unix_ms: Some(1_700_000_000_000),
             trader_pubkey: None,
+            slot: None,
+            fee_lamports: None,
+            cu_consumed: None,
+            venue: None,
         };
         let line = event_to_json(&stamped, 9);
         assert!(
@@ -948,6 +1111,10 @@ garbage line 2
             age_slots: 12,
             recv_unix_ms: None,
             trader_pubkey: None,
+            slot: None,
+            fee_lamports: None,
+            cu_consumed: None,
+            venue: None,
         };
         let line = event_to_json(&unstamped, 9);
         assert!(!line.contains("recv_unix_ms"), "nothing fabricated: {line}");
@@ -974,6 +1141,10 @@ garbage line 2
             age_slots: 12,
             recv_unix_ms: Some(1_700_000_000_000),
             trader_pubkey: Some(wallet),
+            slot: None,
+            fee_lamports: None,
+            cu_consumed: None,
+            venue: None,
         };
         let line = event_to_json(&stamped, 9);
         assert!(line.contains("trader_pubkey"), "{line}");
@@ -994,6 +1165,10 @@ garbage line 2
             age_slots: 12,
             recv_unix_ms: Some(1_700_000_000_000),
             trader_pubkey: None,
+            slot: None,
+            fee_lamports: None,
+            cu_consumed: None,
+            venue: None,
         };
         let line = event_to_json(&anonymous, 9);
         assert!(!line.contains("trader_pubkey"), "{line}");

@@ -263,9 +263,9 @@ pub fn decode_global(account: &[u8]) -> Option<PumpGlobal> {
     // requiring every test to model 1045-byte Global accounts.
     let mut buyback_fee_recipients = [[0u8; 32]; 8];
     if account.len() >= GLOBAL_BUYBACK_MIN_LEN {
-        for i in 0..8 {
+        for (i, slot) in buyback_fee_recipients.iter_mut().enumerate() {
             if let Some(pk) = read_pubkey(account, 741 + i * 32) {
-                buyback_fee_recipients[i] = pk;
+                *slot = pk;
             }
         }
     }

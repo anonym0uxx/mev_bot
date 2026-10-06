@@ -125,14 +125,14 @@ pub fn rank_reversal(candidates: &[RankCandidate]) -> RankReversalResult {
 
     // Rank by NetSol (descending — higher is better).
     let mut netsol_sorted: Vec<&RankCandidate> = candidates.iter().collect();
-    netsol_sorted.sort_by(|a, b| b.netsol_lamports.cmp(&a.netsol_lamports));
+    netsol_sorted.sort_by_key(|a| std::cmp::Reverse(a.netsol_lamports));
 
     // Rank by MaxDd (ascending — lower magnitude is better; maxdd is stored
     // as negative or zero, so ascending = most negative first = worst first...
     // no: we want LEAST negative (closest to 0) first. So sort descending.
     let mut maxdd_sorted: Vec<&RankCandidate> = candidates.iter().collect();
     // Higher maxdd (less negative) = better. Sort descending.
-    maxdd_sorted.sort_by(|a, b| b.maxdd_lamports.cmp(&a.maxdd_lamports));
+    maxdd_sorted.sort_by_key(|a| std::cmp::Reverse(a.maxdd_lamports));
 
     // Find champion's rank under each objective (1-based).
     let champion_netsol_rank = netsol_sorted

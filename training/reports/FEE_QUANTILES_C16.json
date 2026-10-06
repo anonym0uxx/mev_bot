@@ -1,0 +1,43 @@
+{
+ "schema": "fee-quantiles/1",
+ "frozen_at": "2026-09-21T09:09:16",
+ "code_sha256": "47c07e4dc10c1b9fc5628ef39173c12ca1aa8562d67dfe10c2601b5771001f96",
+ "inputs": {
+  "path": "/training/v2/canonical/renorm_pooltest/trades.jsonl",
+  "rows": 91735,
+  "fills_with_fee": 91735
+ },
+ "fixed_lamports_per_leg": {
+  "p50": 10000,
+  "p90": 45000,
+  "p99": 1005000
+ },
+ "bps_at_quote_sizes": {
+  "0.25": {
+   "p50": 0.4,
+   "p90": 1.8,
+   "p99": 40.2
+  },
+  "1": {
+   "p50": 0.1,
+   "p90": 0.45,
+   "p99": 10.05
+  }
+ },
+ "measured_distribution": {
+  "p10": 5000.0,
+  "p50": 10000.0,
+  "p90": 45000.0,
+  "p99": 1005000.0,
+  "mean": 66520.90341745244,
+  "max": 400005000.0
+ },
+ "venue_p50": {
+  "pumpfun": 25000.0,
+  "pumpswap": 5500.0
+ },
+ "declared_not_measured": {
+  "cu_term": "not carried: `fee_lamports` is the charged tx fee (network + priority); no per-CU price is recorded in this tape, so the (tip + CU) split of the M5 leg cost is declared, not measured, and is NOT used to shrink the p50/p90/p99 ladder."
+ },
+ "justification": "The p90/p99 fixed cost shipped as INLINE LITERALS in cost_authority.decompose (45_000 / 1_005_000) beside a properly named p50. Measured here from 91,735 of our own fills (fee_lamports = the tx fee the chain charged, network + priority): p50 10,000 (equal to FIXED_LAMPORTS_PER_LEG_P50, so the named constant and the measurement agree), p90 45,000, p99 1,005,000, mean 66,521 with max 400,005,000. The mean sits ABOVE the p90 because the distribution has a long priority-fee tail, which is exactly why a quantile ladder is the honest input and a mean is not: training stays at p50 (the measured typical leg), adversarial/gate scenarios take the conservative end (p90, and p99 for the worst-case fee spike). The compute-unit term is declared, not measured: fee_lamports carries no per-CU price, so the (tip + CU) split is not used to shrink this ladder."
+}

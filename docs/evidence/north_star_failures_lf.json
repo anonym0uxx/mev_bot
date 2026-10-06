@@ -1,0 +1,772 @@
+[
+ {
+  "id": "tests.north_star.test_aggregate_corrected_capture::test_all_three_parts_conserved_and_exact_schema_nulls",
+  "bucket": "platform_windows_only_api",
+  "first": "RuntimeError: no-clobber directory publication implemented for Windows only"
+ },
+ {
+  "id": "tests.north_star.test_aggregate_corrected_capture::test_interruption_has_no_false_complete_and_can_retry[KeyboardInterrupt]",
+  "bucket": "platform_windows_only_api",
+  "first": "RuntimeError: no-clobber directory publication implemented for Windows only"
+ },
+ {
+  "id": "tests.north_star.test_aggregate_corrected_capture::test_interruption_has_no_false_complete_and_can_retry[OSError]",
+  "bucket": "platform_windows_only_api",
+  "first": "RuntimeError: no-clobber directory publication implemented for Windows only"
+ },
+ {
+  "id": "tests.north_star.test_aggregate_corrected_capture::test_whole_manifest_hash_verification_precedes_project",
+  "bucket": "platform_windows_only_api",
+  "first": "RuntimeError: no-clobber directory publication implemented for Windows only"
+ },
+ {
+  "id": "tests.north_star.test_aggregate_corrected_capture::test_producer_mismatch_not_adjusted_or_published",
+  "bucket": "platform_windows_only_api",
+  "first": "RuntimeError: no-clobber directory publication implemented for Windows only"
+ },
+ {
+  "id": "tests.north_star.test_aggregate_corrected_capture::test_missing_output_resume_never_heals",
+  "bucket": "platform_windows_only_api",
+  "first": "RuntimeError: no-clobber directory publication implemented for Windows only"
+ },
+ {
+  "id": "tests.north_star.test_aggregate_corrected_capture::test_destination_race_preserves_existing_target",
+  "bucket": "platform_windows_only_api",
+  "first": "RuntimeError: no-clobber directory publication implemented for Windows only"
+ },
+ {
+  "id": "tests.north_star.test_development_pipeline::test_real_source_identity_is_proven_by_pinned_capture_manifest",
+  "bucket": "hardcoded_D_drive_path",
+  "first": "FileNotFoundError: [Errno 2] No such file or directory: '/tmp/ns_lf/tools/data-pipeline/D:'"
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_real_economic_target_refused_before_payload_open",
+  "bucket": "line_ending_pinned_hash",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_economic_and_dependent_uses_fail_before_payload[counterfactual_trade_v3.sz005_net_return_bp-calibration]",
+  "bucket": "line_ending_pinned_hash",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_economic_and_dependent_uses_fail_before_payload[counterfactual_trade_v3.sz005_net_return_bp-teacher]",
+  "bucket": "line_ending_pinned_hash",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_economic_and_dependent_uses_fail_before_payload[counterfactual_trade_v3.sz005_net_return_bp-target]",
+  "bucket": "line_ending_pinned_hash",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_economic_and_dependent_uses_fail_before_payload[counterfactual_trade_v3.sz005_net_return_bp-training]",
+  "bucket": "line_ending_pinned_hash",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_economic_and_dependent_uses_fail_before_payload[counterfactual_trade_v3.sz100_exit_sol-calibration]",
+  "bucket": "line_ending_pinned_hash",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_economic_and_dependent_uses_fail_before_payload[counterfactual_trade_v3.sz100_exit_sol-teacher]",
+  "bucket": "line_ending_pinned_hash",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_economic_and_dependent_uses_fail_before_payload[counterfactual_trade_v3.sz100_exit_sol-target]",
+  "bucket": "line_ending_pinned_hash",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_economic_and_dependent_uses_fail_before_payload[counterfactual_trade_v3.sz100_exit_sol-training]",
+  "bucket": "line_ending_pinned_hash",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_economic_and_dependent_uses_fail_before_payload[counterfactual_trade_v3.sz050_net_pnl_sol-calibration]",
+  "bucket": "line_ending_pinned_hash",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_economic_and_dependent_uses_fail_before_payload[counterfactual_trade_v3.sz050_net_pnl_sol-teacher]",
+  "bucket": "line_ending_pinned_hash",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_economic_and_dependent_uses_fail_before_payload[counterfactual_trade_v3.sz050_net_pnl_sol-target]",
+  "bucket": "line_ending_pinned_hash",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_economic_and_dependent_uses_fail_before_payload[counterfactual_trade_v3.sz050_net_pnl_sol-training]",
+  "bucket": "line_ending_pinned_hash",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_economic_and_dependent_uses_fail_before_payload[counterfactual_trade_v3.exact_net_return_bp-calibration]",
+  "bucket": "line_ending_pinned_hash",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_economic_and_dependent_uses_fail_before_payload[counterfactual_trade_v3.exact_net_return_bp-teacher]",
+  "bucket": "line_ending_pinned_hash",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_economic_and_dependent_uses_fail_before_payload[counterfactual_trade_v3.exact_net_return_bp-target]",
+  "bucket": "line_ending_pinned_hash",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_economic_and_dependent_uses_fail_before_payload[counterfactual_trade_v3.exact_net_return_bp-training]",
+  "bucket": "line_ending_pinned_hash",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_economic_and_dependent_uses_fail_before_payload[counterfactual_trade_v3.sz005_feasible-calibration]",
+  "bucket": "line_ending_pinned_hash",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_economic_and_dependent_uses_fail_before_payload[counterfactual_trade_v3.sz005_feasible-teacher]",
+  "bucket": "line_ending_pinned_hash",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_economic_and_dependent_uses_fail_before_payload[counterfactual_trade_v3.sz005_feasible-target]",
+  "bucket": "line_ending_pinned_hash",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_economic_and_dependent_uses_fail_before_payload[counterfactual_trade_v3.sz005_feasible-training]",
+  "bucket": "line_ending_pinned_hash",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_economic_and_dependent_uses_fail_before_payload[dependent_targets.utility-calibration]",
+  "bucket": "line_ending_pinned_hash",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_economic_and_dependent_uses_fail_before_payload[dependent_targets.utility-teacher]",
+  "bucket": "line_ending_pinned_hash",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_economic_and_dependent_uses_fail_before_payload[dependent_targets.utility-target]",
+  "bucket": "line_ending_pinned_hash",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_economic_and_dependent_uses_fail_before_payload[dependent_targets.utility-training]",
+  "bucket": "line_ending_pinned_hash",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_economic_and_dependent_uses_fail_before_payload[dependent_targets.relative_rank-calibration]",
+  "bucket": "line_ending_pinned_hash",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_economic_and_dependent_uses_fail_before_payload[dependent_targets.relative_rank-teacher]",
+  "bucket": "line_ending_pinned_hash",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_economic_and_dependent_uses_fail_before_payload[dependent_targets.relative_rank-target]",
+  "bucket": "line_ending_pinned_hash",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_economic_and_dependent_uses_fail_before_payload[dependent_targets.relative_rank-training]",
+  "bucket": "line_ending_pinned_hash",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_economic_and_dependent_uses_fail_before_payload[dependent_targets.recommended_action-calibration]",
+  "bucket": "line_ending_pinned_hash",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_economic_and_dependent_uses_fail_before_payload[dependent_targets.recommended_action-teacher]",
+  "bucket": "line_ending_pinned_hash",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_economic_and_dependent_uses_fail_before_payload[dependent_targets.recommended_action-target]",
+  "bucket": "line_ending_pinned_hash",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_economic_and_dependent_uses_fail_before_payload[dependent_targets.recommended_action-training]",
+  "bucket": "line_ending_pinned_hash",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_requests_failclosed_before_payload[changes0-UNKNOWN_FIELD]",
+  "bucket": "line_ending_pinned_hash",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_requests_failclosed_before_payload[changes1-UNKNOWN_FIELD]",
+  "bucket": "line_ending_pinned_hash",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_requests_failclosed_before_payload[changes2-UNKNOWN_FIELD]",
+  "bucket": "line_ending_pinned_hash",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_requests_failclosed_before_payload[changes3-FIELD_REQUEST]",
+  "bucket": "line_ending_pinned_hash",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_requests_failclosed_before_payload[changes4-FIELD_REQUEST]",
+  "bucket": "line_ending_pinned_hash",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_requests_failclosed_before_payload[changes5-FIELD_REQUEST]",
+  "bucket": "line_ending_pinned_hash",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_requests_failclosed_before_payload[changes6-FIELD_REQUEST]",
+  "bucket": "line_ending_pinned_hash",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_requests_failclosed_before_payload[changes7-UNKNOWN_FIELD]",
+  "bucket": "line_ending_pinned_hash",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_requests_failclosed_before_payload[changes8-EXACT_PATH]",
+  "bucket": "line_ending_pinned_hash",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_requests_failclosed_before_payload[changes9-EXACT_PATH]",
+  "bucket": "line_ending_pinned_hash",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_requests_failclosed_before_payload[changes10-EXACT_PATH]",
+  "bucket": "line_ending_pinned_hash",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_requests_failclosed_before_payload[changes11-PROTECTED_SPLIT]",
+  "bucket": "line_ending_pinned_hash",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_requests_failclosed_before_payload[changes12-PROTECTED_SPLIT]",
+  "bucket": "line_ending_pinned_hash",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_requests_failclosed_before_payload[changes13-UNKNOWN_USE]",
+  "bucket": "line_ending_pinned_hash",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_requests_failclosed_before_payload[changes14-ROW_BOUND]",
+  "bucket": "line_ending_pinned_hash",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_requests_failclosed_before_payload[changes15-ROW_BOUND]",
+  "bucket": "line_ending_pinned_hash",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_requests_failclosed_before_payload[changes16-ROW_BOUND]",
+  "bucket": "line_ending_pinned_hash",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_changed_requested_producer_lineage_fails_before_payload[source]",
+  "bucket": "line_ending_pinned_hash",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_changed_requested_producer_lineage_fails_before_payload[run_uuid]",
+  "bucket": "line_ending_pinned_hash",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_changed_requested_producer_lineage_fails_before_payload[pipeline_version]",
+  "bucket": "line_ending_pinned_hash",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_changed_requested_producer_lineage_fails_before_payload[source_hash]",
+  "bucket": "line_ending_pinned_hash",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_changed_requested_producer_lineage_fails_before_payload[code_config_hash]",
+  "bucket": "line_ending_pinned_hash",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_changed_requested_producer_lineage_fails_before_payload[execution_config_hash]",
+  "bucket": "line_ending_pinned_hash",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_changed_requested_producer_lineage_fails_before_payload[producer_sha256]",
+  "bucket": "line_ending_pinned_hash",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_missing_or_extra_lineage_failsclosed[None]",
+  "bucket": "line_ending_pinned_hash",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_missing_or_extra_lineage_failsclosed[lineage1]",
+  "bucket": "line_ending_pinned_hash",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_missing_or_extra_lineage_failsclosed[lineage2]",
+  "bucket": "line_ending_pinned_hash",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_sample_redirect_to_protected_path_refused_before_open",
+  "bucket": "line_ending_pinned_hash",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_sample_tampering_refused_before_decode",
+  "bucket": "line_ending_pinned_hash",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_bounded_audit_preserves_original_bytes_and_field_scope",
+  "bucket": "hardcoded_D_drive_path",
+  "first": "FileNotFoundError: [Errno 2] No such file or directory: 'D:/mev_bot-artifacts/north_star/development/slinky_economics_audit_v1/development_samples.jso"
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_raw_inventory_is_separate_unadmitted_and_bounded",
+  "bucket": "line_ending_pinned_hash",
+  "first": "ValueError: REGISTRY_PIN: bytes/hash mismatch"
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_raw_inventory_cannot_launder_targets[counterfactual_trade_v3.sz005_net_return_bp]",
+  "bucket": "line_ending_pinned_hash",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_raw_inventory_cannot_launder_targets[counterfactual_trade_v3.net_return_bp]",
+  "bucket": "line_ending_pinned_hash",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_raw_inventory_cannot_launder_targets[dependent_targets.utility]",
+  "bucket": "line_ending_pinned_hash",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_unaffected_barrier_not_certified_or_blanket_economically_invalid",
+  "bucket": "line_ending_pinned_hash",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_decoded_lineage_and_join_failclosed[pump_state_v3-code_config_hash-changed]",
+  "bucket": "line_ending_pinned_hash",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_decoded_lineage_and_join_failclosed[pump_state_v3-source_hash-changed]",
+  "bucket": "line_ending_pinned_hash",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_decoded_lineage_and_join_failclosed[counterfactual_trade_v3-execution_config_hash-changed]",
+  "bucket": "line_ending_pinned_hash",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_decoded_lineage_and_join_failclosed[pump_outcome_v3-run_uuid-changed]",
+  "bucket": "line_ending_pinned_hash",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_economic_quarantine::test_decoded_lineage_and_join_failclosed[pump_outcome_v3-state_id-different_join]",
+  "bucket": "line_ending_pinned_hash",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_hls_clock_capture::test_production_transport_blocks_segments_and_caps_real_api_responses",
+  "bucket": "missing_declared_dependency",
+  "first": "ModuleNotFoundError: No module named 'yt_dlp'"
+ },
+ {
+  "id": "tests.north_star.test_hls_clock_capture::test_redirects_fail_closed_before_any_body_or_second_hop[https://off-list.invalid/secret.ts?token=PRIVATE-301]",
+  "bucket": "missing_declared_dependency",
+  "first": "ModuleNotFoundError: No module named 'yt_dlp'"
+ },
+ {
+  "id": "tests.north_star.test_hls_clock_capture::test_redirects_fail_closed_before_any_body_or_second_hop[https://off-list.invalid/secret.ts?token=PRIVATE-302]",
+  "bucket": "missing_declared_dependency",
+  "first": "ModuleNotFoundError: No module named 'yt_dlp'"
+ },
+ {
+  "id": "tests.north_star.test_hls_clock_capture::test_redirects_fail_closed_before_any_body_or_second_hop[https://off-list.invalid/secret.ts?token=PRIVATE-303]",
+  "bucket": "missing_declared_dependency",
+  "first": "ModuleNotFoundError: No module named 'yt_dlp'"
+ },
+ {
+  "id": "tests.north_star.test_hls_clock_capture::test_redirects_fail_closed_before_any_body_or_second_hop[https://off-list.invalid/secret.ts?token=PRIVATE-307]",
+  "bucket": "missing_declared_dependency",
+  "first": "ModuleNotFoundError: No module named 'yt_dlp'"
+ },
+ {
+  "id": "tests.north_star.test_hls_clock_capture::test_redirects_fail_closed_before_any_body_or_second_hop[https://off-list.invalid/secret.ts?token=PRIVATE-308]",
+  "bucket": "missing_declared_dependency",
+  "first": "ModuleNotFoundError: No module named 'yt_dlp'"
+ },
+ {
+  "id": "tests.north_star.test_hls_clock_capture::test_redirects_fail_closed_before_any_body_or_second_hop[https://video.ttvnw.net/a.ts-301]",
+  "bucket": "missing_declared_dependency",
+  "first": "ModuleNotFoundError: No module named 'yt_dlp'"
+ },
+ {
+  "id": "tests.north_star.test_hls_clock_capture::test_redirects_fail_closed_before_any_body_or_second_hop[https://video.ttvnw.net/a.ts-302]",
+  "bucket": "missing_declared_dependency",
+  "first": "ModuleNotFoundError: No module named 'yt_dlp'"
+ },
+ {
+  "id": "tests.north_star.test_hls_clock_capture::test_redirects_fail_closed_before_any_body_or_second_hop[https://video.ttvnw.net/a.ts-303]",
+  "bucket": "missing_declared_dependency",
+  "first": "ModuleNotFoundError: No module named 'yt_dlp'"
+ },
+ {
+  "id": "tests.north_star.test_hls_clock_capture::test_redirects_fail_closed_before_any_body_or_second_hop[https://video.ttvnw.net/a.ts-307]",
+  "bucket": "missing_declared_dependency",
+  "first": "ModuleNotFoundError: No module named 'yt_dlp'"
+ },
+ {
+  "id": "tests.north_star.test_hls_clock_capture::test_redirects_fail_closed_before_any_body_or_second_hop[https://video.ttvnw.net/a.ts-308]",
+  "bucket": "missing_declared_dependency",
+  "first": "ModuleNotFoundError: No module named 'yt_dlp'"
+ },
+ {
+  "id": "tests.north_star.test_hls_clock_capture::test_redirects_fail_closed_before_any_body_or_second_hop[https://usher.ttvnw.net/other.m3u8-301]",
+  "bucket": "missing_declared_dependency",
+  "first": "ModuleNotFoundError: No module named 'yt_dlp'"
+ },
+ {
+  "id": "tests.north_star.test_hls_clock_capture::test_redirects_fail_closed_before_any_body_or_second_hop[https://usher.ttvnw.net/other.m3u8-302]",
+  "bucket": "missing_declared_dependency",
+  "first": "ModuleNotFoundError: No module named 'yt_dlp'"
+ },
+ {
+  "id": "tests.north_star.test_hls_clock_capture::test_redirects_fail_closed_before_any_body_or_second_hop[https://usher.ttvnw.net/other.m3u8-303]",
+  "bucket": "missing_declared_dependency",
+  "first": "ModuleNotFoundError: No module named 'yt_dlp'"
+ },
+ {
+  "id": "tests.north_star.test_hls_clock_capture::test_redirects_fail_closed_before_any_body_or_second_hop[https://usher.ttvnw.net/other.m3u8-307]",
+  "bucket": "missing_declared_dependency",
+  "first": "ModuleNotFoundError: No module named 'yt_dlp'"
+ },
+ {
+  "id": "tests.north_star.test_hls_clock_capture::test_redirects_fail_closed_before_any_body_or_second_hop[https://usher.ttvnw.net/other.m3u8-308]",
+  "bucket": "missing_declared_dependency",
+  "first": "ModuleNotFoundError: No module named 'yt_dlp'"
+ },
+ {
+  "id": "tests.north_star.test_hls_clock_capture::test_redirects_fail_closed_before_any_body_or_second_hop[/live.m3u8-301]",
+  "bucket": "missing_declared_dependency",
+  "first": "ModuleNotFoundError: No module named 'yt_dlp'"
+ },
+ {
+  "id": "tests.north_star.test_hls_clock_capture::test_redirects_fail_closed_before_any_body_or_second_hop[/live.m3u8-302]",
+  "bucket": "missing_declared_dependency",
+  "first": "ModuleNotFoundError: No module named 'yt_dlp'"
+ },
+ {
+  "id": "tests.north_star.test_hls_clock_capture::test_redirects_fail_closed_before_any_body_or_second_hop[/live.m3u8-303]",
+  "bucket": "missing_declared_dependency",
+  "first": "ModuleNotFoundError: No module named 'yt_dlp'"
+ },
+ {
+  "id": "tests.north_star.test_hls_clock_capture::test_redirects_fail_closed_before_any_body_or_second_hop[/live.m3u8-307]",
+  "bucket": "missing_declared_dependency",
+  "first": "ModuleNotFoundError: No module named 'yt_dlp'"
+ },
+ {
+  "id": "tests.north_star.test_hls_clock_capture::test_redirects_fail_closed_before_any_body_or_second_hop[/live.m3u8-308]",
+  "bucket": "missing_declared_dependency",
+  "first": "ModuleNotFoundError: No module named 'yt_dlp'"
+ },
+ {
+  "id": "tests.north_star.test_hls_clock_capture::test_exhausted_limits_prevent_http_dispatch[bytes]",
+  "bucket": "missing_declared_dependency",
+  "first": "ModuleNotFoundError: No module named 'yt_dlp'"
+ },
+ {
+  "id": "tests.north_star.test_hls_clock_capture::test_exhausted_limits_prevent_http_dispatch[requests]",
+  "bucket": "missing_declared_dependency",
+  "first": "ModuleNotFoundError: No module named 'yt_dlp'"
+ },
+ {
+  "id": "tests.north_star.test_hls_clock_capture::test_exhausted_limits_prevent_http_dispatch[deadline]",
+  "bucket": "missing_declared_dependency",
+  "first": "ModuleNotFoundError: No module named 'yt_dlp'"
+ },
+ {
+  "id": "tests.north_star.test_hls_clock_capture::test_changed_final_url_rejected_before_body",
+  "bucket": "missing_declared_dependency",
+  "first": "ModuleNotFoundError: No module named 'yt_dlp'"
+ },
+ {
+  "id": "tests.north_star.test_hls_clock_capture::test_error_responses_are_closed_without_body_reads[304]",
+  "bucket": "missing_declared_dependency",
+  "first": "ModuleNotFoundError: No module named 'yt_dlp'"
+ },
+ {
+  "id": "tests.north_star.test_hls_clock_capture::test_error_responses_are_closed_without_body_reads[401]",
+  "bucket": "missing_declared_dependency",
+  "first": "ModuleNotFoundError: No module named 'yt_dlp'"
+ },
+ {
+  "id": "tests.north_star.test_hls_clock_capture::test_error_responses_are_closed_without_body_reads[403]",
+  "bucket": "missing_declared_dependency",
+  "first": "ModuleNotFoundError: No module named 'yt_dlp'"
+ },
+ {
+  "id": "tests.north_star.test_hls_clock_capture::test_error_responses_are_closed_without_body_reads[429]",
+  "bucket": "missing_declared_dependency",
+  "first": "ModuleNotFoundError: No module named 'yt_dlp'"
+ },
+ {
+  "id": "tests.north_star.test_hls_clock_capture::test_error_responses_are_closed_without_body_reads[500]",
+  "bucket": "missing_declared_dependency",
+  "first": "ModuleNotFoundError: No module named 'yt_dlp'"
+ },
+ {
+  "id": "tests.north_star.test_hls_clock_capture::test_unapproved_origins_never_dispatch[http://usher.ttvnw.net/live.m3u8]",
+  "bucket": "missing_declared_dependency",
+  "first": "ModuleNotFoundError: No module named 'yt_dlp'"
+ },
+ {
+  "id": "tests.north_star.test_hls_clock_capture::test_unapproved_origins_never_dispatch[https://ttvnw.net.evil.invalid/live.m3u8]",
+  "bucket": "missing_declared_dependency",
+  "first": "ModuleNotFoundError: No module named 'yt_dlp'"
+ },
+ {
+  "id": "tests.north_star.test_hls_clock_capture::test_unapproved_origins_never_dispatch[https://user:PRIVATE@usher.ttvnw.net/live.m3u8]",
+  "bucket": "missing_declared_dependency",
+  "first": "ModuleNotFoundError: No module named 'yt_dlp'"
+ },
+ {
+  "id": "tests.north_star.test_hls_clock_capture::test_unapproved_origins_never_dispatch[https://usher.ttvnw.net:444/live.m3u8]",
+  "bucket": "missing_declared_dependency",
+  "first": "ModuleNotFoundError: No module named 'yt_dlp'"
+ },
+ {
+  "id": "tests.north_star.test_hls_clock_capture::test_unapproved_origins_never_dispatch[https://usher.ttvnw.net/live.m3u8#PRIVATE]",
+  "bucket": "missing_declared_dependency",
+  "first": "ModuleNotFoundError: No module named 'yt_dlp'"
+ },
+ {
+  "id": "tests.north_star.test_hls_clock_capture::test_unapproved_origins_never_dispatch[https://gql.twitch.tv/not-gql]",
+  "bucket": "missing_declared_dependency",
+  "first": "ModuleNotFoundError: No module named 'yt_dlp'"
+ },
+ {
+  "id": "tests.north_star.test_hls_clock_capture::test_graphql_post_preserved_without_environment_auth",
+  "bucket": "missing_declared_dependency",
+  "first": "ModuleNotFoundError: No module named 'yt_dlp'"
+ },
+ {
+  "id": "tests.north_star.test_hls_clock_capture::test_production_body_cap_closes_response_and_stops_future_dispatch",
+  "bucket": "missing_declared_dependency",
+  "first": "ModuleNotFoundError: No module named 'yt_dlp'"
+ },
+ {
+  "id": "tests.north_star.test_narrative_sources::test_exact_prefix_roundtrip_keeps_bytes_versions_and_unverified_times",
+  "bucket": "platform_windows_only_api",
+  "first": "OSError: atomic no-clobber directory publication requires Windows"
+ },
+ {
+  "id": "tests.north_star.test_narrative_sources::test_only_exact_nonempty_prefix_gets_span[content0-prefix-CONTENT_ID_NOT_FOUND-False]",
+  "bucket": "platform_windows_only_api",
+  "first": "OSError: atomic no-clobber directory publication requires Windows"
+ },
+ {
+  "id": "tests.north_star.test_narrative_sources::test_only_exact_nonempty_prefix_gets_span[content1-prefix-CLAIM_PREFIX_NOT_EXACT-True]",
+  "bucket": "platform_windows_only_api",
+  "first": "OSError: atomic no-clobber directory publication requires Windows"
+ },
+ {
+  "id": "tests.north_star.test_narrative_sources::test_only_exact_nonempty_prefix_gets_span[content2-PREFIX-CLAIM_PREFIX_NOT_EXACT-True]",
+  "bucket": "platform_windows_only_api",
+  "first": "OSError: atomic no-clobber directory publication requires Windows"
+ },
+ {
+  "id": "tests.north_star.test_narrative_sources::test_only_exact_nonempty_prefix_gets_span[content3-e\\u0301-CLAIM_PREFIX_NOT_EXACT-True]",
+  "bucket": "platform_windows_only_api",
+  "first": "OSError: atomic no-clobber directory publication requires Windows"
+ },
+ {
+  "id": "tests.north_star.test_narrative_sources::test_only_exact_nonempty_prefix_gets_span[content4--CLAIM_PREFIX_NOT_EXACT-True]",
+  "bucket": "platform_windows_only_api",
+  "first": "OSError: atomic no-clobber directory publication requires Windows"
+ },
+ {
+  "id": "tests.north_star.test_narrative_sources::test_only_exact_nonempty_prefix_gets_span[content5-prefix-TEXT_MISSING-False]",
+  "bucket": "platform_windows_only_api",
+  "first": "OSError: atomic no-clobber directory publication requires Windows"
+ },
+ {
+  "id": "tests.north_star.test_narrative_sources::test_only_exact_nonempty_prefix_gets_span[content6-prefix-TEXT_MISSING-False]",
+  "bucket": "platform_windows_only_api",
+  "first": "OSError: atomic no-clobber directory publication requires Windows"
+ },
+ {
+  "id": "tests.north_star.test_narrative_sources::test_only_exact_nonempty_prefix_gets_span[content7-prefix-TEXT_MISSING-False]",
+  "bucket": "platform_windows_only_api",
+  "first": "OSError: atomic no-clobber directory publication requires Windows"
+ },
+ {
+  "id": "tests.north_star.test_narrative_sources::test_duplicate_content_is_flagged_and_conflicts_never_arbitrarily_selected[change0-False]",
+  "bucket": "platform_windows_only_api",
+  "first": "OSError: atomic no-clobber directory publication requires Windows"
+ },
+ {
+  "id": "tests.north_star.test_narrative_sources::test_duplicate_content_is_flagged_and_conflicts_never_arbitrarily_selected[change1-True]",
+  "bucket": "platform_windows_only_api",
+  "first": "OSError: atomic no-clobber directory publication requires Windows"
+ },
+ {
+  "id": "tests.north_star.test_narrative_sources::test_duplicate_content_is_flagged_and_conflicts_never_arbitrarily_selected[change2-True]",
+  "bucket": "platform_windows_only_api",
+  "first": "OSError: atomic no-clobber directory publication requires Windows"
+ },
+ {
+  "id": "tests.north_star.test_narrative_sources::test_duplicate_claim_ids_are_not_counted_as_independent_examples[False]",
+  "bucket": "platform_windows_only_api",
+  "first": "OSError: atomic no-clobber directory publication requires Windows"
+ },
+ {
+  "id": "tests.north_star.test_narrative_sources::test_duplicate_claim_ids_are_not_counted_as_independent_examples[True]",
+  "bucket": "platform_windows_only_api",
+  "first": "OSError: atomic no-clobber directory publication requires Windows"
+ },
+ {
+  "id": "tests.north_star.test_narrative_sources::test_provider_pointer_is_unverified_not_a_verified_blob",
+  "bucket": "platform_windows_only_api",
+  "first": "OSError: atomic no-clobber directory publication requires Windows"
+ },
+ {
+  "id": "tests.north_star.test_narrative_sources::test_claim_prefix_is_bounded_and_full_content_hash_is_exact",
+  "bucket": "platform_windows_only_api",
+  "first": "OSError: atomic no-clobber directory publication requires Windows"
+ },
+ {
+  "id": "tests.north_star.test_narrative_sources::test_empty_inputs",
+  "bucket": "platform_windows_only_api",
+  "first": "OSError: atomic no-clobber directory publication requires Windows"
+ },
+ {
+  "id": "tests.north_star.test_narrative_sources::test_identifiers_are_literal_data_not_paths[ ]",
+  "bucket": "platform_windows_only_api",
+  "first": "OSError: atomic no-clobber directory publication requires Windows"
+ },
+ {
+  "id": "tests.north_star.test_narrative_sources::test_identifiers_are_literal_data_not_paths[ c1 ]",
+  "bucket": "platform_windows_only_api",
+  "first": "OSError: atomic no-clobber directory publication requires Windows"
+ },
+ {
+  "id": "tests.north_star.test_narrative_sources::test_identifiers_are_literal_data_not_paths[../../outside]",
+  "bucket": "platform_windows_only_api",
+  "first": "OSError: atomic no-clobber directory publication requires Windows"
+ },
+ {
+  "id": "tests.north_star.test_narrative_sources::test_identifiers_are_literal_data_not_paths[C:/outside]",
+  "bucket": "platform_windows_only_api",
+  "first": "OSError: atomic no-clobber directory publication requires Windows"
+ },
+ {
+  "id": "tests.north_star.test_narrative_sources::test_identifiers_are_literal_data_not_paths[\\\\\\\\host\\\\share]",
+  "bucket": "platform_windows_only_api",
+  "first": "OSError: atomic no-clobber directory publication requires Windows"
+ },
+ {
+  "id": "tests.north_star.test_narrative_sources::test_publication_is_complete_or_absent_and_retryable[manifest_error]",
+  "bucket": "unclassified",
+  "first": "assert ([])"
+ },
+ {
+  "id": "tests.north_star.test_narrative_sources::test_publication_is_complete_or_absent_and_retryable[manifest_short]",
+  "bucket": "unclassified",
+  "first": "assert ([])"
+ },
+ {
+  "id": "tests.north_star.test_narrative_sources::test_publication_is_complete_or_absent_and_retryable[object_error]",
+  "bucket": "unclassified",
+  "first": "assert ([])"
+ },
+ {
+  "id": "tests.north_star.test_narrative_sources::test_publication_is_complete_or_absent_and_retryable[object_short]",
+  "bucket": "unclassified",
+  "first": "assert ([])"
+ },
+ {
+  "id": "tests.north_star.test_narrative_sources::test_publication_is_complete_or_absent_and_retryable[source_change]",
+  "bucket": "platform_windows_only_api",
+  "first": "OSError: atomic no-clobber directory publication requires Windows"
+ },
+ {
+  "id": "tests.north_star.test_narrative_sources::test_publication_is_complete_or_absent_and_retryable[concurrent_dir]",
+  "bucket": "platform_windows_only_api",
+  "first": "OSError: atomic no-clobber directory publication requires Windows"
+ },
+ {
+  "id": "tests.north_star.test_narrative_sources::test_publication_is_complete_or_absent_and_retryable[concurrent_file]",
+  "bucket": "platform_windows_only_api",
+  "first": "OSError: atomic no-clobber directory publication requires Windows"
+ },
+ {
+  "id": "tests.north_star.test_narrative_sources::test_artifact_pins_current_transform_and_is_fully_read_back",
+  "bucket": "platform_windows_only_api",
+  "first": "OSError: atomic no-clobber directory publication requires Windows"
+ },
+ {
+  "id": "tests.north_star.test_narrative_sources::test_os_publication_refuses_concurrent_destination_at_rename[empty_directory]",
+  "bucket": "platform_windows_only_api",
+  "first": "OSError: atomic no-clobber directory publication requires Windows"
+ },
+ {
+  "id": "tests.north_star.test_narrative_sources::test_os_publication_refuses_concurrent_destination_at_rename[file]",
+  "bucket": "platform_windows_only_api",
+  "first": "OSError: atomic no-clobber directory publication requires Windows"
+ },
+ {
+  "id": "tests.north_star.test_narrative_sources::test_readback_detects_corruption_even_when_write_reports_success[manifest]",
+  "bucket": "platform_windows_only_api",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_narrative_sources::test_readback_detects_corruption_even_when_write_reports_success[object]",
+  "bucket": "platform_windows_only_api",
+  "first": "AssertionError: Regex pattern did not match."
+ },
+ {
+  "id": "tests.north_star.test_narrative_sources::test_depth_boundary_and_escaped_quotes_are_not_overrejected",
+  "bucket": "platform_windows_only_api",
+  "first": "OSError: atomic no-clobber directory publication requires Windows"
+ }
+]

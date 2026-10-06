@@ -15,43 +15,38 @@
 
 use std::time::Instant;
 
+pub mod model_admit;
+pub mod model_manage;
+pub mod model_restore;
+pub mod model_safety;
 use crate::analytics::ReflectionAnalytics;
 use crate::brain::{
-    burst_phase_of, discovery_lane_of, exit_reason_of, narrative_class_of, platform_of,
-    range_state_of, AppBlobStore, BrainAuthorRecord, BrainEntry, BrainMetaState, BrainPlane,
-    BrainSetupClass, BrainSizeVerdict, BRAIN_BURST_BASELINE_MULT, BRAIN_TICK_NS,
+    exit_reason_of, platform_of, AppBlobStore, BrainAuthorRecord, BrainEntry, BrainMetaState,
+    BrainPlane, BrainSetupClass, BRAIN_TICK_NS,
 };
 use crate::config::Config;
 use crate::event::AppEvent;
-use crate::gate::{decide, Confirmation, GateDecision, GateReject};
 use crate::journal_log::{Decision, DecisionJournal};
 use crate::lane::{
-    AttentionDecayParams, NarrativeLane, NumericEmitGate, NumericLane, Regime, SocialLane,
-    WalletLane,
+    AttentionDecayParams, NarrativeLane, NumericEmitGate, NumericLane, SocialLane, WalletLane,
 };
 use crate::market_context::MarketContext;
-use crate::measured_state::{
-    brain_creator_class, brain_meta_saturation, brain_narrative_class, MeasuredState, MetaTotals,
-    META_PHASE_NEUTRAL,
-};
+use crate::measured_state::{MeasuredState, MetaTotals};
+use crate::model_authority::ModelSource;
 use crate::position::{DerivedTargets, Exit, ExitReason, LifecycleParams, ScalpLifecycle};
 use crate::reflect::reflect_with_brain;
-use crate::screen::{
-    creator_credibility_haircut_bp, deployer_screen_haircut_bp, FlowScreen, WalletScreen,
-};
+use crate::screen::{FlowScreen, WalletScreen};
 use crate::shadow::{ChallengerStanding, ExitTournament};
 use crate::structure::StructureState;
-use crate::toxicity::{
-    vpin_exit_escalates, vpin_size_mult_bp, VpinParams, VpinState, VpinThresholds,
-};
+use crate::toxicity::{vpin_exit_escalates, VpinParams, VpinState, VpinThresholds};
 
 use crate::attention::{AttentionField, AttentionParams};
 use crate::event::CreatorActionKind;
 use crate::extraction_risk::ExtractionRiskLedger;
 use crate::hazard_scaffold::HazardScaffold;
 use crate::holder_concentration::{
-    brain_reading_of, concentration_of, internal_concentration_of, ConcentrationRisk,
-    ConcentrationTrajectoryPlane, ConcentrationUnknown, ConcentrationVerdict, TOP10_HAIRCUT_BPS,
+    concentration_of, internal_concentration_of, ConcentrationTrajectoryPlane,
+    ConcentrationUnknown, ConcentrationVerdict, TOP10_HAIRCUT_BPS,
 };
 use pump_quant_brain::concentration::ConcentrationTrajectory as BrainTrajectory;
 
@@ -71,7 +66,7 @@ use pump_quant_evaluator::baseline_destruction::{
 use pump_quant_evaluator::baseline_family::{
     run_family, BaselineResult, FamilyParams, FeeModel, TapeEvent,
 };
-use pump_quant_evaluator::convexity_enrich::{ConvexityMark, SizeFraction};
+use pump_quant_evaluator::convexity_enrich::ConvexityMark;
 use pump_quant_evaluator::convexity_ledger::{RuleId, RuleKind};
 use pump_quant_evaluator::evaluator_stats::{Lane as EvalLane, ReconTrade};
 use pump_quant_evaluator::fdr::Hypothesis;
@@ -97,25 +92,19 @@ use pump_quant_narrative::narrative_family::NarrativeFamily;
 use pump_quant_signals::active_market_universe::{
     passes_broad_screen, passes_progressive_filter, MarketObservation, ScreenCriteria,
 };
-use pump_quant_signals::fee_plausibility::{
-    assess_fee_floor, cumulative_fees_lamports, FeeFloorConfig, FeeFloorStatus,
-};
+use pump_quant_signals::fee_plausibility::cumulative_fees_lamports;
 use pump_quant_signals::launch_trajectory::FirstSlotTx;
 use pump_quant_signals::setup_classifier::{classify_setup, SetupThresholds};
 use pump_quant_simulator::capacity::CapacityPoint;
 use pump_quant_social::ledger::{SourceOutcomeLedger, SourceQualityLedger};
 use pump_quant_social::types::SourceRef;
-use pump_quant_strategy::calibration_budget::{
-    admit_calibration, CalibrationLedger, CalibrationRequest, RouteId,
-};
+use pump_quant_strategy::calibration_budget::CalibrationLedger;
+use pump_quant_strategy::economic_gate::effective_fixed_lamports;
+#[cfg(test)]
+use pump_quant_strategy::economic_gate::round_trip_cost_bps;
 #[cfg(test)]
 use pump_quant_strategy::economic_gate::ImpactCurve;
-use pump_quant_strategy::economic_gate::{effective_fixed_lamports, round_trip_cost_bps};
-use pump_quant_strategy::entry_arbitration::{arbitrate, ArbitrationParams, EntryCandidate};
-use pump_quant_strategy::entry_mode_leaves::{
-    detect_narrative_confirmation, detect_pullback_continuation, NarrativeConfirmationFeatures,
-    NarrativeConfirmationParams, PullbackParams, SuggestedLane,
-};
+use pump_quant_strategy::entry_arbitration::EntryCandidate;
 use pump_quant_strategy::hazard_estimator::{HazardEstimate, ShrinkError};
 use pump_quant_strategy::probe_ladder::{
     deployable_capital, derive_survival_floor, wallet_floor_guard, FloorVerdict,
@@ -129,17 +118,13 @@ use pump_quant_strategy::thesis::{
 use pump_quant_wallet_graph::creator_classifier::{
     classify_creator, CreatorClass, CreatorInputs, CreatorThresholds,
 };
-use pump_quant_wallet_graph::creator_ledger::CreatorTrack;
-use pump_quant_wallet_graph::deployer_credibility::{
-    compute_deployer_credibility, DeployerCredibilityConfig, PriorLaunch, SocialReachInput,
-};
 use pump_quant_watchlist::candidate::{Candidate, DiscoveryLane, Features, Lane as WlLane};
 use pump_quant_watchlist::lane_ingest::ingest_union;
 use pump_quant_watchlist::lane_performance::{DiscoveryLanePerformance, LanePerformance};
 use pump_quant_watchlist::promote::promote_top;
 use pump_quant_watchlist::rank::{LaneWeights, RankParams};
 use pump_quant_watchlist::state::WatchlistState;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// A bounded running reconciliation of realized net-SOL for one evaluator lane.
 ///
@@ -225,6 +210,7 @@ struct PendingEntry {
     size: u64,
     entry_cost: u64,
     /// Conditional expected net SOL for the slot (size × priced move − cost load).
+    #[allow(dead_code)] // documented slot diagnostic; retained for provenance, not yet read
     expected_net: i128,
     /// §24 LAW 2: the measured round-trip cost (bps) at this size, computed at
     /// admit and threaded to the held position so its take-profit ladder is
@@ -266,6 +252,12 @@ struct PendingEntry {
     /// (an outbound sink is installed). `None` in paper/replay, so no clock is ever
     /// read there and the tick stays reproducible.
     t_dec: Option<Instant>,
+    /// The model's own PRICE LIMIT (lamports per raw token) when the lane that built this entry
+    /// carried one; `None` for every legacy entry. Reaches the outbound record unchanged.
+    price_limit: Option<f64>,
+    /// The model chose the clip: open it WHOLE. The legacy probe -> scale-in split is a Rust sizing
+    /// law, and the model lane owns size, so it must not re-split the brain's clip.
+    full_clip: bool,
 }
 
 /// Index of an evaluator lane into the running-accumulator array.
@@ -291,9 +283,6 @@ const PROBE_PER_TRADE_CAP_LAMPORTS: u64 = 50_000_000;
 const PROBE_DAILY_CAP_LAMPORTS: u64 = 200_000_000;
 /// §39 per-route cap: cumulative probe spend on any one submission route.
 const PROBE_PER_ROUTE_CAP_LAMPORTS: u64 = 500_000_000;
-/// The single paper submission route probes are accounted against (§39). The
-/// laptop build has one route; the per-route table has headroom for the live set.
-const PROBE_ROUTE_ID: u16 = 0;
 
 /// Split an entry `target` into `(probe, scale_in_add)` under the §33 probe→confirm→
 /// scale-in lifecycle, honoring the criterion-112 / A-6 operator floor so EVERY
@@ -407,12 +396,6 @@ const ALPHA_SOURCE_BIND_CAP: usize = 4_096;
 /// for the operator's subscribed paid rooms; LRU-evicts the least-recently-updated
 /// room past the cap (a room that has not called in longest yields first).
 const ALPHA_SOURCE_LEDGER_CAP: usize = 256;
-
-/// Maximum size fade (bps of 10_000) that creator *distribution* alone may apply.
-/// A fully-distributed creator caps the haircut here — it can shrink size, never
-/// veto a trade the on-chain gate already admitted (§22 behavioral-risk clause:
-/// creator ownership is never an automatic binary reject).
-const MAX_CREATOR_FADE_BPS: u32 = 5_000;
 
 /// How the engine is allowed to act. Paper and Replay are safe modes with no
 /// capital at risk. Live mode wires real Solana execution: ed25519 signing,
@@ -810,6 +793,7 @@ struct InflightOutbound {
     entry_cost: u64,
     price_fp: u64,
     /// The tick the record was handed off on (eviction order + diagnostics).
+    #[allow(dead_code)] // eviction-order diagnostic; retained for provenance, not yet read
     submit_tick: u64,
 }
 
@@ -835,6 +819,70 @@ pub struct PendingTx {
 pub struct Engine {
     cfg: Config,
     mode: RunMode,
+    /// Paper-model admission: the model lane owns entry/management decisions. Default OFF —
+    /// the legacy deterministic `gate_evaluate` path is untouched unless this is set AND a
+    /// source is installed. Never a fallback order: OFF means legacy, ON-without-source means
+    /// fail closed.
+    paper_model_mode: bool,
+    /// The model lane's decision-time cache (see `decision_join`). Fed only when armed.
+    model_cache: crate::decision_join::DecisionCache,
+    /// Model-lane request discipline, worker pool, per-request bindings, pending paper orders and
+    /// the coverage report. All inert unless the lane is armed (see `engine/model_admit.rs`).
+    model_table: crate::model_lane::RequestTable,
+    model_pool: Option<crate::model_worker::InferencePool>,
+    model_meta: BTreeMap<crate::model_lane::RequestId, model_admit::ModelReqMeta>,
+    model_orders: BTreeMap<[u8; 32], model_admit::ModelOrder>,
+    /// Model-managed position lane (HOLD/REDUCE/EXIT). Inert unless the paper-model lane is armed.
+    model_mgmt: model_manage::MgmtLane,
+    /// Durable SAFETY_OFF state (see `crate::safety_off`).
+    model_safety: crate::safety_off::SafetyOff,
+    model_last_ask: BTreeMap<[u8; 32], i64>,
+    model_first_cand: BTreeMap<[u8; 32], i64>,
+    model_drift: pump_quant_inference::seam::DriftLedger,
+    model_report: BTreeMap<String, u64>,
+    /// Stream-discovered markets (curve launches/prints, canonical PumpSwap swaps): registered
+    /// BEFORE any legacy priced print or gate, and re-offered to the model only when a genuinely new
+    /// observation arrives (`model_dirty`). See `engine/model_admit.rs`.
+    model_registry: BTreeSet<[u8; 32]>,
+    model_dirty: BTreeSet<[u8; 32]>,
+    /// When each currently-dirty market first became dirty (clock ms): queue-age measurement.
+    model_dirty_since: BTreeMap<[u8; 32], i64>,
+    model_uniq_seen: BTreeSet<(String, [u8; 32])>,
+    model_amm_fee: BTreeMap<[u8; 32], (Option<u32>, i64)>,
+    /// First terminal execution report per mint (evidence kept), and mints blocked by a conflicting one.
+    /// Monotonic id of the next model order. Every order, fill, evidence report and fault is keyed by
+    /// this, never by mint alone, so evidence for one order cannot touch another order's state.
+    model_order_seq: u64,
+    model_held: model_restore::HeldPersist,
+    /// Append-only-ish order book (bounded): identity, attempt, quantity, state and terminal evidence.
+    model_order_log: BTreeMap<u64, model_admit::OrderRec>,
+    /// Which order opened the currently-held model position on each mint.
+    model_position_order: BTreeMap<[u8; 32], u64>,
+    /// Every paper-model fill with its validation status (routing simulation vs assessable).
+    model_fills: Vec<model_admit::ModelFillRecord>,
+    /// Mints whose open position is a paper-model routing fill that is NOT assessable. Their exits
+    /// settle cash but feed no assessment consumer (see `book_exit`).
+    model_quarantine: std::collections::BTreeSet<[u8; 32]>,
+    /// Exits excluded from every economic assessment, with the reason. Visible, never zero-filled.
+    model_excluded_exits: Vec<model_admit::ExcludedExit>,
+    model_recon_faults: BTreeMap<u64, model_admit::ReconFault>,
+    /// Per-mint (fee parts, virtual quote, swap time) of the latest swap: executable economics.
+    #[allow(clippy::type_complexity)]
+    // per-mint latest-swap economics tuple; a type alias would scatter the shape
+    model_amm_econ: BTreeMap<[u8; 32], (Option<(u32, u32, u32)>, Option<u64>, i64)>,
+    /// Non-canonical pools seen per mint (counted, never priced from): the honest `pools_total`.
+    model_other_pools: BTreeMap<[u8; 32], BTreeSet<[u8; 32]>>,
+    /// The feed's own clock (max wire receive time seen), ms. Decision age and request deadlines
+    /// are measured on THIS clock, so paper/replay stay deterministic.
+    model_clock_ms: i64,
+    /// Highest on-chain slot observed on the model feed (orders record it at creation).
+    model_slot: u64,
+    /// (receipt ms, slot) of the AMM swap being processed right now; `None` between swaps.
+    model_swap_ctx: Option<(i64, u64)>,
+    /// The last named refusal per registered market (for never-ready reporting).
+    model_last_refusal: BTreeMap<[u8; 32], String>,
+    /// The installed model source, when the lane is armed. `None` in legacy/replay.
+    model_source: Option<std::sync::Arc<dyn ModelSource + Send + Sync>>,
     now: u64,
 
     numeric: NumericLane,
@@ -1210,6 +1258,7 @@ pub struct Engine {
     /// Stratified per-candidate expected-move table. EMPTY in the shipped state, so
     /// every estimate refuses and the gate prices on `gate_expected_move_bps`.
     expected_move: crate::expected_move::MoveTable,
+    #[allow(dead_code)] // reused per-tick candidate scratch buffer; not read across ticks
     cands_buf: Vec<EntryCandidate>,
 
     /// LAWs B1–B5: the episodic recall memory plane. Bounded (§99) and, unless
@@ -1255,6 +1304,16 @@ pub struct Engine {
     reentry_cooldown: BTreeMap<[u8; 32], u64>,
 }
 
+/// Failure modes of the paper-model lane's source lookup. Named so an armed-but-unwired engine
+/// fails CLOSED with an auditable cause, never downgrades to the deterministic gate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelModeFault {
+    /// The lane is not armed; the legacy `gate_evaluate` path governs.
+    NotEnabled,
+    /// Armed but no source installed — refuse, do not fall back.
+    MissingSource,
+}
+
 impl Engine {
     /// Construct an engine under a validated config and a run mode.
     ///
@@ -1268,6 +1327,39 @@ impl Engine {
     pub fn new(cfg: Config, mode: RunMode) -> Self {
         let origin = BankrollOrigin::PaperSeed(cfg.bankroll_initial_lamports);
         Self::with_origin(cfg, mode, origin)
+    }
+
+    /// Arm the paper-model lane: entry/management decisions flow through `source`. Once armed,
+    /// a missing source is a hard fault at the admission gate — never a fallback to
+    /// `gate_evaluate`. The legacy deterministic path is unchanged while not armed.
+    pub fn enable_paper_model<S>(&mut self, source: S)
+    where
+        S: ModelSource + Send + Sync + 'static,
+    {
+        let src: std::sync::Arc<dyn ModelSource + Send + Sync> = std::sync::Arc::new(source);
+        self.model_pool = Some(crate::model_worker::InferencePool::new(
+            std::sync::Arc::clone(&src),
+            model_admit::MODEL_WORKERS,
+            model_admit::MODEL_QUEUE,
+        ));
+        self.paper_model_mode = true;
+        self.model_source = Some(src);
+    }
+
+    /// Whether the paper-model lane is armed.
+    pub fn paper_model_enabled(&self) -> bool {
+        self.paper_model_mode
+    }
+
+    /// Fail-closed source lookup. `NotEnabled` => the legacy gate governs; `MissingSource` is a
+    /// misconfiguration that MUST refuse (armed with no source), never silently downgrade.
+    fn model_source(&self) -> Result<&(dyn ModelSource + Send + Sync), ModelModeFault> {
+        if !self.paper_model_mode {
+            return Err(ModelModeFault::NotEnabled);
+        }
+        self.model_source
+            .as_deref()
+            .ok_or(ModelModeFault::MissingSource)
     }
 
     /// **Phase-B live entry (fail-closed).** Construct an engine whose bankroll base
@@ -1371,6 +1463,38 @@ impl Engine {
         Self {
             cfg,
             mode,
+            paper_model_mode: false,
+            model_cache: crate::decision_join::DecisionCache::new(),
+            model_table: crate::model_lane::RequestTable::default(),
+            model_pool: None,
+            model_meta: BTreeMap::new(),
+            model_orders: BTreeMap::new(),
+            model_mgmt: model_manage::MgmtLane::new(),
+            model_safety: crate::safety_off::SafetyOff::default(),
+            model_last_ask: BTreeMap::new(),
+            model_first_cand: BTreeMap::new(),
+            model_registry: BTreeSet::new(),
+            model_dirty: BTreeSet::new(),
+            model_dirty_since: BTreeMap::new(),
+            model_uniq_seen: BTreeSet::new(),
+            model_amm_fee: BTreeMap::new(),
+            model_order_seq: 0,
+            model_held: model_restore::HeldPersist::default(),
+            model_order_log: BTreeMap::new(),
+            model_position_order: BTreeMap::new(),
+            model_fills: Vec::new(),
+            model_quarantine: std::collections::BTreeSet::new(),
+            model_excluded_exits: Vec::new(),
+            model_recon_faults: BTreeMap::new(),
+            model_amm_econ: BTreeMap::new(),
+            model_other_pools: BTreeMap::new(),
+            model_drift: pump_quant_inference::seam::DriftLedger::new(),
+            model_report: BTreeMap::new(),
+            model_clock_ms: 0,
+            model_slot: 0,
+            model_swap_ctx: None,
+            model_last_refusal: BTreeMap::new(),
+            model_source: None,
             now: 0,
             numeric: NumericLane::new(),
             narrative: NarrativeLane::new(),
@@ -1498,6 +1622,11 @@ impl Engine {
         }
     }
 
+    /// Recent journal decisions (inspection; the digest covers all).
+    pub fn journal_recent(&self) -> impl Iterator<Item = &Decision> {
+        self.journal.recent()
+    }
+
     /// The current realized balance, lamports: `base + Σ realized`, floored at zero
     /// (§33 realized-only accounting; marks never count). The `base` is the bankroll
     /// ORIGIN's seed — `cfg.bankroll_initial_lamports` for a Paper/Replay
@@ -1531,26 +1660,6 @@ impl Engine {
         self.bankroll_hwm = self.bankroll_origin.seed_lamports();
     }
 
-    /// The effective per-position fraction (bps of deployable) after the drawdown
-    /// ratchet: full below tier1, halved past tier1, quartered past tier2, probe-only
-    /// past tier3 (Grossman–Zhou surplus shape, step-quantized; realized-only hwm).
-    fn dd_f_eff_bp(&self, balance: u64) -> u32 {
-        let hwm = self.bankroll_hwm.max(1);
-        if balance >= hwm {
-            return self.cfg.f_base_bp;
-        }
-        let dd_bp = ((u128::from(hwm - balance) * 10_000) / u128::from(hwm)) as u32;
-        if dd_bp >= self.cfg.dd_tier3_bp {
-            self.cfg.probe_f_bp
-        } else if dd_bp >= self.cfg.dd_tier2_bp {
-            self.cfg.f_base_bp >> 2
-        } else if dd_bp >= self.cfg.dd_tier1_bp {
-            self.cfg.f_base_bp >> 1
-        } else {
-            self.cfg.f_base_bp
-        }
-    }
-
     /// The VPIN parameter/threshold views over the config (§102 named).
     fn vpin_params(&self) -> VpinParams {
         VpinParams {
@@ -1582,9 +1691,6 @@ impl Engine {
         self.now
     }
 
-    /// Snapshot of all open positions for report-plane consumption (item 2c).
-    /// Call BEFORE `report()` which force-closes positions.
-    #[must_use]
     /// Phase 2: total episodes recorded into the expected-move model. Zero means
     /// no trade has closed since the engine was created — the learning loop is
     /// not accumulating samples.
@@ -1593,6 +1699,8 @@ impl Engine {
         self.expected_move.total_n()
     }
 
+    /// Snapshot of all open positions for report-plane consumption (item 2c).
+    /// Call BEFORE `report()` which force-closes positions.
     pub fn open_positions_snapshot(&self) -> Vec<crate::live_status::OpenPositionSnapshot> {
         self.positions.open_positions_snapshot(self.now)
     }
@@ -1834,14 +1942,57 @@ impl Engine {
                 // yet — it is the state ledger's key (C2), and its feed lands with the
                 // C6/C7 wiring. Bound to `_` on purpose: a silent default here would be the
                 // one place a fabricated clock could enter the causal windows.
-                recv_unix_ms: _,
-                // The trader's address, when the producing path knew it. Bound to `_` for the
-                // same reason as the clock: nothing in the engine's decision path reads it yet
-                // (the address-keyed derivations are the flow reducer's and the corpus's), and
-                // a pattern that demanded `None` would silently stop matching once the wire
-                // started supplying it.
-                trader_pubkey: _,
+                // Wire receive time, trader, slot, fee, CU and venue are bound by name because the
+                // model lane's `DecisionCache` is fed from them. Each stays an `Option` all the way
+                // to the cache, which refuses by name when one is missing: a silent default here
+                // would be the one place a fabricated clock/trader/fee could enter the causal
+                // windows.
+                recv_unix_ms,
+                trader_pubkey,
+                slot,
+                fee_lamports,
+                cu_consumed,
+                venue,
             } => {
+                // Model-lane ingest. A no-op unless the paper-model lane is armed, so every legacy
+                // and golden path is byte-identical.
+                if self.paper_model_mode {
+                    if let Some(ms) = recv_unix_ms {
+                        self.model_note_clock(ms);
+                    }
+                    if price_fp > 0 {
+                        self.model_mgmt_note_price(mint.as_bytes(), price_fp);
+                    }
+                    let venue = match venue {
+                        Some(crate::event::TradeVenue::PumpFun) => {
+                            crate::state_ledger::VenueLabel::Pumpfun
+                        }
+                        Some(crate::event::TradeVenue::PumpSwap) => {
+                            crate::state_ledger::VenueLabel::Pumpswap
+                        }
+                        None => crate::state_ledger::VenueLabel::Unknown,
+                    };
+                    // A priced CURVE print registers the market for stream-driven dispatch. A
+                    // PumpSwap instruction-half print is keyed by the POOL address upstream, so it
+                    // never registers a mint (AMM markets register via `AmmSwap`).
+                    if price_fp > 0 && matches!(venue, crate::state_ledger::VenueLabel::Pumpfun) {
+                        self.model_register(*mint.as_bytes());
+                    }
+                    self.model_cache
+                        .observe_trade(&crate::decision_join::TradeObs {
+                            mint: *mint.as_bytes(),
+                            price_fp,
+                            quote_lamports,
+                            signed_base,
+                            buyer_entity,
+                            trader: trader_pubkey,
+                            recv_unix_ms,
+                            slot,
+                            fee_lamports,
+                            cu_consumed,
+                            venue,
+                        });
+                }
                 self.numeric.observe(
                     mint,
                     price_fp,
@@ -2123,7 +2274,11 @@ impl Engine {
                             // §32 thesis evaluation: deterministic invalidation forces the
                             // exit; no score may override it.
                             // Rev-31: gate on on-chain confirmation in live mode.
-                            let thesis_exit = self.thesis_forces_exit(mint.as_bytes())
+                            // A model-managed position's discretionary thesis/VPIN exits stand down;
+                            // the model is shown the same flow state and decides.
+                            let model_owned = self.positions.is_model_managed(mint.as_bytes());
+                            let thesis_exit = !model_owned
+                                && self.thesis_forces_exit(mint.as_bytes())
                                 && !(self.mode == RunMode::Live
                                     && !self.positions.is_onchain_confirmed(mint.as_bytes()));
                             if thesis_exit {
@@ -2139,8 +2294,9 @@ impl Engine {
                                 // distributed multi-swap dump the single-print rug-precursor
                                 // cannot see — force the thesis-invalidation exit (§21.7/§32).
                                 // Rev-31: gate on on-chain confirmation in live mode.
-                                let vpin_ok = !(self.mode == RunMode::Live
-                                    && !self.positions.is_onchain_confirmed(mint.as_bytes()));
+                                let vpin_ok = !model_owned
+                                    && !(self.mode == RunMode::Live
+                                        && !self.positions.is_onchain_confirmed(mint.as_bytes()));
                                 if vpin_ok {
                                     let vp = self.vpin_params();
                                     let reading = self
@@ -2269,6 +2425,23 @@ impl Engine {
             // ─── Rev-19 on-chain feedback loop ──────────────────────────────
             // Our buy tx landed on-chain. Reconcile the paper position: mark it
             // as on-chain confirmed so the sell path knows tokens are real.
+            AppEvent::ModelOrderEvidence {
+                mint,
+                order_id,
+                attempt,
+                clip_lamports,
+                filled,
+            } => {
+                if self.paper_model_mode {
+                    self.model_on_evidence_event(
+                        *mint.as_bytes(),
+                        order_id,
+                        attempt,
+                        clip_lamports,
+                        filled,
+                    );
+                }
+            }
             AppEvent::OurBuyConfirmed {
                 mint, signature, ..
             } => {
@@ -2324,6 +2497,93 @@ impl Engine {
                     // Reverse the paper exit so the sell ladder can retry.
                     self.positions
                         .reverse_paper_exit(mint.as_bytes(), pending.size);
+                }
+            }
+            // Model-lane provenance feeds. Pure cache writes, armed-only: with the lane off these
+            // are no-ops, so no legacy or golden path can observe them.
+            AppEvent::CurveObserved {
+                mint,
+                v_sol_lamports,
+                v_tokens,
+                real_sol_lamports,
+                real_tokens,
+                recv_unix_ms,
+                slot,
+            } => {
+                if self.paper_model_mode {
+                    // A reserve observation with no wire clock cannot be ordered against a decision
+                    // cutoff, so it is not admitted (a local clock is a different quantity).
+                    if let Some(ts_ms) = recv_unix_ms {
+                        self.model_note_clock(ts_ms);
+                        self.model_note_slot(slot);
+                        self.model_register(*mint.as_bytes());
+                        self.model_cache.observe_curve(
+                            *mint.as_bytes(),
+                            crate::curve_annotation::CurveObservation {
+                                v_sol_lamports,
+                                v_tokens,
+                                real_sol_lamports,
+                                real_tokens,
+                                ts_ms,
+                                slot,
+                            },
+                        );
+                        // Event-driven: the first eligible landing state fills the order.
+                        let c = self.model_clock_ms;
+                        self.model_try_fills(c);
+                    }
+                }
+            }
+            AppEvent::LaunchObserved {
+                mint,
+                creator,
+                launch_unix_ms,
+            } => {
+                if self.paper_model_mode {
+                    self.model_cache
+                        .observe_launch(*mint.as_bytes(), creator, launch_unix_ms);
+                    self.model_register(*mint.as_bytes());
+                }
+            }
+            AppEvent::AmmSwap {
+                mint,
+                pool,
+                pool_is_canonical,
+                quote_is_wsol,
+                token_reserve_pre,
+                quote_reserve_pre,
+                fee_bps,
+                fee_parts,
+                virtual_quote,
+                is_buy,
+                token_amount,
+                quote_lamports,
+                trader,
+                fee_lamports,
+                cu_consumed,
+                recv_unix_ms,
+                slot,
+            } => {
+                if self.paper_model_mode {
+                    self.model_on_amm_swap(model_admit::AmmSwapIn {
+                        fee_parts,
+                        virtual_quote,
+                        mint,
+                        pool,
+                        canonical: pool_is_canonical,
+                        quote_is_wsol,
+                        token_reserve_pre,
+                        quote_reserve_pre,
+                        fee_bps,
+                        is_buy,
+                        token_amount,
+                        quote_lamports,
+                        trader,
+                        fee_lamports,
+                        cu_consumed,
+                        recv_unix_ms,
+                        slot,
+                    });
                 }
             }
             AppEvent::Tick => self.evaluate(),
@@ -2692,6 +2952,13 @@ impl Engine {
         applied
     }
 
+    /// Whether this market has a RECORDED on-chain confirmation. A reserve pair that the decoder-health
+    /// check refuses (see [`Self::confirm`]) is never recorded, so this stays false for it.
+    #[must_use]
+    pub fn is_market_confirmed(&self, mint: &[u8; 32]) -> bool {
+        self.confirmed.contains_key(mint)
+    }
+
     /// Record one decoded bonding-curve snapshot as this market's on-chain proof.
     ///
     /// **DECODER HEALTH IS CHECKED HERE, AT THE BOUNDARY.** The pair is run through
@@ -2742,6 +3009,15 @@ impl Engine {
     /// The evaluation half of the loop, run once per `Tick`.
     fn evaluate(&mut self) {
         self.now = self.now.saturating_add(1);
+
+        // Model lane: collect finished verdicts / expire deadlines / try simulated fills. Non-blocking
+        // by construction, and a no-op when the lane is not armed.
+        if self.paper_model_mode {
+            self.model_poll();
+            self.model_stream_schedule();
+            self.model_mgmt_schedule();
+            self.model_held_persist_if_changed();
+        }
 
         // §Quant-Rev-7: prune expired re-entry cooldown entries. The set is bounded
         // by the number of recently-exited mints, but without periodic pruning
@@ -3003,66 +3279,21 @@ impl Engine {
                 lane: cand.lane as u8,
                 rank,
             });
-            if let Some(pe) = self.gate_evaluate(cand) {
-                pending.push(pe);
+            // Model lane armed: the legacy verdict and sizing law are NOT consulted. The candidate is
+            // snapshotted and sent to the (off-thread) model; any resulting order opens later, on its
+            // simulated fill. Disarmed: byte-identical legacy behaviour.
+            // The model is the ONLY entry authority. No lane armed => no entry: the candidate is counted and dropped.
+            if self.paper_model_mode {
+                self.model_admit_candidate(cand);
+            } else {
+                // Every refusal is counted AND journalled (as every retired gate rejection was), so a
+                // no-authority refusal is replayable and `sum(reject_counts) == rejected` has a record.
+                self.reject(REJECT_NO_ENTRY_AUTHORITY);
+                self.journal.record(Decision::Rejected {
+                    mint: cand.mint.bytes(),
+                    reason: REJECT_NO_ENTRY_AUTHORITY,
+                });
             }
-        }
-        if !pending.is_empty() {
-            let slots = (self
-                .cfg
-                .max_concurrent_positions
-                .saturating_sub(self.positions.len())) as u32;
-            // Floor basis = the bankroll ORIGIN's seed (not the config seed): for
-            // Paper/Replay that IS `cfg.bankroll_initial_lamports` (byte-identical),
-            // for a Phase-B live origin it is the reconciled wallet — so the survival
-            // floor scales with the real wallet, never the paper constant.
-            let floor = derive_survival_floor(
-                self.bankroll_origin.seed_lamports(),
-                self.cfg.floor_fraction_bps,
-            );
-            let deployable = deployable_capital(self.bankroll_balance(), floor);
-            let risk_budget =
-                u128::from(deployable) * u128::from(self.cfg.total_risk_cap_bp) / 10_000;
-            let exposure_cap = risk_budget.saturating_sub(self.bankroll_committed);
-            // Reused scratch (O2): identical mapping/order to the old `collect`.
-            let mut cands = std::mem::take(&mut self.cands_buf);
-            cands.clear();
-            cands.extend(pending.iter().enumerate().map(|(i, p)| EntryCandidate {
-                candidate_id: i as u64,
-                entry_mode: p.lane as u16,
-                archetype: p.archetype,
-                regime: 0,
-                expected_net_sol_lamports: i64::try_from(p.expected_net).unwrap_or(i64::MAX),
-                size_lamports: p.entry_cost,
-            }));
-            let outcome = arbitrate(
-                &cands,
-                &ArbitrationParams {
-                    max_slots: slots,
-                    exposure_cap_lamports: u64::try_from(exposure_cap).unwrap_or(u64::MAX),
-                    min_expected_net_lamports: self.cfg.arb_min_expected_net_lamports,
-                },
-            );
-            let mut awarded = [false; 64];
-            for award in &outcome.awarded {
-                let idx = award.candidate_id as usize;
-                if idx < pending.len() && idx < awarded.len() {
-                    awarded[idx] = true;
-                }
-            }
-            for (i, p) in pending.iter().enumerate() {
-                if i < awarded.len() && awarded[i] {
-                    self.open_pending(p);
-                } else {
-                    self.reject(REJECT_ARBITRATION);
-                    self.journal.record(Decision::Rejected {
-                        mint: p.mint,
-                        reason: REJECT_ARBITRATION,
-                    });
-                    self.record_reject_sample(REJECT_ARBITRATION, p.mint);
-                }
-            }
-            self.cands_buf = cands;
         }
         // Restore reused scratch (O2) for next tick — allocation retained, contents
         // dropped; no state crosses the tick boundary.
@@ -3247,925 +3478,6 @@ impl Engine {
         }
     }
 
-    fn gate_evaluate(&mut self, cand: Candidate) -> Option<PendingEntry> {
-        let mint_bytes = cand.mint.bytes();
-        let domain_mint = DomainMint::from_bytes(mint_bytes);
-        // §34.3: the gate's numeric snapshot obeys the SAME evidence TTL as
-        // discovery — a fresh confirm can never borrow a stale numeric picture
-        // (previously `features_for` was read with no freshness bound at all,
-        // letting liquidity observed up to confirm-TTL ago size an entry).
-        let numeric_feats = self.numeric.features_for(domain_mint).filter(|_| {
-            self.numeric
-                .evidence_age(domain_mint, self.now)
-                .is_some_and(|age| age <= self.cfg.lane_evidence_ttl_ticks)
-        });
-        // Rev-14 wangr intelligence: enrich the Features snapshot with auxiliary
-        // data from MarketAuxiliary events and the latest TimeSignal BEFORE
-        // either confirmation path consumes it. When no auxiliary data was fed,
-        // the sentinels (0, 255) are no-ops for all wangr gate filters, so the
-        // decision is byte-identical to prior behavior.
-        let numeric_feats = numeric_feats
-            .map(|f| self.enrich_wangr_features(f, &mint_bytes))
-            .map(|f| self.enrich_narrative_features(f, &mint_bytes));
-        // Confirmation exists only with an on-chain confirm AND numeric evidence;
-        // a confirm with no numeric snapshot degrades to a NoNumericConfirmation
-        // reject inside the gate (default features carry zero liquidity).
-        // Freshness law (§34.3): an on-chain confirmation older than the TTL no
-        // longer authorizes entry — depth proven long ago is not depth now.
-        let confirmation = self
-            .confirmed
-            .get(&mint_bytes)
-            .filter(|&&(_, _, at)| self.now.saturating_sub(at) <= self.cfg.confirm_ttl_ticks)
-            .map(|&(confirmed_vsol, confirmed_real_sol, _)| {
-                let numeric = numeric_feats.unwrap_or_default();
-                // ---- DEPTH PROVENANCE ----
-                //
-                // The retired rule was `depth.min(numeric.liquidity_lamports)`: take
-                // the smaller of an ASSERTED sellable depth and the VIRTUAL reserve.
-                // It was conservative against the wrong number. `liquidity_lamports`
-                // IS `virtual_sol`, and a curve escrows `virtual_sol − 30 SOL`, so the
-                // min() permitted a capacity 30x the reserve that can actually pay at
-                // `vsol = 31 SOL` and an unbounded one at the seed reserve.
-                //
-                // The rule now: the FRESH numeric reserve is the price authority
-                // (§34.3 — the confirm may be up to `confirm_ttl_ticks` old, the
-                // numeric snapshot no more than `lane_evidence_ttl_ticks`), and the
-                // decoded `real_sol` is preferred for payout ONLY when it belongs to
-                // that same snapshot. A decoded reserve from an EARLIER snapshot is
-                // stale, not wrong; refusing on it would re-litigate staleness, which
-                // the TTL laws already decide, so the identity supplies the payout
-                // instead. Decoder health is checked at the ingest boundary in
-                // `confirm`, where a contradictory pair is never recorded at all.
-                let depth = if confirmed_vsol == numeric.liquidity_lamports {
-                    crate::curve_depth::CurveDepth::decoded(confirmed_vsol, confirmed_real_sol)
-                } else {
-                    crate::curve_depth::CurveDepth::derived(numeric.liquidity_lamports)
-                };
-                Confirmation { depth, numeric }
-            });
-
-        // §24 LAW 11 EntryMode leaves: with the detectors enabled, a controlled
-        // pullback that holds a retest in an established uptrend
-        // (`detect_pullback_continuation`) makes an ALREADY-LIVE market eligible
-        // for an active-market scalp without a fresh on-chain confirm — its
-        // sellable depth is the freshly-observed pool liquidity. This only ADDS a
-        // synthetic confirmation when no real one exists; it never relaxes the
-        // economic gate. The narrative-confirmation leaf stays dormant/admission-
-        // gated (§28) and authorizes nothing on its own.
-        let confirmation = confirmation
-            .or_else(|| self.entry_mode_confirmation(&cand, &mint_bytes, numeric_feats));
-
-        // §56.11: a retired lane's candidates stay research-visible but are
-        // capital-ineligible.
-        if self.retired[cand.lane.index()] {
-            self.reject(REJECT_LANE_RETIRED);
-            self.journal.record(Decision::Rejected {
-                mint: mint_bytes,
-                reason: REJECT_LANE_RETIRED,
-            });
-            return None;
-        }
-        // §Quant-Rev-7: RE-ENTRY COOLDOWN — reject if this mint was recently exited
-        // and is still within the cooldown window. This is a SELECTION refusal: the
-        // mint is on temporary blackout to break the death-by-a-thousand-cuts re-
-        // entry loop. Checked BEFORE the economic gate to avoid wasted pricing work.
-        // When disabled (reentry_cooldown_enable=false) the set is never populated,
-        // so this entire block is a no-op on the golden path.
-        if self.cfg.reentry_cooldown_enable {
-            if let Some(&exit_tick) = self.reentry_cooldown.get(&mint_bytes) {
-                let elapsed = self.now.saturating_sub(exit_tick);
-                if elapsed < self.cfg.reentry_cooldown_ticks {
-                    self.reject(REJECT_REENTRY_COOLDOWN);
-                    self.journal.record(Decision::Rejected {
-                        mint: mint_bytes,
-                        reason: REJECT_REENTRY_COOLDOWN,
-                    });
-                    return None;
-                } else {
-                    // Cooldown expired — prune the stale entry lazily.
-                    self.reentry_cooldown.remove(&mint_bytes);
-                }
-            }
-        }
-        // BENEFIT-SIDE PRICING — ONE ESTIMATE, COMPUTED ONCE, WITH ITS PROVENANCE.
-        //
-        // `gate::decide` compared a per-candidate MEASURED cost against a GLOBAL
-        // CONSTANT benefit (`docs/EDGE_PROVENANCE_2026-07-27.md` §4) while §23
-        // arbitration, a few hundred lines below, priced the SAME trade off the lane's
-        // realized expectancy. Two estimators, one trade, and no record of which had
-        // spoken. `PricedMove` is computed HERE, once, and is the only expected move
-        // either decision can see (`docs/DEPTH_AND_MOVE_PROVENANCE_PLAN_2026-07-28.md`
-        // §4.2). Precedence: the calibrated model when it is armed AND above its
-        // sample floor, else the lane's own realized evidence, else the cold-start
-        // constant — each recorded in the `MoveSource` the journal carries.
-        let model_estimate = if self.cfg.expected_move_model_enable {
-            let vsol = confirmation
-                .and_then(|c| c.depth.price_reserve())
-                .unwrap_or(0);
-            // EVERY conditioning signal the engine holds at gate time is presented. That
-            // is safe precisely because an UNCALIBRATED band contributes exactly zero
-            // (`expected_move::uncalibrated_signals_contribute_exactly_zero`), so wiring
-            // more signals can never add fabricated edge — only earned edge.
-            let obs = confirmation.map_or(crate::expected_move::SignalObs::none(), |c| {
-                crate::expected_move::SignalObs::from_features(
-                    c.numeric.buy_pressure_bp,
-                    c.numeric.unique_buyers,
-                    c.numeric.age_slots,
-                )
-            });
-            match self.expected_move.estimate(
-                vsol,
-                obs,
-                crate::expected_move::MoveParams {
-                    min_sample: self.cfg.expected_move_min_sample,
-                    prior_weight: self.cfg.expected_move_prior_weight,
-                    prior_bps: self.cfg.gate_expected_move_bps,
-                },
-            ) {
-                crate::expected_move::MoveVerdict::Known(e) => Some(e),
-                crate::expected_move::MoveVerdict::Unknown(_) => None,
-            }
-        } else {
-            None
-        };
-        let priced_move = self.priced_move(cand.lane, model_estimate.as_ref());
-        match decide(&cand, confirmation, &self.cfg, priced_move) {
-            GateDecision::Admit(band) => {
-                // The market's SOL-side reserve: the ONE number every cost term below
-                // derives from — the venue fee tier, the impact denominator, the
-                // round-trip bps. `gate::decide` refuses a zero reserve, so reaching
-                // this arm guarantees it is positive.
-                let conf_vsol = confirmation
-                    .and_then(|c| c.depth.price_reserve())
-                    .unwrap_or(0);
-                // §21.7 extreme fabrication signature — the only authenticity gate.
-                let (auth_bps, fabricated) = self.flow_screen.authenticity(&mint_bytes);
-                // §105 REPORT-plane extraction-risk accumulation (never feeds a
-                // decision, never journaled): fold the decayed wash-strength
-                // covariate (10_000 − authenticity) for evidenced flow. A neutral
-                // prior (no auth evidence) contributes nothing. This write only
-                // mutates the report-only ledger, so the golden digest is unchanged.
-                if self.flow_screen.has_auth_evidence(&mint_bytes) {
-                    let wash_strength = 10_000u32.saturating_sub(auth_bps);
-                    self.extraction_risk
-                        .observe(mint_bytes, u64::from(wash_strength), self.now);
-                }
-                if fabricated {
-                    self.reject(REJECT_FABRICATED_FLOW);
-                    self.journal.record(Decision::Rejected {
-                        mint: mint_bytes,
-                        reason: REJECT_FABRICATED_FLOW,
-                    });
-                    self.record_reject_sample(REJECT_FABRICATED_FLOW, mint_bytes);
-                    return None;
-                }
-                // §26 confirmed-creator-dump HARD VETO (operator-approved reversal):
-                // a market whose deployer is in a confirmed distribution is refused
-                // pre-entry — the prior "creator distribution is fade-only, never a
-                // veto" behaviour is reversed for the confirmed-dump regime.
-                if self.creator_dump_active(&mint_bytes) {
-                    self.reject(REJECT_CREATOR_DUMP);
-                    self.journal.record(Decision::Rejected {
-                        mint: mint_bytes,
-                        reason: REJECT_CREATOR_DUMP,
-                    });
-                    self.record_reject_sample(REJECT_CREATOR_DUMP, mint_bytes);
-                    return None;
-                }
-                // §70.10 anti-bundle fee-floor (LAW 10): a fully-saturated
-                // (near-zero cumulative fee) first-slot footprint for the
-                // advertised activity is a manufactured/wash launch — veto
-                // pre-entry. A merely-low footprint fades size later (below).
-                let (fee_floor_veto, _fee_fade) = self.fee_floor_verdict(&mint_bytes);
-                if fee_floor_veto {
-                    self.reject(REJECT_FEE_FLOOR);
-                    self.journal.record(Decision::Rejected {
-                        mint: mint_bytes,
-                        reason: REJECT_FEE_FLOOR,
-                    });
-                    self.record_reject_sample(REJECT_FEE_FLOOR, mint_bytes);
-                    return None;
-                }
-                // ---- §21.7/§70.1 HOLDER DISTRIBUTION SHAPE (the wave's decision
-                // change). Concentration, early-buyer capture and whale dominance,
-                // derived from the continuous holder ledger — reduce-only, and
-                // fail-open on an `Unknown` verdict (delta-only basis, truncated or
-                // thin ledger, or the law disarmed all yield `Clear`, which is the
-                // identity).
-                //
-                // The refusal is CONJUNCTIVE by operator-mandated requirement: §21.7
-                // states that bundle-adjusted top-N holding concentration is "a
-                // feature family and prior, never a standalone veto", and that
-                // "only extreme fabrication signatures may hard-reject". So the
-                // corroborating leg is the INDEPENDENT flow-authenticity reading —
-                // computed over per-entity QUOTE-lamport gross flow, where the
-                // concentration is computed over per-entity BASE-token net
-                // positions. It is deliberately read WITHOUT the holder evidence
-                // (`authenticity`, not `authenticity_with`): letting the holder
-                // ledger corroborate itself would make the conjunction decorative.
-                let conc = self.concentration_verdict(&mint_bytes);
-                let conc_corroborated = self.flow_screen.has_auth_evidence(&mint_bytes)
-                    && auth_bps <= CONCENTRATION_VETO_AUTH_BPS;
-                let conc_risk = conc.risk_or_clear(conc_corroborated);
-                if conc_risk == ConcentrationRisk::Veto {
-                    self.reject(REJECT_HOLDER_CONCENTRATION);
-                    self.journal.record(Decision::Rejected {
-                        mint: mint_bytes,
-                        reason: REJECT_HOLDER_CONCENTRATION,
-                    });
-                    // Feeds the §49 ConvexityPreservationLedger through the shared
-                    // veto path, which is the audit the operator requires of
-                    // this family's veto/downweight effects.
-                    self.record_reject_sample(REJECT_HOLDER_CONCENTRATION, mint_bytes);
-                    return None;
-                }
-
-                // ---- §Quant-Rev-1: BUNDLE DETECTION hard veto ----
-                // Same-slot buy count ≥ threshold AND/OR same-slot supply
-                // concentration > threshold. Uses the ConcentrationVerdict's
-                // bundle_entities field (already computed by holder_flow).
-                // Fail-open: Unknown verdict or feature OFF → no reject.
-                if self.cfg.bundle_detect_enable {
-                    let conc_full = self.holder_concentration(&mint_bytes);
-                    if let ConcentrationVerdict::Known(ref metrics) = conc_full {
-                        // Rev-1a: bundle count veto — ≥N buys in creation slot
-                        if metrics.bundle_entities >= self.cfg.bundle_detect_min_same_slot_buys {
-                            self.reject(REJECT_BUNDLE_DETECTED);
-                            self.journal.record(Decision::Rejected {
-                                mint: mint_bytes,
-                                reason: REJECT_BUNDLE_DETECTED,
-                            });
-                            self.record_reject_sample(REJECT_BUNDLE_DETECTED, mint_bytes);
-                            return None;
-                        }
-                        // Rev-1b: bundle concentration veto — same-slot buyers
-                        // collectively hold > threshold % of float
-                        let conc_bps = conc_full.screen_concentration_bps();
-                        if conc_bps > self.cfg.bundle_concentration_max_bps
-                            && metrics.bundle_entities > 0
-                        {
-                            self.reject(REJECT_BUNDLE_CONCENTRATION);
-                            self.journal.record(Decision::Rejected {
-                                mint: mint_bytes,
-                                reason: REJECT_BUNDLE_CONCENTRATION,
-                            });
-                            self.record_reject_sample(REJECT_BUNDLE_CONCENTRATION, mint_bytes);
-                            return None;
-                        }
-                    }
-                }
-
-                // ---- §Quant-Rev-2: DEV WALLET GRADING hard veto ----
-                // Deployer has < threshold graduation rate over ≥ min_launches
-                // prior mints. Uses the existing deployer_screen_mult_bp
-                // infrastructure. Fail-open: no prior history → identity.
-                if self.cfg.dev_history_reject_enable {
-                    let dev_mult = self.deployer_screen_mult_bp(&mint_bytes);
-                    // deployer_screen_mult_bp returns a haircut in bps of 10_000.
-                    // A mult ≤ dev_graduation_min_rate_bp means the deployer's
-                    // effective graduation rate is below the floor.
-                    let creator = self.mint_creator.get(&mint_bytes);
-                    let launches = creator
-                        .and_then(|c| self.creator_launches.get(c))
-                        .map(|&(lifetime, _, _)| lifetime)
-                        .unwrap_or(0);
-                    if dev_mult < self.cfg.dev_graduation_min_rate_bp
-                        && u64::from(launches) >= self.cfg.dev_history_min_launches as u64
-                    {
-                        self.reject(REJECT_DEV_HISTORY);
-                        self.journal.record(Decision::Rejected {
-                            mint: mint_bytes,
-                            reason: REJECT_DEV_HISTORY,
-                        });
-                        self.record_reject_sample(REJECT_DEV_HISTORY, mint_bytes);
-                        return None;
-                    }
-                }
-
-                // ---- §Quant-Rev-3: COORDINATED FUNDING hard veto ----
-                // >70% of first-10 buyers share a common funding source.
-                // Uses the existing wallet_graph funding edges. Fail-open
-                // when graph data is insufficient (§6.4).
-                if self.cfg.coordinated_funding_reject_enable {
-                    if self.detect_coordinated_funding(&mint_bytes) {
-                        self.reject(REJECT_COORDINATED_FUNDING);
-                        self.journal.record(Decision::Rejected {
-                            mint: mint_bytes,
-                            reason: REJECT_COORDINATED_FUNDING,
-                        });
-                        self.record_reject_sample(REJECT_COORDINATED_FUNDING, mint_bytes);
-                        return None;
-                    }
-                }
-
-                // ---- §Quant-Rev-6: EXIT LIQUIDITY hard veto ----
-                // Fewer than min_holders genuinely independent holders.
-                // Uses the holder_flow unique buyer count, deflated by
-                // the funding-graph-linked cluster size. Fail-open on Unknown.
-                if self.cfg.exit_liquidity_reject_enable {
-                    let conc_full = self.holder_concentration(&mint_bytes);
-                    if let ConcentrationVerdict::Known(ref metrics) = conc_full {
-                        let unique_holders = metrics.holders;
-                        if unique_holders < self.cfg.exit_liquidity_min_holders as u32 {
-                            self.reject(REJECT_INSUFFICIENT_EXIT_LIQUIDITY);
-                            self.journal.record(Decision::Rejected {
-                                mint: mint_bytes,
-                                reason: REJECT_INSUFFICIENT_EXIT_LIQUIDITY,
-                            });
-                            self.record_reject_sample(
-                                REJECT_INSUFFICIENT_EXIT_LIQUIDITY,
-                                mint_bytes,
-                            );
-                            return None;
-                        }
-                    }
-                }
-
-                // ---- VPIN extreme tier (the one binary veto): a distributed,
-                // sell-dominant dump in progress. Graded tiers only shrink size.
-                let vp = self.vpin_params();
-                let vpin_reading = self
-                    .vpin
-                    .get(&mint_bytes)
-                    .and_then(|v| v.reading(self.now, &vp));
-                let vpin_mult = vpin_size_mult_bp(vpin_reading, &self.vpin_thresholds());
-                if vpin_mult == 0 {
-                    self.reject(REJECT_VPIN_TOXIC);
-                    self.journal.record(Decision::Rejected {
-                        mint: mint_bytes,
-                        reason: REJECT_VPIN_TOXIC,
-                    });
-                    self.record_reject_sample(REJECT_VPIN_TOXIC, mint_bytes);
-                    return None;
-                }
-                // ---- Concurrency cap (§33: jointly sized with the risk fractions —
-                // max_concurrent × f_base ≈ total_risk_cap). Journaled, never silent.
-                if self.positions.len() >= self.cfg.max_concurrent_positions {
-                    self.reject(REJECT_MAX_CONCURRENT);
-                    self.journal.record(Decision::Rejected {
-                        mint: mint_bytes,
-                        reason: REJECT_MAX_CONCURRENT,
-                    });
-                    return None;
-                }
-                // ---- Bankroll chain (§33 Layer 1 / delta-§1): every limit derives
-                // from deployable = balance − survival_floor. Start with ANY SOL
-                // amount — the fractions are scale-invariant; the per-market cost
-                // floor x_min carves out what the venue can economically serve. The
-                // floor basis is the bankroll ORIGIN's seed (paper seed for
-                // Paper/Replay — byte-identical; reconciled wallet for a live origin).
-                let floor = derive_survival_floor(
-                    self.bankroll_origin.seed_lamports(),
-                    self.cfg.floor_fraction_bps,
-                );
-                let balance = self.bankroll_balance();
-                let deployable = deployable_capital(balance, floor);
-                let risk_budget =
-                    u128::from(deployable) * u128::from(self.cfg.total_risk_cap_bp) / 10_000;
-                let available_risk = risk_budget.saturating_sub(self.bankroll_committed);
-                if deployable == 0 || available_risk == 0 {
-                    self.reject(REJECT_INSUFFICIENT_BANKROLL);
-                    self.journal.record(Decision::Rejected {
-                        mint: mint_bytes,
-                        reason: REJECT_INSUFFICIENT_BANKROLL,
-                    });
-                    return None;
-                }
-                // ---- Per-position fraction (drawdown-ratcheted) × reduce-only
-                // haircuts: creator/category × VPIN toxicity × tape regime.
-                let mut f_eff = self.dd_f_eff_bp(balance);
-                // §33 Layer-2 controller: the sizing validator's survival-constrained
-                // recommendation may only move f INSIDE the [probe_f, f_base] envelope
-                // (§56.2), and never above the drawdown-ratcheted fraction.
-                if let Some(rec) = self.f_recommended {
-                    f_eff = f_eff.min(rec.clamp(self.cfg.probe_f_bp, self.cfg.f_base_bp));
-                }
-                let regime = self.numeric.regime_of(
-                    domain_mint,
-                    self.cfg.roll_trend_bp,
-                    self.cfg.roll_revert_bp,
-                );
-                let regime_mult: u32 = if regime == Regime::Revert {
-                    self.cfg.revert_size_mult_bp
-                } else {
-                    10_000
-                };
-                // §21.7 single-channel authenticity multiplier (phase-weighted) and
-                // §27 creator-credibility haircut — both reduce-only.
-                let is_pool = self.context.is_pool(&mint_bytes);
-                // The bundle/sniper cohort size and the bump/wash flip ratio are
-                // AUTHENTICITY evidence, so they enter through the authenticity
-                // multiplier and nowhere else — §21.7 admits exactly one entry
-                // point per feature into the sizing chain. The concentration
-                // SHARES are a different quantity (fragility, not fabrication) and
-                // enter through `conc_mult` below; no number is charged twice.
-                // `HolderAuthEvidence::default()` under an `Unknown` verdict makes
-                // this call byte-identical to the plain `size_mult_bp`.
-                let auth_mult = self.flow_screen.size_mult_bp_with(
-                    &mint_bytes,
-                    is_pool,
-                    conc.auth_evidence_or_default(),
-                );
-                // §21.7/§70.1 concentration fragility haircut — reduce-only, and
-                // exactly 10 000 (identity) under `Clear`, which is what every
-                // `Unknown` verdict and the disarmed law both produce.
-                let conc_mult: u32 = conc_risk.size_mult_bp();
-                let cred_mult = match self
-                    .mint_creator
-                    .get(&mint_bytes)
-                    .and_then(|c| self.creator_launches.get(c))
-                {
-                    Some(&(lifetime, _, in_window)) => creator_credibility_haircut_bp(
-                        lifetime,
-                        in_window,
-                        CREATOR_SERIAL_THRESHOLD,
-                    ),
-                    None => 10_000,
-                };
-                // §70.9 deployer-credibility screen (LAW 10, reduce-only): the
-                // wallet-graph deployer_credibility bundle (prior-CA + serial-
-                // deploy burst), CLASS-CONDITIONED by the §27 known-extractor
-                // verdict. Identity when the screen is off or nothing is known
-                // about the deployer (golden-safe).
-                let deployer_mult: u32 = if self.cfg.deployer_screen_enable {
-                    self.deployer_screen_mult_bp(&mint_bytes)
-                } else {
-                    10_000
-                };
-                // §70.10 fee-floor GRADED fade (LAW 10, reduce-only): a low-but-
-                // not-vetoed first-slot footprint shrinks size proportionally. The
-                // fully-saturated signature already vetoed above.
-                let (_veto, fee_fade_bps) = self.fee_floor_verdict(&mint_bytes);
-                let fee_mult: u32 = 10_000u32.saturating_sub(fee_fade_bps.min(10_000));
-                // §21.3 regime consumption: elevated market-wide rug rate shrinks size.
-                let rug_mult: u32 = if self.regime_rug_elevated {
-                    REGIME_RUG_HAIRCUT_BP
-                } else {
-                    10_000
-                };
-                // §21.6 bar-structure factor — REDUCE-ONLY (§56.2 envelope): a
-                // Downtrend swing structure contradicting the long entry shrinks
-                // size; confirmed or undefined structure is identity. Structure
-                // never authorizes and never boosts above the §33 fraction.
-                let struct_mult: u32 = if self
-                    .structure
-                    .trend(&mint_bytes, self.cfg.structure_min_bars)
-                    == TrendStructure::Downtrend
-                {
-                    self.cfg.structure_downtrend_haircut_bp
-                } else {
-                    10_000
-                };
-                let base_haircut_bp = (u128::from(self.size_haircut_bps(&mint_bytes))
-                    * u128::from(vpin_mult)
-                    / 10_000
-                    * u128::from(regime_mult)
-                    / 10_000
-                    * u128::from(auth_mult)
-                    / 10_000
-                    * u128::from(cred_mult)
-                    / 10_000
-                    * u128::from(deployer_mult)
-                    / 10_000
-                    * u128::from(fee_mult)
-                    / 10_000
-                    * u128::from(rug_mult)
-                    / 10_000
-                    * u128::from(struct_mult)
-                    / 10_000
-                    * u128::from(conc_mult)
-                    / 10_000) as u32;
-                let raw = u128::from(deployable) * u128::from(f_eff) / 10_000;
-                // ---- LAWs B1/B3: the episodic capture and the reduce-only recall
-                // verdict. The fingerprint's round-trip-cost field is measured at the
-                // PRE-BRAIN size (`raw` under the existing reduce-only chain), so the
-                // brain's own haircut can never feed back into the fingerprint it
-                // queries with — a feedback loop there would make the law
-                // self-referential and its A/B meaningless.
-                let brain_entry: Option<BrainEntry> = if self.cfg.brain_enable {
-                    let pre_brain_size = (raw * u128::from(base_haircut_bp) / 10_000)
-                        .min(u128::from(band.x_max))
-                        .min(available_risk) as u64;
-                    // An UNDECODED quote yields no cost; the entry is rejected for
-                    // that reason further down regardless, so the `0` fallback here
-                    // can never reach a decision (§18.2 fails closed below).
-                    let pre_rt = self
-                        .unified_rt_bps(&mint_bytes, pre_brain_size, conf_vsol)
-                        .unwrap_or(0);
-                    Some(self.brain_entry_at_admit(&mint_bytes, cand.discovery_lane, pre_rt))
-                } else {
-                    None
-                };
-                // The verdict is COMPUTED in both arms of the A/B (identical work,
-                // identical counters) and only ACTED ON when `brain_haircut_enable`
-                // is set — so the A/B isolates the law, not the bookkeeping.
-                let brain_verdict = match &brain_entry {
-                    Some(e) => self.brain.size_verdict(
-                        e,
-                        self.cfg.brain_haircut_enable,
-                        self.cfg.brain_haircut_win_rate_bp,
-                        self.cfg.brain_veto_win_rate_bp,
-                        self.cfg.brain_haircut_mult_bp,
-                    ),
-                    None => BrainSizeVerdict::Identity,
-                };
-                if brain_verdict == BrainSizeVerdict::Veto {
-                    self.reject(REJECT_BRAIN_BLED);
-                    self.journal.record(Decision::Rejected {
-                        mint: mint_bytes,
-                        reason: REJECT_BRAIN_BLED,
-                    });
-                    self.record_reject_sample(REJECT_BRAIN_BLED, mint_bytes);
-                    return None;
-                }
-                // Reduce-only composition: `mult_bp()` is structurally ≤ 10_000, so
-                // this product can only ever shrink the size the rest of the chain
-                // arrived at (§29.5). With the law disarmed it is exactly 10_000 and
-                // `haircut_bp == base_haircut_bp` bit-for-bit.
-                let haircut_bp = (u128::from(base_haircut_bp) * u128::from(brain_verdict.mult_bp())
-                    / 10_000) as u32;
-                let sized = (raw * u128::from(haircut_bp) / 10_000)
-                    .min(u128::from(band.x_max))
-                    .min(available_risk);
-                // §27/§28 amendment: apply tracked-wallet trust boost (G5) and
-                // smart-money PnL-screen boost (§28 Phase 7) as additive bps
-                // lifts on the sized position. Both are DISABLED by default
-                // (tracked_wallet_boost_enable=false,
-                // smart_money_boost_enable=false), so the golden tape is
-                // byte-identical to the pre-amendment path. When enabled, the
-                // boost is capped at its respective max_bps and never exceeds
-                // x_max or available_risk (re-clamped after the lift).
-                let sized = {
-                    let mut boost_bp: u32 = 0;
-                    if self.cfg.tracked_wallet_boost_enable {
-                        boost_bp =
-                            boost_bp.saturating_add(self.tracked_wallet_boost_bp(&mint_bytes));
-                    }
-                    if self.cfg.smart_money_boost_enable {
-                        boost_bp = boost_bp.saturating_add(self.smart_money_boost_bp(&mint_bytes));
-                    }
-                    if boost_bp > 0 {
-                        let lifted = sized * u128::from(10_000u32 + boost_bp) / 10_000;
-                        lifted.min(u128::from(band.x_max)).min(available_risk)
-                    } else {
-                        sized
-                    }
-                };
-                // ---- Below effective x_min: CLAMP UP to the operator floor, or
-                // REFUSE if unsafe (criterion 112 / A-6). `band.x_min` is now the
-                // EFFECTIVE floor `max(min_trade_size, economic x_min)` (lifted in
-                // `gate::decide`). When the risk/Kelly-arbitrated size lands below it
-                // we promote UP to it — the operator's minimum bite — but ONLY if that
-                // still fits every HARD cap: no drawdown tier active (f_eff == f_base),
-                // the corroboration haircut is not risk-faded (never size UP a faded
-                // trade), and x_min fits the promote cap, the remaining risk budget,
-                // and x_max. If promoting would breach any hard cap → REFUSE (never
-                // shrink below the floor, never over-risk). The sub-x_min
-                // paid-information probe (§33/§43 LAW 13) is a SUB-FLOOR bet, so it is
-                // switched OFF whenever the floor is active (min_trade_size > 0); it
-                // survives only with the floor disabled (min_trade_size == 0), keeping
-                // the legacy path byte-identical and the golden tape coherent.
-                let size = if sized >= u128::from(band.x_min) {
-                    sized as u64
-                } else {
-                    // §33/§43 LAW 13 sub-x_min probe-budget accounting (floor-gated):
-                    // only reachable when the operator floor is disabled. With the
-                    // floor active every emitted bite is ≥ the floor, so a sub-x_min
-                    // (hence sub-floor) probe can never fire.
-                    if self.cfg.probe_budget_enable && self.cfg.min_trade_size_lamports == 0 {
-                        return self.account_sub_xmin_probe(mint_bytes, sized as u64);
-                    }
-                    let promote_cap =
-                        u128::from(deployable) * u128::from(self.cfg.x_min_promote_cap_bp) / 10_000;
-                    let promotable = f_eff == self.cfg.f_base_bp
-                        && haircut_bp >= self.cfg.promote_min_haircut_bp
-                        && u128::from(band.x_min) <= promote_cap
-                        && u128::from(band.x_min) <= available_risk
-                        && band.x_min <= band.x_max;
-                    if promotable {
-                        band.x_min
-                    } else {
-                        self.reject(REJECT_BELOW_COST_FLOOR);
-                        self.journal.record(Decision::Rejected {
-                            mint: mint_bytes,
-                            reason: REJECT_BELOW_COST_FLOOR,
-                        });
-                        self.record_reject_sample(REJECT_BELOW_COST_FLOOR, mint_bytes);
-                        return None;
-                    }
-                };
-                // ---- Survival-floor guard (strategy leaf pl_wallet_floor): the
-                // entry spend may never push the balance below the floor.
-                // COST-MODEL UNIFICATION: the entry leg is priced by the SAME
-                // authority the gate admitted under — the venue's tiered per-leg fee
-                // against THIS market's reserve, one landed transaction's fixed cost,
-                // and (only when we do not already hold a token account for the mint)
-                // the refundable ATA rent deposit. The deposit is returned, less one
-                // signature, by `book_exit` when the position fully closes; carrying
-                // it in the basis is what makes the 203 bps difference between a round
-                // trip that finishes and one that abandons its account VISIBLE in the
-                // realized net rather than invisible in nobody's model.
-                let entry_vsol = conf_vsol;
-                let entry_fee = (u128::from(size)
-                    * u128::from(crate::cost_model::venue_fee_bps_per_leg(entry_vsol))
-                    / 10_000) as u64;
-                let needs_ata = !self.ata_open.contains(&mint_bytes);
-                let entry_cost = size
-                    .saturating_add(entry_fee)
-                    .saturating_add(crate::cost_model::FIXED_LAMPORTS_PER_LEG)
-                    .saturating_add(if needs_ata {
-                        crate::cost_model::ATA_RENT_LAMPORTS
-                    } else {
-                        0
-                    });
-                if wallet_floor_guard(entry_cost, balance, floor) == FloorVerdict::RefusedBelowFloor
-                {
-                    self.reject(REJECT_WALLET_FLOOR);
-                    self.journal.record(Decision::Rejected {
-                        mint: mint_bytes,
-                        reason: REJECT_WALLET_FLOOR,
-                    });
-                    return None;
-                }
-                // ---- G4/G5: the payability buffer reserves the CLIP'S OWN ROUND TRIP, and the
-                // book carries an aggregate exposure cap.
-                //
-                // `wallet_floor_guard` above reserves the ENTRY leg (clip + entry fee + one
-                // fixed leg + ATA rent). It charges no exit-leg cost and no own price impact on
-                // either leg, so the clip that fits the floor exactly is the clip whose impact
-                // pushes it through — the impact term scales with `clip / vsol`, which is
-                // largest exactly when the book is thinnest. `cost_model::round_trip_lamports`
-                // is the single authority for that cost (fees on BOTH legs, own impact on BOTH
-                // legs, the exit tranches' fixed legs, and the ATA terms), so the reserve is
-                // built from it rather than from a second, locally-invented form.
-                //
-                // The aggregate cap is the risk budget the sizing chain already sizes against:
-                // the same number, now checked as a BOOK-level limit with the clip's cost
-                // counted, so a full book cannot admit a clip whose own round trip would take
-                // total exposure past it.
-                let rt_cost =
-                    crate::cost_model::round_trip_lamports(&crate::cost_model::CostInputs {
-                        notional_lamports: size,
-                        vsol_lamports: entry_vsol,
-                        fee_bps_per_leg: crate::cost_model::venue_fee_bps_per_leg(entry_vsol),
-                        fixed_lamports_per_leg: crate::cost_model::FIXED_LAMPORTS_PER_LEG,
-                        fail_rate_bps: self.cfg.gate_fail_rate_bps,
-                        exit_tranches: self.cfg.gate_exit_tranches,
-                        needs_ata,
-                        reclaims_ata: true,
-                    });
-                let payability =
-                    crate::portfolio::payability(&crate::portfolio::PayabilityInputs {
-                        free_cash_lamports: balance,
-                        committed_lamports: self.bankroll_committed,
-                        floor_lamports: floor,
-                        clip_lamports: size,
-                        round_trip_lamports: rt_cost,
-                        live_exposure_lamports: self.bankroll_committed,
-                        total_exposure_cap_lamports: risk_budget,
-                    });
-                if let Err(why) = payability {
-                    let code = match why {
-                        crate::portfolio::PayabilityRefusal::Unpriceable => {
-                            REJECT_PAYABILITY_UNPRICED
-                        }
-                        crate::portfolio::PayabilityRefusal::FloorBreached => {
-                            REJECT_INSUFFICIENT_CASH
-                        }
-                        crate::portfolio::PayabilityRefusal::ExposureCapReached => {
-                            REJECT_EXPOSURE_CAP
-                        }
-                    };
-                    self.reject(code);
-                    self.journal.record(Decision::Rejected {
-                        mint: mint_bytes,
-                        reason: code,
-                    });
-                    self.record_reject_sample(code, mint_bytes);
-                    return None;
-                }
-                // §34.4/§21.7 phase-correct exit-cost law: if the executable exit side
-                // already consumes the priced move, the trade is a structural loss.
-                // §18.2/§6.4 UNKNOWN fails CLOSED: sizing without a priced exit is
-                // not allowed to proceed on a fabricated number — an unpriceable
-                // exit is treated exactly like an unaffordable one.
-                match self.context.exit_cost_bps(&mint_bytes, size) {
-                    Some(exit_cost)
-                        if exit_cost
-                            <= self
-                                .cfg
-                                .gate_expected_move_bps
-                                .saturating_mul(EXIT_COST_VETO_MULT) => {}
-                    _ => {
-                        self.reject(REJECT_EXIT_COST);
-                        self.journal.record(Decision::Rejected {
-                            mint: mint_bytes,
-                            reason: REJECT_EXIT_COST,
-                        });
-                        self.record_reject_sample(REJECT_EXIT_COST, mint_bytes);
-                        return None;
-                    }
-                }
-                // Fully priced: hand to §23 arbitration. Expected net per slot =
-                // size × priced move − the round-trip cost load — conditional
-                // expected net SOL, never raw discovery score.
-                let spot_price = self.numeric.latest_price_fp(domain_mint).unwrap_or(0);
-                if spot_price == 0 {
-                    self.reject(REJECT_PRICING_FAILURE);
-                    self.journal.record(Decision::Rejected {
-                        mint: mint_bytes,
-                        reason: REJECT_PRICING_FAILURE,
-                    });
-                    self.record_reject_sample(REJECT_PRICING_FAILURE, mint_bytes);
-                    return None;
-                }
-                // §24/criterion 103 FILL FIDELITY: pump.fun is a constant-product curve,
-                // so OUR OWN order does not fill at the observed print — it fills at the
-                // average along the curve, which is strictly worse by exactly
-                // `size · 10_000 / vsol` bps (the token reserve cancels; see
-                // `curve_fill::own_impact_bps`). Filling at the print is a subsidy the
-                // market never granted, on every entry. Disarmed by default so the
-                // historical pins hold; MUST be armed for any real-data backtest.
-                let entry_price = if self.cfg.curve_exact_fill_enable {
-                    // Same fresh snapshot `latest_price_fp` came from — the pool's SOL
-                    // side is the curve depth our order walks.
-                    let vsol = self
-                        .numeric
-                        .features_for(domain_mint)
-                        .map_or(0, |f| f.liquidity_lamports);
-                    // Unknown depth ⇒ refuse, never guess (§6): fail-closed with
-                    // full reject accounting — preserves promoted = admitted + rejected.
-                    match crate::curve_fill::buy_fill_price_fp(spot_price, vsol, size) {
-                        Some(p) => p,
-                        None => {
-                            self.reject(REJECT_PRICING_FAILURE);
-                            self.journal.record(Decision::Rejected {
-                                mint: mint_bytes,
-                                reason: REJECT_PRICING_FAILURE,
-                            });
-                            self.record_reject_sample(REJECT_PRICING_FAILURE, mint_bytes);
-                            return None;
-                        }
-                    }
-                } else {
-                    spot_price
-                };
-                if entry_price == 0 {
-                    self.reject(REJECT_PRICING_FAILURE);
-                    self.journal.record(Decision::Rejected {
-                        mint: mint_bytes,
-                        reason: REJECT_PRICING_FAILURE,
-                    });
-                    self.record_reject_sample(REJECT_PRICING_FAILURE, mint_bytes);
-                    return None;
-                }
-                // Priced with the SAME §34.4 economics the gate admitted under, so a
-                // size the band declared viable ranks with a non-negative expected
-                // net (move − round-trip cost at this size), in lamports.
-                // §94 quote-mint-parametric cost, now priced by the ONE authority
-                // (`cost_model`) rather than by a second restatement of the gate's
-                // arithmetic. An UNDECODED quote fails closed here (never priced as
-                // assumed-SOL).
-                let rt_bps = match self.unified_rt_bps(&mint_bytes, size, conf_vsol) {
-                    Some(bps) => bps,
-                    None => {
-                        self.reject(REJECT_UNDECODED_QUOTE);
-                        self.journal.record(Decision::Rejected {
-                            mint: mint_bytes,
-                            reason: REJECT_UNDECODED_QUOTE,
-                        });
-                        self.record_reject_sample(REJECT_UNDECODED_QUOTE, mint_bytes);
-                        return None;
-                    }
-                };
-                // **ONE EXPECTED MOVE PER TRADE (silo audit F1, 2026-07-28).** This is
-                // the SAME `PricedMove` the size band was priced with, a few hundred
-                // lines above — not a second estimate, and no longer even a second
-                // number that could be fetched. Arbitration used to reach
-                // independently for `conditional_edge_bps` (the lane's realized
-                // expectancy, ~6 numbers for the whole universe) while admission used
-                // the global `gate_expected_move_bps` constant; once a lane cleared
-                // `expectancy_min_lane_trades` the two diverged permanently, and
-                // neither site was wrong on its own terms. That is the cost-model
-                // defect (`docs/NET_SOL_AUDIT_2026-07-28.md` F2) reappearing in the
-                // BENEFIT term: admission priced one trade, ranking ranked a different
-                // one.
-                //
-                // The RANKING view is used here, and the ADMISSION view priced the
-                // band above. They are two questions, not two answers to one (see
-                // `priced_move`): §18 asks whether this trade beats its own costs,
-                // which is a POPULATION question; §23/§24 asks which admissible
-                // candidate takes a scarce slot, which §24 conditions on the lane's
-                // paper-realized expectancy — a quantity §38 explicitly forbids from
-                // becoming promotion evidence, and which therefore must never acquire
-                // an admission veto. Once the calibrated model speaks, both views are
-                // the same number from the same source, which is the case the silo
-                // actually broke.
-                let edge_bps = priced_move.ranking_bps() - i128::from(rt_bps);
-                let expected_net = i128::from(size).saturating_mul(edge_bps) / 10_000;
-                // §49 LAW 15 haircut convexity (reduced-vs-full size): when the
-                // reduce-only multipliers shrank the size below the full §33
-                // fraction, record a two-sided event whose counterfactual is the
-                // full-size priced edge and whose realized side is that edge scaled
-                // by the applied size fraction — the slice actually taken, never a
-                // phantom all-or-nothing.
-                if haircut_bp < 10_000 {
-                    let full_cf = edge_bps.clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64;
-                    self.analytics
-                        .record_convexity_mark(&ConvexityMark::Haircut {
-                            rule: RuleId::new(
-                                RuleKind::ConfidenceReducer,
-                                cand.lane.index() as u64,
-                            ),
-                            full_counterfactual_bps: full_cf,
-                            applied: SizeFraction::new(u64::from(haircut_bp), 10_000),
-                            mfe_bps: full_cf.max(0),
-                        });
-                }
-                Some(PendingEntry {
-                    lane: cand.lane,
-                    discovery_lane: cand.discovery_lane,
-                    archetype: self.classify_archetype(&mint_bytes),
-                    mint: mint_bytes,
-                    entry_price,
-                    size,
-                    entry_cost,
-                    expected_net,
-                    round_trip_cost_bps: rt_bps,
-                    entry_vsol: conf_vsol,
-                    entry_obs: confirmation.map_or(crate::expected_move::SignalObs::none(), |c| {
-                        crate::expected_move::SignalObs::from_features(
-                            c.numeric.buy_pressure_bp,
-                            c.numeric.unique_buyers,
-                            c.numeric.age_slots,
-                        )
-                    }),
-                    x_min: band.x_min,
-                    x_cost: band.x_cost,
-                    x_max: band.x_max,
-                    priced_move,
-                    depth_basis: confirmation.map_or(0, |c| c.depth.basis_code()),
-                    brain: brain_entry,
-                    t_dec: if self.outbound_sink.is_some() {
-                        Some(Instant::now())
-                    } else {
-                        None
-                    },
-                })
-            }
-            GateDecision::Reject(reason) => {
-                let code = reject_code(reason);
-                self.reject(code);
-                self.journal.record(Decision::Rejected {
-                    mint: mint_bytes,
-                    reason: code,
-                });
-                self.record_reject_sample(code, mint_bytes);
-                None
-            }
-        }
-    }
-
-    /// §33/§43 LAW 13: account a sub-`x_min` candidate as a budgeted calibration
-    /// probe (paid information) instead of opening it as a position. Routes the
-    /// intended (sub-floor) spend through the calibration ledger under the paper
-    /// route; on admission the spend is journalled as a labeled [`Decision::Probe`]
-    /// and the research counter advances; on refusal (any cap exhausted) it is a
-    /// below-cost-floor rejection (reuses code 7 — no new reject code). Always
-    /// returns `None`: a probe is never a pending position.
-    fn account_sub_xmin_probe(
-        &mut self,
-        mint: [u8; 32],
-        intended_spend: u64,
-    ) -> Option<PendingEntry> {
-        let req = CalibrationRequest {
-            cost_lamports: intended_spend.max(1),
-            day: 0,
-            measurement_id: Some(fnv1a_64(&mint) as u32),
-            route: Some(RouteId(PROBE_ROUTE_ID)),
-        };
-        match admit_calibration(&self.calibration, &req) {
-            Ok((updated, label)) => {
-                self.calibration = updated;
-                self.probes_budgeted += 1;
-                self.journal.record(Decision::Probe {
-                    mint,
-                    cost_lamports: label.research_cost_lamports,
-                    measurement_id: label.measurement_id,
-                });
-            }
-            Err(_) => {
-                self.reject(REJECT_BELOW_COST_FLOOR);
-                self.journal.record(Decision::Rejected {
-                    mint,
-                    reason: REJECT_BELOW_COST_FLOOR,
-                });
-                self.record_reject_sample(REJECT_BELOW_COST_FLOOR, mint);
-            }
-        }
-        None
-    }
-
     /// §43 LAW 13 probe-budget telemetry (report-only): lifetime probe spend
     /// (lamports) accounted through the calibration ledger and the count of
     /// budgeted paid-information probes admitted. A probe is never a position, so
@@ -4173,166 +3485,6 @@ impl Engine {
     #[must_use]
     pub fn probe_budget_report(&self) -> (u64, u64) {
         (self.calibration.spent_lifetime, self.probes_budgeted)
-    }
-
-    /// Feed a gate rejection into the PRFS forward-marking ring (§47c) at the
-    /// mint's latest decoded price, and (§49 LAW 15) record the rejection as a
-    /// two-sided VETO convexity event (counterfactual-vs-zero): the full
-    /// unsuppressed position's signed counterfactual vs the realized zero (nothing
-    /// was taken), so a veto is scored on the loss it avoided AND the upside it
-    /// forwent — never a degenerate self-cancelling event.
-    fn record_reject_sample(&mut self, gate_code: u8, mint: [u8; 32]) {
-        let cf = self.veto_counterfactual_bps(&mint);
-        self.analytics.record_convexity_mark(&ConvexityMark::Veto {
-            rule: RuleId::new(RuleKind::Veto, u64::from(gate_code)),
-            counterfactual_bps: cf,
-            mfe_bps: cf.max(0),
-        });
-        if let Some(price) = self.numeric.latest_price_fp(DomainMint::from_bytes(mint)) {
-            let archetype = self.classify_archetype(&mint);
-            self.analytics
-                .record_reject(gate_code, mint, price, self.now, archetype);
-        }
-    }
-
-    /// §49 LAW 15 signed veto counterfactual (bps): the magnitude is the market's
-    /// recent realized volatility over the vol-stop window (or the configured
-    /// expected move when no bars exist yet), signed by the recent swing structure
-    /// — a downtrend at veto time means the full position would have taken the
-    /// downside (negative counterfactual = loss avoided), otherwise it would have
-    /// had upside exposure (positive = upside forgone). Honest and deterministic:
-    /// observed structure, never a fabricated forward price.
-    fn veto_counterfactual_bps(&self, mint: &[u8; 32]) -> i64 {
-        let mag = self
-            .structure
-            .recent_vol_bps(mint, VOL_STOP_WINDOW_BARS)
-            .map(|v| v.clamp(0, i128::from(i64::MAX)) as i64)
-            .filter(|&v| v > 0)
-            .unwrap_or_else(|| i64::from(self.cfg.gate_expected_move_bps));
-        match self.structure.trend(mint, self.cfg.structure_min_bars) {
-            TrendStructure::Downtrend => -mag,
-            _ => mag,
-        }
-    }
-
-    /// Rev-14 wangr intelligence: enrich a `Features` snapshot with auxiliary
-    /// data stored from `MarketAuxiliary` events (token_standard, symbol_len),
-    /// the latest `TimeSignal` (dow, hour_utc), and the creator's launch count
-    /// from the `mint_creator`/`creator_launches` maps. When no auxiliary data
-    /// was fed, all fields stay at their Default sentinels (0, 255) which are
-    /// no-ops for every wangr gate filter — byte-identical to prior behavior.
-    #[must_use]
-    fn enrich_wangr_features(&self, mut f: Features, mint: &[u8; 32]) -> Features {
-        if let Some(&(ts, sym_len)) = self.mint_aux.get(mint) {
-            f.token_standard = ts;
-            f.symbol_len = sym_len;
-        }
-        let (dow, hour_utc) = self.time_signal;
-        f.dow = dow;
-        f.hour_utc = hour_utc;
-        if let Some(&creator) = self.mint_creator.get(mint) {
-            if let Some(&(launches, _, _)) = self.creator_launches.get(&creator) {
-                f.creator_launches = launches;
-            }
-        }
-        f
-    }
-
-    /// Narrative precondition enrichment (operator ruling 2026-09-26).
-    ///
-    /// Copies the per-mint narrative verdict onto the gate's `Features`
-    /// snapshot. A mint that never received a `NarrativeResolved` event keeps the
-    /// zero sentinel, which the gate reads as UNOBSERVED and ADMITS: the
-    /// precondition can only act on a verdict that actually exists, and a market
-    /// whose name was never resolved must not be refused by a filter that never
-    /// ran. Enrichment is impl-level (not nested in `gate_evaluate`) for the same
-    /// reason `enrich_wangr_features` is.
-    fn enrich_narrative_features(&self, mut f: Features, mint: &[u8; 32]) -> Features {
-        if let Some(&(verdict, stage, family, version)) = self.mint_narrative.get(mint) {
-            f.narrative_verdict = verdict;
-            f.narrative_stage = stage;
-            f.narrative_family = family;
-            f.narrative_lexicon_version = version;
-        }
-        f
-    }
-
-    /// §24 LAW 11: the EntryMode detector leaves' contribution to admission. When
-    /// `entry_mode_leaves_enable` is set, map the strategy predicates onto the
-    /// engine's lane selection via the `SuggestedLane` discriminant mirror:
-    ///
-    /// * `detect_pullback_continuation` → **active-market-scalp eligibility**: a
-    ///   controlled pullback holding a retest inside a confirmed uptrend admits an
-    ///   already-live market (payout depth derived from the observed reserve) even
-    ///   without a fresh `OnchainConfirm` — the setup the 4-lane confirm-gated
-    ///   logic misses. Returns a synthetic [`Confirmation`] for [`decide`], whose
-    ///   depth is DERIVED from the observed reserve by the curve identity rather than
-    ///   set equal to it (the retired code assigned `liquidity_lamports` — i.e. the
-    ///   VIRTUAL reserve — straight into the sellability cap).
-    /// * `detect_narrative_confirmation` → **dormant / admission-gated** (§28):
-    ///   the narrative feature family is not admitted in laptop replay, so the
-    ///   predicate returns `dormant` and authorizes nothing — the candidate stays
-    ///   gated on real on-chain confirmation.
-    ///
-    /// `None` when the law is off, the lane does not map, or the detector is not
-    /// eligible — in which case the gate's original confirmation stands.
-    #[must_use]
-    fn entry_mode_confirmation(
-        &self,
-        cand: &Candidate,
-        mint: &[u8; 32],
-        numeric_feats: Option<Features>,
-    ) -> Option<Confirmation> {
-        if !self.cfg.entry_mode_leaves_enable {
-            return None;
-        }
-        match cand.lane {
-            WlLane::ActiveMarketScalp => {
-                let numeric = numeric_feats?;
-                if numeric.liquidity_lamports == 0 {
-                    return None;
-                }
-                let pf = self
-                    .structure
-                    .pullback_features(mint, self.cfg.structure_min_bars)?;
-                let sig = detect_pullback_continuation(&pf, &PullbackParams::test());
-                if sig.eligible && sig.suggested_lane == SuggestedLane::ActiveMarketScalp {
-                    Some(Confirmation {
-                        depth: crate::curve_depth::CurveDepth::derived(numeric.liquidity_lamports),
-                        numeric,
-                    })
-                } else {
-                    None
-                }
-            }
-            WlLane::EarlyConfirmation => {
-                // §28 dormant/admission-gated: the narrative feature family is not
-                // admitted in laptop replay, so the predicate is inert and never
-                // synthesizes authority. Evaluated here so the leaf is genuinely
-                // wired (it is a no-op decision-wise, exactly as §28 requires).
-                let numeric = numeric_feats.unwrap_or_default();
-                let nf = NarrativeConfirmationFeatures {
-                    narrative_velocity: 0,
-                    confirming_independent_buyers: 0,
-                    confirming_net_inflow: 0,
-                    mechanically_sellable: numeric.liquidity_lamports > 0,
-                };
-                let sig =
-                    detect_narrative_confirmation(&nf, &NarrativeConfirmationParams::test(), false);
-                if sig.eligible
-                    && sig.suggested_lane == SuggestedLane::EarlyConfirmation
-                    && numeric.liquidity_lamports > 0
-                {
-                    Some(Confirmation {
-                        depth: crate::curve_depth::CurveDepth::derived(numeric.liquidity_lamports),
-                        numeric,
-                    })
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        }
     }
 
     /// §25 LAW 4: derive the setup archetype for a mint at admit/reject from its
@@ -4352,270 +3504,6 @@ impl Engine {
         {
             Some(state) => classify_setup(&state, &SetupThresholds::neutral()).archetype_id(),
             None => 0,
-        }
-    }
-
-    /// **LAW B1 — the entry-time episodic capture point.**
-    ///
-    /// Quantize the market state into a [`BrainEntry`] using ONLY facts that exist
-    /// before the position opens. This function is called exactly once per admit,
-    /// inside [`Self::gate_evaluate`], and its result is carried forward on the
-    /// pending entry and then the open position until the exit books.
-    ///
-    /// Why it must be here and nowhere else: a fingerprint computed at exit would
-    /// be a function of the price path it is supposed to predict. Recall over such
-    /// fingerprints would look spectacular in backtest and be worth nothing live —
-    /// it would be reading the answer off the back of the card. Every input below
-    /// is a `&self` read of state the engine already had at admit; there is no path
-    /// from a post-entry event into this value, and
-    /// `brain_laws::b1_fingerprint_has_no_look_ahead` pins that by mutating the
-    /// entire post-entry price path and asserting the recorded fingerprint is
-    /// byte-identical.
-    ///
-    /// `rt_bps` is the round-trip cost measured at the PRE-brain size, so LAW B3's
-    /// own action can never feed back into the fingerprint it queries with.
-    fn brain_entry_at_admit(
-        &self,
-        mint: &[u8; 32],
-        discovery_lane: DiscoveryLane,
-        rt_bps: u32,
-    ) -> BrainEntry {
-        use pump_quant_brain::episode::EpisodeContext;
-        use pump_quant_brain::fingerprint::{
-            signed_decade, CreatorClass as BrainCreatorClass, MetaSaturationState,
-            SetupFingerprint, SetupInputs, TrendStructure as BrainTrend, VenuePhase,
-        };
-
-        let domain_mint = DomainMint::from_bytes(*mint);
-        let feats = self.numeric.features_for(domain_mint).unwrap_or_default();
-        let mint_id = fnv1a_64(mint);
-
-        // Order-flow imbalance: the lane's 0..=10_000 buy-pressure scale re-centred
-        // on the balanced midpoint and rescaled to signed bps (§21.7).
-        let ofi_bps = (i64::from(feats.buy_pressure_bp) - i64::from(PRESSURE_BALANCED_BP)) * 2;
-
-        // Bar-derived structure: CVD decade, swing trend, range compression.
-        let state = self
-            .structure
-            .market_state(mint, self.cfg.structure_min_bars);
-        let cvd_decade = state.map_or(0, |s| signed_decade(s.cvd_delta));
-        let range_state = state.map_or(pump_quant_brain::fingerprint::RangeState::Normal, |s| {
-            range_state_of(u64::from(s.range_bps), u64::from(s.prior_range_bps))
-        });
-        let trend_structure = match self.structure.trend(mint, self.cfg.structure_min_bars) {
-            TrendStructure::Uptrend => BrainTrend::Up,
-            TrendStructure::Downtrend => BrainTrend::Down,
-            // Range and Undefined both collapse to the neutral middle: "no dominant
-            // swing direction" and "not enough swings to say" are the same bucket
-            // for similarity purposes (§6.4 — absence is not a third direction).
-            TrendStructure::Range | TrendStructure::Undefined => BrainTrend::Range,
-        };
-
-        // §21.7 burst lifecycle: recent arrival intensity against a longer baseline.
-        let short = self
-            .structure
-            .activity(mint, self.now, self.cfg.universe_window_ticks);
-        let long = self.structure.activity(
-            mint,
-            self.now,
-            self.cfg
-                .universe_window_ticks
-                .saturating_mul(BRAIN_BURST_BASELINE_MULT),
-        );
-        let burst_phase = burst_phase_of(short.trades, long.trades, BRAIN_BURST_BASELINE_MULT);
-
-        let realized_vol_bps = self
-            .structure
-            .recent_vol_bps(mint, VOL_STOP_WINDOW_BARS)
-            .map_or(0i64, |v| v.clamp(0, i128::from(i64::MAX)) as i64);
-
-        let venue_phase = if self.context.is_pool(mint) {
-            VenuePhase::Pool
-        } else {
-            VenuePhase::Curve
-        };
-
-        // §21.4 attention / narrative. Absent attention is a zero velocity and an
-        // Unclassified narrative — the neutral buckets, never a fabricated reading.
-        let attention_velocity_bps = self.attention.velocity_of(mint).unwrap_or(0);
-        // §21.4 narrative identity. TWO independent axes feed one nominal field:
-        //   1. the MEASURED launch-metadata family (`nv_family_classify`), which
-        //      spans all eight brain slots — Animal / Seasonal / Stream included —
-        //      and is a pure function of decoded launch metadata; and
-        //   2. the attention plane's four-way `NarrativeClass`, which keeps owning
-        //      the §70.6/§70.8 conviction-CEILING semantics and is unchanged.
-        // The measured family WINS when it exists and is not `Unclassified`,
-        // because it is the finer, evidence-stamped axis; otherwise the historical
-        // four-way crosswalk applies; otherwise `Unclassified` — a refusal this
-        // nominal field CAN carry, so no fabrication is needed here (§6.4).
-        let narrative_class = match self.measured.family_of(mint) {
-            Some(c) if c.family != NarrativeFamily::Unclassified => brain_narrative_class(c.family),
-            _ => narrative_class_of(self.attention.narrative_class_of(mint)),
-        };
-
-        // §21.7 flow authenticity — already a neutral prior when unevidenced.
-        let (authenticity_bps, _fabricated) = self.flow_screen.authenticity(mint);
-
-        // §29.9 creator class. `Proven` used to be UNREACHABLE from app state; the
-        // launch → migration → survival ledger now makes it reachable, so the
-        // cascade is:
-        //   1. a CONFIRMED live dump right now ⇒ Toxic. A fact about the present
-        //      dominates a track record about the past, and it is also the fresher
-        //      observation — the ledger's own rug fact is fed from this same signal
-        //      but only lands once per launch.
-        //   2. the MEASURED ledger verdict when it speaks (Proven / Toxic / Serial).
-        //   3. the app's lifetime-launch-count heuristic ⇒ Serial.
-        //   4. Unknown. `CreatorClass::Unknown` is a real nominal slot, so the
-        //      refusal is representable and nothing is fabricated (§6.4).
-        let creator = self.mint_creator.get(mint).copied();
-        let ledger_track =
-            creator.map_or(CreatorTrack::Unknown, |c| self.measured.creator_track(c));
-        let creator_class = if self.creator_dump_active(mint) {
-            BrainCreatorClass::Toxic
-        } else if ledger_track != CreatorTrack::Unknown {
-            brain_creator_class(ledger_track)
-        } else if creator
-            .and_then(|c| self.creator_launches.get(&c))
-            .is_some_and(|&(lifetime, _, _)| lifetime >= CREATOR_SERIAL_THRESHOLD)
-        {
-            BrainCreatorClass::Serial
-        } else {
-            BrainCreatorClass::Unknown
-        };
-
-        // §21.4 meta identity + lifecycle position. The category space is u64 in the
-        // app and u32 in the brain; the low half is the fold (categories are dense
-        // small ids, so this is lossless in practice and monotone regardless).
-        let category = self.mint_category.get(mint).copied();
-        let meta_category_id = category.map_or(0u32, |c| (c & 0xFFFF_FFFF) as u32);
-        // Lifecycle position. The MEASURED phase wins when the tracker will speak
-        // (it is the only path to `Decaying` — participation and activity both
-        // falling off a prior peak, i.e. "new entrants are exit liquidity"); the
-        // rotation-verdict heuristic is the fallback.
-        //
-        // HONEST LIMITATION (§6.4): `MetaSaturationState` is an ORDINAL lifecycle
-        // with no UNKNOWN variant, and `Emerging` is ordinal 0 — which is also the
-        // "this mint has no category at all" default below. So "no category",
-        // "category with too few samples to phase" and "genuinely emerging meta"
-        // all collapse into ONE fingerprint code. That is a real loss the ladder
-        // cannot express and the app cannot fix from this side of the boundary;
-        // it is stated rather than papered over.
-        let measured_phase = category.and_then(|c| self.measured.meta_phase_of(c, self.now));
-        let meta_saturation_state = match measured_phase {
-            Some(p) => brain_meta_saturation(p),
-            None => match category.and_then(|c| self.category_rank_adj.get(&c)) {
-                Some(&adj) if adj > 0 => MetaSaturationState::Emerging,
-                Some(_) => MetaSaturationState::Saturated,
-                // A known category with no rotation verdict is running but not
-                // rotating: broad participation, attention flat-to-rising.
-                None if category.is_some() => MetaSaturationState::Hot,
-                None => META_PHASE_NEUTRAL,
-            },
-        };
-
-        let inputs = SetupInputs {
-            ofi_bps,
-            cvd_decade,
-            trend_structure,
-            range_state,
-            burst_phase,
-            realized_vol_bps,
-            liquidity_decade: signed_decade(i128::from(feats.liquidity_lamports)),
-            buyer_breadth: feats.unique_buyers,
-            token_age_ns: u64::from(feats.age_slots).saturating_mul(BRAIN_TICK_NS),
-            venue_phase,
-            attention_velocity_bps,
-            narrative_class,
-            authenticity_bps: i64::from(authenticity_bps),
-            // §70.1 holder-growth ACCELERATION — the ANALYZE limb of the continuous
-            // holder stream. The series behind this is no longer a seam nobody
-            // called: it is folded from OUR OWN decoded swap flow on every
-            // `MarketTrade` for every watched mint (`holder_flow`), sampled into
-            // the leaf estimator on the `HOLDER_SAMPLE_INTERVAL_TICKS` cadence, and
-            // read here point-in-time-safely as known at this instant. On a tape
-            // with genuine holder broadening this field now carries a REAL,
-            // non-neutral value at admit; before this wave it was the neutral rung
-            // on literally every admit.
-            //
-            // The estimator still fails closed (fewer than three usable samples, a
-            // stale interval, or a zero base count ⇒ `None`), and the refusal
-            // collapses onto the ladder's neutral rung.
-            //
-            // HONEST LIMITATION (§6.4): `HOLDER_GROWTH_ACCEL_EDGES_BPS` has no
-            // UNKNOWN rung, so "never captured" and "measured exactly zero
-            // acceleration" are the SAME fingerprint code once collapsed. The
-            // distinction survives on `MeasuredState::holder_growth_accel_bps`
-            // (which returns `Option`) for any caller that needs it; the
-            // fingerprint cannot carry it.
-            holder_growth_accel_bps: self
-                .measured
-                .holder_growth_accel_input(mint_id, self.now.saturating_mul(BRAIN_TICK_NS)),
-            // §70.1 holder-growth VELOCITY — the FIRST derivative (schema 2).
-            //
-            // Under schema 1 the fingerprint carried only the second derivative, so
-            // a market broadening fast and steadily (large velocity, zero
-            // acceleration) was BIT-IDENTICAL to a completely flat one. Those are
-            // different markets with different forward distributions, and the
-            // similarity index could not see the difference.
-            //
-            // The value comes off the SAME estimate the acceleration does — the
-            // holder-growth estimator computes both first differences on its way to
-            // the second — so this field adds no estimator, no sampling and no new
-            // refusal path. It is `None` exactly when acceleration is `None`.
-            //
-            // Same honest §6.4 limitation, same reason: the ladder has no UNKNOWN
-            // rung, so "never captured" and "measured flat" share a code. That is
-            // the bounded price of a BROAD-COVERAGE derivative, and it is precisely
-            // the price that made a thin-coverage LEVEL unacceptable here —
-            // concentration rides beside the signature instead
-            // (`EpisodeContext::concentration`), never inside it.
-            holder_growth_velocity_bps: self
-                .measured
-                .holder_growth_velocity_input(mint_id, self.now.saturating_mul(BRAIN_TICK_NS)),
-            creator_class,
-            meta_category_id,
-            meta_saturation_state,
-            designated_caller_present: self.brain.designated_caller_present(mint_id),
-            round_trip_cost_bps: i64::from(rt_bps),
-            info_time_ns: self.now.saturating_mul(BRAIN_TICK_NS),
-        };
-
-        BrainEntry {
-            fingerprint: SetupFingerprint::from_inputs(&inputs),
-            context: EpisodeContext {
-                mint_id,
-                venue_phase,
-                meta_category_id,
-                discovery_lane: discovery_lane_of(discovery_lane),
-                info_time_ns: self.now.saturating_mul(BRAIN_TICK_NS),
-                // The engine's logical tick IS the replay anchor (§22: no wall clock,
-                // no chain slot on the laptop build).
-                slot: self.now,
-                // ---- THE PARALLEL STREAM (schema 2) -------------------------
-                // The holder-distribution shape the episode was entered under,
-                // recorded BESIDE the signature rather than inside it. It is a
-                // LEVEL and needs an `Exact` holder basis, so on most episodes it
-                // is an explicit `Unknown(reason)` — which is the point. Recording
-                // the refusal, with its reason, is what lets the optional recall
-                // conditioner sharpen where the data exists and decline where it
-                // does not. Collapsing it into a numeric bucket, as a fingerprint
-                // field would have to, is the §6.4 failure this avoids.
-                //
-                // This is the REPORT-plane derivation (`holder_concentration`),
-                // not the decision-plane one, because what the episode records is
-                // the EVIDENCE the market presented, not whether some law happened
-                // to be armed when it did. The brain is decision-inert.
-                concentration: brain_reading_of(&self.holder_concentration(mint)),
-                // …and the DERIVATIVE half, which is valid on the delta-only
-                // ledgers the level refuses. Maintained continuously by
-                // `conc_trajectory` on the holder-sample cadence, so what lands
-                // here is a trajectory rather than a point reading.
-                concentration_trajectory: self.conc_trajectory.trajectory_as_of(
-                    mint,
-                    self.holder_flow.reading(mint).map(|r| r.basis()),
-                    self.now.saturating_mul(BRAIN_TICK_NS),
-                ),
-            },
         }
     }
 
@@ -4815,11 +3703,15 @@ impl Engine {
     fn open_pending(&mut self, e: &PendingEntry) {
         // Criterion 112 / A-6: split the target into a probe + scale-in add such that
         // EVERY emitted bite is ≥ the operator floor (see [`probe_scale_split`]).
-        let (probe, scale_add) = probe_scale_split(
-            e.size,
-            self.cfg.probe_frac_bp,
-            self.cfg.min_trade_size_lamports,
-        );
+        let (probe, scale_add) = if e.full_clip {
+            (e.size, 0)
+        } else {
+            probe_scale_split(
+                e.size,
+                self.cfg.probe_frac_bp,
+                self.cfg.min_trade_size_lamports,
+            )
+        };
         let probe_cost =
             ((u128::from(e.entry_cost) * u128::from(probe)) / u128::from(e.size.max(1))) as u64;
         let scale_cost = e.entry_cost.saturating_sub(probe_cost);
@@ -4849,7 +3741,7 @@ impl Engine {
                     // The model's price limit is not plumbed to this call site yet:
                     // when the Qwen wiring lands, the engine fills it in from the
                     // parsed decision. Until then the slippage budget protects the order.
-                    price_limit_lamports_per_raw_token: None,
+                    price_limit_lamports_per_raw_token: e.price_limit,
                 };
                 let t_call = Instant::now();
                 let outcome = sink.on_admit(&record);
@@ -5186,10 +4078,17 @@ impl Engine {
                 crate::cost_model::ATA_RENT_LAMPORTS - crate::cost_model::ATA_CLOSE_LAMPORTS,
             ));
         }
-        let attribution = self
-            .open_lane
-            .get(&e.mint)
-            .map(|a| (a.lane, a.discovery_lane, a.archetype, a.latency));
+        // ASSESSABILITY GUARD: a paper-model routing fill (quote or landing unvalidated) settles cash
+        // but must not reach lane/disc performance, reconciliation, tape, analytics, markouts, the
+        // tournament, expected-move, edge or brain memory. Those are the assessment/promotion feeds.
+        let quarantined = self.model_quarantine.contains(&e.mint);
+        let attribution = if quarantined {
+            None
+        } else {
+            self.open_lane
+                .get(&e.mint)
+                .map(|a| (a.lane, a.discovery_lane, a.archetype, a.latency))
+        };
         if let Some((lane, discovery_lane, archetype, mut latency)) = attribution {
             // Saturate in the CORRECT DIRECTION: `try_from` fails at BOTH ends, so
             // `unwrap_or(i64::MAX)` would turn an out-of-range LOSS into a maximal
@@ -5228,15 +4127,37 @@ impl Engine {
                 self.tape_latency.push(latency.trace);
             }
         }
-        self.journal.record(Decision::Filled {
-            mint: e.mint,
-            net_pnl_lamports: e.net_lamports,
-            reason: e.reason.code(),
-        });
+        // A routing (non-assessable) fill is journalled as its own record so a `Filled` consumer
+        // cannot sum it. Cash/inventory below are settled identically either way.
+        if quarantined {
+            let status = self
+                .model_fills
+                .iter()
+                .rev()
+                .find(|f| f.mint == e.mint)
+                .map_or(0, |f| {
+                    u8::from(f.quote_validated) | (u8::from(f.landing_validated) << 1)
+                });
+            self.journal.record(Decision::RoutingExit {
+                mint: e.mint,
+                net_pnl_lamports: e.net_lamports,
+                reason: e.reason.code(),
+                status,
+            });
+        } else {
+            self.journal.record(Decision::Filled {
+                mint: e.mint,
+                net_pnl_lamports: e.net_lamports,
+                reason: e.reason.code(),
+            });
+        }
         // §47/§54 LAW 17: register this exit for post-exit markout sampling at its
         // fill mark; the forward samples are taken at the mandated ns horizons on
         // the reflection cadence. Report-only — never touches the journal digest.
-        if let Some(exit_px) = self.numeric.latest_price_fp(DomainMint::from_bytes(e.mint)) {
+        if let (false, Some(exit_px)) = (
+            quarantined,
+            self.numeric.latest_price_fp(DomainMint::from_bytes(e.mint)),
+        ) {
             self.analytics
                 .record_exit_markout(e.mint, exit_px, self.now, e.reason.code());
         }
@@ -5251,6 +4172,7 @@ impl Engine {
             self.context.on_rug_precursor();
         }
         if e.closed {
+            self.model_on_position_closed(&e.mint);
             if let Some(att) = self.open_lane.remove(&e.mint) {
                 let (lane_w, total, entry_spend, entry_price, archetype, entry_vsol, entry_obs) = (
                     att.lane,
@@ -5270,7 +4192,7 @@ impl Engine {
                 // lives in the gate. The realized net also becomes a markout for
                 // every author who called this mint (§82), which is what turns
                 // "who called it" into "who actually earns".
-                if let Some(be) = &att.brain {
+                if let (false, Some(be)) = (quarantined, &att.brain) {
                     self.brain.record_exit(
                         be,
                         total,
@@ -5285,6 +4207,21 @@ impl Engine {
                 self.bankroll_committed = self
                     .bankroll_committed
                     .saturating_sub(u128::from(entry_spend));
+                if quarantined {
+                    self.model_quarantine.remove(&e.mint);
+                    self.model_excluded_exits.push(model_admit::ExcludedExit {
+                        mint: e.mint,
+                        net_lamports: e.net_lamports,
+                        reason: "routing_fill:landing_unvalidated",
+                    });
+                    self.theses.remove(&e.mint);
+                    self.thesis_adverse.remove(&e.mint);
+                    let balance = self.bankroll_balance();
+                    if balance > self.bankroll_hwm {
+                        self.bankroll_hwm = balance;
+                    }
+                    return;
+                }
                 self.social_earn.record_outcome(&e.mint, total);
                 // LAW D5: fold the whole position's realized net into the paid
                 // Discord room that surfaced this mint — the per-source outcome
@@ -6058,56 +4995,6 @@ impl Engine {
         .emerging
     }
 
-    /// The corroboration-tier size multiplier (bps of 10_000, always ≤ 10_000) for
-    /// an admitted market: a graded haircut composed from creator distribution (the
-    /// creator has sold more than `creator_fade_sold_bps` of peak) and category
-    /// saturation. Returns 10_000 (identity) when nothing is known about the market
-    /// — so a run without creator or category data sizes exactly as before (golden-
-    /// safe). NEVER zero-on-known-risk as a veto: creator fade is capped at
-    /// `MAX_CREATOR_FADE_BPS` (§22 behavioral-risk clause).
-    fn size_haircut_bps(&self, mint: &[u8; 32]) -> u32 {
-        let mut mult: u64 = 10_000;
-        // (1) Creator-distribution fade: once the creator has sold more than the
-        // configured fraction of peak, fade size linearly with the excess, capped.
-        if let Some(reducer) = self.creators.get(mint) {
-            if let Some(sold) = reducer.snapshot().sold_fraction_of_peak_bps {
-                if sold > self.cfg.creator_fade_sold_bps {
-                    let excess = sold - self.cfg.creator_fade_sold_bps;
-                    let span = 10_000u64
-                        .saturating_sub(self.cfg.creator_fade_sold_bps)
-                        .max(1);
-                    let fade =
-                        u64::from(MAX_CREATOR_FADE_BPS).saturating_mul(excess.min(span)) / span;
-                    mult = mult.saturating_sub(fade);
-                }
-            }
-        }
-        // (2) Category-saturation fade: reuse the negative discovery adjustment a
-        // saturating category already carries (single source of truth), applied
-        // proportionally to whatever size (1) left.
-        if let Some(&cat) = self.mint_category.get(mint) {
-            if let Some(&adj) = self.category_rank_adj.get(&cat) {
-                if adj < 0 {
-                    let hair = (adj.unsigned_abs()).min(10_000);
-                    mult = mult.saturating_sub(mult.saturating_mul(hair) / 10_000);
-                }
-            }
-        }
-        // (3) §70.8/§49 narrative-class sizing conviction (LAW 8, reduce-only): a
-        // fast, low-ceiling narrative (News/Trend) sizes down; a durable, high-
-        // ceiling one (Tech/Culture) keeps full conviction. Read from the derived
-        // class the attention field carries for the mint. Identity when the class
-        // law is off or the mint is untracked (unknown stays unknown, §6.4) — so
-        // the golden path is byte-identical.
-        if self.cfg.narrative_class_enable {
-            if let Some(class) = self.attention.narrative_class_of(mint) {
-                let conv = u64::from(crate::attention::narrative_class_conviction_bp(class));
-                mult = mult.saturating_mul(conv) / 10_000;
-            }
-        }
-        mult.min(10_000) as u32
-    }
-
     /// §26 (operator-approved reversal): whether the deployer of `mint` is in a
     /// CONFIRMED distribution — has sold at/above the veto fraction of peak. Unlike
     /// the graded `size_haircut_bps` fade, this is a hard binary the pre-entry gate
@@ -6167,61 +5054,6 @@ impl Engine {
             classify_creator(&inputs, &CreatorThresholds::test()),
             CreatorClass::SerialRug | CreatorClass::VolumeFarmer
         )
-    }
-
-    /// §70.9 deployer-credibility screen (LAW 10): the reduce-only size multiplier
-    /// (bps) for a market's deployer, from the wallet-graph deployer_credibility
-    /// bundle CLASS-CONDITIONED by the §27 known-extractor verdict. Identity
-    /// (10_000) when the deployer is unknown (§6.4). The point-in-time prior-launch
-    /// slot list is reconstructed from the app plane's tracked launch counts
-    /// (`creator_launches`: lifetime + windowed occupancy) — `in_window` launches
-    /// clustered in the recent serial window, the remainder spread before it — so
-    /// `compute_deployer_credibility` recovers the prior-CA count and serial-deploy
-    /// burst deterministically.
-    fn deployer_screen_mult_bp(&self, mint: &[u8; 32]) -> u32 {
-        let Some(creator) = self.mint_creator.get(mint) else {
-            return 10_000;
-        };
-        let Some(&(lifetime, window_start, in_window)) = self.creator_launches.get(creator) else {
-            return 10_000;
-        };
-        if lifetime == 0 {
-            return 10_000;
-        }
-        let window = CREATOR_SERIAL_WINDOW_TICKS.max(1);
-        let decision_slot = self.now.saturating_add(1);
-        let mut launches: Vec<PriorLaunch> = Vec::with_capacity(lifetime as usize);
-        // Recent cluster inside the serial window (drives the serial-deploy burst).
-        for i in 0..in_window.min(lifetime) {
-            launches.push(PriorLaunch {
-                slot: window_start.saturating_add(u64::from(i)),
-            });
-        }
-        // Older launches, one per window width before the recent cluster, so they
-        // count toward prior-CA without manufacturing a false recent burst.
-        let older = lifetime.saturating_sub(in_window);
-        for i in 0..older {
-            launches.push(PriorLaunch {
-                slot: window_start.saturating_sub((u64::from(i) + 1).saturating_mul(window)),
-            });
-        }
-        let cfg = DeployerCredibilityConfig {
-            serial_window_slots: window,
-            serial_threshold: CREATOR_SERIAL_THRESHOLD,
-        };
-        let cred = compute_deployer_credibility(
-            &launches,
-            decision_slot,
-            &[],
-            &SocialReachInput::default(),
-            &cfg,
-        );
-        let extractor = self
-            .creators
-            .get(mint)
-            .map(|r| self.creator_is_known_extractor(mint, &r.snapshot()))
-            .unwrap_or(false);
-        deployer_screen_haircut_bp(&cred, extractor)
     }
 
     /// §26 held-position limb (operator-approved reversal): once the deployer of a
@@ -6678,26 +5510,6 @@ impl Engine {
         e.1 = e.1.saturating_add(txs.len() as u64);
     }
 
-    /// §70.10 whether the market's first-slot fee footprint is a fully-saturated
-    /// (bundle/wash) signature that VETOES pre-entry, versus merely a graded fade.
-    /// Returns `(veto, fade_bps)`: `veto` fires only when the fee-floor law is on,
-    /// the footprint is `ImplausiblyLow`, AND the fade is at/above the veto bar.
-    /// `(false, 0)` when the law is off or no fee record exists (unknown stays
-    /// unknown, §6.4) — so the golden path is untouched.
-    fn fee_floor_verdict(&self, mint: &[u8; 32]) -> (bool, u32) {
-        if !self.cfg.fee_floor_enable {
-            return (false, 0);
-        }
-        let Some(&(fees, count)) = self.first_slot_fees.get(mint) else {
-            return (false, 0);
-        };
-        let r = assess_fee_floor(fees, count, &FeeFloorConfig::neutral());
-        if r.status != FeeFloorStatus::ImplausiblyLow {
-            return (false, 0);
-        }
-        (r.fade_bps >= FEE_FLOOR_VETO_FADE_BP, r.fade_bps)
-    }
-
     /// §28 lagged-shadow followable verdict for a buyer entity (telemetry seam —
     /// the event vocabulary does not yet carry wallet ids on WalletAction).
     #[must_use]
@@ -6748,45 +5560,6 @@ impl Engine {
         entry.1 = entry.1.saturating_add(1);
     }
 
-    /// §27 amendment (G5): compute the tracked-wallet trust boost in bps for a
-    /// mint, based on how many distinct tracked wallets have bought it within
-    /// the corroboration window. Returns 0 when disabled or no corroboration.
-    /// Called from the gate sizing path. Bounded O(1) lookup.
-    fn tracked_wallet_boost_bp(&self, mint: &[u8; 32]) -> u32 {
-        if !self.cfg.tracked_wallet_boost_enable {
-            return 0;
-        }
-        let max_bp = self.cfg.tracked_dev_boost_max_bps;
-        if max_bp == 0 {
-            return 0;
-        }
-        let window = self.cfg.tracked_corroboration_window_slots;
-        let now = self.now;
-        let (_, count) = match self.tracked_buys.get(mint) {
-            Some(&v) => v,
-            None => return 0,
-        };
-        if count == 0 {
-            return 0;
-        }
-        // Scale: 1 wallet = quarter boost, 2 = half, 3+ = full.
-        let scaled = if count >= 3 {
-            max_bp
-        } else if count == 2 {
-            max_bp / 2
-        } else {
-            max_bp / 4 // 1 wallet = quarter boost
-        };
-        // Apply corroboration window: if the last tracked buy is older than
-        // `window` slots, decay the boost by half.
-        let (last_slot, _) = self.tracked_buys.get(mint).copied().unwrap_or((now, 0));
-        if now.saturating_sub(last_slot) > window {
-            scaled / 2
-        } else {
-            scaled
-        }
-    }
-
     /// §27/§28 amendment (G6): allocate or retrieve a wallet-graph node index
     /// for the given entity id. Grows the graph by one node at a time,
     /// preserving all existing edges. Bounded O(1) amortized.
@@ -6813,32 +5586,6 @@ impl Engine {
         self.wallet_graph.add_edge(a, b, EdgeKind::Funding, slot);
     }
 
-    /// §28 amendment (Phase 7): compute the §28 smart-money PnL-screen boost in
-    /// bps for a mint. The boost is applied when the most recent buyer on that
-    /// mint is `wallet_followable()` (≥40 actions, positive realized PnL,
-    /// lagged-shadow edge). Returns 0 when disabled or the buyer is not
-    /// followable. Bounded O(1) lookup + O(1) followable check.
-    fn smart_money_boost_bp(&self, mint: &[u8; 32]) -> u32 {
-        if !self.cfg.smart_money_boost_enable {
-            return 0;
-        }
-        let max_bp = self.cfg.smart_money_boost_max_bps;
-        if max_bp == 0 {
-            return 0;
-        }
-        // Look up the last buyer entity on this mint.
-        let buyer = match self.last_mint_buyer.get(mint) {
-            Some(&e) => e,
-            None => return 0,
-        };
-        // §28 truth screen: ≥40 actions, positive realized PnL, lagged-shadow.
-        if !self.wallet_followable(buyer) {
-            return 0;
-        }
-        // Full boost when the smart-money buyer is followable.
-        max_bp
-    }
-
     /// §27/§28 test accessor: the number of distinct wallet entities registered
     /// in the funding graph. Used by integration tests to verify that funding
     /// edges are wired into the tick path (G6).
@@ -6851,94 +5598,6 @@ impl Engine {
     /// buyers and sellers transact on the same mint (G6).
     pub fn funding_edge_count(&self) -> usize {
         self.wallet_graph.edges().len()
-    }
-
-    /// §Quant-Rev-3: detect coordinated funding for a mint. Returns true when
-    /// >70% of the first-N buyers on this mint are connected in the funding
-    /// graph (share a common funding ancestor). Uses the existing wallet_graph
-    /// funding-edge connected components. Fail-open: returns false when the
-    /// graph has insufficient data (§6.4) or the feature is disabled.
-    ///
-    /// Algorithm:
-    /// 1. Collect the first-N buyer entities for this mint from `last_mint_buyer`
-    ///    and the holder_flow ledger's known entities.
-    /// 2. Build the funding-edge connected components via `families_by_kinds`.
-    /// 3. Find the largest component that contains any of the first-N buyers.
-    /// 4. If that component contains >70% of the first-N buyers → coordinated.
-    ///
-    /// This is O(V + E) over the funding graph, bounded by §99 capacity.
-    fn detect_coordinated_funding(&self, mint: &[u8; 32]) -> bool {
-        use pump_quant_wallet_graph::tier2_wallet_graph::EdgeKind;
-
-        // Gather the early buyer entities for this mint. We use the holder_flow
-        // ledger's per-mint entity roster. The `last_mint_buyer` map gives us
-        // the most recent buyer, but we need the FIRST N buyers. We track them
-        // via the holder_flow's per-entity first-buy sighting, which records
-        // the age_slots at first buy — entities with age_slots == 0 (creation
-        // slot) or age_slots <= SNIPER_SLOT_WINDOW are the early buyers.
-        //
-        // However, the holder_flow does not expose a per-mint entity iterator
-        // directly. We use the wallet_graph's funding families as a proxy:
-        // the funding graph connects wallets that transacted on the same mint.
-        // A large connected component in the funding graph IS the coordination
-        // signal — if N wallets on the same mint share funding edges, they
-        // are linked by a common funder.
-
-        // Get all funding-edge connected components.
-        let funding_kinds = EdgeKind::funding_family_kinds();
-        let families = self.wallet_graph.families_by_kinds(&funding_kinds);
-
-        // If there are no funding edges at all, fail-open (§6.4).
-        if families.is_empty() {
-            return false;
-        }
-
-        // Find the entities associated with this mint. We use the last_mint_buyer
-        // and last_mint_seller maps, plus any entity that has transacted on this
-        // mint according to the wallet_graph. Since we don't have a per-mint
-        // entity roster, we use the funding graph families directly: if a single
-        // funding family contains >= (first_n_buyers * max_share / 10_000)
-        // entities, that's coordinated funding.
-        let max_share = self.cfg.coordinated_funding_max_share_bps;
-        let first_n = self.cfg.coordinated_funding_first_n_buyers as usize;
-
-        // The largest funding family component.
-        let _largest_family_size = families.iter().map(|f| f.len()).max().unwrap_or(0);
-
-        // If the largest funding family has >= first_n entities and constitutes
-        // > max_share of all tracked wallet entities, it's coordinated.
-        let total_entities = self.wallet_graph_nodes.len();
-        if total_entities == 0 {
-            return false; // fail-open
-        }
-
-        // We need to check if the entities on THIS mint are concentrated in
-        // one funding family. Since we don't have a per-mint entity list, we
-        // use the wallet_graph's funding families: if one family contains
-        // >= ceil(first_n * max_share / 10_000) of the first-N entities,
-        // that's coordinated funding.
-        let threshold = ((first_n * max_share as usize) + 9_999) / 10_000; // ceil division
-                                                                           // The family must have at least `threshold` members AND those members
-                                                                           // must include entities that transacted on this mint. We approximate
-                                                                           // the "transacted on this mint" check using the wallet_graph_node indices:
-                                                                           // if the mint's last buyer is in a large family, and that family is
-                                                                           // large enough, it's coordinated.
-        let buyer = self.last_mint_buyer.get(mint).copied().unwrap_or(0);
-        if buyer == 0 {
-            return false; // no buyer recorded, fail-open
-        }
-        let buyer_idx = match self.wallet_graph_nodes.get(&buyer) {
-            Some(&idx) => idx,
-            None => return false, // buyer not in graph, fail-open
-        };
-
-        // Check if the buyer's funding family is large enough.
-        for family in &families {
-            if family.contains(&buyer_idx) && family.len() >= threshold {
-                return true;
-            }
-        }
-        false
     }
 
     /// §27/§28 test accessor: the number of distinct wallet entities registered
@@ -7394,221 +6053,160 @@ const fn sprt_llr_to_p_ppm(llr_millinats: i64) -> u32 {
     }
 }
 
-/// Stable small codes for gate-reject reasons, for the journal.
-const fn reject_code(r: GateReject) -> u8 {
-    match r {
-        GateReject::NeedsOnchainConfirmation => 1,
-        GateReject::NoNumericConfirmation => 2,
-        GateReject::EconomicallyUnviable => 3,
-        // 9 continues the post-gate numbering; a band refusal is a SELECTION event and
-        // must never be confused with an economic one in the reject statistics.
-        GateReject::OutsideMcapBand => 9,
-        // Re-pin #29: TP1 reachability refusal — the model's estimated upside can't
-        // reach TP1 after round-trip costs. A distinct gate refusal, not an economic
-        // unviability: the trade clears costs, it just can't reach the first take-
-        // profit rung of the new cost-aware ladder.
-        GateReject::Tp1Unreachable => 18,
-        // §Quant-Rev-7: re-entry cooldown refusal — a SELECTION refusal (mint on
-        // temporary blackout after exit). Cannot fire in golden tape.
-        GateReject::ReentryCooldown => 25,
-        // Rev-13: entry quality filter refusal — a SELECTION refusal (pre-entry
-        // trade ring lacks organic buy demand or is whale-dominated). Cannot
-        // fire in golden tape (no pre-entry ring in the tape's fixed flow).
-        GateReject::EntryQualityFilter => 26,
-        // Rev-14 wangr intelligence: selection refusals from the wangr graduation
-        // study. Each is a SELECTION event, distinct from economic unviability.
-        // Cannot fire in golden tape (no MarketAuxiliary/TimeSignal events fed).
-        GateReject::WangrTokenStandard => 30,
-        GateReject::WangrTimeWindow => 31,
-        GateReject::WangrSymbolLength => 32,
-        GateReject::WangrCreatorTrack => 33,
-        GateReject::WangrLiquidityZone => 34,
-        // Narrative precondition (operator ruling 2026-09-26): SELECTION refusals,
-        // distinct from economic unviability — the trade may clear costs, it just
-        // has no positive evidence of a rising attention narrative. Cannot fire in
-        // golden tape (no NarrativeResolved events fed, so the verdict sentinel
-        // stays 0 = unobserved and the gate admits).
-        GateReject::NarrativeSaturated => 35,
-        GateReject::NarrativeNoAttach => 36,
-        GateReject::NarrativeThrowaway => 37,
-        GateReject::NarrativeUnresolved => 38,
-    }
+// HISTORICAL REJECT-CODE REGISTRY. The legacy deterministic entry gate is retired (the model lane is the only entry
+// authority), but these ordinals are serialized in journals and live_status `reject_counts`; their meanings are
+// FROZEN and must never be renumbered or reused. Only REJECT_NO_ENTRY_AUTHORITY (29) is still emitted.
+#[allow(dead_code)]
+mod reject_codes_history {
+    /// Post-gate journal reject codes (continuing the gate's 1–3 numbering): sizing
+    /// and toxicity refusals that fire AFTER economic admission. Stable for replay.
+    pub const REJECT_VPIN_TOXIC: u8 = 4;
+    pub const REJECT_INSUFFICIENT_BANKROLL: u8 = 5;
+    pub const REJECT_MAX_CONCURRENT: u8 = 6;
+    pub const REJECT_BELOW_COST_FLOOR: u8 = 7;
+    pub const REJECT_WALLET_FLOOR: u8 = 8;
+    /// Extreme fabrication signature on the mint's flow (§21.7 law — the ONLY
+    /// authenticity-driven discovery-adjacent gate; graded authenticity only sizes).
+    pub const REJECT_FABRICATED_FLOW: u8 = 9;
+    /// Phase-correct executable exit cost exceeds the priced expected move (§34.4 —
+    /// a trade whose exit side already eats the edge is a structural loss).
+    pub const REJECT_EXIT_COST: u8 = 10;
+    /// Slot lost in expected-net arbitration (§23 — the forgone candidate and its
+    /// opportunity cost are journaled, never silently dropped).
+    pub const REJECT_ARBITRATION: u8 = 11;
+    /// The discovering lane is retired (§56.11 sequential-evidence retirement):
+    /// discovery continues as research, capital eligibility is suspended.
+    pub const REJECT_LANE_RETIRED: u8 = 12;
+    /// §26 confirmed-creator-dump HARD VETO (operator-approved reversal): the
+    /// deployer has distributed past the config veto threshold — refuse pre-entry.
+    pub const REJECT_CREATOR_DUMP: u8 = 13;
+    /// §70.10 anti-bundle fee-floor VETO (Batch-2c LAW 10): the market's first-slot
+    /// fee footprint is a fully-saturated bundle/wash signature — refuse pre-entry.
+    pub const REJECT_FEE_FLOOR: u8 = 14;
+    /// §94/§18.2 UNKNOWN-fails-closed: the market's quote mint could not be decoded,
+    /// so its round-trip cost cannot be priced without silently assuming SOL — refuse.
+    /// Never fires while quote resolution defaults to SOL (all golden markets are
+    /// SOL-quoted), so the golden path is byte-identical.
+    pub const REJECT_UNDECODED_QUOTE: u8 = 15;
+
+    /// LAW B3 (§29.5/§46): episodic recall returned a `Known` verdict over a setup
+    /// class that historically BLED — negative median realized net AND a decisive win
+    /// rate at or below the veto bar. Refused pre-entry. This code can only ever appear
+    /// with `brain_haircut_enable` armed; the fail-closed law (B4) guarantees an
+    /// `Unknown` verdict can never reach it.
+    pub const REJECT_BRAIN_BLED: u8 = 16;
+
+    /// §21.7/§70.1 holder-concentration refusal: the market's tracked holder
+    /// distribution is extreme (cumulative top-10 share, first-ten-buyer capture, or
+    /// whale dominance past the named-const veto bar) AND an independent §21.7
+    /// flow-authenticity signature corroborates it.
+    ///
+    /// **The conjunction is operator-mandated, not stylistic.** §21.7 names this exact
+    /// feature — bundle-adjusted top-N holding concentration — "a feature family and
+    /// prior, never a standalone veto", and separately restricts hard rejection to
+    /// "extreme fabrication signatures". Concentration alone therefore only ever
+    /// haircuts; this code can only appear when the base-position distribution AND the
+    /// quote-flow authenticity independently agree.
+    ///
+    /// It also cannot appear at all unless `holder_concentration_enable` is armed, and
+    /// the fail-open law guarantees a `ConcentrationVerdict::Unknown` (delta-only,
+    /// truncated, or thin ledger) can never reach it.
+    pub const REJECT_HOLDER_CONCENTRATION: u8 = 17;
+
+    /// Post-admission pricing failure (§18.2/§24): the gate's `Admit` verdict
+    /// fired, but a downstream pricing step failed-closed — no spot price, curve
+    /// fill returned `None`, or zero entry price — so the candidate could not be
+    /// economically sized and was refused. This is a **pricing-side rejection**,
+    /// not a silent drop: it preserves the accounting identity
+    /// `promoted = admitted + rejected` by ensuring every promoted candidate
+    /// that exits `gate_evaluate` with `None` has been counted.
+    pub const REJECT_PRICING_FAILURE: u8 = 18;
+
+    /// §Quant-Rev-1: bundle detection — ≥3 buys sharing the creation slot from
+    /// linked wallets (same-slot buy count ≥ `bundle_detect_min_same_slot_buys`).
+    /// MELT (arXiv:2602.13480) shows 36.5% of supply held by coordinated accounts
+    /// on average; ScorpTrader identifies same-slot buy counting as the #1 anti-rug
+    /// filter. The existing `holder_concentration` module already classifies
+    /// bundle entities; this reject fires when the bundle cohort is large enough
+    /// to indicate coordinated insider accumulation, independent of the reduce-only
+    /// size haircut path. Operator-approved hard veto (A-14 precedent: the §26
+    /// creator-dump veto reversed the prior "fade-only" behaviour for confirmed
+    /// extractors; this is the same reversal for confirmed bundlers).
+    pub const REJECT_BUNDLE_DETECTED: u8 = 20;
+
+    /// §Quant-Rev-1: bundle concentration — same-slot buyers collectively hold
+    /// more than `bundle_concentration_max_bps` (default 25%) of the float. When
+    /// a coordinated cohort controls >25% supply, a single actor can move the
+    /// price alone — this is not a free market. MELT's bundle-trace data shows
+    /// that high same-slot concentration is the strongest predictor of rug-pull
+    /// launches. Fires only when bundle detection is enabled AND the concentration
+    /// screen has a non-Unknown verdict (fail-open on insufficient evidence, §21.7).
+    pub const REJECT_BUNDLE_CONCENTRATION: u8 = 21;
+
+    /// §Quant-Rev-2: dev wallet grading — the deployer has a prior-launch history
+    /// with a graduation rate below `dev_graduation_min_rate_bp` over at least
+    /// `dev_history_min_launches` prior mints. ScorpTrader data: grade-B devs
+    /// survive at 87.8% vs 45.5% for unknown devs. The existing
+    /// `deployer_screen_mult_bp` already computes a size haircut; this reject
+    /// fires when the deployer's history is so poor (e.g. <10% graduation over
+    /// ≥5 prior launches) that no size is safe. Operator-approved hard veto
+    /// (same A-14 precedent). Fail-open: no prior history → identity (unknown
+    /// stays unknown, §6.4), so first-launch deployers are never rejected.
+    pub const REJECT_DEV_HISTORY: u8 = 22;
+
+    /// §Quant-Rev-3: coordinated funding — >70% of the first-10 buyers trace to a
+    /// common funding source, indicating "one entity wearing ten hats" (ScorpTrader).
+    /// The existing `wallet_graph` infrastructure already builds funding edges via
+    /// `add_wallet_funding_edge`; this reject traverses the graph to detect a
+    /// single-ancestor cluster among early buyers. MELT's bundle-trace data
+    /// confirms coordinated accounts hold 36.5% supply on average. Fail-open when
+    /// the funding graph has insufficient data (§6.4). Operator-approved.
+    pub const REJECT_COORDINATED_FUNDING: u8 = 23;
+
+    /// §Quant-Rev-6: exit liquidity — fewer than `exit_liquidity_min_holders`
+    /// (default 30) genuinely independent holders exist for the exit side.
+    /// ScorpTrader: "Under ~30 genuinely independent holders means nobody on the
+    /// other side when you sell. You will realise −60% on a token that never
+    /// technically rugged." The holder count excludes entities linked by the
+    /// funding graph (coordinated wallets are not "independent"). Fail-open when
+    /// the holder ledger is Unknown or truncated. Operator-approved.
+    pub const REJECT_INSUFFICIENT_EXIT_LIQUIDITY: u8 = 24;
+
+    /// §Quant-Rev-7: RE-ENTRY COOLDOWN refusal. The mint was recently exited and is
+    /// still within the cooldown window (`reentry_cooldown_ticks`). A SELECTION
+    /// refusal: the trade may be viable, the mint is on temporary blackout to break
+    /// the death-by-a-thousand-cuts re-entry loop. Cannot fire in the golden tape
+    /// (no position closes → cooldown set never populated → golden path byte-identical).
+    pub const REJECT_REENTRY_COOLDOWN: u8 = 25;
+    /// G4: the clip's own round trip could not be priced. UNKNOWN fails closed (§18.2) — an
+    /// unpriced round trip is not a free one.
+    pub const REJECT_PAYABILITY_UNPRICED: u8 = 26;
+    /// G4: paying for the clip AND its own round trip would take free cash below the survival
+    /// floor. The old guard reserved the clip and the entry leg only.
+    pub const REJECT_INSUFFICIENT_CASH: u8 = 27;
+    /// G5: the book's aggregate exposure would pass the risk budget once the clip's own round
+    /// trip is counted.
+    pub const REJECT_EXPOSURE_CAP: u8 = 28;
 }
-
-/// Post-gate journal reject codes (continuing the gate's 1–3 numbering): sizing
-/// and toxicity refusals that fire AFTER economic admission. Stable for replay.
-const REJECT_VPIN_TOXIC: u8 = 4;
-const REJECT_INSUFFICIENT_BANKROLL: u8 = 5;
-const REJECT_MAX_CONCURRENT: u8 = 6;
-const REJECT_BELOW_COST_FLOOR: u8 = 7;
-const REJECT_WALLET_FLOOR: u8 = 8;
-/// Extreme fabrication signature on the mint's flow (§21.7 law — the ONLY
-/// authenticity-driven discovery-adjacent gate; graded authenticity only sizes).
-const REJECT_FABRICATED_FLOW: u8 = 9;
-/// Phase-correct executable exit cost exceeds the priced expected move (§34.4 —
-/// a trade whose exit side already eats the edge is a structural loss).
-const REJECT_EXIT_COST: u8 = 10;
-/// Slot lost in expected-net arbitration (§23 — the forgone candidate and its
-/// opportunity cost are journaled, never silently dropped).
-const REJECT_ARBITRATION: u8 = 11;
-/// The discovering lane is retired (§56.11 sequential-evidence retirement):
-/// discovery continues as research, capital eligibility is suspended.
-const REJECT_LANE_RETIRED: u8 = 12;
-/// §26 confirmed-creator-dump HARD VETO (operator-approved reversal): the
-/// deployer has distributed past the config veto threshold — refuse pre-entry.
-const REJECT_CREATOR_DUMP: u8 = 13;
-/// §70.10 anti-bundle fee-floor VETO (Batch-2c LAW 10): the market's first-slot
-/// fee footprint is a fully-saturated bundle/wash signature — refuse pre-entry.
-const REJECT_FEE_FLOOR: u8 = 14;
-/// §94/§18.2 UNKNOWN-fails-closed: the market's quote mint could not be decoded,
-/// so its round-trip cost cannot be priced without silently assuming SOL — refuse.
-/// Never fires while quote resolution defaults to SOL (all golden markets are
-/// SOL-quoted), so the golden path is byte-identical.
-const REJECT_UNDECODED_QUOTE: u8 = 15;
-
-/// LAW B3 (§29.5/§46): episodic recall returned a `Known` verdict over a setup
-/// class that historically BLED — negative median realized net AND a decisive win
-/// rate at or below the veto bar. Refused pre-entry. This code can only ever appear
-/// with `brain_haircut_enable` armed; the fail-closed law (B4) guarantees an
-/// `Unknown` verdict can never reach it.
-const REJECT_BRAIN_BLED: u8 = 16;
-
-/// §21.7/§70.1 holder-concentration refusal: the market's tracked holder
-/// distribution is extreme (cumulative top-10 share, first-ten-buyer capture, or
-/// whale dominance past the named-const veto bar) AND an independent §21.7
-/// flow-authenticity signature corroborates it.
-///
-/// **The conjunction is operator-mandated, not stylistic.** §21.7 names this exact
-/// feature — bundle-adjusted top-N holding concentration — "a feature family and
-/// prior, never a standalone veto", and separately restricts hard rejection to
-/// "extreme fabrication signatures". Concentration alone therefore only ever
-/// haircuts; this code can only appear when the base-position distribution AND the
-/// quote-flow authenticity independently agree.
-///
-/// It also cannot appear at all unless `holder_concentration_enable` is armed, and
-/// the fail-open law guarantees a `ConcentrationVerdict::Unknown` (delta-only,
-/// truncated, or thin ledger) can never reach it.
-const REJECT_HOLDER_CONCENTRATION: u8 = 17;
-
-/// Post-admission pricing failure (§18.2/§24): the gate's `Admit` verdict
-/// fired, but a downstream pricing step failed-closed — no spot price, curve
-/// fill returned `None`, or zero entry price — so the candidate could not be
-/// economically sized and was refused. This is a **pricing-side rejection**,
-/// not a silent drop: it preserves the accounting identity
-/// `promoted = admitted + rejected` by ensuring every promoted candidate
-/// that exits `gate_evaluate` with `None` has been counted.
-const REJECT_PRICING_FAILURE: u8 = 18;
-
 /// Post-arbitration open failure (§23/§33): the candidate was awarded a slot
 /// by arbitration, but `positions.open()` refused — either because the mint
 /// was already open (duplicate award) or the positions capacity was full
 /// (capacity reached between gate and open). The candidate is counted as
 /// rejected to preserve the accounting identity `promoted = admitted + rejected`.
 const REJECT_OPEN_FAILURE: u8 = 19;
-
-/// §Quant-Rev-1: bundle detection — ≥3 buys sharing the creation slot from
-/// linked wallets (same-slot buy count ≥ `bundle_detect_min_same_slot_buys`).
-/// MELT (arXiv:2602.13480) shows 36.5% of supply held by coordinated accounts
-/// on average; ScorpTrader identifies same-slot buy counting as the #1 anti-rug
-/// filter. The existing `holder_concentration` module already classifies
-/// bundle entities; this reject fires when the bundle cohort is large enough
-/// to indicate coordinated insider accumulation, independent of the reduce-only
-/// size haircut path. Operator-approved hard veto (A-14 precedent: the §26
-/// creator-dump veto reversed the prior "fade-only" behaviour for confirmed
-/// extractors; this is the same reversal for confirmed bundlers).
-const REJECT_BUNDLE_DETECTED: u8 = 20;
-
-/// §Quant-Rev-1: bundle concentration — same-slot buyers collectively hold
-/// more than `bundle_concentration_max_bps` (default 25%) of the float. When
-/// a coordinated cohort controls >25% supply, a single actor can move the
-/// price alone — this is not a free market. MELT's bundle-trace data shows
-/// that high same-slot concentration is the strongest predictor of rug-pull
-/// launches. Fires only when bundle detection is enabled AND the concentration
-/// screen has a non-Unknown verdict (fail-open on insufficient evidence, §21.7).
-const REJECT_BUNDLE_CONCENTRATION: u8 = 21;
-
-/// §Quant-Rev-2: dev wallet grading — the deployer has a prior-launch history
-/// with a graduation rate below `dev_graduation_min_rate_bp` over at least
-/// `dev_history_min_launches` prior mints. ScorpTrader data: grade-B devs
-/// survive at 87.8% vs 45.5% for unknown devs. The existing
-/// `deployer_screen_mult_bp` already computes a size haircut; this reject
-/// fires when the deployer's history is so poor (e.g. <10% graduation over
-/// ≥5 prior launches) that no size is safe. Operator-approved hard veto
-/// (same A-14 precedent). Fail-open: no prior history → identity (unknown
-/// stays unknown, §6.4), so first-launch deployers are never rejected.
-const REJECT_DEV_HISTORY: u8 = 22;
-
-/// §Quant-Rev-3: coordinated funding — >70% of the first-10 buyers trace to a
-/// common funding source, indicating "one entity wearing ten hats" (ScorpTrader).
-/// The existing `wallet_graph` infrastructure already builds funding edges via
-/// `add_wallet_funding_edge`; this reject traverses the graph to detect a
-/// single-ancestor cluster among early buyers. MELT's bundle-trace data
-/// confirms coordinated accounts hold 36.5% supply on average. Fail-open when
-/// the funding graph has insufficient data (§6.4). Operator-approved.
-const REJECT_COORDINATED_FUNDING: u8 = 23;
-
-/// §Quant-Rev-6: exit liquidity — fewer than `exit_liquidity_min_holders`
-/// (default 30) genuinely independent holders exist for the exit side.
-/// ScorpTrader: "Under ~30 genuinely independent holders means nobody on the
-/// other side when you sell. You will realise −60% on a token that never
-/// technically rugged." The holder count excludes entities linked by the
-/// funding graph (coordinated wallets are not "independent"). Fail-open when
-/// the holder ledger is Unknown or truncated. Operator-approved.
-const REJECT_INSUFFICIENT_EXIT_LIQUIDITY: u8 = 24;
-
-/// §Quant-Rev-7: RE-ENTRY COOLDOWN refusal. The mint was recently exited and is
-/// still within the cooldown window (`reentry_cooldown_ticks`). A SELECTION
-/// refusal: the trade may be viable, the mint is on temporary blackout to break
-/// the death-by-a-thousand-cuts re-entry loop. Cannot fire in the golden tape
-/// (no position closes → cooldown set never populated → golden path byte-identical).
-const REJECT_REENTRY_COOLDOWN: u8 = 25;
-/// G4: the clip's own round trip could not be priced. UNKNOWN fails closed (§18.2) — an
-/// unpriced round trip is not a free one.
-const REJECT_PAYABILITY_UNPRICED: u8 = 26;
-/// G4: paying for the clip AND its own round trip would take free cash below the survival
-/// floor. The old guard reserved the clip and the entry leg only.
-const REJECT_INSUFFICIENT_CASH: u8 = 27;
-/// G5: the book's aggregate exposure would pass the risk budget once the clip's own round
-/// trip is counted.
-const REJECT_EXPOSURE_CAP: u8 = 28;
-
-/// §21.7 corroboration bar (bps) for [`REJECT_HOLDER_CONCENTRATION`].
-///
-/// The independent flow-authenticity reading — computed over per-entity
-/// quote-lamport gross flow, a different quantity with a different denominator
-/// from the base-token net positions the concentration is computed over — must be
-/// EVIDENCED (past the screen's own swap-sample floor, so a thin tape's neutral
-/// prior cannot corroborate anything) and degraded to at most half. At 5 000 bps
-/// the wash/HHI evidence the concentration screen never saw has already cut the
-/// authenticity multiplier in half on its own.
-const CONCENTRATION_VETO_AUTH_BPS: u32 = 5_000;
+/// A candidate reached the gate with no model lane armed: the model is the ONLY entry authority, so nothing is
+/// selected deterministically. Appended as 29; earlier codes keep their historical meaning.
+const REJECT_NO_ENTRY_AUTHORITY: u8 = 29;
 
 /// §94 default quote decimals for a SOL-quoted market (lamports = 9 decimals).
 /// The engine's economic gate has always priced in SOL lamports; making the
 /// quote mint explicit (defaulting here) leaves every SOL-quoted golden market
 /// byte-identical while opening the parametric USDC path.
 const SOL_QUOTE_DECIMALS: u32 = 9;
-/// §70.10 fee-floor veto bar (bps of fade): an `ImplausiblyLow` footprint whose
-/// fade reaches this is a manufactured/wash launch (near-zero cumulative fees for
-/// the advertised activity) — a veto, not merely a fade. Below it the footprint
-/// only shrinks size. 9_000 bps ⇒ intensity ≤ 10% of the plausible floor.
-const FEE_FLOOR_VETO_FADE_BP: u32 = 9_000;
 
 /// Creator serial-deploy window (ticks) and launch-count threshold for the
 /// §27/§70.9 credibility haircut (3 launches inside ~2 minutes = serial deployer).
 const CREATOR_SERIAL_WINDOW_TICKS: u64 = 300;
-const CREATOR_SERIAL_THRESHOLD: u32 = 3;
-/// Regime consumption (§21.3): sizing haircut applied when the market-wide
-/// rug/collapse rate is Elevated+ (reduce-only, never a veto).
-const REGIME_RUG_HAIRCUT_BP: u32 = 7_000;
-/// §34.4 exit-cost structural-veto multiple: the phase-correct executable exit
-/// cost may not exceed this multiple of the priced expected move. The economic
-/// gate already prices round-trip viability with the SAME fee/failure config, and
-/// the v0 phase model carries its own fixed failure/retry load — so this backstop
-/// only fires on genuinely structural phase mispricing (e.g. a size that is a
-/// large fraction of the curve reserve: impact alone ⇒ cost ≫ move), never on the
-/// ordinary cost load. 10× the priced move ⇒ fires around ≳30% exit impact.
-const EXIT_COST_VETO_MULT: u32 = 10;
 
 /// Thesis feature ids (§32: conditions compile from the registered feature
 /// schema — these two ARE the v0 schema): 1 = numeric-lane OFI bps, 2 = CVD sign.
@@ -8068,5 +6666,154 @@ mod f5a_sink_failures {
         let json = s.to_canonical_json();
         assert!(json.contains("\"sink_failures_sender\":2"), "{json}");
         assert!(json.contains("\"sink_failures_construction\":1"), "{json}");
+    }
+}
+
+#[cfg(test)]
+mod model_lane_seam {
+    //! The paper-model lane's arming + fail-closed source lookup. Pins the seam's contract:
+    //! legacy-until-armed, armed == source installed, armed-without-source == a NAMED fault
+    //! (never a fallback to `gate_evaluate`).
+
+    use super::*;
+    use crate::model_authority::ModelSource;
+    use pump_quant_inference::InferenceError;
+
+    /// A source that returns a canned completion — the deterministic stand-in for the live
+    /// llama-server client (Windows inference is not needed to prove the wiring).
+    struct Stub(&'static str);
+
+    impl ModelSource for Stub {
+        fn complete(&self, _system: &str, _user: &str) -> Result<String, InferenceError> {
+            Ok(self.0.to_string())
+        }
+    }
+
+    #[test]
+    fn a_fresh_engine_has_no_model_lane_and_goes_legacy() {
+        let eng = Engine::new(Config::dev_portable(), RunMode::Paper);
+        assert!(!eng.paper_model_enabled(), "default is legacy, never model");
+        assert!(matches!(
+            eng.model_source(),
+            Err(ModelModeFault::NotEnabled)
+        ));
+    }
+
+    #[test]
+    fn arming_the_lane_installs_the_source() {
+        let mut eng = Engine::new(Config::dev_portable(), RunMode::Paper);
+        eng.enable_paper_model(Stub("DECISION: BUY\nSIZE: FULL\n"));
+        assert!(eng.paper_model_enabled());
+        assert!(eng.model_source().is_ok());
+    }
+
+    #[test]
+    fn an_armed_lane_without_a_source_fails_closed_with_a_named_fault() {
+        // The misconfiguration the contract forbids: model mode on, but the client was never
+        // wired. The guard MUST return `MissingSource`; the admission branch reads this and
+        // refuses, never consulting `gate_evaluate`. The private flag is set directly to model
+        // that state (unreachable via the public builder, which always pairs the source).
+        let mut eng = Engine::new(Config::dev_portable(), RunMode::Paper);
+        eng.paper_model_mode = true;
+        eng.model_source = None;
+        assert!(matches!(
+            eng.model_source(),
+            Err(ModelModeFault::MissingSource)
+        ));
+    }
+}
+
+#[cfg(test)]
+mod reject_code_pins {
+    //! Reject-code ordinals are SERIALIZED (journal `Decision::Rejected.reason`, live_status `reject_counts`).
+    //! Their meanings are frozen. The legacy gate that emitted 4..=28 is retired, but a recorded journal
+    //! still has to be read with the numbering it was written with. Codes 0..=3 were the gate's own
+    //! numbering (`GateReject`), 4..=28 the post-gate set below, 29 the only code still emitted.
+    use super::reject_codes_history as h;
+    use super::{REJECT_NO_ENTRY_AUTHORITY, REJECT_OPEN_FAILURE};
+
+    #[test]
+    fn every_historical_code_keeps_its_ordinal() {
+        let pinned: [(&str, u8, u8); 25] = [
+            ("VPIN_TOXIC", h::REJECT_VPIN_TOXIC, 4),
+            ("INSUFFICIENT_BANKROLL", h::REJECT_INSUFFICIENT_BANKROLL, 5),
+            ("MAX_CONCURRENT", h::REJECT_MAX_CONCURRENT, 6),
+            ("BELOW_COST_FLOOR", h::REJECT_BELOW_COST_FLOOR, 7),
+            ("WALLET_FLOOR", h::REJECT_WALLET_FLOOR, 8),
+            ("FABRICATED_FLOW", h::REJECT_FABRICATED_FLOW, 9),
+            ("EXIT_COST", h::REJECT_EXIT_COST, 10),
+            ("ARBITRATION", h::REJECT_ARBITRATION, 11),
+            ("LANE_RETIRED", h::REJECT_LANE_RETIRED, 12),
+            ("CREATOR_DUMP", h::REJECT_CREATOR_DUMP, 13),
+            ("FEE_FLOOR", h::REJECT_FEE_FLOOR, 14),
+            ("UNDECODED_QUOTE", h::REJECT_UNDECODED_QUOTE, 15),
+            ("BRAIN_BLED", h::REJECT_BRAIN_BLED, 16),
+            ("HOLDER_CONCENTRATION", h::REJECT_HOLDER_CONCENTRATION, 17),
+            ("PRICING_FAILURE", h::REJECT_PRICING_FAILURE, 18),
+            ("BUNDLE_DETECTED", h::REJECT_BUNDLE_DETECTED, 20),
+            ("BUNDLE_CONCENTRATION", h::REJECT_BUNDLE_CONCENTRATION, 21),
+            ("DEV_HISTORY", h::REJECT_DEV_HISTORY, 22),
+            ("COORDINATED_FUNDING", h::REJECT_COORDINATED_FUNDING, 23),
+            (
+                "INSUFFICIENT_EXIT_LIQUIDITY",
+                h::REJECT_INSUFFICIENT_EXIT_LIQUIDITY,
+                24,
+            ),
+            ("REENTRY_COOLDOWN", h::REJECT_REENTRY_COOLDOWN, 25),
+            ("PAYABILITY_UNPRICED", h::REJECT_PAYABILITY_UNPRICED, 26),
+            ("INSUFFICIENT_CASH", h::REJECT_INSUFFICIENT_CASH, 27),
+            ("EXPOSURE_CAP", h::REJECT_EXPOSURE_CAP, 28),
+            ("OPEN_FAILURE", REJECT_OPEN_FAILURE, 19),
+        ];
+        for (name, actual, expected) in pinned {
+            assert_eq!(
+                actual, expected,
+                "REJECT_{name} was renumbered: serialized journals would misread"
+            );
+        }
+        assert_eq!(
+            REJECT_NO_ENTRY_AUTHORITY, 29,
+            "the new code is pinned at 29"
+        );
+    }
+
+    #[test]
+    fn the_codes_are_distinct_and_fit_the_counter_array() {
+        let mut all: Vec<u8> = vec![
+            h::REJECT_VPIN_TOXIC,
+            h::REJECT_INSUFFICIENT_BANKROLL,
+            h::REJECT_MAX_CONCURRENT,
+            h::REJECT_BELOW_COST_FLOOR,
+            h::REJECT_WALLET_FLOOR,
+            h::REJECT_FABRICATED_FLOW,
+            h::REJECT_EXIT_COST,
+            h::REJECT_ARBITRATION,
+            h::REJECT_LANE_RETIRED,
+            h::REJECT_CREATOR_DUMP,
+            h::REJECT_FEE_FLOOR,
+            h::REJECT_UNDECODED_QUOTE,
+            h::REJECT_BRAIN_BLED,
+            h::REJECT_HOLDER_CONCENTRATION,
+            h::REJECT_PRICING_FAILURE,
+            REJECT_OPEN_FAILURE,
+            h::REJECT_BUNDLE_DETECTED,
+            h::REJECT_BUNDLE_CONCENTRATION,
+            h::REJECT_DEV_HISTORY,
+            h::REJECT_COORDINATED_FUNDING,
+            h::REJECT_INSUFFICIENT_EXIT_LIQUIDITY,
+            h::REJECT_REENTRY_COOLDOWN,
+            h::REJECT_PAYABILITY_UNPRICED,
+            h::REJECT_INSUFFICIENT_CASH,
+            h::REJECT_EXPOSURE_CAP,
+            REJECT_NO_ENTRY_AUTHORITY,
+        ];
+        let n = all.len();
+        all.sort_unstable();
+        all.dedup();
+        assert_eq!(all.len(), n, "two reject codes share an ordinal");
+        assert!(
+            all.iter().all(|c| usize::from(*c) < 32),
+            "reject_counts has 32 slots"
+        );
     }
 }

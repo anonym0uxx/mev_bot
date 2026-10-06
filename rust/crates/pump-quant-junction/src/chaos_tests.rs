@@ -7,10 +7,16 @@
 //! * §18.2 — fail closed on unknown, never guess benign.
 //! * §22 — integer-only, deterministic, no float / clock / RNG / I/O.
 
+// Plain modulo, not `is_multiple_of`, to honour the workspace MSRV 1.85 (the
+// helper stabilised in 1.87) — the same choice `engine.rs` documents.
+#![allow(clippy::manual_is_multiple_of)]
+
 use crate::laserstream::{classify_pump_instructions, parse_ndjson_line, LaserStreamUpdate};
 use crate::memory_bank::{MemoryBank, MemoryBankConfig};
 use crate::trade_journal::{RunMode, TradeOutcome, TradeRecord, TradeSide};
 use crate::ProvenanceSource;
+use base64::engine::general_purpose::STANDARD as B64;
+use base64::Engine as _;
 
 // ---------------------------------------------------------------------------
 // LaserStream parser chaos tests
@@ -148,9 +154,9 @@ mod chaos_parser {
         for _ in 0..100 {
             deep.push_str("{\"a\":");
         }
-        deep.push_str("1");
+        deep.push('1');
         for _ in 0..100 {
-            deep.push_str("}");
+            deep.push('}');
         }
         let _ = parse_ndjson_line(&deep); // must not panic
     }
@@ -163,7 +169,7 @@ mod chaos_parser {
         let mut ix_data = pump_quant_protocol::ix::BUY_DISCRIMINATOR.to_vec();
         ix_data.extend_from_slice(&100u64.to_le_bytes());
         ix_data.extend_from_slice(&10u64.to_le_bytes());
-        let ix_b64 = base64::encode(&ix_data);
+        let ix_b64 = B64.encode(&ix_data);
         let line = format!(
             "{{\"lane\":\"laserstream\",\"kind\":\"transaction\",\"slot\":1,\"account_keys\":[\"{}\",\"{}\"],\"instructions\":[{{\"program_b58\":\"{}\",\"data_b64\":\"{}\",\"accounts\":[255]}}]}}",
             pump_b58, mint_b58, pump_b58, ix_b64
@@ -179,7 +185,7 @@ mod chaos_parser {
     #[test]
     fn chaos_short_instruction_data() {
         let pump_b58 = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
-        let short_data_b64 = base64::encode(&[0x66, 0x06, 0x3d]);
+        let short_data_b64 = B64.encode([0x66, 0x06, 0x3d]);
         let line = format!(
             "{{\"lane\":\"laserstream\",\"kind\":\"transaction\",\"slot\":1,\"account_keys\":[\"{}\"],\"instructions\":[{{\"program_b58\":\"{}\",\"data_b64\":\"{}\",\"accounts\":[0]}}]}}",
             pump_b58, pump_b58, short_data_b64
@@ -193,6 +199,7 @@ mod chaos_parser {
 
     /// Fuzzy: 100 random byte sequences as instruction data — none must panic.
     #[test]
+    #[allow(clippy::cast_possible_truncation)] // LINT-ALLOW(hot_arith,hot_cast): test fixture: (i*const)%256 masked before as u8
     fn chaos_fuzzy_instruction_data() {
         let pump_b58 = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
         let mint_b58 = "11111111111111111111111111111111";
@@ -210,7 +217,7 @@ mod chaos_parser {
             for j in 0..16 {
                 data.push(((i * 127 + j) % 256) as u8);
             }
-            let ix_b64 = base64::encode(&data);
+            let ix_b64 = B64.encode(&data);
             let line = format!(
                 "{{\"lane\":\"laserstream\",\"kind\":\"transaction\",\"slot\":{},\"account_keys\":[\"{}\",\"{}\"],\"instructions\":[{{\"program_b58\":\"{}\",\"data_b64\":\"{}\",\"accounts\":[0,1]}}]}}",
                 i, pump_b58, mint_b58, pump_b58, ix_b64
@@ -231,6 +238,7 @@ mod chaos_parser {
 mod chaos_journal {
     use super::*;
 
+    #[allow(clippy::arithmetic_side_effects)] // LINT-ALLOW(hot_arith,hot_cast): test fixture: seed-bounded i128/usize
     fn make_record(seed: u64) -> TradeRecord {
         TradeRecord {
             slot: seed % 1_000_000,
@@ -380,6 +388,7 @@ mod chaos_memory {
     use crate::trade_journal::{RunMode, TradeOutcome, TradeRecord, TradeSide};
     use crate::ProvenanceSource;
 
+    #[allow(clippy::arithmetic_side_effects)] // LINT-ALLOW(hot_arith,hot_cast): test fixture: seed-bounded i128/usize
     fn make_record(seed: u64) -> TradeRecord {
         TradeRecord {
             slot: seed % 1_000_000,

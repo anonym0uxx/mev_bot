@@ -113,6 +113,7 @@ impl EdgeAttribution {
 
     /// Decompose a trade and add it to the aggregation in one step.
     /// Convenience method that calls `decompose_trade` then `add`.
+    #[allow(clippy::too_many_arguments)] // mirrors decompose_trade's eight measured quantities
     pub fn add_trade(
         &mut self,
         actual_entry_lamports: i64,
@@ -251,6 +252,7 @@ impl EdgeSource {
 /// - residual = total_pnl - (entry + exit + sizing + selection)
 /// - total_pnl = (actual_exit - actual_entry) * actual_size
 #[must_use]
+#[allow(clippy::too_many_arguments)] // eight independent measured lamport quantities
 pub fn decompose_trade(
     actual_entry_lamports: i64,
     twap_entry_lamports: i64,

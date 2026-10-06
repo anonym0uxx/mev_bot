@@ -1,0 +1,11 @@
+[Unit]
+Description=Hourly RL chain trigger (sft-013 -> qwen-rl-001)
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+AccuracySec=1min
+Unit=rl-chain-013.service
+
+[Install]
+WantedBy=timers.target

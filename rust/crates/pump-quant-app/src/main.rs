@@ -297,6 +297,26 @@ fn write_trade_jsonl(
                 "{{\"t\":\"filled\",\"mint\":\"{}\",\"net_pnl_lamports\":{net_pnl_lamports},\"reason\":{reason}}}",
                 hex32(&mint)
             ),
+            Decision::RoutingExit {
+                mint,
+                net_pnl_lamports,
+                reason,
+                status,
+            } => format!(
+                "{{\"t\":\"routing_exit\",\"assessable\":false,\"mint\":\"{}\",\"net_pnl_lamports\":{net_pnl_lamports},\"reason\":{reason},\"quote_validated\":{},\"landing_validated\":{},\"exclusion\":\"routing_fill:landing_unvalidated\"}}",
+                hex32(&mint),
+                status & 1 == 1,
+                status & 2 == 2
+            ),
+            Decision::ReconFault {
+                mint,
+                order_id,
+                closed,
+            } => format!(
+                "{{\"t\":\"recon_fault\",\"mint\":\"{}\",\"order_id\":{order_id},\"position_closed\":{}}}",
+                hex32(&mint),
+                closed == 1
+            ),
             Decision::Reweighted {
                 lane,
                 before_bp,

@@ -263,6 +263,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(non_snake_case)] // intentional readable law name
     fn the_payability_reserve_is_the_clip_PLUS_its_own_round_trip() {
         // G4's whole point: the old check reserved the notional and treated its own impact as
         // free. A clip that fits exactly WITHOUT the cost must refuse WITH it.

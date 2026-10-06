@@ -333,10 +333,10 @@ impl FlowReducer {
         }
 
         if self.tracked.contains(&e.mint) {
-            if self.mint_wallets.entry(e.mint).or_default().insert(w) {
-                if e.slot <= first.saturating_add(self.p.sniper_slots) {
-                    self.mint_snipers.entry(e.mint).or_default().insert(w);
-                }
+            if self.mint_wallets.entry(e.mint).or_default().insert(w)
+                && e.slot <= first.saturating_add(self.p.sniper_slots)
+            {
+                self.mint_snipers.entry(e.mint).or_default().insert(w);
             }
             if self.creator_of.get(&e.mint) == Some(&w) {
                 self.creator_traded.insert(e.mint);

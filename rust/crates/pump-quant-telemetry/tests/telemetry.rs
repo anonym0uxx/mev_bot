@@ -108,10 +108,12 @@ fn floor_breach_pages_exactly_once_and_is_ordered_first() {
 /// (3) Drawdown is exact at both band boundaries produced by the named constants.
 #[test]
 fn drawdown_is_exact_at_the_named_constant_boundaries() {
-    assert!(
-        DEGRADED_DRAWDOWN_BPS < CRITICAL_DRAWDOWN_BPS,
-        "bands must ascend"
-    );
+    const {
+        assert!(
+            DEGRADED_DRAWDOWN_BPS < CRITICAL_DRAWDOWN_BPS,
+            "bands must ascend"
+        )
+    };
     let peak = 10_000_000u64;
 
     // Exactly the degraded boundary, inclusive: (peak-equity)*10_000/peak == DEGRADED.

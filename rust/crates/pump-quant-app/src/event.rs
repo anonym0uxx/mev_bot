@@ -84,6 +84,16 @@ pub enum CreatorActionKind {
     },
 }
 
+/// Which venue a print executed on, as the PRODUCER knows it (the instruction's program id).
+/// Never inferred from reserve size: the corpus's `venue=` is the tape's own label.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TradeVenue {
+    /// pump.fun bonding curve.
+    PumpFun,
+    /// PumpSwap AMM.
+    PumpSwap,
+}
+
 /// One unit of input to the engine.
 ///
 /// `Copy` and small so a journal of millions of events replays without allocation
@@ -130,6 +140,18 @@ pub enum AppEvent {
         /// had. The LaserStream sidecar emits it on every notification; the PumpPortal path
         /// has no such field yet, so it passes `None` and the ledger refuses to serve.
         recv_unix_ms: Option<i64>,
+        /// Solana slot of the transaction that produced this print, when the producing path knows
+        /// it. `None` is "not carried", never `0`. Orders prints on-chain; it is NOT a clock.
+        slot: Option<u64>,
+        /// TOTAL transaction fee (lamports): 5000/signature base + priority. A TRANSACTION-level
+        /// quantity repeated on every trade row of the same signature, which is how the corpus
+        /// counts it (per trade row). `None` = not carried; never defaulted to 0.
+        fee_lamports: Option<u64>,
+        /// Compute units CONSUMED (not requested). Same per-row counting. `None` = not carried.
+        cu_consumed: Option<u64>,
+        /// The venue the print executed on, when the producer knew it. `None` is unknown, never a
+        /// default: the state ledger then labels the print `unknown` and the join refuses it.
+        venue: Option<TradeVenue>,
     },
 
     /// A narrative attention sample for a market: how many fresh mentions arrived
@@ -193,6 +215,83 @@ pub enum AppEvent {
         /// lamports. Seeded at 0. Decoded since the first commit and, until now,
         /// consumed by nothing outside the protocol crate's own tests.
         real_sol_lamports: u64,
+    },
+
+    /// A full bonding-curve reserve observation, as decoded from the account update. Additive to
+    /// `OnchainConfirm` (which carries only the SOL side and no clock): the model lane's curve
+    /// plane needs all four reserves plus WHEN the update was received, and a decision may only
+    /// use an observation received at or before its clock.
+    CurveObserved {
+        /// The curve's mint.
+        mint: Mint,
+        /// `virtual_sol_reserves`, lamports.
+        v_sol_lamports: u64,
+        /// `virtual_token_reserves`, raw token units.
+        v_tokens: u64,
+        /// `real_sol_reserves`, lamports.
+        real_sol_lamports: u64,
+        /// `real_token_reserves`, raw token units.
+        real_tokens: u64,
+        /// The sidecar's receive time of the account update, unix ms. `None` is refused by the
+        /// cache: a local clock would be a different quantity.
+        recv_unix_ms: Option<i64>,
+        /// The account update's slot.
+        slot: u64,
+    },
+
+    /// One PumpSwap swap decoded from the pool's own event CPI, ORIENTED to the token: the token
+    /// mint (never the pool), the pool it happened in, and that pool's PRE-trade reserves as the
+    /// event reports them. Consumed ONLY by the paper-model lane (legacy numeric/gate paths never
+    /// see it), so it can discover and price an AMM market with no legacy priced print.
+    AmmSwap {
+        /// The TOKEN mint (the non-quote side).
+        mint: Mint,
+        /// The pool the swap executed in.
+        pool: [u8; 32],
+        /// `true` when this is the pool the mint's canonical pump.fun migration derives
+        /// (`pool-authority` PDA, index 0, WSOL quote). Only that pool feeds reserves.
+        pool_is_canonical: bool,
+        /// `true` when the pool's quote side is WSOL. A USDC-quoted pool is excluded by name.
+        quote_is_wsol: bool,
+        /// Pool token-side vault balance BEFORE this swap, raw token units.
+        token_reserve_pre: u64,
+        /// Pool quote-side vault balance BEFORE this swap, lamports (valid only if `quote_is_wsol`).
+        quote_reserve_pre: u64,
+        /// Total fee rate the event applied (lp + protocol + creator), basis points. `None` when
+        /// the event predates the creator-fee tail: never defaulted to 0.
+        fee_bps: Option<u32>,
+        /// (lp, protocol, creator) bps as the event reported them, for per-component ceil rounding.
+        fee_parts: Option<(u32, u32, u32)>,
+        /// `Pool::virtual_quote_reserves` from the event (verified layouts only); `None` => the
+        /// executable quote is unsupported. Never defaulted to 0.
+        virtual_quote: Option<u64>,
+        /// `true` when the trader BOUGHT the token.
+        is_buy: bool,
+        /// Token amount the trader received (buy) or gave (sell), raw units.
+        token_amount: u64,
+        /// Quote the trader paid (buy, all fees in) or received (sell, net of fees), lamports.
+        quote_lamports: u64,
+        /// The trader.
+        trader: [u8; 32],
+        /// Transaction fee / CU consumed (per trade row), as on `MarketTrade`.
+        fee_lamports: Option<u64>,
+        /// Compute units consumed.
+        cu_consumed: Option<u64>,
+        /// Wire receive time, unix ms. `None` is refused by the cache.
+        recv_unix_ms: Option<i64>,
+        /// Slot.
+        slot: u64,
+    },
+
+    /// A token launch: who created the mint and when the launch was RECEIVED. First observation
+    /// of a trade is not a launch; this is the only event that establishes creator history.
+    LaunchObserved {
+        /// The launched mint.
+        mint: Mint,
+        /// The creator's wallet address.
+        creator: [u8; 32],
+        /// The launch event's receive time, unix ms.
+        launch_unix_ms: i64,
     },
 
     /// A deterministic, **on-chain-led** category assignment for a market. The
@@ -301,6 +400,16 @@ pub enum AppEvent {
     /// Fed by the daemon's `getSignaturesForAddress` poller when a pending buy
     /// signature is confirmed. The engine uses this to reconcile the paper
     /// position with on-chain reality and mark it as on-chain confirmed.
+    /// Execution evidence for ONE paper-model order (report ingestion). Bound to the order id, the
+    /// attempt and the quantity; `filled` is `Some((entry_price_fp, reserve_sol_lamports))` for a
+    /// fill and `None` for not-filled. Mint is for routing only and is cross-checked against the log.
+    ModelOrderEvidence {
+        mint: Mint,
+        order_id: u64,
+        attempt: u32,
+        clip_lamports: u64,
+        filled: Option<(u64, u64)>,
+    },
     OurBuyConfirmed {
         /// The mint that was bought.
         mint: Mint,
@@ -366,11 +475,15 @@ impl AppEvent {
             | AppEvent::SocialCall { mint, .. }
             | AppEvent::WalletAction { mint, .. }
             | AppEvent::OnchainConfirm { mint, .. }
+            | AppEvent::CurveObserved { mint, .. }
+            | AppEvent::AmmSwap { mint, .. }
+            | AppEvent::LaunchObserved { mint, .. }
             | AppEvent::TokenMetadata { mint, .. }
             | AppEvent::CreatorAction { mint, .. }
             | AppEvent::Migration { mint, .. }
             | AppEvent::MarketAuxiliary { mint, .. }
             | AppEvent::NarrativeResolved { mint, .. }
+            | AppEvent::ModelOrderEvidence { mint, .. }
             | AppEvent::OurBuyConfirmed { mint, .. }
             | AppEvent::OurBuyFailed { mint, .. }
             | AppEvent::OurSellConfirmed { mint, .. }

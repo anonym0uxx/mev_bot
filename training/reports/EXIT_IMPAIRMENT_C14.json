@@ -1,0 +1,64 @@
+{
+ "schema": "exit_impairment_c14_v1",
+ "code_sha256": "0fa185c56a32d9bfc520d21d4193d8923e9c411fdcd464601d1d5191405a7314",
+ "accounting": {
+  "notional_sol": 1.0,
+  "bps_one": 10000,
+  "population": {
+   "sells_with_trailing_mark": 43876,
+   "retry_windows_<=3s": 72697
+  },
+  "quantile": "p25 of the signed move (the adverse side)"
+ },
+ "reference_floor": {
+  "first_sell_penalty_bps": 200,
+  "retry_slippage_bps": 300,
+  "fee_escalation_lamports": 50000
+ },
+ "values": {
+  "first_sell_penalty_bps": 63,
+  "retry_slippage_bps": 99,
+  "fee_escalation_lamports": 35000
+ },
+ "measured": {
+  "source": "/training/v2/canonical/renorm_pooltest/trades.jsonl",
+  "rows": 91735,
+  "mints": 1268,
+  "population": {
+   "sells_with_trailing_mark": 43876,
+   "retry_windows_<=3s": 72697
+  },
+  "measured": {
+   "first_sell_penalty_bps": 63,
+   "retry_slippage_bps": 99,
+   "fee_escalation_lamports": 35000
+  },
+  "diagnostics": {
+   "shortfall_bp_p25_p50_p75": [
+    -62.9679229573471,
+    1.5301114073951183,
+    133.43038801305772
+   ],
+   "retry_move_bp_p25_p50_p75": [
+    -99.11479897809272,
+    -1.432741329245868,
+    59.246258005901666
+   ],
+   "fee_lamports_p50_p90_p99": [
+    10000.0,
+    45000.0,
+    1005000.0
+   ],
+   "fee_by_venue_p50": {
+    "pumpfun": 25000.0,
+    "pumpswap": 6922.0
+   }
+  }
+ },
+ "justification": "Measured on our own 43,876 real sells (p25 adverse shortfall vs the mint's trailing 20-fill mark) and 72,697 <=3s retry windows; the Rust Mode-C numbers (200/300/50bp) are test fixtures for a DIFFERENT cost model whose fixed leg was already measured ~15x our real cost, and adopting them would charge 3x our measured adverse exit and make every exit unprofitable by construction. Robustness comes from the LEVEL, not from a floor on the measurement: training charges these measured-adverse values, the gate and evaluation charge the pessimistic (2x) level.",
+ "replaced": {
+  "first_sell_penalty_bps": 63,
+  "retry_slippage_bps": 99,
+  "fee_escalation_lamports": 35000
+ }
+}

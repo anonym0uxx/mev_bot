@@ -136,13 +136,14 @@ pub const VOL_WINDOW_S: i64 = 30;
 pub const MIN_TRADES_FOR_VOL: usize = 30;
 
 /// The venue label a trade carried, as the corpus's venue column.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub enum VenueLabel {
     /// pump.fun bonding curve.
     Pumpfun,
     /// PumpSwap AMM.
     Pumpswap,
     /// Not resolvable from the source string.
+    #[default]
     Unknown,
 }
 
@@ -598,6 +599,8 @@ impl StateLedger {
             .iter()
             .rev()
             .find_map(|t| t.price_lamports_per_raw_token.filter(|p| p.is_finite()))?;
+        #[allow(clippy::neg_cmp_op_on_partial_ord)]
+        // deliberate: !(x>0) rejects non-positive AND NaN (x<=0 would accept NaN)
         if !(price > 0.0) {
             return None;
         }
@@ -717,6 +720,8 @@ fn ret_bp(before: &[&StateTrade], price: f64, t_dec_ms: i64, win_s: i64) -> Opti
         .filter(|p| p.is_finite())
         .collect();
     let first = *seg.first()?;
+    #[allow(clippy::neg_cmp_op_on_partial_ord)]
+    // deliberate: !(x>0) rejects non-positive AND NaN (x<=0 would accept NaN)
     if !(first > 0.0) {
         return None;
     }
@@ -735,6 +740,8 @@ fn volatility_30s(before: &[&StateTrade], _price: f64, t_dec_ms: i64) -> Option<
         .filter_map(|t| t.price_lamports_per_raw_token)
         .filter(|p| p.is_finite())
         .collect();
+    #[allow(clippy::neg_cmp_op_on_partial_ord)]
+    // deliberate: !(x>0) rejects non-positive AND NaN (x<=0 would accept NaN)
     if seg.len() < 3 || seg.iter().any(|p| !(*p > 0.0)) {
         return None;
     }

@@ -29,7 +29,7 @@
 //! - §18.2: Corrupt/unreadable state → refiner exits (fail-closed)
 //! - §22: All values are integers or strings, no floats
 
-#![allow(clippy::too_many)]
+#![allow(clippy::too_many_arguments)]
 
 use std::collections::HashMap;
 
@@ -982,13 +982,10 @@ impl EvaluatorState {
                     let beta = extract_u64(&entry_str, "beta").unwrap_or(1);
                     let n_trades = extract_u64(&entry_str, "n_trades").unwrap_or(0);
                     let netsol = extract_i64(&entry_str, "netsol").unwrap_or(0);
-                    let entry_mode =
-                        extract_string(&entry_str, "entry_mode").unwrap_or_else(|| String::new());
-                    let archetype =
-                        extract_string(&entry_str, "archetype").unwrap_or_else(|| String::new());
-                    let sizing =
-                        extract_string(&entry_str, "sizing").unwrap_or_else(|| String::new());
-                    let lane = extract_string(&entry_str, "lane").unwrap_or_else(|| String::new());
+                    let entry_mode = extract_string(&entry_str, "entry_mode").unwrap_or_default();
+                    let archetype = extract_string(&entry_str, "archetype").unwrap_or_default();
+                    let sizing = extract_string(&entry_str, "sizing").unwrap_or_default();
+                    let lane = extract_string(&entry_str, "lane").unwrap_or_default();
                     state.thompson_posteriors.insert(
                         id,
                         ThompsonPosterior {
@@ -1032,11 +1029,8 @@ fn extract_i64(json: &str, key: &str) -> Option<i64> {
     let mut num_str = String::new();
     let mut chars = rest.chars();
     if let Some(c) = chars.next() {
-        if c == '-' {
-            num_str.push(c);
-        } else {
-            num_str.push(c);
-        }
+        // The first character is kept whether it is '-' or a digit; the digit loop below decides the rest.
+        num_str.push(c);
     }
     for c in chars {
         if c.is_ascii_digit() {

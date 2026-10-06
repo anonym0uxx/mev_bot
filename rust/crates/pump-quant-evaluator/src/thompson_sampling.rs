@@ -233,7 +233,7 @@ pub fn allocate(arms: &[ThompsonArm], max_concurrent: usize, seed: u64) -> Alloc
         .collect();
 
     // Sort by sampled value descending (highest Thompson sample first).
-    sampled.sort_by(|a, b| b.0.cmp(&a.0));
+    sampled.sort_by_key(|a| std::cmp::Reverse(a.0));
 
     // Rank the types by their Thompson sample.
     let ranked_types: Vec<StrategyTypeId> = sampled.iter().map(|(_, t)| *t).collect();

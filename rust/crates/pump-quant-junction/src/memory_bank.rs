@@ -71,6 +71,7 @@ pub struct MintSummary {
 
 impl MintSummary {
     /// Win rate in basis points (0..=10_000).
+    #[allow(clippy::arithmetic_side_effects, clippy::cast_possible_truncation)] // LINT-ALLOW(hot_arith): num=(wins as u128)*10000 <= u64::MAX*1e4 < u128::MAX; wins<=wins+losses (losses>=0, saturating) => num/den<=10000 fits u32; .min(10000)
     pub fn win_rate_bps(&self) -> u32 {
         let total = self.wins.saturating_add(self.losses);
         if total == 0 {
@@ -82,6 +83,7 @@ impl MintSummary {
     }
 
     /// Average decision latency in microseconds (0 if no trades).
+    #[allow(clippy::arithmetic_side_effects)] // LINT-ALLOW(hot_arith): trades==0 early-return guard; u64/u64, quotient<=numerator
     pub fn avg_decision_latency_us(&self) -> u64 {
         if self.trades == 0 {
             return 0;
@@ -90,6 +92,7 @@ impl MintSummary {
     }
 
     /// Average net per trade in lamports (0 if no trades).
+    #[allow(clippy::arithmetic_side_effects)] // LINT-ALLOW(hot_arith): guard; i64 / u64-as-i64; quotient within i64
     pub fn avg_net_per_trade(&self) -> i64 {
         if self.trades == 0 {
             return 0;
@@ -98,6 +101,7 @@ impl MintSummary {
     }
 
     /// E11: average buy submit network round trip, in microseconds.
+    #[allow(clippy::arithmetic_side_effects)] // LINT-ALLOW(hot_arith): guard; u64/u64
     pub fn avg_submit_rpc_us(&self) -> u64 {
         if self.trades == 0 {
             return 0;
@@ -106,6 +110,7 @@ impl MintSummary {
     }
 
     /// E11: average exit (sell) submit network round trip, in microseconds.
+    #[allow(clippy::arithmetic_side_effects)] // LINT-ALLOW(hot_arith): guard; u64/u64
     pub fn avg_exit_submit_rpc_us(&self) -> u64 {
         if self.trades == 0 {
             return 0;
@@ -149,6 +154,7 @@ pub struct StrategySummary {
 }
 
 impl StrategySummary {
+    #[allow(clippy::arithmetic_side_effects, clippy::cast_possible_truncation)] // LINT-ALLOW(hot_arith): num=(wins as u128)*10000 <= u64::MAX*1e4 < u128::MAX; wins<=wins+losses (losses>=0, saturating) => num/den<=10000 fits u32; .min(10000)
     pub fn win_rate_bps(&self) -> u32 {
         let total = self.wins.saturating_add(self.losses);
         if total == 0 {
@@ -159,6 +165,7 @@ impl StrategySummary {
         ((num / den) as u32).min(10_000)
     }
 
+    #[allow(clippy::arithmetic_side_effects)] // LINT-ALLOW(hot_arith): guard; i64 / u64-as-i64; quotient within i64
     pub fn avg_net_per_trade(&self) -> i64 {
         if self.trades == 0 {
             return 0;
@@ -169,6 +176,7 @@ impl StrategySummary {
     /// Edge decay ratio (§54): recent_net / old_net.
     /// Returns 1_000_000 (=1.0 in ppm) if no old trades.
     /// > 1_000_000 = improving, < 1_000_000 = decaying, 0 = recent is zero.
+    #[allow(clippy::arithmetic_side_effects)] // LINT-ALLOW(hot_arith): old==0 early-return; recent=i64-as-i128, *1e6 <= 9.2e18*1e6 < i128::MAX; old!=0
     pub fn edge_decay_ratio_ppm(&self) -> i64 {
         if self.old_net_lamports == 0 {
             return 1_000_000; // neutral — no baseline
@@ -217,6 +225,7 @@ pub struct GlobalSummary {
 }
 
 impl GlobalSummary {
+    #[allow(clippy::arithmetic_side_effects, clippy::cast_possible_truncation)] // LINT-ALLOW(hot_arith): num=(wins as u128)*10000 <= u64::MAX*1e4 < u128::MAX; wins<=wins+losses (losses>=0, saturating) => num/den<=10000 fits u32; .min(10000)
     pub fn win_rate_bps(&self) -> u32 {
         let total = self.total_wins.saturating_add(self.total_losses);
         if total == 0 {
@@ -227,6 +236,7 @@ impl GlobalSummary {
         ((num / den) as u32).min(10_000)
     }
 
+    #[allow(clippy::arithmetic_side_effects)] // LINT-ALLOW(hot_arith): guard; i64 / u64-as-i64; quotient within i64
     pub fn avg_net_per_trade(&self) -> i64 {
         if self.total_trades == 0 {
             return 0;
@@ -234,6 +244,7 @@ impl GlobalSummary {
         self.net_lamports / self.total_trades as i64
     }
 
+    #[allow(clippy::arithmetic_side_effects)] // LINT-ALLOW(hot_arith): trades==0 early-return guard; u64/u64, quotient<=numerator
     pub fn avg_decision_latency_us(&self) -> u64 {
         if self.total_trades == 0 {
             return 0;
@@ -241,6 +252,7 @@ impl GlobalSummary {
         self.total_decision_latency_us / self.total_trades
     }
 
+    #[allow(clippy::arithmetic_side_effects)] // LINT-ALLOW(hot_arith): total_trades==0 early-return guard; u64/u64
     pub fn avg_confirm_latency_us(&self) -> u64 {
         if self.total_trades == 0 {
             return 0;
@@ -249,6 +261,7 @@ impl GlobalSummary {
     }
 
     /// E11: average buy submit network round trip, in microseconds.
+    #[allow(clippy::arithmetic_side_effects)] // LINT-ALLOW(hot_arith): guard; u64/u64
     pub fn avg_submit_rpc_us(&self) -> u64 {
         if self.total_trades == 0 {
             return 0;
@@ -257,6 +270,7 @@ impl GlobalSummary {
     }
 
     /// E11: average exit (sell) submit network round trip, in microseconds.
+    #[allow(clippy::arithmetic_side_effects)] // LINT-ALLOW(hot_arith): guard; u64/u64
     pub fn avg_exit_submit_rpc_us(&self) -> u64 {
         if self.total_trades == 0 {
             return 0;
@@ -265,6 +279,7 @@ impl GlobalSummary {
     }
 
     /// E11: mean buy outbound-call duration (µs).
+    #[allow(clippy::arithmetic_side_effects)] // LINT-ALLOW(hot_arith): guard; u64/u64
     pub fn avg_submit_call_us(&self) -> u64 {
         if self.total_trades == 0 {
             return 0;
@@ -273,6 +288,7 @@ impl GlobalSummary {
     }
 
     /// E11: mean exit (sell) outbound-call duration (µs).
+    #[allow(clippy::arithmetic_side_effects)] // LINT-ALLOW(hot_arith): guard; u64/u64
     pub fn avg_exit_submit_call_us(&self) -> u64 {
         if self.total_trades == 0 {
             return 0;
@@ -492,7 +508,7 @@ impl MemoryBank {
     pub fn top_mints(&self, n: usize) -> Vec<(&str, &MintSummary)> {
         let mut all: Vec<(&str, &MintSummary)> =
             self.mints.iter().map(|(k, v)| (k.as_str(), v)).collect();
-        all.sort_by(|a, b| b.1.net_lamports.cmp(&a.1.net_lamports));
+        all.sort_by_key(|x| std::cmp::Reverse(x.1.net_lamports));
         all.into_iter().take(n).collect()
     }
 
@@ -572,7 +588,21 @@ mod tests {
     use super::*;
     use crate::trade_journal::{RunMode, TradeRecord, TradeSide};
     use crate::ProvenanceSource;
+    /// win_rate_bps is bounded by the wins<=trades invariant: all-wins => exactly
+    /// 10000 bps (fits u32), no wins => 0. Pins the ratio's cast bound.
+    #[test]
+    fn win_rate_bps_is_bounded() {
+        let mut m = MintSummary::default();
+        assert_eq!(m.win_rate_bps(), 0);
+        m.wins = 3;
+        m.losses = 0;
+        assert_eq!(m.win_rate_bps(), 10_000); // all wins
+        m.wins = 1;
+        m.losses = 2;
+        assert_eq!(m.win_rate_bps(), 3_333); // floor(1 * 10000 / (1 + 2))
+    }
 
+    #[allow(clippy::arithmetic_side_effects)] // LINT-ALLOW(hot_arith): test fixture: 100/200 * slot.max(1) bounded by test slot
     fn make_record(slot: u64, pnl: i64, fees: u64, mint: &str, strat: u64) -> TradeRecord {
         TradeRecord {
             slot,

@@ -1,0 +1,597 @@
+[
+ {
+  "file": "audit_wave2_laws.rs",
+  "test": "entry_mode_pullback_admits_what_the_four_lane_gate_misses",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "every assertion is an arm-vs-neutral or pinned-net comparison of a retired entry/sizing/exit law on a synthetic tape; no accounting, quote, journal or safety invariant is asserted"
+ },
+ {
+  "file": "audit_wave2_laws.rs",
+  "test": "derived_targets_bank_the_grind_the_fixed_ladder_misses",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "every assertion is an arm-vs-neutral or pinned-net comparison of a retired entry/sizing/exit law on a synthetic tape; no accounting, quote, journal or safety invariant is asserted"
+ },
+ {
+  "file": "audit_wave2_laws.rs",
+  "test": "creator_dump_preentry_veto_avoids_the_loss",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "every assertion is an arm-vs-neutral or pinned-net comparison of a retired entry/sizing/exit law on a synthetic tape; no accounting, quote, journal or safety invariant is asserted"
+ },
+ {
+  "file": "audit_wave2_laws.rs",
+  "test": "fee_floor_vetoes_the_bundle_signature_and_avoids_the_loss",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "every assertion is an arm-vs-neutral or pinned-net comparison of a retired entry/sizing/exit law on a synthetic tape; no accounting, quote, journal or safety invariant is asserted"
+ },
+ {
+  "file": "audit_wave2_laws.rs",
+  "test": "into_strength_exit_sells_the_climax_not_the_exhaustion",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "every assertion is an arm-vs-neutral or pinned-net comparison of a retired entry/sizing/exit law on a synthetic tape; no accounting, quote, journal or safety invariant is asserted"
+ },
+ {
+  "file": "audit_wave2_laws.rs",
+  "test": "vol_scaled_stop_survives_the_bleed_the_fixed_stop_eats",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "every assertion is an arm-vs-neutral or pinned-net comparison of a retired entry/sizing/exit law on a synthetic tape; no accounting, quote, journal or safety invariant is asserted"
+ },
+ {
+  "file": "audit_wave2_laws.rs",
+  "test": "setup_classifier_tags_distinct_archetypes_vs_all_zero_stub",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "every assertion is an arm-vs-neutral or pinned-net comparison of a retired entry/sizing/exit law on a synthetic tape; no accounting, quote, journal or safety invariant is asserted"
+ },
+ {
+  "file": "batch_e_laws.rs",
+  "test": "decay_unseats_the_stale_squatter_and_earns",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "every assertion is an arm-vs-neutral or pinned-net comparison of a retired entry/sizing/exit law on a synthetic tape; no accounting, quote, journal or safety invariant is asserted"
+ },
+ {
+  "file": "batch_e_laws.rs",
+  "test": "structure_haircut_shrinks_the_exit_liquidity_trap",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "every assertion is an arm-vs-neutral or pinned-net comparison of a retired entry/sizing/exit law on a synthetic tape; no accounting, quote, journal or safety invariant is asserted"
+ },
+ {
+  "file": "batch_e_laws.rs",
+  "test": "baseline_verdict_guards_small_n_then_fires",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "every assertion is an arm-vs-neutral or pinned-net comparison of a retired entry/sizing/exit law on a synthetic tape; no accounting, quote, journal or safety invariant is asserted"
+ },
+ {
+  "file": "batch_e_laws.rs",
+  "test": "universe_screen_refuses_dead_markets_and_keeps_the_lamports",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "every assertion is an arm-vs-neutral or pinned-net comparison of a retired entry/sizing/exit law on a synthetic tape; no accounting, quote, journal or safety invariant is asserted"
+ },
+ {
+  "file": "batch_2d_laws.rs",
+  "test": "vetoes_and_haircuts_produce_nondegenerate_convexity",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "every assertion is an arm-vs-neutral or pinned-net comparison of a retired entry/sizing/exit law on a synthetic tape; no accounting, quote, journal or safety invariant is asserted"
+ },
+ {
+  "file": "batch_2d_laws.rs",
+  "test": "markout_cells_and_foregone_present_per_exit_reason",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "every assertion is an arm-vs-neutral or pinned-net comparison of a retired entry/sizing/exit law on a synthetic tape; no accounting, quote, journal or safety invariant is asserted"
+ },
+ {
+  "file": "batch_2d_laws.rs",
+  "test": "baseline_family_vector_is_reported",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "every assertion is an arm-vs-neutral or pinned-net comparison of a retired entry/sizing/exit law on a synthetic tape; no accounting, quote, journal or safety invariant is asserted"
+ },
+ {
+  "file": "brain_laws.rs",
+  "test": "b1_fingerprint_has_no_look_ahead",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "every assertion is an arm-vs-neutral or pinned-net comparison of a retired entry/sizing/exit law on a synthetic tape; no accounting, quote, journal or safety invariant is asserted"
+ },
+ {
+  "file": "brain_laws.rs",
+  "test": "b4_unknown_recall_is_byte_identical_armed_or_not",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "every assertion is an arm-vs-neutral or pinned-net comparison of a retired entry/sizing/exit law on a synthetic tape; no accounting, quote, journal or safety invariant is asserted"
+ },
+ {
+  "file": "brain_laws.rs",
+  "test": "b4_the_brain_plane_itself_is_decision_inert",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "every assertion is an arm-vs-neutral or pinned-net comparison of a retired entry/sizing/exit law on a synthetic tape; no accounting, quote, journal or safety invariant is asserted"
+ },
+ {
+  "file": "brain_laws.rs",
+  "test": "b3_is_reduce_only_and_never_enlarges_a_winning_class",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "every assertion is an arm-vs-neutral or pinned-net comparison of a retired entry/sizing/exit law on a synthetic tape; no accounting, quote, journal or safety invariant is asserted"
+ },
+ {
+  "file": "brain_laws.rs",
+  "test": "b2_reflection_exposes_grounded_recall_and_measured_author_records",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "every assertion is an arm-vs-neutral or pinned-net comparison of a retired entry/sizing/exit law on a synthetic tape; no accounting, quote, journal or safety invariant is asserted"
+ },
+ {
+  "file": "brain_laws.rs",
+  "test": "b3_armed_recall_haircut_strictly_out_earns_its_absence",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "every assertion is an arm-vs-neutral or pinned-net comparison of a retired entry/sizing/exit law on a synthetic tape; no accounting, quote, journal or safety invariant is asserted"
+ },
+ {
+  "file": "brain_reflect_twosided.rs",
+  "test": "the_decay_flag_fires_and_the_incumbent_does_not_already_downweight",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "every assertion is an arm-vs-neutral or pinned-net comparison of a retired entry/sizing/exit law on a synthetic tape; no accounting, quote, journal or safety invariant is asserted"
+ },
+ {
+  "file": "brain_reflect_twosided.rs",
+  "test": "contention_is_real_more_candidates_than_promotion_slots",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "every assertion is an arm-vs-neutral or pinned-net comparison of a retired entry/sizing/exit law on a synthetic tape; no accounting, quote, journal or safety invariant is asserted"
+ },
+ {
+  "file": "brain_reflect_twosided.rs",
+  "test": "the_verdict_is_an_artifact_of_the_step_size",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "every assertion is an arm-vs-neutral or pinned-net comparison of a retired entry/sizing/exit law on a synthetic tape; no accounting, quote, journal or safety invariant is asserted"
+ },
+ {
+  "file": "brain_reflect_twosided.rs",
+  "test": "the_two_sided_verdict_at_the_default_step",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "every assertion is an arm-vs-neutral or pinned-net comparison of a retired entry/sizing/exit law on a synthetic tape; no accounting, quote, journal or safety invariant is asserted"
+ },
+ {
+  "file": "brain_reflect_twosided.rs",
+  "test": "the_sign_of_the_effect_now_tracks_whether_the_flag_is_right",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "every assertion is an arm-vs-neutral or pinned-net comparison of a retired entry/sizing/exit law on a synthetic tape; no accounting, quote, journal or safety invariant is asserted"
+ },
+ {
+  "file": "brain_strategy.rs",
+  "test": "a_retirement_flag_is_a_nomination_not_a_retirement",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "every assertion is an arm-vs-neutral or pinned-net comparison of a retired entry/sizing/exit law on a synthetic tape; no accounting, quote, journal or safety invariant is asserted"
+ },
+ {
+  "file": "brain_strategy.rs",
+  "test": "retirement_flag_keys_carry_the_band_the_evidence_came_from",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "every assertion is an arm-vs-neutral or pinned-net comparison of a retired entry/sizing/exit law on a synthetic tape; no accounting, quote, journal or safety invariant is asserted"
+ },
+ {
+  "file": "brain_strategy.rs",
+  "test": "the_export_labels_every_class_with_its_concentration_band",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "every assertion is an arm-vs-neutral or pinned-net comparison of a retired entry/sizing/exit law on a synthetic tape; no accounting, quote, journal or safety invariant is asserted"
+ },
+ {
+  "file": "alpha_laws.rs",
+  "test": "alpha_alone_cannot_admit_but_admits_with_onchain_confirm",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "every assertion is an arm-vs-neutral or pinned-net comparison of a retired entry/sizing/exit law on a synthetic tape; no accounting, quote, journal or safety invariant is asserted"
+ },
+ {
+  "file": "alpha_laws.rs",
+  "test": "two_paid_rooms_accrue_distinct_per_source_net",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "every assertion is an arm-vs-neutral or pinned-net comparison of a retired entry/sizing/exit law on a synthetic tape; no accounting, quote, journal or safety invariant is asserted"
+ },
+ {
+  "file": "alpha_laws.rs",
+  "test": "bearish_alpha_sell_call_accelerates_a_reduce_only_exit_that_avoids_loss",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "every assertion is an arm-vs-neutral or pinned-net comparison of a retired entry/sizing/exit law on a synthetic tape; no accounting, quote, journal or safety invariant is asserted"
+ },
+ {
+  "file": "entry_exit_frontier.rs",
+  "test": "price_based_exit_knobs_are_inert_on_the_representative_tape",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "every assertion is an arm-vs-neutral or pinned-net comparison of a retired entry/sizing/exit law on a synthetic tape; no accounting, quote, journal or safety invariant is asserted"
+ },
+ {
+  "file": "entry_exit_frontier.rs",
+  "test": "shipped_net_is_pinned_on_every_tape",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "every assertion is an arm-vs-neutral or pinned-net comparison of a retired entry/sizing/exit law on a synthetic tape; no accounting, quote, journal or safety invariant is asserted"
+ },
+ {
+  "file": "entry_exit_frontier.rs",
+  "test": "raising_position_size_is_overbetting_not_an_edge",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "every assertion is an arm-vs-neutral or pinned-net comparison of a retired entry/sizing/exit law on a synthetic tape; no accounting, quote, journal or safety invariant is asserted"
+ },
+ {
+  "file": "flow_persistence_laws.rs",
+  "test": "the_mechanism_is_real_on_its_own_two_sided_tape",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "every assertion is an arm-vs-neutral or pinned-net comparison of a retired entry/sizing/exit law on a synthetic tape; no accounting, quote, journal or safety invariant is asserted"
+ },
+ {
+  "file": "flow_persistence_laws.rs",
+  "test": "default_is_disarmed_and_seed_only",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "every assertion is an arm-vs-neutral or pinned-net comparison of a retired entry/sizing/exit law on a synthetic tape; no accounting, quote, journal or safety invariant is asserted"
+ },
+ {
+  "file": "flow_persistence_laws.rs",
+  "test": "arming_beyond_the_shakeout_threshold_is_harmful",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "every assertion is an arm-vs-neutral or pinned-net comparison of a retired entry/sizing/exit law on a synthetic tape; no accounting, quote, journal or safety invariant is asserted"
+ },
+ {
+  "file": "flow_persistence_laws.rs",
+  "test": "but_it_fails_on_every_pre_existing_tape_so_it_stays_disarmed",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "every assertion is an arm-vs-neutral or pinned-net comparison of a retired entry/sizing/exit law on a synthetic tape; no accounting, quote, journal or safety invariant is asserted"
+ },
+ {
+  "file": "holder_concentration.rs",
+  "test": "ab_tape_is_not_vacuous",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "every assertion is an arm-vs-neutral or pinned-net comparison of a retired entry/sizing/exit law on a synthetic tape; no accounting, quote, journal or safety invariant is asserted"
+ },
+ {
+  "file": "holder_concentration.rs",
+  "test": "ab_holder_concentration_two_sided",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "every assertion is an arm-vs-neutral or pinned-net comparison of a retired entry/sizing/exit law on a synthetic tape; no accounting, quote, journal or safety invariant is asserted"
+ },
+ {
+  "file": "holder_flow.rs",
+  "test": "ab_money_proxy_holder_flow_two_sided",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "every assertion is an arm-vs-neutral or pinned-net comparison of a retired entry/sizing/exit law on a synthetic tape; no accounting, quote, journal or safety invariant is asserted"
+ },
+ {
+  "file": "law_permutation_sweep.rs",
+  "test": "the_concentration_conditioner_is_not_on_law_b3s_path",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "every assertion is an arm-vs-neutral or pinned-net comparison of a retired entry/sizing/exit law on a synthetic tape; no accounting, quote, journal or safety invariant is asserted"
+ },
+ {
+  "file": "law_permutation_sweep.rs",
+  "test": "the_b3_mirror_is_audited_for_severity",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "every assertion is an arm-vs-neutral or pinned-net comparison of a retired entry/sizing/exit law on a synthetic tape; no accounting, quote, journal or safety invariant is asserted"
+ },
+ {
+  "file": "law_permutation_sweep.rs",
+  "test": "law_b3_under_schema_one_versus_schema_two",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "every assertion is an arm-vs-neutral or pinned-net comparison of a retired entry/sizing/exit law on a synthetic tape; no accounting, quote, journal or safety invariant is asserted"
+ },
+ {
+  "file": "law_permutation_sweep.rs",
+  "test": "the_full_permutation_matrix",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "every assertion is an arm-vs-neutral or pinned-net comparison of a retired entry/sizing/exit law on a synthetic tape; no accounting, quote, journal or safety invariant is asserted"
+ },
+ {
+  "file": "law_permutation_sweep.rs",
+  "test": "the_verdict_under_the_pre_registered_rule",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "every assertion is an arm-vs-neutral or pinned-net comparison of a retired entry/sizing/exit law on a synthetic tape; no accounting, quote, journal or safety invariant is asserted"
+ },
+ {
+  "file": "social_hardening.rs",
+  "test": "even_callers_with_earned_realized_trust_cannot_admit_without_onchain",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "every assertion is an arm-vs-neutral or pinned-net comparison of a retired entry/sizing/exit law on a synthetic tape; no accounting, quote, journal or safety invariant is asserted"
+ },
+ {
+  "file": "social_hardening.rs",
+  "test": "maximal_social_support_never_increases_realized_size",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "every assertion is an arm-vs-neutral or pinned-net comparison of a retired entry/sizing/exit law on a synthetic tape; no accounting, quote, journal or safety invariant is asserted"
+ },
+ {
+  "file": "social_hardening.rs",
+  "test": "no_social_configuration_can_admit_without_the_full_onchain_chain",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "every assertion is an arm-vs-neutral or pinned-net comparison of a retired entry/sizing/exit law on a synthetic tape; no accounting, quote, journal or safety invariant is asserted"
+ },
+ {
+  "file": "mcap_band_laws.rs",
+  "test": "the_band_law_ships_disarmed_and_is_decision_inert",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "every assertion is an arm-vs-neutral or pinned-net comparison of a retired entry/sizing/exit law on a synthetic tape; no accounting, quote, journal or safety invariant is asserted"
+ },
+ {
+  "file": "measured_fingerprint.rs",
+  "test": "the_measured_plane_is_decision_inert",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "every assertion is an arm-vs-neutral or pinned-net comparison of a retired entry/sizing/exit law on a synthetic tape; no accounting, quote, journal or safety invariant is asserted"
+ },
+ {
+  "file": "edge_provenance.rs",
+  "test": "the_book_is_dominated_by_end_of_tape_force_closure",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "every assertion is an arm-vs-neutral or pinned-net comparison of a retired entry/sizing/exit law on a synthetic tape; no accounting, quote, journal or safety invariant is asserted"
+ },
+ {
+  "file": "edge_provenance.rs",
+  "test": "the_representative_tape_trades_only_five_distinct_markets",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "every assertion is an arm-vs-neutral or pinned-net comparison of a retired entry/sizing/exit law on a synthetic tape; no accounting, quote, journal or safety invariant is asserted"
+ },
+ {
+  "file": "edge_provenance.rs",
+  "test": "the_golden_book_is_indistinguishable_from_zero",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "every assertion is an arm-vs-neutral or pinned-net comparison of a retired entry/sizing/exit law on a synthetic tape; no accounting, quote, journal or safety invariant is asserted"
+ },
+ {
+  "file": "curve_fill_wiring.rs",
+  "test": "honest_fills_cost_us_about_half_the_reported_book",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "every assertion is an arm-vs-neutral or pinned-net comparison of a retired entry/sizing/exit law on a synthetic tape; no accounting, quote, journal or safety invariant is asserted"
+ },
+ {
+  "file": "curve_fill_wiring.rs",
+  "test": "only_tapes_with_real_depth_may_charge_their_own_impact",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "every assertion is an arm-vs-neutral or pinned-net comparison of a retired entry/sizing/exit law on a synthetic tape; no accounting, quote, journal or safety invariant is asserted"
+ },
+ {
+  "file": "golden_digest.rs",
+  "test": "golden_digest_is_stable",
+  "verdict": "MIXED",
+  "preserved": "journal digest sensitivity/determinism (same events -> same digest)",
+  "replacement": "rust/crates/pump-quant-app/src/journal_log.rs::serialization_pins (8 variants + tags + sequence, derived independently in Python); GOLDEN_NET/ADMITTED/etc. were strategy outcomes: retired"
+ },
+ {
+  "file": "golden_digest.rs",
+  "test": "brain_haircut_is_exactly_neutral_on_this_tape",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "arm-vs-neutral of a retired brain haircut law"
+ },
+ {
+  "file": "golden_digest.rs",
+  "test": "brain_plane_is_decision_inert_on_this_tape",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "decision-inertness of a retired gate; the brain plane no longer feeds an entry decision"
+ },
+ {
+  "file": "golden_digest.rs",
+  "test": "the_concentration_parallel_stream_is_decision_inert_on_this_tape",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "inertness vs the retired gate and its pinned digest"
+ },
+ {
+  "file": "golden_digest.rs",
+  "test": "b7_armed_reflection_is_exactly_neutral_on_this_tape",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "arm-vs-neutral of retired reflection downweight"
+ },
+ {
+  "file": "golden_digest.rs",
+  "test": "corroboration_quota_earns_on_this_tape",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "net-earnings comparison of a retired promotion quota"
+ },
+ {
+  "file": "batch_2d_laws.rs",
+  "test": "admitted_record_carries_band_and_provenance",
+  "verdict": "MIXED",
+  "preserved": "Admitted record provenance: depth_basis never 0, real round-trip cost, move_source known code",
+  "replacement": "rust/crates/pump-quant-app/tests/retired_invariants_e2e.rs::a_model_entry_writes_an_admitted_record_with_honest_zero_band_and_decoded_depth_provenance (band is 0 by design for a model entry: asserted, not fabricated)"
+ },
+ {
+  "file": "phase_a_alignment.rs",
+  "test": "an_inflated_depth_claim_is_refused_not_clamped",
+  "verdict": "MIXED",
+  "preserved": "decoder-boundary refusal of a reserve pair contradicting real_sol = virtual_sol - 30 SOL, with tolerance both sides",
+  "replacement": "rust/crates/pump-quant-app/tests/retired_invariants_e2e.rs::an_honest_reserve_pair_is_recorded_and_a_contradictory_one_is_refused_not_clamped (observes Engine::is_market_confirmed); curve_depth.rs unit tests cover the arithmetic"
+ },
+ {
+  "file": "phase_a_alignment.rs",
+  "test": "fresh_numeric_snapshot_with_confirm_admits",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "single assertion: the retired gate admits a control stream"
+ },
+ {
+  "file": "holder_concentration.rs",
+  "test": "veto_reject_code_17_actually_reaches_the_journal",
+  "verdict": "MIXED",
+  "preserved": "reject ordinal 17 meaning is serialized",
+  "replacement": "rust/crates/pump-quant-app/src/engine.rs::reject_code_pins::every_historical_code_keeps_its_ordinal pins 17 and all of 4..=28; the veto behaviour itself is retired"
+ },
+ {
+  "file": "one_authority_laws.rs",
+  "test": "the_retired_fee_fields_cannot_reach_a_decision",
+  "verdict": "MIXED",
+  "preserved": "legacy fee/tip config fields are decision-inert",
+  "replacement": "rust/crates/pump-quant-app/tests/retired_invariants_e2e.rs::absurd_legacy_fee_and_tip_fields_do_not_change_a_model_entry"
+ },
+ {
+  "file": "one_authority_laws.rs",
+  "test": "admission_and_arbitration_price_the_same_trade",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "arbitration silo of the retired gate; gate and arbitration are deleted (0 asserts beyond a pinned net)"
+ },
+ {
+  "file": "learning_loop_wiring.rs",
+  "test": "closed_trades_deposit_samples_into_the_move_table",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "asserts expected-move table fills from legacy closes; the model entry sets priced_move without a table sample (strategy estimator)"
+ },
+ {
+  "file": "engine_e2e.rs",
+  "test": "bankroll_sizing_scales_with_capital_and_respects_the_floor",
+  "verdict": "MIXED",
+  "preserved": "survival floor: no deployable capital -> refusal, never a silent resize",
+  "replacement": "rust/crates/pump-quant-app/tests/retired_invariants_e2e.rs::a_model_entry_with_no_deployable_capital_is_refused_by_name_and_the_wallet_is_untouched. Scaling-with-capital is the retired sizing law: obsolete (Qwen owns size)"
+ },
+ {
+  "file": "engine_e2e.rs",
+  "test": "bankroll_size_is_proportional_to_deployable_capital",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "legacy proportional sizing law; size is the model's"
+ },
+ {
+  "file": "engine_e2e.rs",
+  "test": "only_confirmed_numeric_candidate_is_admitted",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "retired gate admission rule"
+ },
+ {
+  "file": "engine_e2e.rs",
+  "test": "creator_distribution_fades_size_but_never_vetoes",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "retired size haircut law"
+ },
+ {
+  "file": "engine_e2e.rs",
+  "test": "numeric_lane_discovers_buy_flow_not_sell_flow",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "retired gate admission rule"
+ },
+ {
+  "file": "engine_e2e.rs",
+  "test": "behavior_is_config_driven_not_hardcoded",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "retired thresholds flip a retired decision"
+ },
+ {
+  "file": "engine_e2e.rs",
+  "test": "social_source_earns_quality_from_realized_outcomes",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "social source grading from legacy realized outcomes; research plane"
+ },
+ {
+  "file": "engine_e2e.rs",
+  "test": "stale_confirmation_no_longer_authorizes",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "confirmation TTL re-entry rule of the retired gate"
+ },
+ {
+  "file": "sizing_floor_laws.rs",
+  "test": "no_emitted_order_is_below_the_operator_floor",
+  "verdict": "MIXED",
+  "preserved": "operator minimum trade size",
+  "replacement": "Gap recorded: model orders are sized by the model and the floor min_trade_size is not asserted on the model path. probe_scale_split unit assertions remain in sizing_floor_laws.rs (kept, still passing). Decide whether the floor applies to model clips; not invented here"
+ },
+ {
+  "file": "sizing_floor_laws.rs",
+  "test": "too_thin_market_refuses_rather_than_sizing_below_floor",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "retired sizing/refusal law"
+ },
+ {
+  "file": "sizing_floor_laws.rs",
+  "test": "clamp_up_to_floor_unblocks_what_refuse_below_xmin_would_block",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "retired band clamp"
+ },
+ {
+  "file": "audit_wave2_laws.rs",
+  "test": "discovery_lane_attribution_separates_creation_from_social",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "retired lane attribution of legacy admits"
+ },
+ {
+  "file": "audit_wave2_laws.rs",
+  "test": "creator_dump_held_exit_beats_riding_the_crater",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "legacy exit A/B; CreatorDump is not an exit for model-managed positions (guarded in model_manage_e2e legacy_exits_do_not_close...)"
+ },
+ {
+  "file": "brain_laws.rs",
+  "test": "b5_recall_verdicts_are_identical_after_persist_and_restore",
+  "verdict": "MIXED",
+  "preserved": "brain snapshot+journal restore reproduces recall byte-identically",
+  "replacement": "pump-quant-brain/src/persist.rs::snapshot_restore_reproduces_byte_identical_recall_verdicts (unit, passes)"
+ },
+ {
+  "file": "brain_laws.rs",
+  "test": "b1_seals_one_episode_per_completed_trade",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "episodes are sealed on the legacy close path with a gate-captured fingerprint; model entries carry brain: None"
+ },
+ {
+  "file": "curve_fill_wiring.rs",
+  "test": "the_golden_tape_is_priced_with_real_depth_and_honest_fills",
+  "verdict": "OBSOLETE",
+  "preserved": null,
+  "replacement": "pinned golden net of the retired gate; curve_fill arithmetic is covered by 24 unit tests in curve_fill.rs"
+ }
+]

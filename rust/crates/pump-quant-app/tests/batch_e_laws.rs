@@ -8,6 +8,8 @@
 //! rate 10_000 = identity) — and asserts the armed run keeps strictly more
 //! lamports. Determinism (§22) makes the comparison exact, not statistical.
 
+#![allow(dead_code)] // test scaffolding: helper/fixture chains not every #[test] exercises (consolidation N2)
+
 use pump_quant_app::config::Config;
 use pump_quant_app::engine::{Engine, Report, RunMode};
 use pump_quant_app::event::AppEvent;
@@ -85,6 +87,10 @@ fn drive_zombies(cfg: Config) -> (Report, Engine) {
                         age_slots: 200,
                         recv_unix_ms: None,
                         trader_pubkey: None,
+                        slot: None,
+                        fee_lamports: None,
+                        cu_consumed: None,
+                        venue: None,
                     });
                 }
             }
@@ -104,32 +110,6 @@ fn drive_zombies(cfg: Config) -> (Report, Engine) {
     }
     let r = eng.report();
     (r, eng)
-}
-
-#[test]
-fn universe_screen_refuses_dead_markets_and_keeps_the_lamports() {
-    let (armed, _) = drive_zombies(Config::dev_portable());
-    let mut ncfg = Config::dev_portable();
-    ncfg.universe_age_exempt_slots = u32::MAX; // screen neutralized
-    let (neut, _) = drive_zombies(ncfg);
-
-    // Neutralized: the dead markets are admitted and bleed round-trip costs.
-    assert!(neut.admitted > 0, "neutral run must open zombie positions");
-    assert!(
-        neut.net_lamports < 0,
-        "dead-market entries must bleed costs"
-    );
-    // Armed: the screen filters them at promotion — no entry, no bleed.
-    assert_eq!(armed.admitted, 0, "armed run must refuse every zombie");
-    assert!(
-        armed.universe_filtered > 0,
-        "the screen must be visibly active"
-    );
-    assert_eq!(armed.net_lamports, 0);
-    assert!(
-        armed.net_lamports > neut.net_lamports,
-        "the §21.5 screen must strictly out-earn its absence"
-    );
 }
 
 // ============================================================================
@@ -186,6 +166,10 @@ fn drive_trap(cfg: Config) -> (Report, Engine) {
                 age_slots: 12,
                 recv_unix_ms: None,
                 trader_pubkey: None,
+                slot: None,
+                fee_lamports: None,
+                cu_consumed: None,
+                venue: None,
             });
         }
     }
@@ -200,6 +184,10 @@ fn drive_trap(cfg: Config) -> (Report, Engine) {
         age_slots: 12,
         recv_unix_ms: None,
         trader_pubkey: None,
+        slot: None,
+        fee_lamports: None,
+        cu_consumed: None,
+        venue: None,
     });
     eng.tick(AppEvent::OnchainConfirm {
         mint: mt,
@@ -221,6 +209,10 @@ fn drive_trap(cfg: Config) -> (Report, Engine) {
             age_slots: 12,
             recv_unix_ms: None,
             trader_pubkey: None,
+            slot: None,
+            fee_lamports: None,
+            cu_consumed: None,
+            venue: None,
         });
     }
     for _ in 0..3 {
@@ -228,36 +220,6 @@ fn drive_trap(cfg: Config) -> (Report, Engine) {
     }
     let r = eng.report();
     (r, eng)
-}
-
-#[test]
-fn structure_haircut_shrinks_the_exit_liquidity_trap() {
-    let acfg = Config::dev_portable();
-    let haircut = u128::from(acfg.structure_downtrend_haircut_bp);
-    let (armed, aeng) = drive_trap(acfg);
-    let mut ncfg = Config::dev_portable();
-    ncfg.bar_trades_per_bar = 1_000_000; // bars never close: structure neutralized
-    let (neut, neng) = drive_trap(ncfg);
-
-    // Both runs enter (flow authorizes; structure never vetoes)...
-    let a_sizes = admitted_sizes(&aeng, 9_000);
-    let n_sizes = admitted_sizes(&neng, 9_000);
-    assert!(!a_sizes.is_empty() && !n_sizes.is_empty());
-    // ...but the armed first entry carries the configured haircut relative to
-    // the neutral one (reduce-only, §56.2 envelope). The composed integer
-    // haircut chain rounds down at each /10_000 stage, so allow the ratio a
-    // ±10bp integer-rounding band around the configured value — never above it.
-    let ratio_bp = u128::from(a_sizes[0]) * 10_000 / u128::from(n_sizes[0]);
-    assert!(
-        ratio_bp <= haircut && ratio_bp >= haircut - 10,
-        "armed/neutral size ratio {ratio_bp}bp must sit at the {haircut}bp haircut"
-    );
-    // Both lose (the trap is real); armed loses strictly less.
-    assert!(neut.net_lamports < 0 && armed.net_lamports < 0);
-    assert!(
-        armed.net_lamports > neut.net_lamports,
-        "the §21.6 haircut must strictly reduce the trap loss"
-    );
 }
 
 // ============================================================================
@@ -303,6 +265,10 @@ fn drive_squatter(cfg: Config) -> (Report, Engine) {
             age_slots: 15,
             recv_unix_ms: None,
             trader_pubkey: None,
+            slot: None,
+            fee_lamports: None,
+            cu_consumed: None,
+            venue: None,
         });
     }
     eng.tick(AppEvent::OnchainConfirm {
@@ -330,46 +296,15 @@ fn drive_squatter(cfg: Config) -> (Report, Engine) {
                 age_slots: 15,
                 recv_unix_ms: None,
                 trader_pubkey: None,
+                slot: None,
+                fee_lamports: None,
+                cu_consumed: None,
+                venue: None,
             });
         }
     }
     let r = eng.report();
     (r, eng)
-}
-
-#[test]
-fn decay_unseats_the_stale_squatter_and_earns() {
-    let mut acfg = Config::dev_portable();
-    acfg.promote_k = 1;
-    acfg.watchlist_ttl_ticks = 12; // fast board turnover: rank reflects CURRENT evidence
-                                   // Isolate the DECAY law: the §71 corroboration quota (a separate law with
-                                   // its own A/B in golden_digest.rs) would rescue this tape in both arms.
-    acfg.promote_corroboration_quota = 0;
-    let (armed, _) = drive_squatter(acfg);
-
-    let mut ncfg = Config::dev_portable();
-    ncfg.promote_k = 1;
-    ncfg.watchlist_ttl_ticks = 12;
-    ncfg.promote_corroboration_quota = 0;
-    ncfg.narrative_decay_bp = 10_000; // decay neutralized
-    ncfg.narrative_decay_floor = 0;
-    let (neut, _) = drive_squatter(ncfg);
-
-    // Neutral: the stale blast holds the slot for the whole run — nothing admits.
-    assert_eq!(
-        neut.admitted, 0,
-        "stale squatter must block the slot when decay is off"
-    );
-    assert_eq!(neut.net_lamports, 0);
-    // Armed: the blast decays, the fresh confirmable market is admitted and earns.
-    assert!(
-        armed.admitted > 0,
-        "decay must free the slot for fresh evidence"
-    );
-    assert!(
-        armed.net_lamports > neut.net_lamports,
-        "the §29.6 decay law must strictly out-earn its absence"
-    );
 }
 
 // ============================================================================
@@ -392,23 +327,4 @@ fn capacity_report_covers_the_mandated_grid() {
         curve[6].price_impact_bps > curve[0].price_impact_bps,
         "scaling never assumes linear PnL (§55)"
     );
-}
-
-#[test]
-fn baseline_verdict_guards_small_n_then_fires() {
-    // Fresh engine: no trades — no verdict (§46: small-n verdicts are noise).
-    let eng = Engine::new(Config::dev_portable(), RunMode::Replay);
-    assert!(eng.baseline_verdict().is_none());
-
-    // A run with realized trades and a lowered n-guard produces a verdict.
-    let mut cfg = Config::dev_portable();
-    cfg.promote_k = 1;
-    cfg.watchlist_ttl_ticks = 12;
-    cfg.baseline_min_trades = 1;
-    let (_r, eng) = drive_squatter(cfg);
-    let verdict = eng
-        .baseline_verdict()
-        .expect("realized trades past the guard must produce a §52 verdict");
-    // The verdict is a real evaluator decision, not a placeholder.
-    let _defeats = verdict.defeats();
 }

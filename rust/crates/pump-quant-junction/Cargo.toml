@@ -21,11 +21,16 @@ pump-quant-narrative = { path = "../pump-quant-narrative" }
 # serve path the `TokenIdentity` it must attach to the bundle.
 pump-quant-proposal = { path = "../pump-quant-proposal" }
 pump-quant-execution = { path = "../pump-quant-execution" }
+pump-quant-inference = { path = "../pump-quant-inference" }
 pq-stream-capture = { path = "../../../tools/stream-capture-rs" }
 pump-quant-evaluator = { path = "../pump-quant-evaluator" }
 pump-quant-wallet-graph = { path = "../pump-quant-wallet-graph" }
 solana-program = "2.1"
 base64 = "0.22"
+libc = "0.2"
+serde_json = "1"
+# Operator-approval digest for the CONFIG_PROMOTION gate (already in the lock via solana-program).
+sha2 = "0.10"
 
 [dev-dependencies]
 
@@ -49,6 +54,10 @@ path = "src/bin/pq_watchdog.rs"
 [[bin]]
 name = "pq-engine-replay"
 path = "src/bin/pq_engine_replay.rs"
+
+[[bin]]
+name = "pq-serving-latency"
+path = "src/bin/pq_serving_latency.rs"
 
 [[bin]]
 name = "pq-sell"

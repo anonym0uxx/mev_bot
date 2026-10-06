@@ -123,28 +123,6 @@ fn cold_start(cfg: &Config) -> pump_quant_app::priced_move::PricedMove {
     )
 }
 
-/// **P1 — the shipped default is OFF and changes nothing.**
-#[test]
-fn the_band_law_ships_disarmed_and_is_decision_inert() {
-    let c = Config::dev_portable();
-    assert!(!c.mcap_band_enable, "the band law must ship DISARMED");
-    assert_eq!(
-        tape_golden::drive(c).net_lamports,
-        GOLDEN_SHIP,
-        "with the law off, every golden decision number must be unchanged"
-    );
-    // And the defaults encode the operator's stated band, not something else.
-    let c = Config::dev_portable();
-    assert_eq!(
-        c.mcap_band_lo_lamports, 118_420_000_000,
-        "$9k at the recorded conversion"
-    );
-    assert_eq!(
-        c.mcap_band_hi_lamports, 263_160_000_000,
-        "$20k at the recorded conversion"
-    );
-}
-
 /// **THE LAW DOES WHAT IT SAYS.** In-band admits, out-of-band refuses, and the refusal
 /// is a SELECTION code distinct from the economic one — so band tuning can never be
 /// mistaken for a cost-floor problem in the reject statistics.

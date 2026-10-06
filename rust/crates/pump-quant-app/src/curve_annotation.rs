@@ -518,7 +518,7 @@ mod tests {
         let depth = v.size_depth_sol.expect("depth");
         // The corpus's own SIZE OPTIONS line: "pool depth 4277.3 SOL".
         assert!(
-            (depth - 4277.289_364_175).abs() < 1e-6,
+            (depth - 4_277.289_364_175).abs() < 1e-6,
             "depth {depth} != the row's quote reserve 4277.289364175"
         );
     }
@@ -559,7 +559,7 @@ mod tests {
     /// Neither plane priceable: `na`, not a zero.
     #[test]
     fn an_unpriceable_mint_reports_no_market_cap_rather_than_zero() {
-        let mut st = AnnotationState::new();
+        let st = AnnotationState::new();
         let v = st.reserve_view(&mint(13), 1_000);
         assert_eq!(v.mcap_sol_at_t, None);
         assert_eq!(v.mcap_source, "absent");

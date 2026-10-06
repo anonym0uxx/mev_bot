@@ -1,0 +1,24 @@
+# SERVER-BUILD-ONLY crate — see README.md (first line) and
+# docs/SERVER_BUILD_MANIFEST.md. NOT a workspace member of anything; NOT
+# compilable on the laptop profile (helius-laserstream drags tokio + tonic +
+# yellowstone protos from crates.io, which is unreachable there). No
+# Cargo.lock is committed: the lock is generated at server build time.
+[package]
+name = "pq-laserstream-grpc"
+version = "0.2.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "pq-laserstream-grpc"
+path = "src/main.rs"
+
+[dependencies]
+helius-laserstream = "0.6"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
+futures = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+zstd = "0.13"
+chrono = "0.4"

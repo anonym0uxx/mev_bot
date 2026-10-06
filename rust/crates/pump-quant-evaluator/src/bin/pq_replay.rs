@@ -406,10 +406,6 @@ fn main() -> std::process::ExitCode {
 mod tests {
     use super::*;
 
-    fn make_trade(lane: Lane, gross: i128, fee: u128, tip: u128, failc: u128) -> ReconTrade {
-        ReconTrade::test(lane, gross, fee, tip, failc)
-    }
-
     #[test]
     fn test_parse_args_defaults() {
         let args = ReplayArgs::default();
@@ -433,7 +429,7 @@ mod tests {
             tape_path: "test".to_string(),
             ..ReplayArgs::default()
         };
-        let result = run_replay(&tape_text, &args).unwrap();
+        let result = run_replay(tape_text, &args).unwrap();
         assert_eq!(result.delta_lamports, 0);
         assert_eq!(result.n_trades_baseline, result.n_trades_replay);
     }
@@ -448,7 +444,7 @@ mod tests {
             margin_lamports: 50_000,
             ..ReplayArgs::default()
         };
-        let result = run_replay(&tape_text, &args).unwrap();
+        let result = run_replay(tape_text, &args).unwrap();
         assert_eq!(result.n_trades_baseline, 2);
         assert_eq!(result.n_trades_replay, 1);
     }
@@ -466,8 +462,8 @@ mod tests {
             fee_bps: 1000,
             ..ReplayArgs::default()
         };
-        let r1 = run_replay(&tape_text, &args_default).unwrap();
-        let r2 = run_replay(&tape_text, &args_high_fee).unwrap();
+        let r1 = run_replay(tape_text, &args_default).unwrap();
+        let r2 = run_replay(tape_text, &args_high_fee).unwrap();
         assert!(r2.replay_net_sol.net_lamports < r1.replay_net_sol.net_lamports);
     }
 
@@ -478,7 +474,7 @@ mod tests {
             tape_path: "test".to_string(),
             ..ReplayArgs::default()
         };
-        let result = run_replay(&tape_text, &args).unwrap();
+        let result = run_replay(tape_text, &args).unwrap();
         let json = result.to_json();
         assert!(json.contains("\"baseline_net_sol\""));
         assert!(json.contains("\"replay_net_sol\""));
@@ -493,7 +489,7 @@ mod tests {
             tape_path: "test".to_string(),
             ..ReplayArgs::default()
         };
-        let result = run_replay(&tape_text, &args);
+        let result = run_replay(tape_text, &args);
         assert!(result.is_err());
     }
 
@@ -509,8 +505,8 @@ mod tests {
             slippage_bps: 100,
             ..ReplayArgs::default()
         };
-        let r1 = run_replay(&tape_text, &args_no_slip).unwrap();
-        let r2 = run_replay(&tape_text, &args_with_slip).unwrap();
+        let r1 = run_replay(tape_text, &args_no_slip).unwrap();
+        let r2 = run_replay(tape_text, &args_with_slip).unwrap();
         assert!(r2.replay_net_sol.net_lamports < r1.replay_net_sol.net_lamports);
     }
 
@@ -526,8 +522,8 @@ mod tests {
             exit_delay_slots: 10,
             ..ReplayArgs::default()
         };
-        let r1 = run_replay(&tape_text, &args_no_delay).unwrap();
-        let r2 = run_replay(&tape_text, &args_with_delay).unwrap();
+        let r1 = run_replay(tape_text, &args_no_delay).unwrap();
+        let r2 = run_replay(tape_text, &args_with_delay).unwrap();
         assert!(r2.replay_net_sol.net_lamports < r1.replay_net_sol.net_lamports);
     }
 }
