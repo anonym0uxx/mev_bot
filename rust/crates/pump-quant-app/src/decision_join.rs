@@ -19,7 +19,7 @@
 use std::collections::{BTreeMap, VecDeque};
 
 use crate::bundle_assemble::py_round;
-use pump_quant_market_state::flow_reducer::{FlowOutcome, FlowReducer};
+use pump_quant_market_state::flow_reducer::{FlowOutcome, FlowReducer, WINDOW_300_MS};
 use pump_quant_proposal::bundle_gate::BundlePolicy;
 use pump_quant_proposal::decision::{AmmState, CurveState};
 use pump_quant_proposal::render_decision;
@@ -40,6 +40,11 @@ pub const LAUNCH_TOLERANCE_MS: i64 = 5_000;
 /// Per-mint enrichment ring bound (§99). `enrich` reads the WHOLE prefix, so a mint that
 /// overflows this is refused rather than silently truncated.
 pub const MAX_ENRICH_TRADES_PER_MINT: usize = 50_000;
+/// How many recent upstream-dropped prints a mint remembers. A drop poisons the window for
+/// [`WINDOW_300_MS`]; a ring larger than the number of drops that can fall inside one 300 s
+/// window is never needed, and the bound keeps the record off the unbounded path (§99).
+const FLOW_UPSTREAM_DROP_RING: usize = 64;
+
 /// How many recent prints a duplicate check looks back over.
 const DEDUPE_LOOKBACK: usize = 64;
 
@@ -103,6 +108,13 @@ pub enum JoinRefusal {
     },
     /// The reducer served aggregates with no fee-p90 or CU-p50 (never rendered `none` in training).
     FlowAggregatesIncomplete,
+    /// A print was dropped by the feed derivation *before* the flow reducer could see it
+    /// (a reserve delta the derivation refused), so this clock's 300 s flow window is
+    /// missing a print. Refused by name — never served as complete or as a quiet market —
+    /// until the drop ages out of the window.
+    FlowUpstreamDrop {
+        drop_ms: i64,
+    },
     CurveAbsent(String),
     AmmAbsent(String),
     /// More than one pool was bound to the mint and the observation's pool is not the bound one.
@@ -133,6 +145,7 @@ impl JoinRefusal {
             JoinRefusal::Enrichment(_) => "join_enrichment_gap",
             JoinRefusal::FlowMetaMissing { .. } => "join_flow_meta_missing",
             JoinRefusal::FlowAggregatesIncomplete => "join_flow_aggregates_incomplete",
+            JoinRefusal::FlowUpstreamDrop { .. } => "join_flow_upstream_drop",
             JoinRefusal::CurveAbsent(_) => "join_curve_absent",
             JoinRefusal::AmmAbsent(_) => "join_amm_absent",
             JoinRefusal::AmmPoolAmbiguous => "join_amm_pool_ambiguous",
@@ -229,6 +242,9 @@ struct MintCache {
     n_accepted: u64,
     identity_missing: u64,
     flow_meta_missing: u64,
+    /// Receive instants of prints the feed derivation dropped before the reducer could
+    /// see them. A flow window containing one is incomplete and refused by name.
+    flow_upstream_drops: VecDeque<i64>,
     enrich_overflow: bool,
     venue: VenueLabel,
     recent: VecDeque<(Option<u64>, [u8; 32], i64, i64)>,
@@ -249,6 +265,8 @@ pub struct IngestCounters {
     pub no_price: u64,
     pub out_of_order: u64,
     pub duplicate: u64,
+    /// Prints the feed derivation dropped before the reducer could see them.
+    pub flow_upstream_drops: u64,
 }
 
 /// The decision-time cache. One owner (the engine); no interior mutability.
@@ -427,6 +445,24 @@ impl DecisionCache {
         Ingest::Accepted
     }
 
+    /// Record that the feed derivation dropped a print for `mint` at `drop_unix_ms` — a
+    /// reserve delta the derivation refused before it could reach the flow reducer. Such a
+    /// print is invisible to every received-print check, so the cache remembers the instant
+    /// and refuses any 300 s flow window that contains it ([`JoinRefusal::FlowUpstreamDrop`])
+    /// rather than serving the window as complete or as a quietly idle market.
+    ///
+    /// The record is bounded and self-healing: once the decision clock has advanced past the
+    /// drop by more than [`WINDOW_300_MS`], the drop is outside the served window and normal
+    /// serving resumes without any explicit clearing.
+    pub fn note_flow_upstream_drop(&mut self, mint: [u8; 32], drop_unix_ms: i64) {
+        let mc = self.mints.entry(mint).or_default();
+        if mc.flow_upstream_drops.len() >= FLOW_UPSTREAM_DROP_RING {
+            mc.flow_upstream_drops.pop_front();
+        }
+        mc.flow_upstream_drops.push_back(drop_unix_ms);
+        self.counters.flow_upstream_drops += 1;
+    }
+
     /// The last curve reserve observation for a mint (for the paper fill), if any.
     #[must_use]
     pub fn curve_obs(&self, mint: &[u8; 32]) -> Option<CurveObservation> {
@@ -504,6 +540,18 @@ impl DecisionCache {
             return Err(JoinRefusal::FutureStateInCache {
                 newest_ms: mc.last_recv_ms,
             });
+        }
+        // UPSTREAM DROP — fail-closed, and blamed before any "quiet"/"few trades" verdict.
+        // A print the feed derivation refused never reached the reducer, so no received-print
+        // check and no reserve age can prove this window complete: it is known-incomplete.
+        // Refuse by name so a window driven quiet BY the drop reads as feed loss, never as an
+        // idle market. The window recovers once the drop leaves the 300 s horizon.
+        if let Some(&drop_ms) = mc
+            .flow_upstream_drops
+            .iter()
+            .find(|&&d| d >= t_dec_ms - WINDOW_300_MS && d < t_dec_ms)
+        {
+            return Err(JoinRefusal::FlowUpstreamDrop { drop_ms });
         }
         self.ledger
             .eligibility(mint, t_dec_ms)
@@ -1036,6 +1084,61 @@ mod tests {
     }
 
     #[test]
+    fn an_upstream_dropped_print_refuses_the_flow_block_by_name_and_recovers() {
+        // 80 fully-attributed prints so the refusal clock is past the drop and the market is
+        // not otherwise idle.
+        let mut c = ready(80);
+        let t_refuse = t_dec(80);
+        // A print dropped early in the window, before the decision clock: the reserve delta
+        // was refused by the feed derivation, so it never reached the reducer.
+        let drop_ms = T0 + 1_000;
+        c.note_flow_upstream_drop(MINT, drop_ms);
+        assert_eq!(c.counters().flow_upstream_drops, 1);
+        assert_eq!(
+            c.snapshot(&MINT, t_refuse),
+            Err(JoinRefusal::FlowUpstreamDrop { drop_ms }),
+            "a dropped print must refuse the window by name, not serve it"
+        );
+
+        // RECOVERY: extend the history past drop_ms + 300 s. The drop is now outside the
+        // served flow window, so the same cache serves normally again with no explicit clear.
+        for i in 80..155 {
+            assert_eq!(c.observe_trade(&trade(i)), Ingest::Accepted);
+        }
+        let t_recover = t_dec(155);
+        assert!(
+            t_recover - drop_ms > WINDOW_300_MS,
+            "the drop must have left the 300 s window: {drop_ms} vs {t_recover}"
+        );
+        assert!(
+            c.snapshot(&MINT, t_recover).is_ok(),
+            "once the drop ages out of the flow window, serving resumes"
+        );
+    }
+
+    #[test]
+    fn an_ordinary_no_trade_window_is_not_flagged_as_feed_loss() {
+        // No drop recorded: the ordinary path serves, so the new check cannot fire on a
+        // market that simply had prints.
+        let c = ready(40);
+        assert!(
+            c.snapshot(&MINT, t_dec(40)).is_ok(),
+            "an ordinary window with no upstream drop must serve"
+        );
+        assert_eq!(c.counters().flow_upstream_drops, 0);
+
+        // An honestly quiet window keeps its existing, honest refusal — IdleTooLong — and is
+        // never relabelled as feed loss.
+        match c.snapshot(&MINT, t_dec(40) + 120_000) {
+            Err(JoinRefusal::FlowUpstreamDrop { .. }) => {
+                panic!("a quiet window was mislabelled as an upstream drop")
+            }
+            Err(JoinRefusal::State(ClockRefusal::IdleTooLong { .. })) | Ok(_) => {}
+            other => panic!("unexpected refusal for a quiet window: {other:?}"),
+        }
+    }
+
+    #[test]
     fn every_refusal_has_a_distinct_stable_label() {
         let all = [
             JoinRefusal::NoMint,
@@ -1046,6 +1149,7 @@ mod tests {
             JoinRefusal::EnrichmentOverflow,
             JoinRefusal::FlowMetaMissing { prints: 1 },
             JoinRefusal::FlowAggregatesIncomplete,
+            JoinRefusal::FlowUpstreamDrop { drop_ms: 1 },
             JoinRefusal::CurveAbsent(String::new()),
             JoinRefusal::AmmAbsent(String::new()),
             JoinRefusal::AmmPoolAmbiguous,

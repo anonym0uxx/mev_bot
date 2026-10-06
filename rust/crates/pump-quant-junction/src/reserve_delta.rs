@@ -192,6 +192,63 @@ pub fn delta_representable(prev: Option<&ReserveSnapshot>, current: &PumpCurve) 
     fits(current.virtual_sol, p.virtual_sol) && fits(current.virtual_token, p.virtual_token)
 }
 
+/// Why a reserve observation yielded no `MarketTrade`.
+///
+/// [`derive_market_trade_from_delta`] returns `None` for two fundamentally different
+/// reasons, and the difference is a *flow-completeness* question, not a diagnostic:
+///
+/// * [`DeltaMiss::NoPrint`] — no print existed. A first sighting (no previous snapshot),
+///   or reserves that did not move (a `complete`-flag flip on migration, a spurious
+///   notification). Nothing was lost; a quiet window is honest.
+/// * [`DeltaMiss::UpstreamDropped`] — a print moved the curve but the derivation refused
+///   it: a delta outside `i64`, a self-inconsistent curve (both reserves moved the same
+///   way), or degenerate post-trade reserves (zero token side). That print is dropped
+///   **before** the flow reducer ever sees it, so every flow window that contains its
+///   instant is missing a print and must not be served as complete or as a quiet market.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeltaMiss {
+    /// No print existed to drop.
+    NoPrint,
+    /// A print existed and was dropped upstream of the flow reducer.
+    UpstreamDropped,
+}
+
+/// Classify a `None` from [`derive_market_trade_from_delta`], so a caller can tell an
+/// ordinary no-trade observation from a dropped print.
+///
+/// This mirrors the derivation's rejections exactly and is only meaningful when the
+/// derivation returned `None` (the consistency is pinned by a test below). A valid print
+/// never reaches the fall-through: the final arm exists so the classifier fails *closed*
+/// rather than misreading an unclassified rejection as an ordinary no-trade.
+#[must_use]
+pub fn classify_delta_miss(prev: Option<&ReserveSnapshot>, current: &PumpCurve) -> DeltaMiss {
+    let Some(p) = prev else {
+        return DeltaMiss::NoPrint; // first sighting: no print existed
+    };
+    // Same widened arithmetic as the derivation: only a delta that cannot fit `i64`
+    // is out of range, never a merely large reserve.
+    let delta_vsol = i128::from(current.virtual_sol).checked_sub(i128::from(p.virtual_sol));
+    let delta_vtoken = i128::from(current.virtual_token).checked_sub(i128::from(p.virtual_token));
+    let (Some(dv), Some(dt)) = (
+        delta_vsol.and_then(|d| i64::try_from(d).ok()),
+        delta_vtoken.and_then(|d| i64::try_from(d).ok()),
+    ) else {
+        return DeltaMiss::UpstreamDropped; // delta outside i64
+    };
+    if dv == 0 || dt == 0 {
+        return DeltaMiss::NoPrint; // nothing moved
+    }
+    if (dv > 0) == (dt > 0) {
+        return DeltaMiss::UpstreamDropped; // self-inconsistent curve
+    }
+    if current.virtual_token == 0 {
+        return DeltaMiss::UpstreamDropped; // degenerate post-trade reserves
+    }
+    // Either a valid print (the classifier was misused) or a rejection not enumerated
+    // above; both fail closed rather than being read as an ordinary no-trade.
+    DeltaMiss::UpstreamDropped
+}
+
 /// Record the result of a derivation attempt, for stats tracking.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct DeltaStats {
@@ -440,5 +497,100 @@ mod tests {
         let result =
             derive_market_trade_from_delta(&[0xAB; 32], Some(prev), &curve, 1000, true, None);
         assert!(result.is_none());
+    }
+
+    /// The classifier must agree with the derivation: an ordinary no-trade observation is
+    /// `NoPrint`, and a print that genuinely moved the curve but was refused is
+    /// `UpstreamDropped`.
+    #[test]
+    fn classify_separates_dropped_prints_from_ordinary_no_trade() {
+        let prev = ReserveSnapshot {
+            virtual_sol: 30_000_000_000,
+            virtual_token: 1_000_000_000,
+            slot: 900,
+        };
+        // Ordinary: first sighting, and reserves that did not move.
+        assert_eq!(
+            classify_delta_miss(None, &make_curve(31_000_000_000, 1_000_000_000)),
+            DeltaMiss::NoPrint
+        );
+        assert_eq!(
+            classify_delta_miss(Some(&prev), &make_curve(30_000_000_000, 1_000_000_000)),
+            DeltaMiss::NoPrint
+        );
+        // Dropped: out-of-range delta.
+        assert_eq!(
+            classify_delta_miss(Some(&prev), &make_curve(u64::MAX, 1_000_000_000)),
+            DeltaMiss::UpstreamDropped
+        );
+        // Dropped: self-inconsistent curve (both reserves moved up).
+        assert_eq!(
+            classify_delta_miss(Some(&prev), &make_curve(31_000_000_000, 1_100_000_000)),
+            DeltaMiss::UpstreamDropped
+        );
+        // Dropped: degenerate post-trade reserves (zero token side).
+        assert_eq!(
+            classify_delta_miss(Some(&prev), &make_curve(31_000_000_000, 0)),
+            DeltaMiss::UpstreamDropped
+        );
+    }
+
+    /// Pin the classifier against the derivation on every rejection: each fixture is a
+    /// `None` from the derivation, and the classifier's label matches what was lost.
+    #[test]
+    fn classifier_agrees_with_the_derivation_on_every_rejection() {
+        let prev = ReserveSnapshot {
+            virtual_sol: 30_000_000_000,
+            virtual_token: 1_000_000_000,
+            slot: 900,
+        };
+        let cases: [(Option<ReserveSnapshot>, PumpCurve, DeltaMiss); 6] = [
+            (
+                None,
+                make_curve(31_000_000_000, 999_000_000),
+                DeltaMiss::NoPrint,
+            ),
+            (
+                Some(prev),
+                make_curve(30_000_000_000, 1_000_000_000),
+                DeltaMiss::NoPrint,
+            ),
+            (
+                Some(prev),
+                make_curve(30_000_000_000, 1_001_000_000),
+                DeltaMiss::NoPrint,
+            ),
+            (
+                Some(prev),
+                make_curve(u64::MAX, 1_000_000_000),
+                DeltaMiss::UpstreamDropped,
+            ),
+            (
+                Some(prev),
+                make_curve(31_000_000_000, 1_100_000_000),
+                DeltaMiss::UpstreamDropped,
+            ),
+            (
+                Some(prev),
+                make_curve(31_000_000_000, 0),
+                DeltaMiss::UpstreamDropped,
+            ),
+        ];
+        for (p, cur, want) in cases {
+            let derived = derive_market_trade_from_delta(
+                &[0xAB; 32],
+                p,
+                &cur,
+                1000,
+                true,
+                Some(1_700_000_000_000),
+            );
+            assert!(derived.is_none(), "fixture must be a rejection: {want:?}");
+            assert_eq!(
+                classify_delta_miss(p.as_ref(), &cur),
+                want,
+                "classifier disagreed on {want:?}"
+            );
+        }
     }
 }

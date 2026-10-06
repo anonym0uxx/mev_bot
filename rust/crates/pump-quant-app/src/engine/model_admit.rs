@@ -273,6 +273,16 @@ impl Engine {
         self.model_cache.counters()
     }
 
+    /// Record a print the feed derivation dropped before the flow reducer could see it (a
+    /// reserve delta it refused), so any 300 s flow window that contains it is refused by
+    /// name rather than served as complete or quietly idle. No-op unless the paper-model
+    /// lane is armed — nothing else serves flow.
+    pub fn note_flow_upstream_drop(&mut self, mint: [u8; 32], drop_unix_ms: i64) {
+        if self.paper_model_mode {
+            self.model_cache.note_flow_upstream_drop(mint, drop_unix_ms);
+        }
+    }
+
     pub fn model_lane_report(&self) -> &std::collections::BTreeMap<String, u64> {
         &self.model_report
     }

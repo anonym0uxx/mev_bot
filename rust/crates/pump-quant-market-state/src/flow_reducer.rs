@@ -63,6 +63,13 @@ pub struct FlowEvent {
     pub cu_consumed: Option<u64>,
 }
 
+/// The 300 s flow window, in ms — the horizon one served `LIVE FLOW STATE` block covers.
+///
+/// Exposed as a `const` so a consumer that must reason about whether that window is
+/// *complete* (the decision join's upstream-drop check) uses the reducer's own horizon
+/// instead of duplicating the number and silently drifting from it.
+pub const WINDOW_300_MS: i64 = 300_000;
+
 /// The c11 window/percentile constants, as a parameter block so a caller can see them
 /// (and a test can tighten them) rather than reading magic numbers out of the code.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -91,7 +98,7 @@ impl Default for FlowParams {
     /// The c11 constants, verbatim.
     fn default() -> Self {
         Self {
-            window_300_ms: 300_000,
+            window_300_ms: WINDOW_300_MS,
             window_60_ms: 60_000,
             fresh_ms: 86_400_000,
             lookback_ms: 604_800_000,

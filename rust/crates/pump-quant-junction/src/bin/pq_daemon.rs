@@ -2824,6 +2824,21 @@ fn main() -> ExitCode {
                                 ) {
                                     stats.delta_out_of_range += 1;
                                 }
+                                // A print that moved the curve but the derivation refused never
+                                // reaches the flow reducer, so no received-print check can see
+                                // it. Surface it (with its wire receive time) so the decision
+                                // join refuses any 300 s flow window that would otherwise be
+                                // served as complete or quietly idle. An ordinary no-trade
+                                // classifies as `NoPrint` and is left alone.
+                                if pump_quant_junction::reserve_delta::classify_delta_miss(
+                                    prev.as_ref(),
+                                    &curve,
+                                ) == pump_quant_junction::reserve_delta::DeltaMiss::UpstreamDropped
+                                {
+                                    if let Some(ms) = recv_unix_ms {
+                                        engine.note_flow_upstream_drop(mb, ms);
+                                    }
+                                }
                             }
                             reserve_tracker.insert(
                                 mb,
