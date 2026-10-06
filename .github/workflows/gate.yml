@@ -61,6 +61,13 @@ jobs:
             rust/target
           key: ${{ runner.os }}-${{ runner.arch }}-rust${{ steps.env.outputs.rustc_release }}-cargo-${{ hashFiles('rust/**/Cargo.lock') }}-${{ hashFiles('rust/.cargo/config.toml','.github/workflows/gate.yml') }}
 
+      - name: Portable gate (no-stubs blocking; hot-path lint reported)
+        # Replaces the two retained checks of the retired scripts/ci_gate.py (deleted in
+        # 9c822551 with the supervisor/constitution machinery): no-stubs (blocking) and the
+        # §24/criterion-109 hot-path lint (reported with counts, not concealed). Runs from the
+        # repo root. See tools/gates/portable_gate.py for the obsolete-vs-retained classification.
+        run: python3 tools/gates/portable_gate.py --repo .
+
       - name: Format check
         working-directory: rust
         run: cargo fmt --all -- --check

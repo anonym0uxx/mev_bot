@@ -55,13 +55,23 @@ kill switch, SAFETY_OFF), data collection (tape export, memory bank), enrichment
 
 - **Automatic evaluator/refiner promotion loop — RETIRED** (`63a80511`). The daemon no longer spawns
   `pq-refiner`. `--refiner-every-ticks` is accepted and ignored (logged `RETIRED`). A promotion file
-  (`data/CONFIG_PROMOTION.json`) is still hot-reloaded, but **only if an operator places it deliberately**;
-  the auto-revert safety path is unchanged. Do not re-add a timer spawn.
+  (`data/CONFIG_PROMOTION.json`) is hot-reloaded **only when an operator has approved that exact
+  content**: `data/CONFIG_PROMOTION.approved` must hold the sha256 of the promotion bytes, otherwise
+  it is refused and the live config is untouched. Approval is consumed on apply; the digest binding
+  prevents an old approval from authorising a different replay. The auto-revert safety path is
+  unchanged and needs no approval. Do not re-add a timer spawn or a self-approving path.
 - **Legacy strategy authority** (`gate_evaluate`, ladder/trail/thesis/stall exits, arbitration): removed
   from the engine; reject code **29 (NO_ENTRY_AUTHORITY)** fires when no armed model lane exists. Legacy
   crates kept only as offline comparators (see manifest §MIGRATE).
 - Historical launchers (`launch_rev16/17/29/36`, `start_rev36`, `launch_live`, `detach_launch`,
   `restart_daemon`, `run_watchdog`) were removed. Kept: `rust/launch_watchdog.sh`, `tools/pq-startup.ps1`.
+- **Supervisor/constitution gate scripts — RETIRED** (`9c822551`): `scripts/ci_gate.py`,
+  `supervisor/gates/hotpath_lint.py`, `scripts/materialize_tests.py`, the dossier machinery and the
+  `.claude` edit-denial. Two of their checks protected retained behaviour and were **replaced**, not
+  dropped: `tools/gates/portable_gate.py` (no-stubs blocking + §24/criterion-109 hot-path lint
+  reported). The dossier/constitution checks were obsolete legacy-policy enforcement — do not restore.
+  The old `secrets` check was warning-only; the blocking replacement is `.githooks/pre-push`
+  (enable once per clone: `git config core.hooksPath .githooks`).
 
 ## 5. Configuration & state
 
@@ -107,6 +117,11 @@ file for *how to run*.
 ## 10. Operational commands (current)
 
 ```bash
+# portable gate (no-stubs blocking; hot-path lint reported) - run from the REPO ROOT
+python3 tools/gates/portable_gate.py --repo .            # add --strict-hotpath to make the lint blocking
+# enable the blocking credential guard once per clone
+git config core.hooksPath .githooks
+
 # build + full local gate (CI-equivalent)
 cd rust
 cargo fmt --all -- --check
@@ -127,5 +142,8 @@ cargo run --release --bin pq-engine-replay -- <tape>
 cargo run --release --bin pq_replay -- <tape>
 ```
 
-**CI:** GitHub Actions workflow `rust-ci` (`.github/workflows/gate.yml`) runs the four steps above on the
-pushed branch. Local run and hosted run are reported separately (see the merge-review package).
+**CI:** GitHub Actions workflow `rust-ci` (`.github/workflows/gate.yml`) runs on the pushed branch:
+Record toolchain/runner CPU/effective flags · **Portable gate** · Format check · Clippy
+(deny warnings) · Build · Tests. It uses a **CI-only** `RUSTFLAGS=-C target-cpu=x86-64-v3`
+(the deployment `znver5` pin in `rust/.cargo/config.toml` is unchanged; hosted runners are not
+Zen5). Local and hosted runs are reported separately (see the merge-review package).
