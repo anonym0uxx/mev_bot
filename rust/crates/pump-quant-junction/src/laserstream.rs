@@ -88,6 +88,10 @@ pub struct LaserStreamTx {
     /// Compute units CONSUMED (`meta.compute_units_consumed`), not requested/limit. `None` when
     /// absent. Same quantity as the corpus tape `cu_consumed`.
     pub cu_consumed: Option<u64>,
+    /// Whether the transaction VERIFIABLY succeeded (`meta.err` absent), parsed from the wire
+    /// line's `meta.tx_ok` (1/0). `None` = the line does not say, which is NOT success: the
+    /// curve trade-event path refuses it. A sidecar subscription filter is not per-line evidence.
+    pub tx_ok: Option<bool>,
 }
 
 /// pump.fun `create` instruction discriminator (`sha256("global:create")[..8]`).
@@ -472,7 +476,7 @@ fn account_key_at(ix: &LaserStreamInstruction, tx: &LaserStreamTx, idx: usize) -
 /// `u64` handle for the `buyer_entity` field that the engine uses for holder
 /// de-duplication and bitset tracking. Collisions are negligible for the
 /// ~10⁶-wallet addressable space (birthday bound ~2³²).
-fn wallet_entity_id(pubkey: &[u8; 32]) -> u64 {
+pub fn wallet_entity_id(pubkey: &[u8; 32]) -> u64 {
     let lo = u64::from_le_bytes(pubkey[..8].try_into().unwrap_or([0; 8]));
     let hi = u64::from_le_bytes(pubkey[24..32].try_into().unwrap_or([0; 8]));
     // splitmix64 round: mix hi into lo
@@ -882,6 +886,7 @@ pub fn parse_ndjson_line(line: &str) -> Option<LaserStreamUpdate> {
             };
             let fee_lamports = meta_u64("fee", "fee_lamports");
             let cu_consumed = meta_u64("compute_units_consumed", "cu_consumed");
+            let tx_ok = meta_u64("tx_ok", "tx_ok").map(|n| n != 0);
 
             Some(LaserStreamUpdate::Transaction(LaserStreamTx {
                 slot,
@@ -890,6 +895,7 @@ pub fn parse_ndjson_line(line: &str) -> Option<LaserStreamUpdate> {
                 instructions,
                 fee_lamports,
                 cu_consumed,
+                tx_ok,
                 is_live: true, // gRPC stream is always live (§65)
                 // Straight off the wire, into the event: this is the clock the corpus's
                 // causal windows are keyed on, and it is never re-derived.
@@ -1030,6 +1036,7 @@ mod tests {
             recv_unix_ms: None,
             fee_lamports: None,
             cu_consumed: None,
+            tx_ok: None,
         }
     }
 

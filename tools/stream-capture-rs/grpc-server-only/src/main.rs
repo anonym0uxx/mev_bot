@@ -135,6 +135,8 @@ fn daemon_tx_line(
         "meta": {
             "fee": meta.map(|m| m.fee),
             "compute_units_consumed": meta.and_then(|m| m.compute_units_consumed),
+            // Per-line success evidence: `meta.err` absent. Absent meta => field omitted (unknown).
+            "tx_ok": meta.map(|m| u64::from(m.err.is_none())),
         },
     })
     .to_string()
