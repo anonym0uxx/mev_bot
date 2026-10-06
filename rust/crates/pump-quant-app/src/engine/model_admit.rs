@@ -248,6 +248,20 @@ fn warm_bucket(n: u64) -> &'static str {
     }
 }
 
+/// Retry spacing (wire-clock ms) for a failed missing-history write.
+const MISSING_RETRY_MS: i64 = 5_000;
+
+/// Missing-history persistence bookkeeping (one field on the engine).
+#[derive(Debug, Default)]
+pub(super) struct MissingStore {
+    pub path: Option<std::path::PathBuf>,
+    pub writer: Option<crate::missing_history_store::Writer>,
+    pub persisted_rev: u64,
+    pub submitted_seq: u64,
+    pub last_submit_ms: i64,
+    pub failure_reported: bool,
+}
+
 impl Engine {
     pub(super) fn mrep(&mut self, key: impl Into<String>) {
         *self.model_report.entry(key.into()).or_insert(0) += 1;
@@ -280,6 +294,119 @@ impl Engine {
     pub fn note_flow_upstream_drop(&mut self, mint: [u8; 32], drop_unix_ms: i64) {
         if self.paper_model_mode {
             self.model_cache.note_flow_upstream_drop(mint, drop_unix_ms);
+        }
+    }
+
+    /// Attach the durable missing-history ledger and RESTORE it before any inference.
+    ///
+    /// * trusted records are restored (the gaps keep refusing);
+    /// * a missing file is a clean start;
+    /// * an unreadable / incompatible file raises the named conservative refusal for every prompt
+    ///   and is NEVER overwritten while untrusted (the evidence stays on disk).
+    pub fn model_missing_attach(
+        &mut self,
+        path: &std::path::Path,
+    ) -> crate::missing_history_store::StoreLoad {
+        use crate::missing_history_store::{load, StoreLoad, Writer};
+        let l = load(path);
+        match &l {
+            StoreLoad::NeverWritten => {}
+            StoreLoad::Records(r) => {
+                let _ = self.model_cache.restore_missing_history(r, true);
+            }
+            StoreLoad::Untrusted(why) => {
+                let _ = self.model_cache.restore_missing_history(&[], false);
+                self.mrep(format!("missing_history:untrusted:{why}"));
+            }
+        }
+        self.missing_store.path = Some(path.to_path_buf());
+        self.missing_store.writer = Some(Writer::start(path.to_path_buf()));
+        // What is on disk (or absent) is the baseline: the first change writes.
+        self.missing_store.persisted_rev = self.model_cache.missing_rev();
+        l
+    }
+
+    /// Test seam: attach with a caller-supplied writer (forced-failure injection).
+    #[doc(hidden)]
+    pub fn model_missing_attach_with_writer(&mut self, w: crate::missing_history_store::Writer) {
+        self.missing_store.writer = Some(w);
+        self.missing_store.persisted_rev = self.model_cache.missing_rev();
+    }
+
+    /// Called every tick: one integer compare when nothing changed. A change (or an unconfirmed /
+    /// failed previous write) hands the newest snapshot to the background writer; the tick never
+    /// waits on disk. Never writes while continuity is untrusted.
+    pub(super) fn model_missing_persist_if_changed(&mut self) {
+        let Some((w_written, fails)) = self
+            .missing_store
+            .writer
+            .as_ref()
+            .map(|w| (w.written_seq(), w.consecutive_failures()))
+        else {
+            return;
+        };
+        if self.model_cache.history_continuity_unknown() {
+            return;
+        }
+        let rev = self.model_cache.missing_rev();
+        if fails > 0 && !self.missing_store.failure_reported {
+            self.missing_store.failure_reported = true;
+            self.mrep("missing_history:persist_failed");
+        }
+        if fails == 0 {
+            self.missing_store.failure_reported = false;
+        }
+        let _ = w_written;
+        let retry = fails > 0
+            && self.model_clock_ms - self.missing_store.last_submit_ms >= MISSING_RETRY_MS;
+        if rev == self.missing_store.persisted_rev && !retry {
+            return;
+        }
+        let body =
+            crate::missing_history_store::encode(&self.model_cache.missing_history_records());
+        let Some(w) = self.missing_store.writer.as_ref() else {
+            return;
+        };
+        self.missing_store.submitted_seq = w.submit(body);
+        self.missing_store.persisted_rev = rev;
+        self.missing_store.last_submit_ms = self.model_clock_ms;
+    }
+
+    /// Persistence health for the status writer: (unflushed, consecutive_failures, total_failures).
+    #[must_use]
+    pub fn model_missing_persist_health(&self) -> (bool, u64, u64) {
+        self.missing_store
+            .writer
+            .as_ref()
+            .map_or((false, 0, 0), |w| {
+                (
+                    self.missing_store.submitted_seq > w.written_seq(),
+                    w.consecutive_failures(),
+                    w.total_failures(),
+                )
+            })
+    }
+
+    /// Block (bounded) until the newest snapshot is durable. Shutdown and tests ONLY.
+    pub fn model_missing_flush(&mut self, timeout: std::time::Duration) -> bool {
+        self.model_missing_persist_if_changed();
+        match self.missing_store.writer.as_ref() {
+            Some(w) => w.wait_durable(self.missing_store.submitted_seq, timeout),
+            None => false,
+        }
+    }
+
+    /// Record a refused reserve observation with the producer's classification and source id.
+    pub fn note_missing_observation(
+        &mut self,
+        mint: [u8; 32],
+        drop_unix_ms: i64,
+        kind: crate::decision_join::MissingKind,
+        source_id: String,
+    ) {
+        if self.paper_model_mode {
+            self.model_cache
+                .note_missing_observation(mint, drop_unix_ms, kind, source_id);
         }
     }
 

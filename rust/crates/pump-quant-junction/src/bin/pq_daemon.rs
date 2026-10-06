@@ -1826,10 +1826,36 @@ fn main() -> ExitCode {
         let held_file = std::env::var("PQ_MODEL_HELD_FILE").unwrap_or_else(|_| {
             pump_quant_junction::model_lifecycle::DEFAULT_HELD_FILE.to_string()
         });
-        match pump_quant_junction::model_lifecycle::restore_held_state(
+        let restore = pump_quant_junction::model_lifecycle::restore_held_state(
             &mut engine,
             std::path::Path::new(&held_file),
-        ) {
+        );
+        // Missing-history continuity is loaded BEFORE any inference, after the held restore so an
+        // absent ledger next to restored exposure is treated as untrusted, never as "no gap".
+        {
+            let mh_file = std::env::var("PQ_MODEL_MISSING_HISTORY_FILE").unwrap_or_else(|_| {
+                pump_quant_junction::model_lifecycle::DEFAULT_MISSING_HISTORY_FILE.to_string()
+            });
+            let held_restored = matches!(
+                restore,
+                pump_quant_junction::model_lifecycle::StartupRestore::Restored(_)
+            );
+            let st = pump_quant_junction::model_lifecycle::attach_missing_history(
+                &mut engine,
+                std::path::Path::new(&mh_file),
+                held_restored,
+            );
+            eprintln!("[pq-daemon] missing-history ledger {mh_file}: {st:?}");
+            if let pump_quant_junction::model_lifecycle::MissingHistoryStartup::ContinuityUnknown(
+                why,
+            ) = &st
+            {
+                eprintln!(
+                    "[pq-daemon] ALERT: missing-history continuity UNKNOWN ({why}) - Qwen entry and management refuse by name; monitoring, reconciliation and hard safeguards continue"
+                );
+            }
+        }
+        match restore {
             pump_quant_junction::model_lifecycle::StartupRestore::Clean => {
                 eprintln!("[pq-daemon] held-state: no ledger at {held_file} - clean start");
             }
@@ -2594,6 +2620,7 @@ fn main() -> ExitCode {
             // Low-frequency (status-heartbeat) dropped-print health: lets an operator tell an
             // honestly QUIET market from one whose data is INCOMPLETE. Never on the hot path.
             let flow_drop = engine.model_flow_drop_summary();
+            let (mh_unflushed, _mh_fail_now, mh_fail_total) = engine.model_missing_persist_health();
             let health_json = format!(
                 concat!(
                     "{{",
@@ -2612,6 +2639,9 @@ fn main() -> ExitCode {
                     "\"flow_upstream_drops\":{},",
                     "\"flow_windows_incomplete\":{},",
                     "\"flow_missing_observations\":{},",
+                    "\"missing_history_unflushed\":{},",
+                    "\"missing_history_persist_failures\":{},",
+                    "\"missing_history_continuity_unknown\":{},",
                     "\"uptime_secs\":{},",
                     "\"tick\":{},",
                     "\"account_subs_active\":{},",
@@ -2635,6 +2665,9 @@ fn main() -> ExitCode {
                 flow_drop.drops_total,
                 flow_drop.mints_incomplete_now,
                 flow_drop.mints_history_unreconstructed,
+                mh_unflushed,
+                mh_fail_total,
+                engine.model_history_continuity_unknown(),
                 uptime_secs,
                 tick_counter,
                 sub_tracker.len(),
@@ -2846,6 +2879,7 @@ fn main() -> ExitCode {
                                         mb,
                                         prev.as_ref(),
                                         &curve,
+                                        slot,
                                         recv_unix_ms,
                                     );
                             }

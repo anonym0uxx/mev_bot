@@ -75,6 +75,7 @@ pub mod lane;
 pub mod live_status;
 pub mod market_context;
 pub mod measured_state;
+pub mod missing_history_store;
 pub mod model_authority;
 pub mod model_lane;
 pub mod model_worker;

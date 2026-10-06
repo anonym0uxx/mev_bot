@@ -343,6 +343,41 @@ pub fn restore_held_state(engine: &mut Engine, path: &Path) -> StartupRestore {
     }
 }
 
+/// Default location of the durable missing-history ledger.
+pub const DEFAULT_MISSING_HISTORY_FILE: &str = "data/model_missing_history.json";
+
+/// What startup did with the missing-history ledger.
+#[derive(Debug, PartialEq, Eq)]
+pub enum MissingHistoryStartup {
+    /// No ledger and no restored exposure: a genuinely clean first start.
+    Clean,
+    /// Trusted records restored (count). Their gaps keep refusing.
+    Restored(usize),
+    /// The ledger is unreadable/incompatible, OR it is ABSENT while held exposure was restored
+    /// (a deleted record must not read as "no gap"). Every prompt refuses
+    /// `join_history_continuity_unknown`; the evidence on disk is left untouched.
+    ContinuityUnknown(String),
+}
+
+/// Attach + restore the missing-history ledger BEFORE the first tick (call after
+/// [`restore_held_state`] so `held_restored` is known).
+pub fn attach_missing_history(
+    engine: &mut Engine,
+    path: &Path,
+    held_restored: bool,
+) -> MissingHistoryStartup {
+    use pump_quant_app::missing_history_store::StoreLoad;
+    match engine.model_missing_attach(path) {
+        StoreLoad::NeverWritten if held_restored => {
+            let _ = engine.model_restore_missing_history(&[], false);
+            MissingHistoryStartup::ContinuityUnknown("absent_with_restored_exposure".into())
+        }
+        StoreLoad::NeverWritten => MissingHistoryStartup::Clean,
+        StoreLoad::Records(r) => MissingHistoryStartup::Restored(r.len()),
+        StoreLoad::Untrusted(why) => MissingHistoryStartup::ContinuityUnknown(why.to_string()),
+    }
+}
+
 /// Mints whose reserve/print feeds the daemon must (re)subscribe after a restore, independently of
 /// new-opportunity discovery.
 #[must_use]

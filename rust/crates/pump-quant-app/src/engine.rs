@@ -854,6 +854,8 @@ pub struct Engine {
     /// this, never by mint alone, so evidence for one order cannot touch another order's state.
     model_order_seq: u64,
     model_held: model_restore::HeldPersist,
+    /// Durable missing-history ledger (writer + bookkeeping); `None` until attached.
+    missing_store: model_admit::MissingStore,
     /// Append-only-ish order book (bounded): identity, attempt, quantity, state and terminal evidence.
     model_order_log: BTreeMap<u64, model_admit::OrderRec>,
     /// Which order opened the currently-held model position on each mint.
@@ -1480,6 +1482,7 @@ impl Engine {
             model_amm_fee: BTreeMap::new(),
             model_order_seq: 0,
             model_held: model_restore::HeldPersist::default(),
+            missing_store: model_admit::MissingStore::default(),
             model_order_log: BTreeMap::new(),
             model_position_order: BTreeMap::new(),
             model_fills: Vec::new(),
@@ -3017,6 +3020,7 @@ impl Engine {
             self.model_stream_schedule();
             self.model_mgmt_schedule();
             self.model_held_persist_if_changed();
+            self.model_missing_persist_if_changed();
         }
 
         // §Quant-Rev-7: prune expired re-entry cooldown entries. The set is bounded

@@ -201,6 +201,13 @@ pub struct StateMarker {
 }
 
 /// Everything `prepare` read from the producers, shared by the entry and management snapshots.
+/// Who the prepared state is for: each audience gates only on the history it actually renders.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Audience {
+    Entry,
+    Management,
+}
+
 struct Prepared {
     state: crate::state_ledger::StateSnapshot,
     enriched: crate::enrichment::EnrichedSnapshot,
@@ -320,15 +327,78 @@ pub struct FlowDropSummary {
 ///   horizon; it is NOT evidence that any given feature depends on this print for 7 d.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct MissingDeps {
-    /// Rolling 300 s windows (flow block + ledger `ret_*`): bounded by the print's own window.
+    /// Rolling 300 s flow block + ledger `ret_*`: bounded by the print's own window.
+    /// Needed by ENTRY and MANAGEMENT.
     pub rolling_300s: bool,
-    /// CUMULATIVE ledger state, including a held position's age/inventory history: no timer
-    /// restores it.
-    pub cumulative_ledger: bool,
-    /// Wallet-derived features (`fresh_wallet_share`, `smart_*`, coentry). The refused derivation
-    /// never resolved a trader, so attribution is UNKNOWN — which is NOT proof of unaffectedness.
-    /// Carried as readiness UNCERTAINTY; it is not used to freeze unrelated mints.
+    /// Cumulative LEDGER counters rendered only in the ENTRY prompt (`n_prior_trades`, buy/sell
+    /// counts, volumes, top1/top5, buyer/seller ratio). NOT read by the management prompt, and
+    /// NOT part of the engine's reconciled position state (inventory, cost basis, held time).
+    pub ledger_cumulative: bool,
+    /// Cumulative HOLDER state (`holders_at_t`, `top1_float_share`, `holder_hhi`, bundle /
+    /// round-trip wallets, wash ratio) computed from the mint's whole trade list. Rendered by
+    /// ENTRY and by MANAGEMENT.
+    pub holder_enrichment: bool,
+    /// Wallet-derived flow features (`fresh_wallet_share`, `smart_*`, coentry). The refused
+    /// derivation never resolved a trader, so attribution is UNKNOWN. These read GLOBAL wallet
+    /// state (first-activity, co-entry graph), so other mints MAY carry a one-event error; that
+    /// is REPORTED (health counter), neither assumed zero nor used to freeze unrelated mints.
     pub wallet_derived_uncertain: bool,
+}
+
+impl MissingDeps {
+    /// Everything a refused-but-coherent reserve move could have touched.
+    #[must_use]
+    pub fn all_market_history() -> Self {
+        Self {
+            rolling_300s: true,
+            ledger_cumulative: true,
+            holder_enrichment: true,
+            wallet_derived_uncertain: true,
+        }
+    }
+    fn union(self, o: Self) -> Self {
+        Self {
+            rolling_300s: self.rolling_300s || o.rolling_300s,
+            ledger_cumulative: self.ledger_cumulative || o.ledger_cumulative,
+            holder_enrichment: self.holder_enrichment || o.holder_enrichment,
+            wallet_derived_uncertain: self.wallet_derived_uncertain || o.wallet_derived_uncertain,
+        }
+    }
+    /// Does a CUMULATIVE gap with these deps make the ENTRY prompt incomplete?
+    #[must_use]
+    pub fn blocks_entry(&self) -> bool {
+        self.ledger_cumulative || self.holder_enrichment
+    }
+    /// Does it make the MANAGEMENT prompt incomplete? (Position inventory/cost/age are engine
+    /// state and are never inputs here.)
+    #[must_use]
+    pub fn blocks_management(&self) -> bool {
+        self.holder_enrichment
+    }
+}
+
+/// What the producer actually knows about the refused observation. A failed reserve-delta
+/// inference alone never proves a trade was lost, so `Confirmed` is deliberately NOT producible
+/// from the reserve path: it would need an independent transaction record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MissingKind {
+    /// Both reserves moved by representable amounts but the derivation refused the pair
+    /// (same-sign move, degenerate token side): a swap-sized move we could not turn into a print.
+    PossibleTrade,
+    /// A reserve delta outside `i64`: the account decoded to non-physical reserves. No trade is
+    /// shown to exist OR to be absent. Explicitly UNKNOWN; gated fail-closed like `PossibleTrade`
+    /// (relaxing that is an operator decision, not made here).
+    InvalidObservation,
+}
+
+impl MissingKind {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MissingKind::PossibleTrade => "possible_trade",
+            MissingKind::InvalidObservation => "invalid_observation_unknown",
+        }
+    }
 }
 
 /// Evidence that missing history was actually RECONSTRUCTED from an authoritative source and
@@ -345,8 +415,12 @@ pub struct ReconstructionReceipt {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MissingObservation {
-    /// Receive instant of the dropped print.
+    /// Receive instant of the (earliest folded) refused observation.
     pub drop_ms: i64,
+    /// What the producer knows: possible trade vs invalid (unknown) observation.
+    pub kind: MissingKind,
+    /// How many refused observations this record stands for (compaction folds, never drops).
+    pub count: u32,
     /// Source/event identity where the producer has one (empty when it does not).
     pub source_id: String,
     pub deps: MissingDeps,
@@ -361,6 +435,8 @@ pub struct MissingHistoryStatus {
     pub drop_ms: i64,
     pub source_id: String,
     pub deps: MissingDeps,
+    pub kind: MissingKind,
+    pub count: u32,
     pub entry_unavailable: bool,
     pub management_unavailable: bool,
     /// `rolling_pending` | `reconstruction_unsupported` | `reconstructed` | `continuity_unknown`
@@ -405,6 +481,9 @@ pub struct DecisionCache {
     /// record). Refuses every prompt by [`JoinRefusal::HistoryContinuityUnknown`] until a
     /// reconstruction receipt clears it — never by assuming no gap occurred.
     history_continuity_unknown: bool,
+    /// Bumped on every change to the unresolved-gap set, so the persister can skip unchanged ticks
+    /// with one integer compare.
+    missing_rev: u64,
 }
 
 impl Default for DecisionCache {
@@ -429,7 +508,14 @@ fn push_missing_bounded(ring: &mut VecDeque<MissingObservation>, mut new: Missin
     while ring.len() >= FLOW_UPSTREAM_DROP_RING {
         let Some(old) = ring.pop_front() else { break };
         if old.receipt.is_none() {
+            // Fold, never drop: earliest instant, UNION of dependencies, summed count, the more
+            // conservative kind, and a surviving source id.
             new.drop_ms = new.drop_ms.min(old.drop_ms);
+            new.deps = new.deps.union(old.deps);
+            new.count = new.count.saturating_add(old.count);
+            if old.kind == MissingKind::PossibleTrade {
+                new.kind = MissingKind::PossibleTrade;
+            }
             if new.source_id.is_empty() {
                 new.source_id = old.source_id;
             }
@@ -451,6 +537,7 @@ impl DecisionCache {
             pools: BTreeMap::new(),
             policy: BundlePolicy::trained_only(),
             counters: IngestCounters::default(),
+            missing_rev: 0,
             history_continuity_unknown: false,
         }
     }
@@ -622,15 +709,21 @@ impl DecisionCache {
     /// 300 s window for [`WINDOW_300_MS`], then the cumulative history until it is reconstructed
     /// or reconciled. Never served as complete or as a quietly idle market.
     pub fn note_flow_upstream_drop(&mut self, mint: [u8; 32], drop_unix_ms: i64) {
-        self.note_flow_upstream_drop_with_source(mint, drop_unix_ms, String::new());
+        self.note_missing_observation(
+            mint,
+            drop_unix_ms,
+            MissingKind::PossibleTrade,
+            String::new(),
+        );
     }
 
-    /// As [`Self::note_flow_upstream_drop`], but carrying the source/event identity where the
-    /// producer has one (e.g. the LaserStream slot). Persisted so the gap survives a restart.
-    pub fn note_flow_upstream_drop_with_source(
+    /// As [`Self::note_flow_upstream_drop`], carrying the source identity where the producer has
+    /// one (e.g. the slot) and the producer's classification.
+    pub fn note_missing_observation(
         &mut self,
         mint: [u8; 32],
         drop_unix_ms: i64,
+        kind: MissingKind,
         source_id: String,
     ) {
         let mc = self.mints.entry(mint).or_default();
@@ -638,18 +731,18 @@ impl DecisionCache {
             &mut mc.flow_drops,
             MissingObservation {
                 drop_ms: drop_unix_ms,
+                kind,
+                count: 1,
                 source_id,
-                deps: MissingDeps {
-                    rolling_300s: true,
-                    cumulative_ledger: true,
-                    // The refused derivation never resolved a trader, so the wallet-derived
-                    // features CANNOT be shown unaffected: readiness carries that uncertainty.
-                    wallet_derived_uncertain: true,
-                },
+                // The refused derivation never resolved a trader or a trade, so every history the
+                // missing print could have entered is carried; each audience then gates on its
+                // own subset (see `MissingDeps::blocks_entry` / `blocks_management`).
+                deps: MissingDeps::all_market_history(),
                 receipt: None,
             },
         );
         self.counters.flow_upstream_drops += 1;
+        self.missing_rev += 1;
     }
 
     /// Resolve the CUMULATIVE gap for `mint` ONLY by installing a validated reconstruction
@@ -726,8 +819,10 @@ impl DecisionCache {
             drop_ms: m.drop_ms,
             source_id: m.source_id.clone(),
             deps: m.deps,
-            entry_unavailable: true,
-            management_unavailable: true,
+            kind: m.kind,
+            count: m.count,
+            entry_unavailable: m.deps.blocks_entry(),
+            management_unavailable: m.deps.blocks_management(),
             recovery: "reconstruction_unsupported",
         })
     }
@@ -761,6 +856,7 @@ impl DecisionCache {
             let mc = self.mints.entry(*mint).or_default();
             push_missing_bounded(&mut mc.flow_drops, m.clone());
         }
+        self.missing_rev += 1;
         Ok(())
     }
 
@@ -785,6 +881,12 @@ impl DecisionCache {
     #[cfg(test)]
     pub(crate) fn clear_history_continuity_fixture(&mut self) {
         self.history_continuity_unknown = false;
+    }
+
+    /// Revision of the unresolved-gap set (changes whenever it does).
+    #[must_use]
+    pub fn missing_rev(&self) -> u64 {
+        self.missing_rev
     }
 
     /// Whether startup continuity could not be established.
@@ -858,7 +960,12 @@ impl DecisionCache {
     /// Order of refusals is the order of cheapness and of blame: identity of the mint, launch
     /// provenance, causality, corpus eligibility, then each plane. Every plane is read from its
     /// existing producer; nothing here computes a market quantity.
-    fn prepare(&self, mint: &[u8; 32], t_dec_ms: i64) -> Result<Prepared, JoinRefusal> {
+    fn prepare(
+        &self,
+        mint: &[u8; 32],
+        t_dec_ms: i64,
+        audience: Audience,
+    ) -> Result<Prepared, JoinRefusal> {
         let Some(mc) = self.mints.get(mint) else {
             return Err(JoinRefusal::NoMint);
         };
@@ -897,7 +1004,13 @@ impl DecisionCache {
         //     counters (n_prior_trades / volumes / unique traders / shares / age) are short.
         //     NO timer repairs that — a fresh reserve snapshot does not restore trade history —
         //     so it stays refused until reconstructed from a capture or reconciled.
-        if let Some(m) = mc.flow_drops.iter().find(|m| m.receipt.is_none()) {
+        if let Some(m) = mc.flow_drops.iter().find(|m| {
+            m.receipt.is_none()
+                && match audience {
+                    Audience::Entry => m.deps.blocks_entry(),
+                    Audience::Management => m.deps.blocks_management(),
+                }
+        }) {
             return Err(JoinRefusal::FlowHistoryUnreconstructable { drop_ms: m.drop_ms });
         }
         self.ledger
@@ -975,7 +1088,7 @@ impl DecisionCache {
             venue,
             last_recv_ms,
             n_accepted,
-        } = self.prepare(mint, t_dec_ms)?;
+        } = self.prepare(mint, t_dec_ms, Audience::Entry)?;
         let mc_last_recv_ms = last_recv_ms;
         let mc_n_accepted = n_accepted;
         let inputs = BundleInputs {
@@ -1037,7 +1150,7 @@ impl DecisionCache {
             venue,
             last_recv_ms,
             n_accepted,
-        } = self.prepare(mint, t_dec_ms)?;
+        } = self.prepare(mint, t_dec_ms, Audience::Management)?;
         // FRESHNESS PER COMPONENT (management only). The entry corpus renders a stale reserve with
         // pricing_eligible=false and lets the model weigh it; a HELD position is marked and sized
         // from these reserves, so a stale one is refused here. Bound = the existing
@@ -1667,6 +1780,134 @@ mod tests {
             c.counters().accepted,
             0,
             "it never reaches enrichment or flow"
+        );
+    }
+
+    fn obs_with(deps: MissingDeps, kind: MissingKind, ms: i64) -> MissingObservation {
+        MissingObservation {
+            drop_ms: ms,
+            kind,
+            count: 1,
+            source_id: String::new(),
+            deps,
+            receipt: None,
+        }
+    }
+
+    #[test]
+    fn entry_and_management_gate_on_different_dependencies() {
+        let ledger_only = MissingDeps {
+            ledger_cumulative: true,
+            ..MissingDeps::default()
+        };
+        // Past the 300 s rolling horizon so only the CUMULATIVE dependency is in play.
+        let t = t_dec(155) + 400_000;
+        let mut c = ready(155);
+        c.restore_missing_history(
+            &[(
+                MINT,
+                obs_with(ledger_only, MissingKind::PossibleTrade, T0 + 1_000),
+            )],
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            c.snapshot(&MINT, t),
+            Err(JoinRefusal::FlowHistoryUnreconstructable {
+                drop_ms: T0 + 1_000
+            }),
+            "a ledger-cumulative gap blocks ENTRY"
+        );
+        let st = c.missing_history_status(&MINT).unwrap();
+        assert!(st.entry_unavailable && !st.management_unavailable);
+        let held = mgmt_inputs();
+        let m = c.management_snapshot(&MINT, t, &held);
+        assert!(
+            !matches!(m, Err(JoinRefusal::FlowHistoryUnreconstructable { .. })),
+            "a ledger-only gap must NOT block MANAGEMENT (it renders none of it): {m:?}"
+        );
+        // A holder-enrichment gap blocks both.
+        let holder = MissingDeps {
+            holder_enrichment: true,
+            ..MissingDeps::default()
+        };
+        let mut c2 = ready(155);
+        c2.restore_missing_history(
+            &[(
+                MINT,
+                obs_with(holder, MissingKind::PossibleTrade, T0 + 1_000),
+            )],
+            true,
+        )
+        .unwrap();
+        assert!(matches!(
+            c2.management_snapshot(&MINT, t, &held),
+            Err(JoinRefusal::FlowHistoryUnreconstructable { .. })
+        ));
+        // CONTROL: no gap, no refusal of that kind.
+        assert!(!matches!(
+            ready(155).snapshot(&MINT, t),
+            Err(JoinRefusal::FlowHistoryUnreconstructable { .. })
+        ));
+    }
+
+    #[test]
+    fn compaction_preserves_the_union_of_dependencies_count_and_conservative_kind() {
+        let mut c = ready(80);
+        let only_ledger = MissingDeps {
+            ledger_cumulative: true,
+            ..MissingDeps::default()
+        };
+        let only_holder = MissingDeps {
+            holder_enrichment: true,
+            ..MissingDeps::default()
+        };
+        let mut recs = vec![(
+            MINT,
+            obs_with(only_ledger, MissingKind::InvalidObservation, T0 + 1),
+        )];
+        recs.push((
+            MINT,
+            obs_with(only_holder, MissingKind::PossibleTrade, T0 + 2),
+        ));
+        c.restore_missing_history(&recs, true).unwrap();
+        // Fill the ring with rolling-only observations until the two originals are folded.
+        let rolling = MissingDeps {
+            rolling_300s: true,
+            ..MissingDeps::default()
+        };
+        let extra: Vec<_> = (0..FLOW_UPSTREAM_DROP_RING as i64 + 3)
+            .map(|i| {
+                (
+                    MINT,
+                    obs_with(rolling, MissingKind::InvalidObservation, T0 + 10 + i),
+                )
+            })
+            .collect();
+        c.restore_missing_history(&extra, true).unwrap();
+        let all = c.missing_history_records();
+        assert!(all.len() <= FLOW_UPSTREAM_DROP_RING);
+        let u = all
+            .iter()
+            .fold(MissingDeps::default(), |a, (_, r)| a.union(r.deps));
+        assert!(
+            u.ledger_cumulative && u.holder_enrichment && u.rolling_300s,
+            "union kept: {u:?}"
+        );
+        assert_eq!(
+            all.iter().map(|(_, r)| r.drop_ms).min(),
+            Some(T0 + 1),
+            "earliest instant kept"
+        );
+        assert!(
+            all.iter()
+                .any(|(_, r)| r.kind == MissingKind::PossibleTrade),
+            "conservative kind kept"
+        );
+        assert_eq!(
+            all.iter().map(|(_, r)| u64::from(r.count)).sum::<u64>(),
+            2 + extra.len() as u64,
+            "no observation silently dropped from the count"
         );
     }
 }
