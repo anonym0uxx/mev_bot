@@ -1,0 +1,113 @@
+{
+ "20260909_144906_000490": {
+  "n": 148753,
+  "labels": {
+   "no_print": 4664,
+   "derived": 142808,
+   "possible_trade": 1281
+  },
+  "flag_classes": {
+   "skipped_events_all_in_B_slot": 1159,
+   "adjacent_events(no skipped event)": 12,
+   "unmatched": 65,
+   "B_vtoken==0": 45
+  },
+  "missing_hist": {
+   "1": 624,
+   "3": 130,
+   "5": 46,
+   "2": 249,
+   "4": 73,
+   "0": 12,
+   "6": 37
+  },
+  "rebuilt_tok_realsol_vsol": {
+   "(True, False)": 1157,
+   "(True, True)": 2
+  },
+  "unmatched": {
+   "('no_mint_map', 'noA', 'noB')": 65
+  },
+  "zeroed_complete_B_A": {
+   "(1, 1)": 44,
+   "(1, 0)": 1
+  },
+  "label_x_missing": {
+   "('derived', 'adjacent')": 92786,
+   "('derived', 'missing>0')": 44260,
+   "('possible_trade', 'missing>0')": 1159,
+   "('derived', 'unmatched')": 5762,
+   "('no_print', 'missing>0')": 362,
+   "('possible_trade', 'adjacent')": 12,
+   "('possible_trade', 'unmatched')": 110,
+   "('no_print', 'adjacent')": 111,
+   "('no_print', 'unmatched')": 29
+  },
+  "label_x_eventsInBslot": {
+   "('no_print', 'single')": 3277,
+   "('no_print', 'multi')": 1129,
+   "('derived', 'single')": 92789,
+   "('derived', 'multi')": 44260,
+   "('no_print', 'none')": 258,
+   "('possible_trade', 'multi')": 1159,
+   "('derived', 'none')": 5759,
+   "('possible_trade', 'single')": 13,
+   "('possible_trade', 'none')": 109
+  }
+ },
+ "20260909_173928_000596": {
+  "n": 155878,
+  "labels": {
+   "no_print": 4883,
+   "derived": 149324,
+   "possible_trade": 1671
+  },
+  "flag_classes": {
+   "skipped_events_all_in_B_slot": 1546,
+   "adjacent_events(no skipped event)": 23,
+   "B_vtoken==0": 60,
+   "unmatched": 42
+  },
+  "missing_hist": {
+   "1": 796,
+   "3": 186,
+   "0": 23,
+   "5": 70,
+   "2": 337,
+   "4": 89,
+   "6": 68
+  },
+  "rebuilt_tok_realsol_vsol": {
+   "(True, False)": 1546
+  },
+  "unmatched": {
+   "('no_mint_map', 'noA', 'noB')": 42
+  },
+  "zeroed_complete_B_A": {
+   "(1, 1)": 59,
+   "(1, 0)": 1
+  },
+  "label_x_missing": {
+   "('derived', 'adjacent')": 102735,
+   "('derived', 'missing>0')": 42929,
+   "('derived', 'unmatched')": 3660,
+   "('possible_trade', 'missing>0')": 1546,
+   "('no_print', 'adjacent')": 294,
+   "('possible_trade', 'adjacent')": 23,
+   "('possible_trade', 'unmatched')": 102,
+   "('no_print', 'missing>0')": 489,
+   "('no_print', 'unmatched')": 68
+  },
+  "label_x_eventsInBslot": {
+   "('no_print', 'single')": 3360,
+   "('no_print', 'multi')": 1236,
+   "('no_print', 'none')": 287,
+   "('derived', 'single')": 102735,
+   "('derived', 'multi')": 42929,
+   "('derived', 'none')": 3660,
+   "('possible_trade', 'multi')": 1546,
+   "('possible_trade', 'single')": 24,
+   "('possible_trade', 'none')": 101
+  }
+ }
+}
