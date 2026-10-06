@@ -35,7 +35,17 @@ pub const PROMOTION_FILE: &str = "data/CONFIG_PROMOTION.json";
 /// of [`PROMOTION_FILE`]. A promotion is applied ONLY when this file exists AND its
 /// digest matches, so the operator's action is bound to one specific config/version:
 /// a stale file, a file produced by anything else, or any post-approval edit is
-/// refused. Approve with:
+/// refused. The approval is ONE-USE: it is deleted when the promotion is consumed, so
+/// recreating the same bytes (or restarting, which resets the in-memory mtime guard) needs
+/// a fresh approval.
+///
+/// LIMIT - this is not authentication. A filesystem marker cannot distinguish the operator
+/// from any other process with write access to `data/`. What it does establish is that no
+/// code path in this daemon self-approves, that an approval must be created out-of-band and
+/// bound to the exact content, and that it is spent once. Real authentication would need an
+/// out-of-process signer/key the daemon verifies.
+///
+/// Approve with:
 /// `sha256sum data/CONFIG_PROMOTION.json | cut -d' ' -f1 > data/CONFIG_PROMOTION.approved`
 pub const PROMOTION_APPROVAL_FILE: &str = "data/CONFIG_PROMOTION.approved";
 
@@ -315,8 +325,10 @@ pub fn try_reload_config(cfg: &mut Config, last_mtime: &mut Option<u64>) -> Relo
             eprintln!(
                 "[autonomous-bridge] CONFIG HOT-RELOAD REJECTED: validate() failed after {mutations_applied} mutations: {e}"
             );
-            // Delete the promotion file so we don't re-reject it forever.
+            // Consume BOTH files: the approval authorised exactly one application
+            // ATTEMPT, and this attempt is spent (see the one-use note above).
             let _ = fs::remove_file(path);
+            let _ = fs::remove_file(PROMOTION_APPROVAL_FILE);
             *last_mtime = Some(mtime);
             return ReloadResult {
                 applied: false,
@@ -332,8 +344,13 @@ pub fn try_reload_config(cfg: &mut Config, last_mtime: &mut Option<u64>) -> Relo
     // ── Commit: validation passed, copy snapshot into live config ─────────
     *cfg = snapshot;
 
-    // Delete the promotion file so we don't re-apply it
+    // Consume BOTH files. Deleting only the promotion file would leave the approval on
+    // disk, and a digest binds CONTENT, not a single use: recreating the identical bytes
+    // (or restarting the daemon, which resets the in-memory `last_mtime`) would then let
+    // the OLD approval authorise a second application. Deleting the approval makes it
+    // one-use - a replay needs a fresh operator approval.
     let _ = fs::remove_file(path);
+    let _ = fs::remove_file(PROMOTION_APPROVAL_FILE);
 
     *last_mtime = Some(mtime);
 
@@ -1065,6 +1082,62 @@ mod tests {
         let r3 = try_reload_config(&mut cfg, &mut last_mtime);
         assert!(r3.applied, "a matching operator approval applies");
         assert_eq!(cfg.gate_margin_bps, 55);
+        let _ = fs::remove_file(PROMOTION_APPROVAL_FILE);
+    }
+
+    /// One-use approval. After an approved promotion is applied, recreating the IDENTICAL
+    /// bytes must NOT be authorised by the old approval - neither in the same process nor
+    /// after a restart (where `last_mtime` is fresh and the mtime guard is bypassed, so the
+    /// approval gate is the ONLY defence).
+    #[test]
+    fn an_old_approval_cannot_authorise_a_replay_of_the_same_content() {
+        let _lock = promotion_lock();
+        let _ = fs::create_dir_all(Path::new("data"));
+        let _ = fs::remove_file(PROMOTION_FILE);
+        let _ = fs::remove_file(PROMOTION_APPROVAL_FILE);
+        let content = r#"{
+  "challenger_id": "replay_probe",
+  "mutations": [
+    {"name": "gate_margin_bps", "from": 50, "to": 55}
+  ],
+  "verdict": "defeats",
+  "gate_verdict": "G1:pass",
+  "status": "READY_FOR_CONFIG_UPDATE"
+}"#;
+        let _ = fs::write(PROMOTION_FILE, content);
+        approve(content);
+
+        let mut cfg = Config::dev_portable().with_mcap_band();
+        let mut lm = None;
+        let r1 = try_reload_config(&mut cfg, &mut lm);
+        assert!(r1.applied, "the approved promotion applies once");
+        assert_eq!(cfg.gate_margin_bps, 55);
+        assert!(
+            !Path::new(PROMOTION_APPROVAL_FILE).exists(),
+            "the approval must be CONSUMED on apply, not merely the promotion file"
+        );
+
+        // Recreate the IDENTICAL bytes with NO new approval.
+        let _ = fs::write(PROMOTION_FILE, content);
+        let r2 = try_reload_config(&mut cfg, &mut lm);
+        assert!(!r2.applied, "same-process replay must be refused");
+
+        // RESTART: fresh last_mtime (the mtime guard is bypassed), same on-disk state.
+        let mut cfg2 = Config::dev_portable().with_mcap_band();
+        let mut lm2 = None;
+        let r3 = try_reload_config(&mut cfg2, &mut lm2);
+        assert!(!r3.applied, "post-restart replay must be refused");
+        assert_ne!(
+            cfg2.gate_margin_bps, 55,
+            "config must be untouched after restart"
+        );
+        assert!(
+            r3.summary.contains("approved"),
+            "refusal must name the missing approval, got: {}",
+            r3.summary
+        );
+
+        let _ = fs::remove_file(PROMOTION_FILE);
         let _ = fs::remove_file(PROMOTION_APPROVAL_FILE);
     }
 
