@@ -2006,7 +2006,9 @@ fn main() -> ExitCode {
     // instruction-arg prints (no price, net quantities) are not queued as curve trades. A feed that
     // cannot supply `meta.tx_ok` therefore yields named gaps, not silent snapshot-fed history.
     let curve_trade_source = match std::env::var("PQ_CURVE_TRADE_SOURCE").as_deref() {
-        Ok("snapshot_delta") => pump_quant_junction::curve_trade_events::CurveTradeSource::SnapshotDelta,
+        Ok("snapshot_delta") => {
+            pump_quant_junction::curve_trade_events::CurveTradeSource::SnapshotDelta
+        }
         _ => pump_quant_junction::curve_trade_events::CurveTradeSource::Events,
     };
     let mut curve_dedup = pump_quant_junction::curve_trade_events::EventDedup::new(65_536);
@@ -2735,7 +2737,10 @@ fn main() -> ExitCode {
                         let mut ev_out = Vec::new();
                         match ingest_curve_tx(&tx, &mut curve_dedup, &mut ev_out) {
                             EventIngest::Nothing => {}
-                            EventIngest::Produced { events: n, duplicates: d } => {
+                            EventIngest::Produced {
+                                events: n,
+                                duplicates: d,
+                            } => {
                                 curve_ev_produced += n as u64;
                                 curve_ev_duplicates += d as u64;
                             }

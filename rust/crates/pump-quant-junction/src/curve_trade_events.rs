@@ -207,7 +207,10 @@ pub fn curve_trade_to_event(
     tx: &LaserStreamTx,
     is_live: bool,
 ) -> Option<ProvenancedEvent> {
-    if t.virtual_token == 0 || t.token_amount == 0 {
+    // Zero reserve fields (measured: whole mints whose every TradeEvent carries vsol=rsol=0) cannot be
+    // priced and would be dropped by the join as `NoPrice` with only a counter. Refuse here so the
+    // caller records a NAMED missing observation instead (unknown cause, not assumed benign).
+    if t.virtual_sol == 0 || t.virtual_token == 0 || t.token_amount == 0 {
         return None;
     }
     let tok = i64::try_from(t.token_amount).ok()?;
@@ -480,7 +483,11 @@ mod tests {
         let evs = vec![buy_ix(), ix(ev_data(MINT, 1, true, 10, 100, 1_000, 5_000))];
         let mut out = Vec::new();
         assert_eq!(
-            ingest_curve_tx(&tx(3, Some(false), evs.clone()), &mut EventDedup::new(4), &mut out),
+            ingest_curve_tx(
+                &tx(3, Some(false), evs.clone()),
+                &mut EventDedup::new(4),
+                &mut out
+            ),
             EventIngest::Nothing
         );
         assert_eq!(
@@ -499,6 +506,21 @@ mod tests {
             &mut out,
         );
         assert_eq!(r, EventIngest::Incomplete("buy_sell_without_trade_event"));
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn a_zero_reserve_trade_event_is_a_named_gap_not_a_noprice_drop() {
+        let t = tx(
+            9,
+            Some(true),
+            vec![buy_ix(), ix(ev_data(MINT, 1, true, 10, 100, 0, 5_000))],
+        );
+        let mut out = Vec::new();
+        assert_eq!(
+            ingest_curve_tx(&t, &mut EventDedup::new(4), &mut out),
+            EventIngest::Incomplete("trade_event_unrepresentable")
+        );
         assert!(out.is_empty());
     }
 

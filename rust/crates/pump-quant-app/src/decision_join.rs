@@ -270,7 +270,7 @@ struct MintCache {
     flow_drops: VecDeque<MissingObservation>,
     enrich_overflow: bool,
     venue: VenueLabel,
-    recent: VecDeque<(Option<u64>, [u8; 32], i64, i64)>,
+    recent: VecDeque<(Option<u64>, [u8; 32], i64, i64, i128)>,
 }
 
 /// Per-mint pool binding for the AMM plane.
@@ -633,7 +633,16 @@ impl DecisionCache {
             self.counters.out_of_order += 1;
             return Ingest::OutOfOrder;
         }
-        let key = (t.slot, t.trader.unwrap_or([0u8; 32]), t.signed_base, recv);
+        // price_fp is part of the identity: two DISTINCT trades by one wallet, of one size, in one slot and
+        // millisecond (measured in the captures: 1 per ~7k curve events) leave different post-trade
+        // reserves, so differ here; a re-delivered print is identical on every field.
+        let key = (
+            t.slot,
+            t.trader.unwrap_or([0u8; 32]),
+            t.signed_base,
+            recv,
+            t.price_fp,
+        );
         if mc.recent.iter().any(|k| *k == key) {
             self.counters.duplicate += 1;
             return Ingest::Duplicate;
@@ -700,6 +709,24 @@ impl DecisionCache {
             _ => mc.flow_meta_missing += 1,
         }
         Ingest::Accepted
+    }
+
+    /// Track `mint` in the flow reducer without a launch record. Measurement/replay only: the
+    /// serving path tracks via `observe_launch`, and a mint with no launch is refused upstream of
+    /// flow (`LaunchUnknown`) -- this does not weaken that.
+    pub fn track_flow_mint_for_measurement(&mut self, mint: [u8; 32]) {
+        self.flow.track_mint(mint);
+    }
+
+    /// Read-only view of the flow reducer's aggregates for `mint` at `t_dec_ms` (measurement and
+    /// tests; the serving path goes through `snapshot`, which also applies every refusal).
+    #[must_use]
+    pub fn flow_aggregates(
+        &self,
+        mint: &[u8; 32],
+        t_dec_ms: i64,
+    ) -> pump_quant_market_state::flow_reducer::FlowOutcome {
+        self.flow.serve(mint, t_dec_ms)
     }
 
     /// Record that the feed derivation dropped a print for `mint` at `drop_unix_ms` — a reserve
@@ -1280,6 +1307,27 @@ mod tests {
             cu_consumed: Some(90_000 + u64::from(i)),
             venue: VenueLabel::Pumpfun,
         }
+    }
+
+    /// Two DIFFERENT trades by the same wallet, same side/size, same slot and same receive
+    /// millisecond (two TradeEvents of one transaction, or two txs in one slot) differ in price:
+    /// both must be kept. A truly identical print (same price too) is still a duplicate.
+    #[test]
+    fn same_wallet_same_size_same_ms_trades_with_different_post_trade_price_are_both_kept() {
+        let mut c = DecisionCache::new();
+        assert!(c.observe_launch(MINT, CREATOR, T0));
+        let a = trade(0);
+        let mut b = a;
+        b.price_fp += 1; // the second trade moved the curve
+        assert_eq!(c.observe_trade(&a), Ingest::Accepted);
+        assert_eq!(c.observe_trade(&b), Ingest::Accepted);
+        assert_eq!(
+            c.observe_trade(&a),
+            Ingest::Duplicate,
+            "exact replay is still a duplicate"
+        );
+        assert_eq!(c.counters().accepted, 2);
+        assert_eq!(c.counters().duplicate, 1);
     }
 
     fn curve() -> CurveObservation {
