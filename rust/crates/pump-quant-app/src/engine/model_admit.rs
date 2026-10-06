@@ -283,6 +283,20 @@ impl Engine {
         }
     }
 
+    /// Low-frequency health view of upstream-dropped prints for the status writers: the
+    /// cumulative drop count and how many mints' 300 s flow windows are currently
+    /// incomplete (readiness refused by [`crate::decision_join::JoinRefusal::FlowUpstreamDrop`]).
+    /// All-zero unless the paper-model lane is armed, because nothing else serves flow.
+    /// Must only be called from a periodic writer — it scans per-mint rings.
+    #[must_use]
+    pub fn model_flow_drop_summary(&self) -> crate::decision_join::FlowDropSummary {
+        if self.paper_model_mode {
+            self.model_cache.flow_drop_summary(self.model_clock_ms)
+        } else {
+            crate::decision_join::FlowDropSummary::default()
+        }
+    }
+
     pub fn model_lane_report(&self) -> &std::collections::BTreeMap<String, u64> {
         &self.model_report
     }

@@ -269,6 +269,18 @@ pub struct IngestCounters {
     pub flow_upstream_drops: u64,
 }
 
+/// A low-frequency health view of upstream-dropped prints, so an operator can tell an
+/// honestly QUIET market apart from one whose data is INCOMPLETE. Computed only when a
+/// status writer asks; never on the hot path.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct FlowDropSummary {
+    /// Cumulative prints the feed derivation dropped since the cache was created.
+    pub drops_total: u64,
+    /// Mints whose 300 s flow window contains a drop as of the query clock — i.e. mints
+    /// whose readiness is currently refused by [`JoinRefusal::FlowUpstreamDrop`].
+    pub mints_incomplete_now: u64,
+}
+
 /// The decision-time cache. One owner (the engine); no interior mutability.
 pub struct DecisionCache {
     ledger: StateLedger,
@@ -316,6 +328,28 @@ impl DecisionCache {
     #[must_use]
     pub fn counters(&self) -> IngestCounters {
         self.counters
+    }
+
+    /// Low-frequency health view of upstream-dropped prints at the decision clock
+    /// `t_dec_ms`: the cumulative drop count plus how many mints' 300 s flow windows are
+    /// currently incomplete (would be refused by [`JoinRefusal::FlowUpstreamDrop`]). A
+    /// bounded scan of the per-mint rings, so it must NOT be called per tick — only by a
+    /// status/reporting writer.
+    #[must_use]
+    pub fn flow_drop_summary(&self, t_dec_ms: i64) -> FlowDropSummary {
+        let mints_incomplete_now = self
+            .mints
+            .values()
+            .filter(|mc| {
+                mc.flow_upstream_drops
+                    .iter()
+                    .any(|&d| d >= t_dec_ms - WINDOW_300_MS && d < t_dec_ms)
+            })
+            .count() as u64;
+        FlowDropSummary {
+            drops_total: self.counters.flow_upstream_drops,
+            mints_incomplete_now,
+        }
     }
 
     /// Record a launch (creator + launch time). `launch_unix_ms` is the LAUNCH event's receive

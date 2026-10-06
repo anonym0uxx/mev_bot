@@ -16,6 +16,7 @@
 //! per-event allocation. All money paths are integer lamports.
 
 use pump_quant_app::event::AppEvent;
+use pump_quant_app::Engine;
 use pump_quant_domain::ids::Mint;
 use pump_quant_protocol::decode::PumpCurve;
 
@@ -247,6 +248,37 @@ pub fn classify_delta_miss(prev: Option<&ReserveSnapshot>, current: &PumpCurve) 
     // Either a valid print (the classifier was misused) or a rejection not enumerated
     // above; both fail closed rather than being read as an ordinary no-trade.
     DeltaMiss::UpstreamDropped
+}
+
+/// The clocked LaserStream `accountSubscribe` path's drop-classification step, extracted so
+/// the daemon and its integration test share ONE body.
+///
+/// Called exactly when [`derive_market_trade_from_delta`] returned `None` for a reserve
+/// snapshot pair. It classifies the miss and, when the refusal was an
+/// [`DeltaMiss::UpstreamDropped`] that carries a wire receive time, records the drop on the
+/// engine via [`Engine::note_flow_upstream_drop`] so the decision join refuses any 300 s flow
+/// window that contains it (by name, never as a quiet market). Returns the classification so
+/// the caller keeps its own accounting (the daemon still counts `delta_no_trade` /
+/// `delta_out_of_range`).
+///
+/// A `recv_unix_ms` of `None` is a drop with no known receive instant: the engine call is
+/// deliberately skipped (no fabricated time, no silent fallback) — the classification is
+/// still returned so the caller can count it.
+#[must_use]
+pub fn note_curve_snapshot_outcome(
+    engine: &mut Engine,
+    mint: [u8; 32],
+    prev: Option<&ReserveSnapshot>,
+    current: &PumpCurve,
+    recv_unix_ms: Option<i64>,
+) -> DeltaMiss {
+    let miss = classify_delta_miss(prev, current);
+    if miss == DeltaMiss::UpstreamDropped {
+        if let Some(ms) = recv_unix_ms {
+            engine.note_flow_upstream_drop(mint, ms);
+        }
+    }
+    miss
 }
 
 /// Record the result of a derivation attempt, for stats tracking.
