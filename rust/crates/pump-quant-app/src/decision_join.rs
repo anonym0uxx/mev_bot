@@ -802,6 +802,15 @@ impl DecisionCache {
         self.flow.track_mint(mint);
     }
 
+    /// Install ONE historical confirmed trade into the flow reducer's global wallet/co-entry state BEFORE the feed's
+    /// first live print. The trained `smart_*`, `coentry_*` and `flow_lookback_d` fields are functions of the whole
+    /// tape prefix (cumulative extraction, distinct mints, early-buyer graph), so a collector that starts cold cannot
+    /// reproduce them. The caller owns provenance and causality: every seeded event must be strictly earlier than every
+    /// decision clock that will be served, and must be a corpus-basis trade (same population as the frozen tape).
+    pub fn seed_flow_history(&mut self, e: &pump_quant_market_state::flow_reducer::FlowEvent) {
+        self.flow.on_event(e);
+    }
+
     /// Read-only view of the flow reducer's aggregates for `mint` at `t_dec_ms` (measurement and
     /// tests; the serving path goes through `snapshot`, which also applies every refusal).
     #[must_use]

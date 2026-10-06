@@ -42,6 +42,40 @@ fn main() {
     files.sort();
     let mut cache = DecisionCache::new();
     assert!(cache.observe_launch(mint, creator, launch_ms));
+    // OPTIONAL SEED (diagnostic, provenance printed to stderr): corpus-tape trades with recv < SEED_BEFORE_MS, all venues,
+    // status=success, applied through the production reducer's seed hook. Never uses an event at/after the first clock.
+    if let (Ok(tape), Ok(before)) = (std::env::var("SEED_TAPE"), std::env::var("SEED_BEFORE_MS")) {
+        let before: i64 = before.parse().expect("SEED_BEFORE_MS");
+        assert!(before <= clocks[0], "seed must end before the first clock");
+        let mut keys: std::collections::HashMap<String, [u8; 32]> = std::collections::HashMap::new();
+        let mut key = |s: &str| *keys.entry(s.to_string()).or_insert_with(|| pk(s));
+        let (mut n, mut last_t) = (0u64, 0i64);
+        let rd = std::io::BufReader::with_capacity(1 << 22, std::fs::File::open(&tape).expect("seed tape"));
+        for line in rd.lines().map_while(Result::ok) {
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
+            if v.get("status").and_then(|s| s.as_str()) != Some("success") {
+                continue;
+            }
+            let t = v["recv_unix_ms"].as_i64().unwrap_or(0);
+            if t >= before {
+                break;
+            }
+            let side = if v["side"].as_str() == Some("buy") { pump_quant_market_state::flow_reducer::Side::Buy } else { pump_quant_market_state::flow_reducer::Side::Sell };
+            cache.seed_flow_history(&pump_quant_market_state::flow_reducer::FlowEvent {
+                mint: key(v["mint"].as_str().unwrap_or("")),
+                trader: key(v["trader"].as_str().unwrap_or("")),
+                side,
+                slot: v["slot"].as_u64().unwrap_or(0),
+                recv_unix_ms: t,
+                sol_lamports: v["sol_lamports"].as_i64().unwrap_or(0),
+                fee_lamports: v["fee_lamports"].as_u64().unwrap_or(0),
+                cu_consumed: v["cu_consumed"].as_u64(),
+            });
+            n += 1;
+            last_t = t;
+        }
+        eprintln!("SEEDED {n} tape trades, newest recv_unix_ms={last_t} (< {before})");
+    }
     let mut dedup = EventDedup::new(1 << 16);
     let mut ci = 0usize;
     let mut n_trades = 0u64;
@@ -98,6 +132,20 @@ fn main() {
                         {
                             if *m.as_bytes() != mint {
                                 n_other_mint += 1;
+                                // Other mints' corpus-basis trades update the GLOBAL wallet/co-entry state exactly as the
+                                // frozen builder applied every tape event (all mints). No window/price state is touched.
+                                if let (Some(f), Some(sl), Some(fee), Some(rm)) = (feature, slot, fee_lamports, recv_unix_ms) {
+                                    cache.seed_flow_history(&pump_quant_market_state::flow_reducer::FlowEvent {
+                                        mint: *m.as_bytes(),
+                                        trader: f.trader,
+                                        side: if f.sol_lamports < 0 { pump_quant_market_state::flow_reducer::Side::Buy } else { pump_quant_market_state::flow_reducer::Side::Sell },
+                                        slot: sl,
+                                        recv_unix_ms: rm,
+                                        sol_lamports: f.sol_lamports,
+                                        fee_lamports: fee,
+                                        cu_consumed,
+                                    });
+                                }
                                 continue;
                             }
                             // MEASUREMENT ONLY (never in serving): SLICE_BAND_MEDIAN=<whole-run median price> applies the corpus's
