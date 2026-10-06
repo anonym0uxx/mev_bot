@@ -93,6 +93,7 @@ fn events(n: u32) -> Vec<AppEvent> {
             cu_consumed: Some(90_000 + u64::from(i)),
             venue: Some(TradeVenue::PumpFun),
             event_id: None,
+            feature: None,
         });
     }
     let t_last = T0 + 1_000 + i64::from(n) * 2_000;
@@ -166,6 +167,7 @@ fn print(e: &mut Engine, i: u32, ts: i64, slot: u64) {
         cu_consumed: Some(90_000 + u64::from(i)),
         venue: Some(TradeVenue::PumpFun),
         event_id: None,
+        feature: None,
     });
 }
 
@@ -622,6 +624,7 @@ fn legacy_exits_do_not_close_a_model_managed_position_but_the_rug_precursor_stil
         cu_consumed: Some(95_000),
         venue: Some(TradeVenue::PumpFun),
         event_id: None,
+        feature: None,
     });
     assert!(
         !r.e.model_position_open(&MINT),
@@ -901,6 +904,7 @@ fn held_data_readiness_is_measured_and_a_stale_reserve_degrades_while_protection
         cu_consumed: Some(95_000),
         venue: Some(TradeVenue::PumpFun),
         event_id: None,
+        feature: None,
     });
     assert!(
         !r.e.model_position_open(&MINT),

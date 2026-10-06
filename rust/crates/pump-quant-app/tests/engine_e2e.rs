@@ -78,6 +78,7 @@ fn scenario() -> Vec<AppEvent> {
             cu_consumed: None,
             venue: None,
             event_id: None,
+            feature: None,
         });
     }
     ev.push(AppEvent::OnchainConfirm {
@@ -268,6 +269,7 @@ fn fed_meta_path_is_live_and_deterministic() {
                         cu_consumed: None,
                         venue: None,
                         event_id: None,
+                        feature: None,
                     });
                 }
                 e.tick(AppEvent::OnchainConfirm {
@@ -316,6 +318,7 @@ fn fed_meta_path_is_live_and_deterministic() {
                 cu_consumed: None,
                 venue: None,
                 event_id: None,
+                feature: None,
             });
         }
     }
@@ -356,6 +359,7 @@ fn admissible_stream(tag: u8) -> Vec<AppEvent> {
             cu_consumed: None,
             venue: None,
             event_id: None,
+            feature: None,
         });
     }
     ev.push(AppEvent::OnchainConfirm {
@@ -394,6 +398,7 @@ fn deep_admissible_stream(tag: u8) -> Vec<AppEvent> {
             cu_consumed: None,
             venue: None,
             event_id: None,
+            feature: None,
         });
     }
     ev.push(AppEvent::OnchainConfirm {
@@ -434,6 +439,7 @@ fn vpin_sell_dump_vetoes_admission() {
             cu_consumed: None,
             venue: None,
             event_id: None,
+            feature: None,
         });
     }
     // 66 tiny-quote buys with big base: the trade ring now holds ONLY buys (CVD>0,
@@ -454,6 +460,7 @@ fn vpin_sell_dump_vetoes_admission() {
             cu_consumed: None,
             venue: None,
             event_id: None,
+            feature: None,
         });
     }
     e.tick(AppEvent::OnchainConfirm {

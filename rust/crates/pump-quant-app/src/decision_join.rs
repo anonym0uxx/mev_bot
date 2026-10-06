@@ -53,6 +53,19 @@ const DEDUPE_ID_LOOKBACK: usize = 512;
 
 /// One live print, as the join needs it. Built from `AppEvent::MarketTrade` plus the venue the
 /// provenance names (the event itself carries none).
+/// MUST stay bit-identical to `pump_quant_junction::laserstream::wallet_entity_id` (this crate cannot depend on the
+/// junction); pinned by a cross-crate test in the junction.
+pub fn wallet_entity_of(pubkey: &[u8; 32]) -> u64 {
+    let lo = u64::from_le_bytes(pubkey[..8].try_into().unwrap_or([0; 8]));
+    let hi = u64::from_le_bytes(pubkey[24..32].try_into().unwrap_or([0; 8]));
+    let mut z = lo.wrapping_add(hi);
+    z = z.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    let z = (z >> (z >> 61).wrapping_add(4)) ^ z;
+    let z = z.wrapping_mul(0xC2B9_5A82_79D4_CEA2);
+    let z = (z >> (z >> 61).wrapping_add(4)) ^ z;
+    z.wrapping_mul(0x9E37_79B9_7F4A_7C15)
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct TradeObs {
     pub mint: [u8; 32],
@@ -70,6 +83,12 @@ pub struct TradeObs {
     /// dedup key: two distinct events never collide and a replayed delivery always does, whatever
     /// their slot/trader/size/time/price. `None` falls back to the heuristic key.
     pub event_id: Option<u128>,
+    /// Corpus-definition basis for the TRAINED windows (see `event::FeatureBasis`). With an `event_id` (the
+    /// transaction-event producer) and `feature: None` the trade is outside the frozen corpus population: it is
+    /// counted (`outside_corpus`) and kept out of the trained windows. `price_fp`/`quote_lamports`/`signed_base`
+    /// above remain the executable reserve price and swap amounts and are not read by the trained windows when a
+    /// basis is present.
+    pub feature: Option<crate::event::FeatureBasis>,
 }
 
 /// What ingest did with a print. Every non-`Accepted` arm is counted.
@@ -299,6 +318,8 @@ pub struct IngestCounters {
     pub duplicate: u64,
     /// Prints the feed derivation dropped before the reducer could see them.
     pub flow_upstream_drops: u64,
+    /// Producer-identified (event_id) trades with NO corpus basis: admitted for discovery/state, excluded from the trained windows.
+    pub outside_corpus: u64,
 }
 
 /// A low-frequency health view of upstream-dropped prints, so an operator can tell an
@@ -677,29 +698,68 @@ impl DecisionCache {
         mc.n_accepted += 1;
         self.counters.accepted += 1;
 
+        // TRAINED-WINDOW inputs. With a corpus basis these are the corpus's own quantities (trader native+WSOL
+        // delta, trader token delta, resolved trader; price = |sol|/|tokens| as `build_states_v2` computes it).
+        // Without a basis: a legacy producer (no event_id) keeps its historical inputs unchanged; a
+        // transaction-event trade is OUTSIDE the corpus population and is kept out of the trained windows.
+        let (w_price, w_quote, w_base, w_trader, w_entity, w_ok) = match (t.feature, t.event_id) {
+            (Some(f), _) => {
+                let sol = f.sol_lamports.unsigned_abs();
+                let tok = i128::from(f.tokens_raw.unsigned_abs());
+                let px = if tok > 0 {
+                    i128::from(sol).saturating_mul(1_000_000_000) / tok
+                } else {
+                    0
+                };
+                (
+                    px,
+                    sol,
+                    f.tokens_raw,
+                    Some(f.trader),
+                    wallet_entity_of(&f.trader),
+                    true,
+                )
+            }
+            (None, Some(_)) => {
+                self.counters.outside_corpus += 1;
+                (0, 0, 0, None, 0, false)
+            }
+            (None, None) => (
+                t.price_fp,
+                t.quote_lamports,
+                t.signed_base,
+                t.trader,
+                t.buyer_entity,
+                true,
+            ),
+        };
+        if !w_ok {
+            return Ingest::Accepted;
+        }
+
         if let Some(st) = StateTrade::from_market_trade(
             recv,
-            t.price_fp,
-            t.quote_lamports,
-            t.signed_base,
-            t.buyer_entity,
+            w_price,
+            w_quote,
+            w_base,
+            w_entity,
             t.venue,
-            Some(t.signed_base),
+            Some(w_base),
         ) {
             self.ledger.on_trade(&t.mint, st);
         }
 
         // Enrichment (holders / bundles): needs the wallet and both legs.
-        match t.trader {
-            Some(w) if t.signed_base != 0 => {
+        match w_trader {
+            Some(w) if w_base != 0 => {
                 if mc.enrich.len() >= MAX_ENRICH_TRADES_PER_MINT {
                     mc.enrich_overflow = true;
                 } else {
                     mc.enrich.push(EnrichmentTrade {
                         recv_unix_ms: recv,
                         trader: w,
-                        tokens_raw: i128::from(t.signed_base),
-                        sol_lamports: t.quote_lamports,
+                        tokens_raw: i128::from(w_base),
+                        sol_lamports: w_quote,
                         slot: t.slot,
                     });
                 }
@@ -709,13 +769,13 @@ impl DecisionCache {
 
         // Flow: wallet + slot + total fee are required by the reducer's event; CU is carried as
         // Option. A print lacking any of them cannot enter the window, and that is counted.
-        let flow_ev = match (t.trader, t.slot, t.fee_lamports) {
+        let flow_ev = match (w_trader, t.slot, t.fee_lamports) {
             (Some(w), Some(slot), Some(fee)) => flow_event_from_market_trade(
                 &t.mint,
                 slot,
                 Some(recv),
-                t.quote_lamports,
-                t.signed_base,
+                w_quote,
+                w_base,
                 w,
                 fee,
                 t.cu_consumed,
@@ -1325,6 +1385,7 @@ mod tests {
             cu_consumed: Some(90_000 + u64::from(i)),
             venue: VenueLabel::Pumpfun,
             event_id: None,
+            feature: None,
         }
     }
 

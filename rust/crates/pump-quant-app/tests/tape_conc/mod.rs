@@ -66,6 +66,7 @@ pub fn swap(
         cu_consumed: None,
         venue: None,
         event_id: None,
+        feature: None,
     });
 }
 

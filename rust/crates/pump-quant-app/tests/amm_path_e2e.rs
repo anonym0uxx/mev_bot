@@ -116,6 +116,7 @@ fn feed_line(e: &mut Engine, v: &serde_json::Value, m: DomainMint, t: i64) {
                 cu_consumed: v["cu"].as_u64(),
                 venue: Some(TradeVenue::PumpFun),
                 event_id: None,
+                feature: None,
             });
         }
         "A" => {

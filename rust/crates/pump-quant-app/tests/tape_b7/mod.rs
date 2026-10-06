@@ -357,6 +357,7 @@ pub fn apply_tape(
                     cu_consumed: None,
                     venue: None,
                     event_id: None,
+                    feature: None,
                 });
             }
             if age == 0 {

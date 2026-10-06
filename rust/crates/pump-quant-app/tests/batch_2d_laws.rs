@@ -61,6 +61,7 @@ fn pump(eng: &mut Engine, tag: u64, base_mult: i128, n: u64, liq: u64) {
             cu_consumed: None,
             venue: None,
             event_id: None,
+            feature: None,
         });
     }
 }
@@ -98,6 +99,7 @@ fn drive_positions(cfg: Config) -> Engine {
                     cu_consumed: None,
                     venue: None,
                     event_id: None,
+                    feature: None,
                 });
             }
         }

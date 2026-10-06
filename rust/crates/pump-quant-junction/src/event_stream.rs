@@ -98,6 +98,7 @@ fn parse_event_line(line: &str) -> Result<AppEvent, String> {
                 cu_consumed: None,
                 venue: None,
                 event_id: None,
+                feature: None,
             })
         }
         "OnchainConfirm" => {
@@ -823,6 +824,7 @@ mod tests {
             cu_consumed: None,
             venue: None,
             event_id: None,
+            feature: None,
         };
         writer.write_event(&event, 12345).expect("write");
         writer.flush().expect("flush");
@@ -957,6 +959,7 @@ mod tests {
             cu_consumed: None,
             venue: None,
             event_id: None,
+            feature: None,
         };
         writer.write_event(&event, 12345).expect("write");
         writer.flush().expect("flush");
@@ -1014,6 +1017,7 @@ mod tests {
                     cu_consumed: None,
                     venue: None,
                     event_id: None,
+                    feature: None,
                 },
                 2,
             )
@@ -1092,6 +1096,7 @@ garbage line 2
             cu_consumed: None,
             venue: None,
             event_id: None,
+            feature: None,
         };
         let line = event_to_json(&stamped, 9);
         assert!(
@@ -1121,6 +1126,7 @@ garbage line 2
             cu_consumed: None,
             venue: None,
             event_id: None,
+            feature: None,
         };
         let line = event_to_json(&unstamped, 9);
         assert!(!line.contains("recv_unix_ms"), "nothing fabricated: {line}");
@@ -1152,6 +1158,7 @@ garbage line 2
             cu_consumed: None,
             venue: None,
             event_id: None,
+            feature: None,
         };
         let line = event_to_json(&stamped, 9);
         assert!(line.contains("trader_pubkey"), "{line}");
@@ -1177,6 +1184,7 @@ garbage line 2
             cu_consumed: None,
             venue: None,
             event_id: None,
+            feature: None,
         };
         let line = event_to_json(&anonymous, 9);
         assert!(!line.contains("trader_pubkey"), "{line}");

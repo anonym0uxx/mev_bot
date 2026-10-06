@@ -139,6 +139,7 @@ fn tape(
             cu_consumed: Some(90_000 + u64::from(seq)),
             venue: Some(TradeVenue::PumpFun),
             event_id: None,
+            feature: None,
         });
     }
     if with_curve {
@@ -899,6 +900,7 @@ fn collapse_print(e: &mut Engine, at_ms: i64, seq: u32) {
         cu_consumed: Some(95_000),
         venue: Some(TradeVenue::PumpFun),
         event_id: None,
+        feature: None,
     });
 }
 

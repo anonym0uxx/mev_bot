@@ -67,6 +67,7 @@ fn feed(n: u32) -> Vec<AppEvent> {
             cu_consumed: Some(90_000 + u64::from(i)),
             venue: Some(TradeVenue::PumpFun),
             event_id: None,
+            feature: None,
         });
     }
     ev.push(AppEvent::CurveObserved {
@@ -399,6 +400,7 @@ fn lifecycle_o_closed_position_conflict_stays_blocked_with_durable_evidence() {
         cu_consumed: Some(95_000),
         venue: Some(pump_quant_app::event::TradeVenue::PumpFun),
         event_id: None,
+        feature: None,
     });
     #[allow(clippy::explicit_counter_loop)]
     // `slot` advances with the loop but is passed into each event; range-as-slot would change the sequence
@@ -511,6 +513,7 @@ fn lifecycle_l_held_position_is_monitored_while_new_exposure_on_the_mint_is_bloc
         cu_consumed: Some(95_000),
         venue: Some(pump_quant_app::event::TradeVenue::PumpFun),
         event_id: None,
+        feature: None,
     });
     #[allow(clippy::explicit_counter_loop)]
     // `slot` advances with the loop but is passed into each event; range-as-slot would change the sequence
@@ -692,6 +695,7 @@ fn lifecycle_j_operational_reconciliation_and_protection_are_not_skipped_for_rou
         cu_consumed: Some(95_000),
         venue: Some(pump_quant_app::event::TradeVenue::PumpFun),
         event_id: None,
+        feature: None,
     });
     #[allow(clippy::explicit_counter_loop)]
     // `slot` advances with the loop but is passed into each event; range-as-slot would change the sequence

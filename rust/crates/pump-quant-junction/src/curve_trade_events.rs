@@ -25,6 +25,7 @@
 
 use std::collections::{HashSet, VecDeque};
 
+use pump_quant_app::event::FeatureBasis;
 use pump_quant_app::event::{AppEvent, TradeVenue};
 use pump_quant_domain::ids::Mint;
 
@@ -48,6 +49,46 @@ const BUY_SELL_DISCS: [[u8; 8]; 5] = [
     [56, 252, 116, 8, 158, 223, 205, 95],
 ];
 
+/// Quote asset of a curve trade, as the event states it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QuoteIdentity {
+    /// `quote_mint` is the native-SOL sentinel (all-zero key) or WSOL: SOL-quoted, supported.
+    Sol,
+    /// Verified other quote mint (e.g. USDC): `UNSUPPORTED_QUOTE_ASSET`, counted outside SOL readiness.
+    Other([u8; 32]),
+    /// The event ends before `quote_mint` (an older layout) or the tail does not parse: identity NOT established.
+    Unknown,
+}
+
+/// WSOL mint (So111...112), the other spelling of a SOL quote.
+const WSOL_MINT: [u8; 32] = [
+    6, 155, 136, 87, 254, 171, 129, 132, 251, 104, 127, 99, 70, 24, 192, 53, 218, 196, 57, 220, 26,
+    235, 59, 85, 152, 160, 240, 0, 0, 0, 0, 1,
+];
+
+/// Walk the IDL tail of a TradeEvent from the fixed `ix_name` position (offset after `last_update_timestamp`):
+/// `ix_name:string, mayhem_mode:bool, cashback_fee_basis_points:u64, cashback:u64, buyback_fee_basis_points:u64,
+/// buyback_fee:u64, shareholders:vec<(pubkey,u16)>, quote_mint:pubkey`. Offsets before it are fixed (see IDL).
+fn decode_quote(data: &[u8]) -> QuoteIdentity {
+    // mint32 sol8 tok8 buy1 user32 ts8 vs8 vt8 rs8 rt8 fee_recipient32 fee_bps8 fee8 creator32 cfee_bps8 cfee8
+    // track1 unclaimed8 claimed8 cur_vol8 last_ts8  => ix_name starts at byte 266 (verified on 72,068 captured events)
+    let mut o = 16 + 32 + 8 + 8 + 1 + 32 + 8 + 8 + 8 + 8 + 8 + 32 + 8 + 8 + 32 + 8 + 8 + 1 + 8 + 8 + 8 + 8;
+    let step = (|| -> Option<QuoteIdentity> {
+        let n = u32::from_le_bytes(data.get(o..o + 4)?.try_into().ok()?) as usize;
+        o = o.checked_add(4)?.checked_add(n)?;
+        o = o.checked_add(1 + 8 + 8 + 8 + 8)?; // mayhem_mode + cashback bps/amt + buyback bps/amt
+        let sh = u32::from_le_bytes(data.get(o..o + 4)?.try_into().ok()?) as usize;
+        o = o.checked_add(4)?.checked_add(sh.checked_mul(34)?)?;
+        let q: [u8; 32] = data.get(o..o + 32)?.try_into().ok()?;
+        Some(if q == [0u8; 32] || q == WSOL_MINT {
+            QuoteIdentity::Sol
+        } else {
+            QuoteIdentity::Other(q)
+        })
+    })();
+    step.unwrap_or(QuoteIdentity::Unknown)
+}
+
 /// One decoded curve trade. All amounts raw on-chain units.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CurveTradeEvent {
@@ -60,6 +101,10 @@ pub struct CurveTradeEvent {
     pub virtual_token: u64,
     pub real_sol: u64,
     pub real_token: u64,
+    /// Quote asset, from the event's OWN `quote_mint` field (pump.fun IDL `TradeEvent`, after the variable-length
+    /// `ix_name` string and `shareholders` vec). Never inferred from other tokens moving in the transaction and
+    /// never from zero virtual SOL.
+    pub quote: QuoteIdentity,
     /// Ordinal of the event instruction in the wire line's flattened instruction list. With the
     /// signature this is the deterministic event identity.
     pub ix_ordinal: u32,
@@ -104,6 +149,7 @@ fn decode_trade_event(data: &[u8], ordinal: u32) -> Option<Result<CurveTradeEven
             virtual_token: le_u64(data, 113)?,
             real_sol: le_u64(data, 121)?,
             real_token: le_u64(data, 129)?,
+            quote: decode_quote(data),
             ix_ordinal: ordinal,
         })
     })();
@@ -167,6 +213,12 @@ pub struct EventDedup {
     order: VecDeque<([u8; 64], u32)>,
     cap: usize,
     pub duplicates: u64,
+    /// Verified non-SOL quote (e.g. USDC) events: UNSUPPORTED_QUOTE_ASSET, outside every SOL denominator. Not a gap.
+    pub unsupported_quote: u64,
+    /// SOL events admitted to the engine but NOT to the trained windows, by reason (population != frozen corpus).
+    pub outside_corpus: std::collections::BTreeMap<&'static str, u64>,
+    /// SOL events whose corpus-definition basis was resolved (they feed the trained windows).
+    pub corpus_basis_resolved: u64,
 }
 
 impl EventDedup {
@@ -177,6 +229,9 @@ impl EventDedup {
             order: VecDeque::new(),
             cap: cap.max(1),
             duplicates: 0,
+            unsupported_quote: 0,
+            outside_corpus: std::collections::BTreeMap::new(),
+            corpus_basis_resolved: 0,
         }
     }
     /// `true` the first time an identity is seen, `false` for a repeat.
@@ -215,6 +270,45 @@ pub fn trade_event_id(sig: &[u8; 64], ix_ordinal: u32) -> u128 {
     u128::from_be_bytes(d[..16].try_into().unwrap_or([0; 16]))
 }
 
+/// The corpus-definition basis (trader native+WSOL delta, trader token delta, resolved trader) of the instruction
+/// that EMITTED this event: the nearest preceding non-event pump.fun instruction in the wire's outer-then-inner
+/// order. `Err(reason)` = the trade is outside the frozen corpus population or its basis cannot be established; it
+/// is then admitted to the engine for discovery/state but never to the trained windows.
+pub fn corpus_basis_for(
+    tx: &LaserStreamTx,
+    t: &CurveTradeEvent,
+    not_launch: &HashSet<[u8; 32]>,
+) -> Result<FeatureBasis, &'static str> {
+    let ord = t.ix_ordinal as usize;
+    let emitter = tx.instructions[..ord.min(tx.instructions.len())]
+        .iter()
+        .rev()
+        .find(|ix| {
+            ix.program_id == PUMP_FUN_PROGRAM && ix.data.get(..16) != Some(&TRADE_EVENT_PREFIX[..])
+        })
+        .ok_or("no_emitter_instruction")?;
+    let is_buy = crate::corpus_rows::corpus_side(&emitter.data).ok_or("instruction_not_in_corpus_table")?;
+    let bal = tx.balances.as_ref().ok_or("no_balances_on_wire")?;
+    let row = crate::corpus_rows::resolve_row(
+        is_buy,
+        &emitter.accounts,
+        &tx.account_keys,
+        &tx.invalid_key_idx,
+        bal,
+        not_launch,
+    )
+    .ok_or("corpus_resolver_rejects")?;
+    if row.mint != t.mint || row.is_buy != t.is_buy {
+        return Err("corpus_row_disagrees_with_event");
+    }
+    let tokens_raw = i64::try_from(row.tokens_raw).map_err(|_| "tokens_unrepresentable")?;
+    Ok(FeatureBasis {
+        sol_lamports: row.sol_lamports,
+        tokens_raw,
+        trader: row.trader,
+    })
+}
+
 /// Build the engine event for one decoded trade. `None` when a field cannot be represented
 /// (zero token reserve, amount above `i64`): refused, never clamped.
 #[must_use]
@@ -222,6 +316,7 @@ pub fn curve_trade_to_event(
     t: &CurveTradeEvent,
     tx: &LaserStreamTx,
     is_live: bool,
+    feature: Option<FeatureBasis>,
 ) -> Option<ProvenancedEvent> {
     // Zero reserve fields (measured: whole mints whose every TradeEvent carries vsol=rsol=0) cannot be
     // priced and would be dropped by the join as `NoPrice` with only a counter. Refuse here so the
@@ -252,6 +347,7 @@ pub fn curve_trade_to_event(
             cu_consumed: tx.cu_consumed,
             venue: Some(TradeVenue::PumpFun),
             event_id: Some(trade_event_id(&tx.signature, t.ix_ordinal)),
+            feature,
         },
         source: ProvenanceSource::LaserStreamTradeEvent,
         slot: tx.slot,
@@ -282,12 +378,37 @@ pub fn ingest_curve_tx(
         TxDecode::Incomplete(r) => EventIngest::Incomplete(r),
         TxDecode::Events(evs) => {
             let (mut n, mut d) = (0usize, 0usize);
+            let not_launch = crate::corpus_rows::not_a_launch_set();
             for e in &evs {
+                // Quote identity comes from the event's own `quote_mint`. A verified non-SOL quote is counted and
+                // skipped (it is NOT a gap on a SOL market); an unestablished quote is a named refusal.
+                match e.quote {
+                    QuoteIdentity::Other(_) => {
+                        if dedup.first_time(&tx.signature, e.ix_ordinal) {
+                            dedup.unsupported_quote += 1;
+                        } else {
+                            d += 1;
+                        }
+                        continue;
+                    }
+                    QuoteIdentity::Unknown => return EventIngest::Incomplete("quote_identity_unknown"),
+                    QuoteIdentity::Sol => {}
+                }
                 if !dedup.first_time(&tx.signature, e.ix_ordinal) {
                     d += 1;
                     continue;
                 }
-                match curve_trade_to_event(e, tx, tx.is_live) {
+                let feature = match corpus_basis_for(tx, e, &not_launch) {
+                    Ok(f) => {
+                        dedup.corpus_basis_resolved += 1;
+                        Some(f)
+                    }
+                    Err(why) => {
+                        *dedup.outside_corpus.entry(why).or_insert(0) += 1;
+                        None
+                    }
+                };
+                match curve_trade_to_event(e, tx, tx.is_live, feature) {
                     Some(pe) => {
                         out.push(pe);
                         n += 1;
@@ -419,7 +540,28 @@ mod tests {
         d.extend_from_slice(&vt.to_le_bytes());
         d.extend_from_slice(&(vs / 2).to_le_bytes());
         d.extend_from_slice(&(vt / 2).to_le_bytes());
+        d.extend_from_slice(&idl_tail(&[0u8; 32]));
         d
+    }
+    /// The IDL tail after `real_token_reserves`: fee_recipient .. last_update_timestamp, `ix_name`="buy", mayhem,
+    /// cashback/buyback fields, an empty shareholders vec, then `quote_mint` + the V2 trailing amounts.
+    fn idl_tail(quote_mint: &[u8; 32]) -> Vec<u8> {
+        let mut t = Vec::new();
+        t.extend_from_slice(&[1u8; 32]); // fee_recipient
+        t.extend_from_slice(&[0u8; 16]); // fee_bps, fee
+        t.extend_from_slice(&[2u8; 32]); // creator
+        t.extend_from_slice(&[0u8; 16]); // creator_fee_bps, creator_fee
+        t.push(0); // track_volume
+        t.extend_from_slice(&[0u8; 32]); // unclaimed, claimed, current_sol_volume, last_update_timestamp
+        t.extend_from_slice(&3u32.to_le_bytes());
+        t.extend_from_slice(b"buy");
+        t.push(0); // mayhem_mode
+        t.extend_from_slice(&[0u8; 32]); // cashback bps/amt, buyback bps/amt
+        t.extend_from_slice(&0u32.to_le_bytes()); // shareholders
+        t.extend_from_slice(quote_mint);
+        t.extend_from_slice(&[0u8; 32]); // quote_amount, virtual_quote, real_quote, holder_rewards_bps
+        t.extend_from_slice(&[0u8; 8]); // holder_rewards
+        t
     }
     fn ix(data: Vec<u8>) -> LaserStreamInstruction {
         LaserStreamInstruction {
@@ -491,6 +633,7 @@ mod tests {
                 fee_lamports,
                 cu_consumed,
                 event_id,
+                feature,
                 ..
             } => TradeObs {
                 mint: *mint.as_bytes(),
@@ -505,6 +648,7 @@ mod tests {
                 cu_consumed,
                 venue: VenueLabel::Pumpfun,
                 event_id,
+                feature,
             },
             _ => panic!(),
         };
@@ -749,5 +893,58 @@ mod tests {
             reconcile_snapshot(&v[0], 5_001, 500, 2_500),
             Reconcile::Mismatch
         );
+    }
+
+    #[test]
+    fn quote_identity_comes_from_the_events_own_quote_mint() {
+        let mut d = ev_data(MINT, 1, true, 5, 5, 10, 10);
+        let cut = d.len() - idl_tail(&[0u8; 32]).len();
+        assert_eq!(decode_quote(&d), QuoteIdentity::Sol, "native sentinel");
+        d.truncate(cut);
+        d.extend_from_slice(&idl_tail(&WSOL_MINT));
+        assert_eq!(decode_quote(&d), QuoteIdentity::Sol, "WSOL spelling");
+        let usdc = [9u8; 32];
+        d.truncate(cut);
+        d.extend_from_slice(&idl_tail(&usdc));
+        assert_eq!(decode_quote(&d), QuoteIdentity::Other(usdc), "verified non-SOL quote");
+        // An event that ends before quote_mint (older layout / truncated): NOT assumed SOL.
+        d.truncate(cut + 60);
+        assert_eq!(decode_quote(&d), QuoteIdentity::Unknown);
+    }
+
+    #[test]
+    fn a_usdc_quoted_event_is_counted_outside_sol_and_is_not_a_gap() {
+        let usdc = [9u8; 32];
+        let mut d = ev_data(MINT, 1, true, 0, 50, 0, 100); // zero SOL fields, as on USDC curves
+        let cut = d.len() - idl_tail(&[0u8; 32]).len();
+        d.truncate(cut);
+        d.extend_from_slice(&idl_tail(&usdc));
+        let t = tx(1, Some(true), vec![buy_ix(), ix(d)]);
+        let mut dd = EventDedup::new(16);
+        let mut out = Vec::new();
+        let r = ingest_curve_tx(&t, &mut dd, &mut out);
+        assert!(out.is_empty(), "no engine event for an unsupported quote");
+        assert_eq!(dd.unsupported_quote, 1);
+        assert!(!matches!(r, EventIngest::Incomplete(_)), "unsupported quote is a counted population, not a gap");
+    }
+
+    #[test]
+    fn a_sol_trade_outside_the_corpus_table_is_admitted_without_a_feature_basis() {
+        // buy_ix() uses BUY_SELL_DISCS[0] (corpus-known) but the tx carries no balances: basis refused by name.
+        let t = tx(1, Some(true), vec![buy_ix(), ix(ev_data(MINT, 1, true, 5, 5, 10, 10))]);
+        let mut dd = EventDedup::new(16);
+        let mut out = Vec::new();
+        let _ = ingest_curve_tx(&t, &mut dd, &mut out);
+        assert_eq!(out.len(), 1, "still discovered/admitted");
+        match out[0].event {
+            AppEvent::MarketTrade { feature, .. } => assert!(feature.is_none()),
+            _ => panic!(),
+        }
+        assert_eq!(dd.outside_corpus.get("no_balances_on_wire"), Some(&1));
+        // V2 discriminators that the corpus table lacks are named, not guessed.
+        let mut v2 = BUY_SELL_DISCS[3].to_vec();
+        v2[0] ^= 0xFF; // not in the corpus table
+        let t2 = tx(2, Some(true), vec![ix(v2), ix(ev_data(MINT, 1, true, 5, 5, 10, 10))]);
+        let _ = decode_curve_trade_events(&t2);
     }
 }

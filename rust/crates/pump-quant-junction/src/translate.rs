@@ -121,6 +121,7 @@ pub fn canonical_tx_to_market_trade(
         cu_consumed: None,
         venue: None,
         event_id: None,
+        feature: None,
     };
 
     Some(ProvenancedEvent {
@@ -302,6 +303,7 @@ mod tests {
             cu_consumed: None,
             venue: None,
             event_id: None,
+            feature: None,
         } = result.event
         {
             // The PumpPortal path decodes the transaction, so it KNOWS the trader's address:

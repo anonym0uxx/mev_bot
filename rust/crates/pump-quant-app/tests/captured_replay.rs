@@ -141,6 +141,7 @@ fn captured_history_through_the_real_engine_reports_coverage() {
                     cu_consumed: v["cu"].as_u64(),
                     venue: Some(venue),
                     event_id: None,
+                    feature: None,
                 });
             }
             _ => panic!("kind"),

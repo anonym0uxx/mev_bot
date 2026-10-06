@@ -94,6 +94,22 @@ pub enum TradeVenue {
     PumpSwap,
 }
 
+/// The TRAINED-feature basis of one trade, kept apart from the execution quantities on the same event
+/// (`price_fp`/`quote_lamports`/`signed_base` stay the reserve price and swap amounts). It is the corpus's own
+/// definition (`renormalize_raw.py` -> `build_states_v2.py`): the resolved trader's whole-transaction native+WSOL
+/// balance delta, that trader's token delta, and that trader. It feeds the trained windows (state ledger, flow
+/// reducer, enrichment) ONLY. It is NEVER an execution price: no sizing, min-out/limit, fill, inventory or
+/// emergency path may read it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FeatureBasis {
+    /// Trader balance delta, lamports; buy negative, sell positive (the tape's `sol_lamports`).
+    pub sol_lamports: i64,
+    /// Trader token delta, raw units; buy positive, sell negative (the tape's `tokens_raw`).
+    pub tokens_raw: i64,
+    /// The corpus-resolved trader (may differ from the event's `user` on router routes).
+    pub trader: [u8; 32],
+}
+
 /// One unit of input to the engine.
 ///
 /// `Copy` and small so a journal of millions of events replays without allocation
@@ -158,6 +174,10 @@ pub enum AppEvent {
         /// heuristic key. Identity -- never price -- is what separates two distinct trades from
         /// one repeated delivery.
         event_id: Option<u128>,
+        /// Corpus-definition basis for the trained windows. `None` = this trade is OUTSIDE the corpus population
+        /// (no corpus-known instruction / corpus-rejected / no balances): it is counted, never put into the
+        /// trained windows under their historical definition.
+        feature: Option<FeatureBasis>,
     },
 
     /// A narrative attention sample for a market: how many fresh mentions arrived

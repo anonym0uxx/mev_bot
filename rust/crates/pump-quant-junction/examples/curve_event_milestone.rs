@@ -71,6 +71,7 @@ fn obs(e: &AppEvent) -> Option<TradeObs> {
         fee_lamports,
         cu_consumed,
         event_id,
+        feature,
         ..
     } = e
     {
@@ -87,6 +88,7 @@ fn obs(e: &AppEvent) -> Option<TradeObs> {
             cu_consumed: *cu_consumed,
             venue: VenueLabel::Pumpfun,
             event_id: *event_id,
+            feature: *feature,
         })
     } else {
         None

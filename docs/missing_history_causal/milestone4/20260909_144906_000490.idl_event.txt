@@ -1,0 +1,4 @@
+20260909_144906_000490 {'events': 32586, 'end:holder_rewards_bps': 32586, 'v2:ix_quote_agrees_with_event(WSOL<->native)': 9445, 'legacy_ix:event_quote=native': 23141}
+ix_name {('sell', 'emitter_known'): 15825, ('buy', 'emitter_known'): 11723, ('buy_exact_quote_in', 'emitter_known'): 3222, ('buy_exact_sol_in', 'emitter_known'): 1816}
+event lens top [(367, 14555), (366, 11589), (381, 2016), (379, 1816), (415, 1205), (401, 1189)]
+quote_mint,vsol&vquote==0 {('11111111111111111111111111111111', 'vsol>0', 'vq>0'): 30590, ('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', 'vsol0', 'vq>0'): 1996}
