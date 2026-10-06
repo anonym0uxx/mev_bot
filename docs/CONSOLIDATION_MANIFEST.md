@@ -6,8 +6,9 @@ addenda that used to live here; that earlier text is preserved verbatim, warts a
 contains decisions later reversed. Where the two disagree, this file wins. Operating entry
 points, commands and the historical-alternatives index are in [`ENTRY.md`](ENTRY.md).
 
-Last updated: 2026-10-06. **Accepted code head: `7e227ee3`** (tested merge `0a62b3d2`; the
-preceding code head `d7596114` was tested as merge `2fabc312`). The
+Last updated: 2026-10-06. **Accepted code head: `0a962d55`** (tested merge
+`439726896f3f51117cfdb97bf8d0b49f40a6539f`; the preceding code head `7e227ee3` was tested as
+merge `0a62b3d2`, and `d7596114` as merge `2fabc312`). The
 branch tip may be a later docs-only commit; the acceptance in section 2 is bound to the code
 head, not to the tip SHA.
 
@@ -18,7 +19,7 @@ head, not to the tip SHA.
 | Item | Value |
 |---|---|
 | Consolidated branch | `task/main-consolidation` |
-| Accepted code head | `7e227ee3` (docs-only commits may follow it) |
+| Accepted code head | `0a962d55` (docs-only commits may follow it) |
 | Base (`main`) | `09e9194b` (2026-09-26) |
 | Rollback ref | tag `rollback/pre-consolidation-959cee8c` (local + remote) |
 | PR | **#10** - `main consolidation: Qwen-first main` - **DRAFT, not merged** |
@@ -43,11 +44,15 @@ into `main`, not the head alone):
 | 20 | `1811e5fb` | `b3ec6fad8111c1cf83756982defb659c2e8927f1` | AMD EPYC 9V45 | SUCCESS |
 | 21 | `161efe45` | `b3ec6fad8111c1cf83756982defb659c2e8927f1` (SAME tested merge as run 20 - GitHub's PR merge ref had not yet advanced for this docs-only head) | AMD EPYC 9V45 | SUCCESS |
 | 22 | `7e227ee3` | `0a62b3d28e028773f55883e745d195f65633c42c7` | AMD EPYC 7763 | SUCCESS |
+| 23 | `451fc63f` | (docs-only head; code tree = run 22) | - | SUCCESS |
+| 24 | `0a962d55` | `439726896f3f51117cfdb97bf8d0b49f40a6539f` (merge of `0a962d55` into `09e9194b`) | AMD EPYC 9V45 | SUCCESS |
 
 - all steps green each time: Record toolchain/runner CPU/effective flags · Portable gate ·
   Format check · Clippy (deny warnings) · Build (portable/dev profile) · Tests
 - runs 18, 20 and 22 used DIFFERENT runner CPUs (7763, 9V45, 7763) and were green - the fix is
   validated on the tested runners, not proven universal
+- **run 24** (`0a962d55`) is green on AMD EPYC 9V45; like-for-like it differs from run 21 by
+  exactly **+1 test** (section 2b), not the -10 that the earlier header-pairing count suggested.
 - **merge-ref lag observed:** runs 20 and 21 both report tested merge `b3ec6fad` although their
   source heads differ (`1811e5fb` vs `161efe45`), i.e. one docs-only head was validated against a
   merge tree that had not yet advanced. Treat "which merge was actually tested" as the log's
@@ -70,24 +75,42 @@ into `main`, not the head alone):
   deployment Zen5 pin is UNCHANGED; all other flags and `-D warnings` are preserved; the cache key
   is separated by toolchain / arch / flag-hash.
 
-## 2b. Test-count reconciliation (like-for-like, from the hosted CI log)
+## 2b. Test-count reconciliation (like-for-like, from the hosted CI logs)
 
-Measured from run 21's **Tests** step log (the same command CI runs: `cargo test --workspace`):
+**Counting rule.** Count every `test result:` line in the Tests-step log
+(`cargo test --workspace`); their number is the number of cargo test targets executed, and the
+`passed` sum is the total passed. Cross-check: the count of `test <name> ... ok` lines equals
+that sum (it does, exactly). Pair a target with its result **positionally** - the nth
+`Running`/`Doc-tests` header with the nth `test result:` line.
 
-| Measure | Value |
-|---|---|
-| `test result` lines | **491** (467 test/bin targets + 24 doctest targets) |
-| targets with >0 passed | 453 |
-| **total passed** | **3,421** |
-| **failed** | **0** |
-| doctests | 0 passed (24 empty doc targets) |
+**Do NOT pair a header with the next result line.** GitHub's runner interleaves stdout, so a
+target's header is often printed *before the previous target's* result line. Header-to-next-
+result pairing then mislabels one target and DROPS the target whose result arrives with no
+header pending. That defect is what produced the earlier 491/490 and 3,421/3,411 figures.
 
-**Earlier figures reconciled - they were NOT like-for-like:**
-- `3,486` was a LOCAL aggregate produced by summing `test result: ok. N passed` lines from one
-  local run, with a different parse and environment (and it counted doctest lines).
+| Run | Targets (`test result` lines) | Targets >0 passed | Total passed | ignored | failed |
+|---|---|---|---|---|---|
+| 21 (tested merge `b3ec6fad`) | **505** (480 test/bin + 25 doctest) | 466 | **3,488** | 1 | 0 |
+| 24 (tested merge `4397268`) | **505** (480 test/bin + 25 doctest) | 466 | **3,489** | 1 | 0 |
+
+**Run 24 vs run 21 = +1 test, 0 failed both.** The single delta is one `pump_quant_junction`
+lib unit test (230 -> 231):
+`autonomous_bridge::tests::an_old_approval_cannot_authorise_a_replay_of_the_same_content` - the
+regression added by `0a962d55` (one-use config-promotion approval). No other target changed.
+
+**Correction - the earlier 3,421 / 491 figure is superseded.** It was produced by the
+header-to-next-result method and is a parse artifact, not a property of the code: run 21's log
+actually contains **505** `test result:` lines and **3,488** `test`-`ok` lines. The same method on
+run 24 gave 3,411 / 490 (14 targets dropped in run 21, 15 in run 24), which manufactured an
+apparent -10-test, -1-target gap between two runs whose true gap is **+1**. Do not cite 3,421/491
+or 3,411/490.
+
+**Earlier figures reconciled:**
+- `3,486` was a LOCAL aggregate summing `test result: ok. N passed` lines from a different local
+  run; it is close to the true hosted total (3,488) but is a different run, so not a match.
 - `3,195` was a draft-manifest transcription, not a measurement.
-- Neither is a by-target count, so neither should be compared to the other. The authoritative,
-  reproducible figure is **3,421 / 0 across 491 targets** from the hosted log.
+- The authoritative, reproducible figure is now **3,489 / 0 across 505 targets** (run 24), with
+  run 21 at 3,488 / 0; the delta is the one junction regression test.
 
 **Actual removals vs counting:** between base `09e9194b` and the head, `#[test]` functions went
 **3,424 -> 3,506 (+82)**; **16 test files were added** and **10 deleted**. The 10 deletions are:
