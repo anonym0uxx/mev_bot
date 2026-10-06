@@ -1,0 +1,10 @@
+20260909_144906_000490 tx 665960 tx_with_bad_key 662743
+bad strings {('111111111111111111111111111111111', 33): 662743}
+where (list,index) top [(('static', 6), 106517), (('static', 10), 96413), (('static', 12), 92573), (('static', 7), 82998), (('static', 9), 62867), (('static', 13), 55029)]
+examples [('3k99d9ki6pau', 'static', 10, '111111111111111111111111111111111'), ('31ZJ9XG73C86', 'static', 10, '111111111111111111111111111111111'), ('2cVzW1Vc9PtM', 'static', 10, '111111111111111111111111111111111')]
+record header keys {'record_type': 'transaction', 'slot': 445637627, 'recv_unix_ms': 1788965347168, 'record_index': 7}
+20260909_173928_000596 tx 631978 tx_with_bad_key 622962
+bad strings {('111111111111111111111111111111111', 33): 622962}
+where (list,index) top [(('static', 10), 98524), (('static', 12), 89414), (('static', 9), 75222), (('static', 13), 51464), (('static', 7), 48031), (('static', 6), 46908)]
+examples [('3y6qnRFdyTim', 'static', 14, '111111111111111111111111111111111'), ('BERxAsFqw1PM', 'static', 17, '111111111111111111111111111111111'), ('31JrNTf4GmEu', 'static', 12, '111111111111111111111111111111111')]
+record header keys {'record_type': 'transaction', 'slot': 445669922, 'recv_unix_ms': 1788975568348, 'record_index': 1}

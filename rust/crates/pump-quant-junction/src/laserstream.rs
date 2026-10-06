@@ -71,6 +71,10 @@ pub struct LaserStreamTx {
     pub signature: [u8; 64],
     /// All account keys in the transaction (message.header + account keys).
     pub account_keys: Vec<[u8; 32]>,
+    /// Indices whose key string did not parse (bytes are zero placeholders, NOT the System Program). Sorted.
+    pub invalid_key_idx: Vec<usize>,
+    /// Count of the one archival repair applied (33 x '1' -> zero key); see the parser comment.
+    pub repaired_zero_keys: u32,
     /// Decoded instructions (outer + inner).
     pub instructions: Vec<LaserStreamInstruction>,
     /// Whether this is a live observation (true) or replay (false).
@@ -460,12 +464,15 @@ pub fn classify_pump_instructions(tx: &LaserStreamTx) -> Vec<PumpInstruction> {
 
 /// Resolve an account key from an instruction's account index.
 /// Returns None if the index is out of bounds (fail-safe, not panic).
+/// The capture emitter's pre-33299734 spelling of the 32-byte all-zero key (a spurious extra digit).
+pub const ARCHIVAL_B58_ZERO_KEY: &str = "111111111111111111111111111111111";
+
 fn account_key_at(ix: &LaserStreamInstruction, tx: &LaserStreamTx, idx: usize) -> Option<[u8; 32]> {
     if idx >= ix.accounts.len() {
         return None;
     }
     let key_idx = ix.accounts[idx] as usize;
-    if key_idx >= tx.account_keys.len() {
+    if key_idx >= tx.account_keys.len() || tx.invalid_key_idx.contains(&key_idx) {
         return None;
     }
     Some(tx.account_keys[key_idx])
@@ -832,19 +839,39 @@ pub fn parse_ndjson_line(line: &str) -> Option<LaserStreamUpdate> {
                 }
             }
 
-            // Parse account keys (array of base58 strings → [[u8;32]; N])
+            // Parse account keys (array of base58 strings -> [[u8;32]; N]).
+            // INDEX ALIGNMENT IS LOAD-BEARING: instruction accounts and balance arrays index into this list, so
+            // every key keeps its slot. A key that does not parse is recorded in `invalid_key_idx` and is NEVER
+            // usable as an account: `account_key_at` and the corpus resolver refuse it by name. Its bytes stay zero
+            // only to keep the vector rectangular; zero is also the real System Program key, so the invalid mask,
+            // not the bytes, is what distinguishes the two.
+            // ONE documented archival repair: the capture emitter built before 33299734 encoded the all-zero
+            // 32-byte key (System Program) as 33 '1's. That exact string, and only it, decodes to the zero key
+            // (`ARCHIVAL_B58_ZERO_KEY_REPAIRS` counts it). Anything else that fails stays invalid.
+            let mut invalid_key_idx: Vec<usize> = Vec::new();
+            let mut repaired_zero_keys: u32 = 0;
             let account_keys: Vec<[u8; 32]> = v
                 .get("account_keys")
                 .and_then(|a| a.as_array())
                 .map(|arr| {
-                    // INDEX ALIGNMENT IS LOAD-BEARING: instruction accounts and balance arrays index into this
-                    // list, so an unparseable key must keep its slot (zero placeholder, which matches no real
-                    // owner) rather than be dropped, which silently shifted every later index by one.
                     arr.iter()
-                        .map(|k| {
-                            k.as_str()
-                                .and_then(|s| Pubkey::from_str(s).ok())
-                                .map_or([0u8; 32], |p| p.to_bytes())
+                        .enumerate()
+                        .map(|(i, k)| match k.as_str() {
+                            Some(s) if s == ARCHIVAL_B58_ZERO_KEY => {
+                                repaired_zero_keys += 1;
+                                [0u8; 32]
+                            }
+                            Some(s) => match Pubkey::from_str(s) {
+                                Ok(p) => p.to_bytes(),
+                                Err(_) => {
+                                    invalid_key_idx.push(i);
+                                    [0u8; 32]
+                                }
+                            },
+                            None => {
+                                invalid_key_idx.push(i);
+                                [0u8; 32]
+                            }
                         })
                         .collect()
                 })
@@ -906,6 +933,8 @@ pub fn parse_ndjson_line(line: &str) -> Option<LaserStreamUpdate> {
                 slot,
                 signature,
                 account_keys,
+                invalid_key_idx,
+                repaired_zero_keys,
                 instructions,
                 fee_lamports,
                 cu_consumed,
@@ -1079,6 +1108,8 @@ mod tests {
             slot,
             signature: [0u8; 64],
             account_keys: vec![],
+            invalid_key_idx: vec![],
+            repaired_zero_keys: 0,
             instructions: vec![],
             is_live,
             recv_unix_ms: None,
@@ -1729,6 +1760,37 @@ mod tests {
         );
         let t = parsed(&line);
         assert_eq!(t.account_keys.len(), 3, "no key may be dropped");
+        assert_eq!(t.invalid_key_idx, vec![1], "the bad key is explicitly invalid");
+        assert_eq!(t.repaired_zero_keys, 0);
+    }
+
+    #[test]
+    fn invalid_key_is_refused_as_an_account_without_shifting_later_indices() {
+        let good = "11111111111111111111111111111111";
+        let mut t = parsed(&format!(
+            r#"{{"kind":"transaction","slot":1,"recv_unix_ms":5,"signature_b58":"{}","account_keys":["{}","not-a-key!!","{}"],"instructions":[]}}"#,
+            "1".repeat(88),
+            good,
+            "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
+        ));
+        let ix = LaserStreamInstruction { program_id: [0; 32], data: vec![], accounts: vec![1, 2, 0] };
+        t.instructions.clear();
+        assert!(account_key_at(&ix, &t, 0).is_none(), "invalid key must not resolve (not a zero System key)");
+        assert_eq!(account_key_at(&ix, &t, 1), Some(PUMP_FUN_PROGRAM), "later index unchanged");
+        assert_eq!(account_key_at(&ix, &t, 2), Some([0u8; 32]), "a REAL System Program key still resolves");
+    }
+
+    #[test]
+    fn archival_33_ones_is_the_only_repaired_spelling() {
+        let t = parsed(&format!(
+            r#"{{"kind":"transaction","slot":1,"recv_unix_ms":5,"signature_b58":"{}","account_keys":["{}","{}"],"instructions":[]}}"#,
+            "1".repeat(88),
+            ARCHIVAL_B58_ZERO_KEY,
+            "1".repeat(34)
+        ));
+        assert_eq!(t.repaired_zero_keys, 1);
+        assert_eq!(t.invalid_key_idx, vec![1], "34 ones is not the documented defect: stays invalid");
+        assert_eq!(t.account_keys[0], [0u8; 32]);
     }
 
     #[test]

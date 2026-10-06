@@ -445,6 +445,8 @@ mod tests {
             cu_consumed: Some(90_000),
             tx_ok: ok,
             balances: None,
+            invalid_key_idx: vec![],
+            repaired_zero_keys: 0,
         }
     }
 

@@ -128,6 +128,7 @@ pub fn resolve_row(
     is_buy: bool,
     ix_accounts: &[u8],
     keys: &[[u8; 32]],
+    invalid_key_idx: &[usize],
     m: &BalanceMeta,
     not_launch: &HashSet<[u8; 32]>,
 ) -> Option<CorpusRow> {
@@ -144,7 +145,7 @@ pub fn resolve_row(
         let mut cands: Vec<(usize, [u8; 32], i128, i128)> = Vec::new();
         for &a in ix_accounts.iter().take(20) {
             let ai = usize::from(a);
-            if ai >= keys.len() || ai >= m.pre_sol.len() {
+            if ai >= keys.len() || ai >= m.pre_sol.len() || invalid_key_idx.contains(&ai) {
                 continue;
             }
             let ow = keys[ai];
@@ -178,6 +179,9 @@ pub fn resolve_row(
         for mint in &mints {
             let mut hits: Vec<(usize, [u8; 32], i128, i128)> = Vec::new();
             for j in 0..keys.len().min(m.pre_sol.len()).min(m.post_sol.len()) {
+                if invalid_key_idx.contains(&j) {
+                    continue; // an unparseable key is never an owner, even though its placeholder bytes are zero
+                }
                 let ow = keys[j];
                 if let Some((sd, td)) = deltas(m, j, &ow, mint) {
                     if pattern_ok(is_buy, sd, td) {
@@ -288,7 +292,7 @@ mod tests {
             vec![tb(k(MINT), k(TRADER), 0), tb(k(MINT), k(POOL), 500)],
             vec![tb(k(MINT), k(TRADER), 200), tb(k(MINT), k(POOL), 300)],
         );
-        let r = resolve_row(true, &[0, 1, 2, 3, 4, 5, 7], &keys, &m, &not_a_launch_set()).unwrap();
+        let r = resolve_row(true, &[0, 1, 2, 3, 4, 5, 7], &keys, &[], &m, &not_a_launch_set()).unwrap();
         assert_eq!(r.trader, k(TRADER));
         assert_eq!(
             r.sol_lamports, -105,
@@ -308,12 +312,12 @@ mod tests {
         let post_leak = vec![tb(k(MINT), k(TRADER), 200), tb(k(MINT), k(POOL), 100)];
         let sol_post = vec![1000, 1000, 1000, 1000, 1000, 1000, 1000, 900, 1100, 1000];
         let m_ok = meta(vec![1000; 10], sol_post.clone(), pre.clone(), post_ok);
-        let r = resolve_row(true, &[0, 1], &keys, &m_ok, &not_a_launch_set()).unwrap();
+        let r = resolve_row(true, &[0, 1], &keys, &[], &m_ok, &not_a_launch_set()).unwrap();
         assert!(r.via_net_position);
         assert_eq!(r.trader, k(TRADER));
         let m_leak = meta(vec![1000; 10], sol_post, pre, post_leak);
         assert!(
-            resolve_row(true, &[0, 1], &keys, &m_leak, &not_a_launch_set()).is_none(),
+            resolve_row(true, &[0, 1], &keys, &[], &m_leak, &not_a_launch_set()).is_none(),
             "non-conserving token totals are rejected, as the corpus rejects them"
         );
     }
@@ -340,6 +344,6 @@ mod tests {
     fn mismatched_balance_arrays_and_zero_deltas_are_rejected() {
         let keys: Vec<[u8; 32]> = (0u8..10).map(k).collect();
         let m = meta(vec![1000; 10], vec![1000; 9], vec![], vec![]);
-        assert!(resolve_row(true, &[7], &keys, &m, &not_a_launch_set()).is_none());
+        assert!(resolve_row(true, &[7], &keys, &[], &m, &not_a_launch_set()).is_none());
     }
 }

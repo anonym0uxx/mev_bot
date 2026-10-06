@@ -60,7 +60,7 @@ fn main() {
             let Some(is_buy) = corpus_side(&ix.data) else {
                 continue;
             };
-            match resolve_row(is_buy, &ix.accounts, &tx.account_keys, bal, &not_launch) {
+            match resolve_row(is_buy, &ix.accounts, &tx.account_keys, &tx.invalid_key_idx, bal, &not_launch) {
                 Some(r) => {
                     let _ = writeln!(
                         out,
