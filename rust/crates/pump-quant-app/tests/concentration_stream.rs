@@ -73,6 +73,7 @@ fn trade(e: &mut Engine, m: Mint, entity: u64, signed_base: i64) {
         fee_lamports: None,
         cu_consumed: None,
         venue: None,
+        event_id: None,
     });
 }
 

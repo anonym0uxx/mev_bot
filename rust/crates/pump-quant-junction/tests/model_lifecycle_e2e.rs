@@ -67,6 +67,7 @@ fn events(n: u32) -> Vec<AppEvent> {
             fee_lamports: Some(60_000 + u64::from(i) * 100),
             cu_consumed: Some(90_000 + u64::from(i)),
             venue: Some(TradeVenue::PumpFun),
+            event_id: None,
         });
     }
     let t_last = T0 + 1_000 + i64::from(n) * 2_000;
@@ -139,6 +140,7 @@ fn print(e: &mut Engine, i: u32, ts: i64, slot: u64) {
         fee_lamports: Some(60_000 + u64::from(i) * 100),
         cu_consumed: Some(90_000 + u64::from(i)),
         venue: Some(TradeVenue::PumpFun),
+        event_id: None,
     });
 }
 
@@ -961,6 +963,7 @@ fn the_stale_callout_is_edge_triggered_names_the_loss_of_protection_and_recovers
             fee_lamports: Some(5_000),
             cu_consumed: Some(1),
             venue: Some(TradeVenue::PumpFun),
+            event_id: None,
         });
     }
     let t1 = r.e.model_clock_ms_now();

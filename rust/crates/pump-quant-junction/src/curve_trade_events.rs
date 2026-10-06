@@ -199,6 +199,22 @@ impl EventDedup {
 
 const PRICE_SCALE: i128 = 1_000_000_000;
 
+/// Stable 128-bit identity of one on-chain trade event: the first 16 bytes of
+/// `sha256("pq-curve-trade-event-v1" || signature(64) || ix_ordinal_le(4))`. The SAME function keys the
+/// producer-side [`EventDedup`] (as `(signature, ordinal)`) and the engine-side dedup (as this digest), so
+/// both layers agree on what "the same event" means. One instruction emits at most one TradeEvent
+/// (measured), but the ordinal is the position in the flattened outer-then-inner list, so two events can
+/// never share an id even if that ever changes.
+#[must_use]
+pub fn trade_event_id(sig: &[u8; 64], ix_ordinal: u32) -> u128 {
+    let mut h = pump_quant_protocol::sha256::Sha256::new();
+    h.update(b"pq-curve-trade-event-v1");
+    h.update(sig);
+    h.update(&ix_ordinal.to_le_bytes());
+    let d = h.finalize();
+    u128::from_be_bytes(d[..16].try_into().unwrap_or([0; 16]))
+}
+
 /// Build the engine event for one decoded trade. `None` when a field cannot be represented
 /// (zero token reserve, amount above `i64`): refused, never clamped.
 #[must_use]
@@ -235,6 +251,7 @@ pub fn curve_trade_to_event(
             fee_lamports: tx.fee_lamports,
             cu_consumed: tx.cu_consumed,
             venue: Some(TradeVenue::PumpFun),
+            event_id: Some(trade_event_id(&tx.signature, t.ix_ordinal)),
         },
         source: ProvenanceSource::LaserStreamTradeEvent,
         slot: tx.slot,
@@ -286,6 +303,48 @@ pub fn ingest_curve_tx(
                     duplicates: d,
                 }
             }
+        }
+    }
+}
+
+/// Producer/consumer compatibility watchdog for the event path. The sidecar must stamp `meta.tx_ok`;
+/// a producer that does not (an older build) makes EVERY pump transaction `tx_status_unknown`, which is
+/// fail-closed but silently yields zero coverage. This turns that into an explicit readiness failure.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ProducerCompat {
+    pub status_known: u64,
+    pub status_unknown: u64,
+}
+
+/// Unknown-status pump transactions tolerated before the producer is declared incompatible, provided it
+/// has NEVER reported a status. (A single stray line from a healthy producer never trips it.)
+pub const COMPAT_UNKNOWN_THRESHOLD: u64 = 32;
+
+impl ProducerCompat {
+    pub fn note(&mut self, tx: &LaserStreamTx) {
+        if !tx
+            .instructions
+            .iter()
+            .any(|i| i.program_id == PUMP_FUN_PROGRAM)
+        {
+            return;
+        }
+        match tx.tx_ok {
+            Some(_) => self.status_known = self.status_known.saturating_add(1),
+            None => self.status_unknown = self.status_unknown.saturating_add(1),
+        }
+    }
+    /// `true` = READY. Not ready once >= threshold pump txs arrived and none ever carried a status.
+    #[must_use]
+    pub fn ready(&self) -> bool {
+        self.status_known > 0 || self.status_unknown < COMPAT_UNKNOWN_THRESHOLD
+    }
+    #[must_use]
+    pub fn reason(&self) -> Option<&'static str> {
+        if self.ready() {
+            None
+        } else {
+            Some("producer_incompatible: no meta.tx_ok on any pump transaction (rebuild the sidecar from this source revision)")
         }
     }
 }
@@ -386,6 +445,124 @@ mod tests {
             cu_consumed: Some(90_000),
             tx_ok: ok,
         }
+    }
+
+    /// Two DISTINCT trades that share slot, trader, size, time AND post-trade price (identical in every
+    /// economic field) stay two engine events with different ids; redelivering the SAME transaction
+    /// yields nothing at the producer layer and, if it somehow reaches the engine, nothing there either.
+    #[test]
+    fn identical_looking_distinct_trades_survive_end_to_end_and_a_redelivery_does_not() {
+        use pump_quant_app::decision_join::{DecisionCache, Ingest, TradeObs};
+        use pump_quant_app::state_ledger::VenueLabel;
+        let e = ev_data(MINT, 1, true, 10, 100, 1_000, 5_000);
+        let t = tx(40, Some(true), vec![buy_ix(), ix(e.clone()), ix(e.clone())]);
+        let mut dd = EventDedup::new(16);
+        let mut out = Vec::new();
+        assert_eq!(
+            ingest_curve_tx(&t, &mut dd, &mut out),
+            EventIngest::Produced {
+                events: 2,
+                duplicates: 0
+            }
+        );
+        let ids: Vec<u128> = out
+            .iter()
+            .map(|p| match p.event {
+                AppEvent::MarketTrade {
+                    event_id: Some(i), ..
+                } => i,
+                _ => panic!("trade expected, with an event id"),
+            })
+            .collect();
+        assert_ne!(ids[0], ids[1], "distinct ordinals must give distinct ids");
+        let obs = |p: &ProvenancedEvent| match p.event {
+            AppEvent::MarketTrade {
+                mint,
+                price_fp,
+                quote_lamports,
+                signed_base,
+                buyer_entity,
+                trader_pubkey,
+                recv_unix_ms,
+                slot,
+                fee_lamports,
+                cu_consumed,
+                event_id,
+                ..
+            } => TradeObs {
+                mint: *mint.as_bytes(),
+                price_fp,
+                quote_lamports,
+                signed_base,
+                buyer_entity,
+                trader: trader_pubkey,
+                recv_unix_ms,
+                slot,
+                fee_lamports,
+                cu_consumed,
+                venue: VenueLabel::Pumpfun,
+                event_id,
+            },
+            _ => panic!(),
+        };
+        let mut c = DecisionCache::new();
+        assert!(c.observe_launch(MINT, [9; 32], 1_000));
+        // The two trades are field-for-field identical apart from the id.
+        let (a, b) = (obs(&out[0]), obs(&out[1]));
+        assert_eq!(
+            (a.slot, a.trader, a.signed_base, a.recv_unix_ms, a.price_fp),
+            (b.slot, b.trader, b.signed_base, b.recv_unix_ms, b.price_fp)
+        );
+        assert_eq!(c.observe_trade(&a), Ingest::Accepted);
+        assert_eq!(
+            c.observe_trade(&b),
+            Ingest::Accepted,
+            "second distinct event must survive"
+        );
+        // Producer layer: the identical transaction delivered again is dropped wholesale ...
+        let mut again = Vec::new();
+        assert_eq!(
+            ingest_curve_tx(&t, &mut dd, &mut again),
+            EventIngest::Produced {
+                events: 0,
+                duplicates: 2
+            }
+        );
+        // ... and if a replay bypasses the producer, the engine layer drops it on the same ids.
+        assert_eq!(c.observe_trade(&a), Ingest::Duplicate);
+        assert_eq!(c.observe_trade(&b), Ingest::Duplicate);
+        assert_eq!(c.counters().accepted, 2);
+    }
+
+    #[test]
+    fn an_incompatible_producer_is_a_readiness_failure_not_silent_zero_coverage() {
+        let mut c = ProducerCompat::default();
+        for _ in 0..(COMPAT_UNKNOWN_THRESHOLD - 1) {
+            c.note(&tx(1, None, vec![buy_ix()]));
+        }
+        assert!(c.ready(), "below threshold: not yet declared");
+        c.note(&tx(1, None, vec![buy_ix()]));
+        assert!(!c.ready());
+        assert!(c.reason().unwrap().contains("rebuild the sidecar"));
+        // Every one of those transactions was ALSO refused as an incomplete (named gap) -- no fallback.
+        let mut out = Vec::new();
+        assert_eq!(
+            ingest_curve_tx(
+                &tx(2, None, vec![buy_ix()]),
+                &mut EventDedup::new(4),
+                &mut out
+            ),
+            EventIngest::Incomplete("tx_status_unknown")
+        );
+        // One status-bearing tx proves the producer is compatible; later strays do not flip it back.
+        c.note(&tx(3, Some(true), vec![buy_ix()]));
+        assert!(c.ready());
+        // Non-pump traffic never counts either way.
+        let mut d = ProducerCompat::default();
+        for _ in 0..100 {
+            d.note(&tx(4, None, vec![]));
+        }
+        assert!(d.ready());
     }
 
     #[test]

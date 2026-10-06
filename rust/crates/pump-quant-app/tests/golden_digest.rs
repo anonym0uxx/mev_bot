@@ -766,6 +766,7 @@ fn holder_flow_money_term_is_exactly_neutral_on_this_tape() {
         fee_lamports: None,
         cu_consumed: None,
         venue: None,
+        event_id: None,
     });
     assert_eq!(
         probe
@@ -835,6 +836,7 @@ fn holder_concentration_is_exactly_neutral_on_this_tape() {
             fee_lamports: None,
             cu_consumed: None,
             venue: None,
+            event_id: None,
         });
     }
     assert_eq!(
@@ -869,6 +871,7 @@ fn holder_concentration_is_exactly_neutral_on_this_tape() {
             fee_lamports: None,
             cu_consumed: None,
             venue: None,
+            event_id: None,
         });
     }
     assert!(

@@ -1956,6 +1956,7 @@ impl Engine {
                 fee_lamports,
                 cu_consumed,
                 venue,
+                event_id,
             } => {
                 // Model-lane ingest. A no-op unless the paper-model lane is armed, so every legacy
                 // and golden path is byte-identical.
@@ -1994,6 +1995,7 @@ impl Engine {
                             fee_lamports,
                             cu_consumed,
                             venue,
+                            event_id,
                         });
                 }
                 self.numeric.observe(

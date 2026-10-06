@@ -2016,6 +2016,10 @@ fn main() -> ExitCode {
     let mut curve_ev_duplicates: u64 = 0;
     let mut curve_ev_incomplete: u64 = 0;
     let mut curve_ev_incomplete_unnamed: u64 = 0;
+    let mut curve_compat = pump_quant_junction::curve_trade_events::ProducerCompat::default();
+    let mut curve_compat_announced = false;
+    let events_mode_health =
+        curve_trade_source == pump_quant_junction::curve_trade_events::CurveTradeSource::Events;
     // The instruction prints' wallets, waiting for their reserve prints (see `trade_join`).
     let mut trade_join = TradeJoin::new(TRADE_JOIN_CAP, TRADE_JOIN_HORIZON_SLOTS);
     // Wangr Rev-14: tracks which mints we've already emitted MarketAuxiliary
@@ -2657,6 +2661,12 @@ fn main() -> ExitCode {
                     "\"missing_history_unflushed\":{},",
                     "\"missing_history_persist_failures\":{},",
                     "\"missing_history_continuity_unknown\":{},",
+                    "\"curve_trade_source\":\"{}\",",
+                    "\"curve_events_produced\":{},",
+                    "\"curve_events_duplicates\":{},",
+                    "\"curve_events_incomplete\":{},",
+                    "\"curve_events_incomplete_unnamed\":{},",
+                    "\"curve_producer_ready\":{},",
                     "\"uptime_secs\":{},",
                     "\"tick\":{},",
                     "\"account_subs_active\":{},",
@@ -2683,6 +2693,17 @@ fn main() -> ExitCode {
                 mh_unflushed,
                 mh_fail_total,
                 engine.model_history_continuity_unknown(),
+                if events_mode_health {
+                    "events"
+                } else {
+                    "snapshot_delta"
+                },
+                curve_ev_produced,
+                curve_ev_duplicates,
+                curve_ev_incomplete,
+                curve_ev_incomplete_unnamed,
+                // Snapshot-delta mode has no producer-status requirement.
+                !events_mode_health || curve_compat.ready(),
                 uptime_secs,
                 tick_counter,
                 sub_tracker.len(),
@@ -2734,6 +2755,13 @@ fn main() -> ExitCode {
                         events
                     };
                     if events_mode {
+                        curve_compat.note(&tx);
+                        if !curve_compat_announced {
+                            if let Some(r) = curve_compat.reason() {
+                                curve_compat_announced = true;
+                                eprintln!("FATAL-READINESS: curve trade source = events, but {r}");
+                            }
+                        }
                         let mut ev_out = Vec::new();
                         match ingest_curve_tx(&tx, &mut curve_dedup, &mut ev_out) {
                             EventIngest::Nothing => {}

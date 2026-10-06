@@ -97,6 +97,7 @@ fn parse_event_line(line: &str) -> Result<AppEvent, String> {
                 fee_lamports: None,
                 cu_consumed: None,
                 venue: None,
+                event_id: None,
             })
         }
         "OnchainConfirm" => {
@@ -821,6 +822,7 @@ mod tests {
             fee_lamports: None,
             cu_consumed: None,
             venue: None,
+            event_id: None,
         };
         writer.write_event(&event, 12345).expect("write");
         writer.flush().expect("flush");
@@ -954,6 +956,7 @@ mod tests {
             fee_lamports: None,
             cu_consumed: None,
             venue: None,
+            event_id: None,
         };
         writer.write_event(&event, 12345).expect("write");
         writer.flush().expect("flush");
@@ -1010,6 +1013,7 @@ mod tests {
                     fee_lamports: None,
                     cu_consumed: None,
                     venue: None,
+                    event_id: None,
                 },
                 2,
             )
@@ -1087,6 +1091,7 @@ garbage line 2
             fee_lamports: None,
             cu_consumed: None,
             venue: None,
+            event_id: None,
         };
         let line = event_to_json(&stamped, 9);
         assert!(
@@ -1115,6 +1120,7 @@ garbage line 2
             fee_lamports: None,
             cu_consumed: None,
             venue: None,
+            event_id: None,
         };
         let line = event_to_json(&unstamped, 9);
         assert!(!line.contains("recv_unix_ms"), "nothing fabricated: {line}");
@@ -1145,6 +1151,7 @@ garbage line 2
             fee_lamports: None,
             cu_consumed: None,
             venue: None,
+            event_id: None,
         };
         let line = event_to_json(&stamped, 9);
         assert!(line.contains("trader_pubkey"), "{line}");
@@ -1169,6 +1176,7 @@ garbage line 2
             fee_lamports: None,
             cu_consumed: None,
             venue: None,
+            event_id: None,
         };
         let line = event_to_json(&anonymous, 9);
         assert!(!line.contains("trader_pubkey"), "{line}");

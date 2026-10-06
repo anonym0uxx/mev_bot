@@ -88,6 +88,7 @@ fn pump(eng: &mut Engine, base_mult: i128, n: u64) {
             fee_lamports: None,
             cu_consumed: None,
             venue: None,
+            event_id: None,
         });
     }
 }
@@ -109,6 +110,7 @@ fn crater(eng: &mut Engine, top_mult: i128, n: u64) {
             fee_lamports: None,
             cu_consumed: None,
             venue: None,
+            event_id: None,
         });
     }
 }
@@ -247,6 +249,7 @@ fn one(eng: &mut Engine, price_mult: i128, signed_base: i64, entity: u64) {
         fee_lamports: None,
         cu_consumed: None,
         venue: None,
+        event_id: None,
     });
 }
 
@@ -456,6 +459,7 @@ fn sell_flow(eng: &mut Engine, tag: u64, base: i128, n: u64) {
             fee_lamports: None,
             cu_consumed: None,
             venue: None,
+            event_id: None,
         });
     }
 }
@@ -540,6 +544,7 @@ fn bar8(eng: &mut Engine, tag: u64, prices: [i128; 8], entity0: u64) {
             fee_lamports: None,
             cu_consumed: None,
             venue: None,
+            event_id: None,
         });
     }
 }
@@ -576,6 +581,7 @@ fn drive_classifier(cfg: Config) -> (Report, Vec<u16>) {
             fee_lamports: None,
             cu_consumed: None,
             venue: None,
+            event_id: None,
         });
     }
     eng.tick(AppEvent::OnchainConfirm {
@@ -650,6 +656,7 @@ fn drive_pullback(cfg: Config) -> Report {
         fee_lamports: None,
         cu_consumed: None,
         venue: None,
+        event_id: None,
     });
     ticks(&mut eng, 3);
     eng.report()
@@ -964,6 +971,7 @@ fn pump_mf(eng: &mut Engine, n: u64) {
             fee_lamports: None,
             cu_consumed: None,
             venue: None,
+            event_id: None,
         });
     }
 }

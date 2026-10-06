@@ -155,6 +155,7 @@ fn drive(cfg: Config, decayed: bool) -> Engine {
                     fee_lamports: None,
                     cu_consumed: None,
                     venue: None,
+                    event_id: None,
                 });
             }
             if round == m % 4 {

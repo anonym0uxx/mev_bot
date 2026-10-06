@@ -65,6 +65,7 @@ pub fn swap(
         fee_lamports: None,
         cu_consumed: None,
         venue: None,
+        event_id: None,
     });
 }
 

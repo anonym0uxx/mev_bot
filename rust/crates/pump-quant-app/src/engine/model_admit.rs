@@ -690,6 +690,7 @@ impl Engine {
                     fee_lamports: a.fee_lamports,
                     cu_consumed: a.cu_consumed,
                     venue: crate::state_ledger::VenueLabel::Pumpswap,
+                    event_id: None,
                 });
             // A HELD market is marked from the pool so the existing lifecycle can monitor it. This is
             // deliberately limited to held mints: the legacy numeric lane must not DISCOVER from it.

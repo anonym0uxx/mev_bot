@@ -551,6 +551,7 @@ pub fn instructions_to_events_with_meta(
                         fee_lamports,
                         cu_consumed,
                         venue: Some(pump_quant_app::event::TradeVenue::PumpFun),
+                        event_id: None,
                     },
                     source: ProvenanceSource::LaserStream,
                     slot,
@@ -581,6 +582,7 @@ pub fn instructions_to_events_with_meta(
                         fee_lamports,
                         cu_consumed,
                         venue: Some(pump_quant_app::event::TradeVenue::PumpFun),
+                        event_id: None,
                     },
                     source: ProvenanceSource::LaserStream,
                     slot,
@@ -608,6 +610,7 @@ pub fn instructions_to_events_with_meta(
                         fee_lamports,
                         cu_consumed,
                         venue: Some(pump_quant_app::event::TradeVenue::PumpSwap),
+                        event_id: None,
                     },
                     source: ProvenanceSource::LaserStream,
                     slot,
@@ -638,6 +641,7 @@ pub fn instructions_to_events_with_meta(
                         fee_lamports,
                         cu_consumed,
                         venue: Some(pump_quant_app::event::TradeVenue::PumpSwap),
+                        event_id: None,
                     },
                     source: ProvenanceSource::LaserStream,
                     slot,
@@ -1644,6 +1648,29 @@ mod tests {
             Some(LaserStreamUpdate::Transaction(t)) => t,
             other => panic!("expected a transaction, got {other:?}"),
         }
+    }
+
+    /// `meta.tx_ok` as the sidecar's serializer writes it (`u64::from(err.is_none())`): 1 = success,
+    /// 0 = failed. An ABSENT field is `None` -- never success (an older sidecar must not read as ok).
+    #[test]
+    fn tx_ok_is_parsed_fail_closed_success_failure_and_missing() {
+        let ok = parsed(&tx_line(
+            r#","meta":{"fee":5000,"compute_units_consumed":1,"tx_ok":1}"#,
+        ));
+        let bad = parsed(&tx_line(
+            r#","meta":{"fee":5000,"compute_units_consumed":1,"tx_ok":0}"#,
+        ));
+        let old = parsed(&tx_line(
+            r#","meta":{"fee":5000,"compute_units_consumed":1}"#,
+        ));
+        assert_eq!(ok.tx_ok, Some(true));
+        assert_eq!(bad.tx_ok, Some(false));
+        assert_eq!(old.tx_ok, None, "missing status is unknown, not success");
+        // The sidecar writes JSON null when the notification carried no meta at all.
+        let nometa = parsed(&tx_line(
+            r#","meta":{"fee":null,"compute_units_consumed":null,"tx_ok":null}"#,
+        ));
+        assert_eq!(nometa.tx_ok, None, "null status is unknown, not success");
     }
 
     #[test]

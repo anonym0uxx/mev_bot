@@ -152,6 +152,12 @@ pub enum AppEvent {
         /// The venue the print executed on, when the producer knew it. `None` is unknown, never a
         /// default: the state ledger then labels the print `unknown` and the join refuses it.
         venue: Option<TradeVenue>,
+        /// Stable identity of the underlying on-chain event: a 128-bit digest of (signature,
+        /// instruction ordinal) set ONLY by the transaction-event producer. `None` = the producer
+        /// has no exact identity (legacy/derived prints); the join then falls back to its
+        /// heuristic key. Identity -- never price -- is what separates two distinct trades from
+        /// one repeated delivery.
+        event_id: Option<u128>,
     },
 
     /// A narrative attention sample for a market: how many fresh mentions arrived

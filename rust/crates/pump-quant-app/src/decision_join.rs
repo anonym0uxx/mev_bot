@@ -47,6 +47,9 @@ const FLOW_UPSTREAM_DROP_RING: usize = 64;
 
 /// How many recent prints a duplicate check looks back over.
 const DEDUPE_LOOKBACK: usize = 64;
+/// How many recent event ids a per-mint replay check remembers. A redelivery older than this many
+/// ACCEPTED events of the same mint is not detected here (the producer's own dedup is the first layer).
+const DEDUPE_ID_LOOKBACK: usize = 512;
 
 /// One live print, as the join needs it. Built from `AppEvent::MarketTrade` plus the venue the
 /// provenance names (the event itself carries none).
@@ -63,6 +66,10 @@ pub struct TradeObs {
     pub fee_lamports: Option<u64>,
     pub cu_consumed: Option<u64>,
     pub venue: VenueLabel,
+    /// Exact event identity (see `AppEvent::MarketTrade::event_id`). When present it is the ONLY
+    /// dedup key: two distinct events never collide and a replayed delivery always does, whatever
+    /// their slot/trader/size/time/price. `None` falls back to the heuristic key.
+    pub event_id: Option<u128>,
 }
 
 /// What ingest did with a print. Every non-`Accepted` arm is counted.
@@ -270,7 +277,9 @@ struct MintCache {
     flow_drops: VecDeque<MissingObservation>,
     enrich_overflow: bool,
     venue: VenueLabel,
-    recent: VecDeque<(Option<u64>, [u8; 32], i64, i64, i128)>,
+    recent: VecDeque<(Option<u64>, [u8; 32], i64, i64)>,
+    /// Exact event ids of the most recent id-carrying prints (see [`DEDUPE_ID_LOOKBACK`]).
+    recent_ids: VecDeque<u128>,
 }
 
 /// Per-mint pool binding for the AMM plane.
@@ -633,24 +642,33 @@ impl DecisionCache {
             self.counters.out_of_order += 1;
             return Ingest::OutOfOrder;
         }
-        // price_fp is part of the identity: two DISTINCT trades by one wallet, of one size, in one slot and
-        // millisecond (measured in the captures: 1 per ~7k curve events) leave different post-trade
-        // reserves, so differ here; a re-delivered print is identical on every field.
-        let key = (
-            t.slot,
-            t.trader.unwrap_or([0u8; 32]),
-            t.signed_base,
-            recv,
-            t.price_fp,
-        );
-        if mc.recent.iter().any(|k| *k == key) {
-            self.counters.duplicate += 1;
-            return Ingest::Duplicate;
+        // Identity, not price. A print carrying an exact `event_id` (transaction-event producer) is
+        // deduplicated ONLY on that id: two distinct events that share slot, trader, size, time AND price
+        // both survive, and a repeated delivery of one event is always dropped. Prints without an id
+        // (legacy/derived) keep the original heuristic key -- price is NOT part of it.
+        match t.event_id {
+            Some(id) => {
+                if mc.recent_ids.contains(&id) {
+                    self.counters.duplicate += 1;
+                    return Ingest::Duplicate;
+                }
+                if mc.recent_ids.len() >= DEDUPE_ID_LOOKBACK {
+                    mc.recent_ids.pop_front();
+                }
+                mc.recent_ids.push_back(id);
+            }
+            None => {
+                let key = (t.slot, t.trader.unwrap_or([0u8; 32]), t.signed_base, recv);
+                if mc.recent.iter().any(|k| *k == key) {
+                    self.counters.duplicate += 1;
+                    return Ingest::Duplicate;
+                }
+                if mc.recent.len() >= DEDUPE_LOOKBACK {
+                    mc.recent.pop_front();
+                }
+                mc.recent.push_back(key);
+            }
         }
-        if mc.recent.len() >= DEDUPE_LOOKBACK {
-            mc.recent.pop_front();
-        }
-        mc.recent.push_back(key);
         if mc.n_accepted == 0 {
             mc.first_seen_ms = recv;
         }
@@ -1306,28 +1324,45 @@ mod tests {
             fee_lamports: Some(60_000 + u64::from(i) * 100),
             cu_consumed: Some(90_000 + u64::from(i)),
             venue: VenueLabel::Pumpfun,
+            event_id: None,
         }
     }
 
-    /// Two DIFFERENT trades by the same wallet, same side/size, same slot and same receive
-    /// millisecond (two TradeEvents of one transaction, or two txs in one slot) differ in price:
-    /// both must be kept. A truly identical print (same price too) is still a duplicate.
+    /// Two DISTINCT events sharing slot, trader, size, time AND price both survive; a repeated
+    /// delivery of one event does not. Price plays no part in identity.
     #[test]
-    fn same_wallet_same_size_same_ms_trades_with_different_post_trade_price_are_both_kept() {
+    fn distinct_events_identical_in_every_field_survive_and_a_redelivery_does_not() {
+        let mut c = DecisionCache::new();
+        assert!(c.observe_launch(MINT, CREATOR, T0));
+        let mut a = trade(0);
+        a.event_id = Some(1);
+        let mut b = a; // identical slot/trader/size/time/price ...
+        b.event_id = Some(2); // ... but a different underlying event
+        assert_eq!(c.observe_trade(&a), Ingest::Accepted);
+        assert_eq!(
+            c.observe_trade(&b),
+            Ingest::Accepted,
+            "distinct event must survive"
+        );
+        assert_eq!(
+            c.observe_trade(&a),
+            Ingest::Duplicate,
+            "same event redelivered"
+        );
+        assert_eq!(c.observe_trade(&b), Ingest::Duplicate);
+        assert_eq!((c.counters().accepted, c.counters().duplicate), (2, 2));
+    }
+
+    /// Without an id the original heuristic key applies and price is NOT part of it.
+    #[test]
+    fn id_less_prints_keep_the_heuristic_key_price_is_not_identity() {
         let mut c = DecisionCache::new();
         assert!(c.observe_launch(MINT, CREATOR, T0));
         let a = trade(0);
         let mut b = a;
-        b.price_fp += 1; // the second trade moved the curve
+        b.price_fp += 1;
         assert_eq!(c.observe_trade(&a), Ingest::Accepted);
-        assert_eq!(c.observe_trade(&b), Ingest::Accepted);
-        assert_eq!(
-            c.observe_trade(&a),
-            Ingest::Duplicate,
-            "exact replay is still a duplicate"
-        );
-        assert_eq!(c.counters().accepted, 2);
-        assert_eq!(c.counters().duplicate, 1);
+        assert_eq!(c.observe_trade(&b), Ingest::Duplicate);
     }
 
     fn curve() -> CurveObservation {

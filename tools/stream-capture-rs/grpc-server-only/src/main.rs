@@ -238,7 +238,7 @@ mod emitted_line_acceptance {
     use super::*;
     use helius_laserstream::grpc::SubscribeUpdateTransactionInfo;
     use helius_laserstream::solana::storage::confirmed_block::{
-        CompiledInstruction, InnerInstruction, InnerInstructions, Message, Transaction, TransactionStatusMeta,
+        CompiledInstruction, InnerInstruction, InnerInstructions, Message, Transaction, TransactionError, TransactionStatusMeta,
     };
 
     fn b58_decode(s: &str) -> Vec<u8> {
@@ -272,6 +272,27 @@ mod emitted_line_acceptance {
             }
         }
         out
+    }
+
+    /// The real serializer's `tx_ok` for the three cases the daemon's parser must distinguish:
+    /// success -> 1, failed (meta.err set) -> 0, no meta at all -> null (parsed as UNKNOWN, never success).
+    #[test]
+    fn tx_ok_serializes_success_failure_and_missing_meta() {
+        let mut ok = SubscribeUpdateTransactionInfo { signature: vec![1; 64], ..Default::default() };
+        ok.meta = Some(TransactionStatusMeta { fee: 5000, compute_units_consumed: Some(7), ..Default::default() });
+        let mut bad = ok.clone();
+        bad.meta = Some(TransactionStatusMeta {
+            fee: 5000,
+            compute_units_consumed: Some(7),
+            err: Some(TransactionError { err: vec![1, 2, 3] }),
+            ..Default::default()
+        });
+        let mut none = ok.clone();
+        none.meta = None;
+        let v = |i: &SubscribeUpdateTransactionInfo| -> serde_json::Value { serde_json::from_str(&daemon_tx_line(9, i)).unwrap() };
+        assert_eq!(v(&ok)["meta"]["tx_ok"], 1);
+        assert_eq!(v(&bad)["meta"]["tx_ok"], 0);
+        assert!(v(&none)["meta"]["tx_ok"].is_null(), "no meta must serialize null, which the parser reads as unknown");
     }
 
     #[test]
@@ -311,9 +332,15 @@ mod emitted_line_acceptance {
                 ..Default::default()
             };
             let got: serde_json::Value = serde_json::from_str(&daemon_tx_line(line["slot"].as_u64().unwrap(), &info)).unwrap();
-            for k in ["lane", "kind", "slot", "signature_b58", "account_keys", "instructions", "meta"] {
+            for k in ["lane", "kind", "slot", "signature_b58", "account_keys", "instructions"] {
                 assert_eq!(got[k], line[k], "field {k} diverged");
             }
+            // `meta` = the fixture's fee/CU (frozen, compared exactly) PLUS `tx_ok` (added with the event
+            // path). The fixture txs carry no error, so the serializer must emit success = 1.
+            assert_eq!(got["meta"]["fee"], line["meta"]["fee"]);
+            assert_eq!(got["meta"]["compute_units_consumed"], line["meta"]["compute_units_consumed"]);
+            assert_eq!(got["meta"]["tx_ok"], 1, "no-error tx must serialize tx_ok=1");
+            assert_eq!(got["meta"].as_object().unwrap().len(), 3, "meta must carry exactly fee, CU, tx_ok");
             assert!(got["recv_unix_ms"].as_u64().unwrap() > 1_700_000_000_000, "the emitter stamps its own receive clock");
         }
     }

@@ -140,6 +140,7 @@ fn captured_history_through_the_real_engine_reports_coverage() {
                     fee_lamports: v["fee"].as_u64(),
                     cu_consumed: v["cu"].as_u64(),
                     venue: Some(venue),
+                    event_id: None,
                 });
             }
             _ => panic!("kind"),
