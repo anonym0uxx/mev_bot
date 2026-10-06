@@ -297,6 +297,19 @@ impl Engine {
         }
     }
 
+    /// Clear the CUMULATIVE incompleteness for `mint` after its missing history has been
+    /// reconstructed (a bounded replay/backfill from an authoritative capture, preserving event
+    /// identity/order/dedup) or explicitly reconciled by an operator. NEVER by a timer — a fresh
+    /// reserve snapshot does not restore missing trade history. Returns true when an
+    /// unreconciled observation was cleared. No-op unless the paper-model lane is armed.
+    pub fn model_reconcile_flow_history(&mut self, mint: &[u8; 32]) -> bool {
+        if self.paper_model_mode {
+            self.model_cache.reconcile_flow_history(mint)
+        } else {
+            false
+        }
+    }
+
     pub fn model_lane_report(&self) -> &std::collections::BTreeMap<String, u64> {
         &self.model_report
     }

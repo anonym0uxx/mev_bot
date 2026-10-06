@@ -115,6 +115,14 @@ pub enum JoinRefusal {
     FlowUpstreamDrop {
         drop_ms: i64,
     },
+    /// The mint's CUMULATIVE history is short a print the feed derivation dropped. A timer
+    /// cannot repair this: a fresh reserve snapshot does NOT restore missing trade history, so
+    /// the counters stay incomplete until a bounded replay/backfill from an authoritative
+    /// capture reconstructs them, or an operator reconciles. Deliberately distinct from
+    /// [`JoinRefusal::FlowUpstreamDrop`], which is the timer-bounded ROLLING window.
+    FlowHistoryUnreconstructable {
+        drop_ms: i64,
+    },
     CurveAbsent(String),
     AmmAbsent(String),
     /// More than one pool was bound to the mint and the observation's pool is not the bound one.
@@ -146,6 +154,9 @@ impl JoinRefusal {
             JoinRefusal::FlowMetaMissing { .. } => "join_flow_meta_missing",
             JoinRefusal::FlowAggregatesIncomplete => "join_flow_aggregates_incomplete",
             JoinRefusal::FlowUpstreamDrop { .. } => "join_flow_upstream_drop",
+            JoinRefusal::FlowHistoryUnreconstructable { .. } => {
+                "join_flow_history_unreconstructable"
+            }
             JoinRefusal::CurveAbsent(_) => "join_curve_absent",
             JoinRefusal::AmmAbsent(_) => "join_amm_absent",
             JoinRefusal::AmmPoolAmbiguous => "join_amm_pool_ambiguous",
@@ -242,9 +253,9 @@ struct MintCache {
     n_accepted: u64,
     identity_missing: u64,
     flow_meta_missing: u64,
-    /// Receive instants of prints the feed derivation dropped before the reducer could
-    /// see them. A flow window containing one is incomplete and refused by name.
-    flow_upstream_drops: VecDeque<i64>,
+    /// Prints the feed derivation dropped before the reducer could see them (a refused reserve
+    /// delta). See [`MissingObservation`] for the served features each one still blocks.
+    flow_drops: VecDeque<MissingObservation>,
     enrich_overflow: bool,
     venue: VenueLabel,
     recent: VecDeque<(Option<u64>, [u8; 32], i64, i64)>,
@@ -279,6 +290,35 @@ pub struct FlowDropSummary {
     /// Mints whose 300 s flow window contains a drop as of the query clock — i.e. mints
     /// whose readiness is currently refused by [`JoinRefusal::FlowUpstreamDrop`].
     pub mints_incomplete_now: u64,
+    /// Mints carrying an UNRECONCILED drop whose cumulative history is still short — refused by
+    /// [`JoinRefusal::FlowHistoryUnreconstructable`] until a replay/backfill or reconciliation.
+    pub mints_history_unreconstructed: u64,
+}
+
+/// One print the feed derivation refused BEFORE it could reach the flow reducer or the ledger
+/// (an out-of-range / self-inconsistent reserve delta).
+///
+/// DEPENDENCY TRACE — which served features still depend on it, and how each recovers:
+/// * **ROLLING 300 s flow block** (net flow, entrants, sniper/uniform/coentry shares, p90 fee,
+///   p50 CU, and the ledger's trailing `ret_*` windows): bounded by the print's own 300 s
+///   window — complete again at `drop_ms + WINDOW_300_MS`.
+/// * **CUMULATIVE ledger state** (`n_prior_trades`, buy/sell counts, `unique_traders`, volumes,
+///   `top1`/`top5` share, buyer/seller ratio, position `age`): the print never entered the tape,
+///   so NO timer restores it and a fresh reserve snapshot does not either. Requires a bounded
+///   replay/backfill from an authoritative capture or an explicit reconciliation.
+/// * **Wallet-derived flow features** (`fresh_wallet_share` reads each buyer's rolling
+///   first-activity against `fresh_ms` = 24 h; `smart_*`/coentry read cumulative wallet state):
+///   the dropped print's trader is UNKNOWN — the derivation refused before resolving it — so
+///   these cannot be attributed to a wallet. They are REPORTED (see the drop summary), not
+///   gated on unrelated mints, because a blanket freeze would be a policy change.
+/// * A configured lookback (e.g. `lookback_ms` = 7 d, `flow_lookback_d`) is a LOOKBACK/eviction
+///   horizon; it is NOT evidence that any given feature depends on this print for 7 d.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MissingObservation {
+    /// Receive instant of the dropped print.
+    pub drop_ms: i64,
+    /// Set once the missing history has been reconstructed/reconciled. NEVER set by a timer.
+    pub reconciled: bool,
 }
 
 /// The decision-time cache. One owner (the engine); no interior mutability.
@@ -341,14 +381,20 @@ impl DecisionCache {
             .mints
             .values()
             .filter(|mc| {
-                mc.flow_upstream_drops
+                mc.flow_drops
                     .iter()
-                    .any(|&d| d >= t_dec_ms - WINDOW_300_MS && d < t_dec_ms)
+                    .any(|m| m.drop_ms >= t_dec_ms - WINDOW_300_MS && m.drop_ms < t_dec_ms)
             })
+            .count() as u64;
+        let mints_history_unreconstructed = self
+            .mints
+            .values()
+            .filter(|mc| mc.flow_drops.iter().any(|m| !m.reconciled))
             .count() as u64;
         FlowDropSummary {
             drops_total: self.counters.flow_upstream_drops,
             mints_incomplete_now,
+            mints_history_unreconstructed,
         }
     }
 
@@ -479,22 +525,49 @@ impl DecisionCache {
         Ingest::Accepted
     }
 
-    /// Record that the feed derivation dropped a print for `mint` at `drop_unix_ms` — a
-    /// reserve delta the derivation refused before it could reach the flow reducer. Such a
-    /// print is invisible to every received-print check, so the cache remembers the instant
-    /// and refuses any 300 s flow window that contains it ([`JoinRefusal::FlowUpstreamDrop`])
-    /// rather than serving the window as complete or as a quietly idle market.
-    ///
-    /// The record is bounded and self-healing: once the decision clock has advanced past the
-    /// drop by more than [`WINDOW_300_MS`], the drop is outside the served window and normal
-    /// serving resumes without any explicit clearing.
+    /// Record that the feed derivation dropped a print for `mint` at `drop_unix_ms` — a reserve
+    /// delta the derivation refused before it could reach the flow reducer or the ledger. Such a
+    /// print is invisible to every received-print check, so the cache remembers the instant and
+    /// refuses the affected prompt by dependency class (see [`MissingObservation`]): the rolling
+    /// 300 s window for [`WINDOW_300_MS`], then the cumulative history until it is reconstructed
+    /// or reconciled. Never served as complete or as a quietly idle market.
     pub fn note_flow_upstream_drop(&mut self, mint: [u8; 32], drop_unix_ms: i64) {
         let mc = self.mints.entry(mint).or_default();
-        if mc.flow_upstream_drops.len() >= FLOW_UPSTREAM_DROP_RING {
-            mc.flow_upstream_drops.pop_front();
+        if mc.flow_drops.len() >= FLOW_UPSTREAM_DROP_RING {
+            mc.flow_drops.pop_front();
         }
-        mc.flow_upstream_drops.push_back(drop_unix_ms);
+        mc.flow_drops.push_back(MissingObservation {
+            drop_ms: drop_unix_ms,
+            reconciled: false,
+        });
         self.counters.flow_upstream_drops += 1;
+    }
+
+    /// Clear the CUMULATIVE block for `mint` after the missing history has genuinely been
+    /// reconstructed — a bounded replay/backfill from an authoritative capture preserving event
+    /// identity, order and dedup — or reconciled by an operator. NEVER called by a timer: a fresh
+    /// reserve snapshot does not restore missing trade history. Returns true when an
+    /// unreconciled observation was cleared.
+    pub fn reconcile_flow_history(&mut self, mint: &[u8; 32]) -> bool {
+        let Some(mc) = self.mints.get_mut(mint) else {
+            return false;
+        };
+        let mut cleared = false;
+        for m in mc.flow_drops.iter_mut() {
+            if !m.reconciled {
+                m.reconciled = true;
+                cleared = true;
+            }
+        }
+        cleared
+    }
+
+    /// One mint's unreconciled drops (status writer only; never on the hot path).
+    #[must_use]
+    pub fn unreconciled_drops(&self, mint: &[u8; 32]) -> u64 {
+        self.mints.get(mint).map_or(0, |mc| {
+            mc.flow_drops.iter().filter(|m| !m.reconciled).count() as u64
+        })
     }
 
     /// The last curve reserve observation for a mint (for the paper fill), if any.
@@ -575,17 +648,23 @@ impl DecisionCache {
                 newest_ms: mc.last_recv_ms,
             });
         }
-        // UPSTREAM DROP — fail-closed, and blamed before any "quiet"/"few trades" verdict.
-        // A print the feed derivation refused never reached the reducer, so no received-print
-        // check and no reserve age can prove this window complete: it is known-incomplete.
-        // Refuse by name so a window driven quiet BY the drop reads as feed loss, never as an
-        // idle market. The window recovers once the drop leaves the 300 s horizon.
-        if let Some(&drop_ms) = mc
-            .flow_upstream_drops
+        // UPSTREAM DROP — fail-closed, blamed before any "quiet"/"few trades" verdict, and
+        // per-DEPENDENCY (see [`MissingObservation`]).
+        // (A) ROLLING: this clock's 300 s flow window is missing a print the derivation refused.
+        //     Known-incomplete until the drop leaves that window — not before.
+        if let Some(m) = mc
+            .flow_drops
             .iter()
-            .find(|&&d| d >= t_dec_ms - WINDOW_300_MS && d < t_dec_ms)
+            .find(|m| m.drop_ms >= t_dec_ms - WINDOW_300_MS && m.drop_ms < t_dec_ms)
         {
-            return Err(JoinRefusal::FlowUpstreamDrop { drop_ms });
+            return Err(JoinRefusal::FlowUpstreamDrop { drop_ms: m.drop_ms });
+        }
+        // (B) CUMULATIVE: the same print never entered the mint's tape, so its cumulative
+        //     counters (n_prior_trades / volumes / unique traders / shares / age) are short.
+        //     NO timer repairs that — a fresh reserve snapshot does not restore trade history —
+        //     so it stays refused until reconstructed from a capture or reconciled.
+        if let Some(m) = mc.flow_drops.iter().find(|m| !m.reconciled) {
+            return Err(JoinRefusal::FlowHistoryUnreconstructable { drop_ms: m.drop_ms });
         }
         self.ledger
             .eligibility(mint, t_dec_ms)
@@ -1134,8 +1213,8 @@ mod tests {
             "a dropped print must refuse the window by name, not serve it"
         );
 
-        // RECOVERY: extend the history past drop_ms + 300 s. The drop is now outside the
-        // served flow window, so the same cache serves normally again with no explicit clear.
+        // (A) ROLLING window clears: extend the history past drop_ms + 300 s. The drop is now
+        // outside the served flow WINDOW, so the rolling reason no longer fires...
         for i in 80..155 {
             assert_eq!(c.observe_trade(&trade(i)), Ingest::Accepted);
         }
@@ -1144,9 +1223,25 @@ mod tests {
             t_recover - drop_ms > WINDOW_300_MS,
             "the drop must have left the 300 s window: {drop_ms} vs {t_recover}"
         );
+        // ...but the mint's CUMULATIVE history is still short the print, and NO timer repairs
+        // that (a fresh reserve snapshot does not restore missing trade history). The old
+        // behaviour — serving again merely because 300 s elapsed — would have presented the
+        // cumulative counters as complete while they still depended on the missing print.
+        assert_eq!(
+            c.snapshot(&MINT, t_recover),
+            Err(JoinRefusal::FlowHistoryUnreconstructable { drop_ms }),
+            "a timer must not clear cumulative incompleteness"
+        );
+
+        // RECOVERY is by RECONSTRUCTION only — a bounded replay/backfill or an operator
+        // reconciliation — never by a timer.
+        assert!(
+            c.reconcile_flow_history(&MINT),
+            "an unreconciled observation must be clearable by reconciliation"
+        );
         assert!(
             c.snapshot(&MINT, t_recover).is_ok(),
-            "once the drop ages out of the flow window, serving resumes"
+            "after reconciliation the mint serves again"
         );
     }
 

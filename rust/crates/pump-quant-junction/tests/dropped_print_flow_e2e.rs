@@ -84,6 +84,22 @@ impl ModelSource for Stub {
     }
 }
 
+const MGMT_HOLD: &str = "DECISION: HOLD\nSIZE: NONE\nINVALIDATION: none\nEVIDENCE: hold it";
+
+/// Answers HOLD for management prompts (so a held position stays OPEN for the duration of the
+/// test) and BUY for entries.
+struct HoldStub;
+
+impl ModelSource for HoldStub {
+    fn complete(&self, _s: &str, u: &str) -> Result<String, InferenceError> {
+        if u.starts_with("Decide the next action for a position you already hold") {
+            Ok(MGMT_HOLD.to_string())
+        } else {
+            Ok(ENTRY_BUY.to_string())
+        }
+    }
+}
+
 /// A mint's warm-up tape: launch + `n` priced prints + (optional) a fresh curve observation.
 /// Prints are 2 s apart starting at `start_ms`; `start_ms - 1_000` is the launch time.
 /// `seq0` offsets the slot/wallet indices so CONTINUATION batches for the same mint stay
@@ -404,23 +420,188 @@ fn an_upstream_dropped_print_refuses_the_window_end_to_end_and_does_not_disable_
         );
     }
 
-    // ── (c) Recovery: advance the clock past the 300 s horizon so the drop is no longer in
-    //     the served window; serving resumes with NO explicit clearing. ─────────────────────
+    // ── (c) The ROLLING window clears at the horizon, but AFFECTED's CUMULATIVE history is
+    //     still short the print — and NO timer repairs that. It stays refused (now by the
+    //     cumulative reason) and only reconstruction/reconciliation resumes serving. ───────
     let snap_ok_before_recovery = rep(&e, "snapshot_ok");
     drive(
         &mut e,
         &tape(AFFECTED, 69, T0 + 251_000, false, true, 400, 22_000),
         8,
     );
+    assert_eq!(
+        rep(&e, "snapshot_ok"),
+        snap_ok_before_recovery,
+        "a timer must NOT resume serving while cumulative history is short: {:?}",
+        e.model_lane_report()
+    );
     assert!(
-        rep(&e, "snapshot_ok") > snap_ok_before_recovery,
-        "once the drop ages out of the 300 s window, AFFECTED must serve again: {:?}",
+        rep(&e, "refuse:join_flow_history_unreconstructable") >= 1,
+        "past the 300 s horizon the refusal must persist, by the cumulative reason: {:?}",
         e.model_lane_report()
     );
     assert_eq!(
         mints_never_ready_with_drop(&e),
         0,
-        "the drop must no longer be blamed after the horizon: {:?}",
+        "the rolling reason must no longer be blamed after the horizon: {:?}",
         e.model_funnel()
+    );
+
+    // Restoration is by RECONSTRUCTION (bounded replay/backfill or an operator reconciliation),
+    // never by a timer.
+    assert!(
+        e.model_reconcile_flow_history(&AFFECTED),
+        "the dropped mint's history must be reconcilable"
+    );
+    let before_restore = rep(&e, "snapshot_ok");
+    drive(
+        &mut e,
+        &tape(AFFECTED, 5, T0 + 253_000, false, true, 500, 22_000),
+        8,
+    );
+    assert!(
+        rep(&e, "snapshot_ok") > before_restore,
+        "after reconstruction AFFECTED must serve again: {:?}",
+        e.model_lane_report()
+    );
+}
+
+/// The held position is ON the dropped mint. Its MANAGEMENT must be UNAVAILABLE (not silently
+/// served with incomplete inputs), protective capabilities must stay active, and management must
+/// resume with the true history only once completeness is restored.
+#[test]
+fn the_dropped_mints_own_management_is_unavailable_until_its_history_is_reconstructed() {
+    let mut e = Engine::new(cfg(), RunMode::Paper);
+    e.enable_paper_model(HoldStub);
+
+    // Open a HELD position on the mint that will carry the dropped print.
+    drive(
+        &mut e,
+        &tape(AFFECTED, 40, T0 + 1_000, true, true, 0, 22_000),
+        8,
+    );
+    landing(&mut e, AFFECTED, T0 + 80_500);
+    assert!(
+        e.model_position_open(&AFFECTED),
+        "the position on AFFECTED must open first: {:?}",
+        e.model_lane_report()
+    );
+
+    // An upstream-dropped print on that SAME mint.
+    let prev = prev_snapshot();
+    let out_of_range = curve_at(u64::MAX, 1_000_000_000);
+    assert_eq!(
+        note_curve_snapshot_outcome(&mut e, AFFECTED, Some(&prev), &out_of_range, Some(DROP_MS)),
+        DeltaMiss::UpstreamDropped,
+        "the production step must record the drop"
+    );
+
+    // Qwen management is UNAVAILABLE due to incomplete inputs: no NEW prompt is dispatched
+    // while the mint's required state is incomplete, and the position stays open.
+    let dispatched_before = rep(&e, "dispatched");
+    assert_eq!(
+        e.model_flow_drop_summary().mints_incomplete_now,
+        1,
+        "the dropped mint's rolling window must be marked incomplete"
+    );
+    assert_eq!(
+        e.model_flow_drop_summary().mints_history_unreconstructed,
+        1,
+        "the dropped mint's cumulative history must be marked unreconstructed"
+    );
+
+    drive(
+        &mut e,
+        &tape(AFFECTED, 1, T0 + 81_500, false, false, 60, 22_000),
+        4,
+    );
+    assert_eq!(
+        rep(&e, "dispatched"),
+        dispatched_before,
+        "Qwen must not be queried with incomplete required state: {:?}",
+        e.model_lane_report()
+    );
+    assert!(
+        e.model_position_open(&AFFECTED) || rep(&e, "skip:held_or_pending") > 0,
+        "the held position must stay TRACKED (open or pending) — only Qwen management is \
+         unavailable: open={} rep={:?}",
+        e.model_position_open(&AFFECTED),
+        e.model_lane_report()
+    );
+
+    // Later VALID prints must not prematurely clear it.
+    drive(
+        &mut e,
+        &tape(AFFECTED, 6, T0 + 120_000, false, false, 80, 22_000),
+        8,
+    );
+    assert_eq!(
+        rep(&e, "dispatched"),
+        dispatched_before,
+        "valid later prints must not clear the gap"
+    );
+    assert_eq!(
+        e.model_flow_drop_summary().mints_incomplete_now,
+        1,
+        "the window must still be incomplete after valid prints"
+    );
+
+    // Protective capabilities remain active while Qwen management is unavailable.
+    e.model_safety_trip("dropped_print_held_e2e");
+    assert!(
+        e.model_safety_blocked(),
+        "SAFETY_OFF must latch while management is unavailable"
+    );
+    assert!(
+        e.model_management_complete(),
+        "management must never be reported blocked by this path"
+    );
+    assert!(
+        e.model_position_open(&AFFECTED) || rep(&e, "skip:held_or_pending") > 0,
+        "emergency protection must not abandon the held position"
+    );
+
+    // A timer must NOT resume management; it clears the ROLLING reason only.
+    drive(
+        &mut e,
+        &tape(AFFECTED, 69, T0 + 251_000, false, true, 200, 22_000),
+        8,
+    );
+    assert_eq!(
+        rep(&e, "dispatched"),
+        dispatched_before,
+        "a timer must not resume management while the history is short"
+    );
+    assert_eq!(
+        e.model_flow_drop_summary().mints_incomplete_now,
+        0,
+        "the rolling reason clears at the horizon"
+    );
+    assert_eq!(
+        e.model_flow_drop_summary().mints_history_unreconstructed,
+        1,
+        "the cumulative reason must survive the horizon"
+    );
+
+    // ...only reconstruction does, and it resumes with the true history.
+    assert!(
+        e.model_reconcile_flow_history(&AFFECTED),
+        "reconstruction must be possible for the dropped mint"
+    );
+    assert_eq!(
+        e.model_flow_drop_summary().mints_history_unreconstructed,
+        0,
+        "reconstruction must clear the cumulative reason"
+    );
+    let served_before_restore = rep(&e, "snapshot_ok") + rep(&e, "dispatched");
+    drive(
+        &mut e,
+        &tape(AFFECTED, 5, T0 + 253_000, false, true, 300, 22_000),
+        8,
+    );
+    assert!(
+        rep(&e, "snapshot_ok") + rep(&e, "dispatched") > served_before_restore,
+        "after reconstruction the mint must be SERVED again (entry/management route resumes): {:?}",
+        e.model_lane_report()
     );
 }
