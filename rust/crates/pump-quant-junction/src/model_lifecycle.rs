@@ -387,7 +387,12 @@ pub fn attach_missing_history(
             let _ = engine.model_restore_missing_history(&[], false);
             MissingHistoryStartup::ContinuityUnknown("absent_with_restored_exposure".into())
         }
-        StoreLoad::NeverWritten => MissingHistoryStartup::Clean,
+        StoreLoad::NeverWritten => {
+            // Clean start: make "trusted, no unresolved gaps" durable so a later restart with exposure is not
+            // forced to read an absent file as unknown.
+            engine.model_missing_publish_baseline();
+            MissingHistoryStartup::Clean
+        }
         StoreLoad::Records(r) => MissingHistoryStartup::Restored(r.len()),
         StoreLoad::Untrusted(why) => MissingHistoryStartup::ContinuityUnknown(why.to_string()),
     }

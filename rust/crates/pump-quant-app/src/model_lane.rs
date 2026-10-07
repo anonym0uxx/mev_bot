@@ -149,6 +149,12 @@ impl RequestTable {
         self.blocked
     }
 
+    /// The id most recently issued (0 before any). OFFLINE BARRIER bookkeeping reads it right after a submit.
+    #[must_use]
+    pub fn last_issued_id(&self) -> u64 {
+        self.next_id.saturating_sub(1)
+    }
+
     /// Outstanding requests, live and abandoned.
     #[must_use]
     pub fn outstanding(&self) -> usize {

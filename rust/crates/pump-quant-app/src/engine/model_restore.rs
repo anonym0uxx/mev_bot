@@ -137,12 +137,34 @@ impl Engine {
             written_wall_ms: 0,
             held,
             pending,
+            decision: self.model_decision_state(),
+        }
+    }
+
+    /// The decision-path scheduling state a restart must not silently reset.
+    #[must_use]
+    pub fn model_decision_state(&self) -> crate::held_state::DecisionState {
+        crate::held_state::DecisionState {
+            last_ask: self.model_last_ask.iter().map(|(m, t)| (*m, *t)).collect(),
+            dirty: self
+                .model_dirty
+                .iter()
+                .map(|m| (*m, self.model_dirty_since.get(m).copied().unwrap_or(0)))
+                .collect(),
+            mgmt: self
+                .model_mgmt
+                .pos
+                .iter()
+                .map(|(m, p)| (*m, p.last_ask_ms, p.last_try_ms))
+                .collect(),
+            through_ms: self.model_clock_ms.max(self.model_replay_through_ms),
         }
     }
 
     fn model_held_digest(l: &HeldLedger) -> String {
         let mut c = l.clone();
         c.written_wall_ms = 0;
+        c.decision = crate::held_state::DecisionState::default();
         let s = c.to_json().to_string();
         pump_quant_protocol::sha256::to_hex(&pump_quant_protocol::sha256::sha256(s.as_bytes()))
     }
@@ -313,6 +335,15 @@ impl Engine {
         self.bankroll_realized = l.realized_lamports;
         self.model_order_seq = self.model_order_seq.max(l.model_order_seq);
         self.model_mgmt.seq = self.model_mgmt.seq.max(l.mgmt_seq);
+        self.model_replay_through_ms = l.decision.through_ms;
+        for (m, t) in &l.decision.last_ask {
+            self.model_last_ask.insert(*m, *t);
+        }
+        for (m, t) in &l.decision.dirty {
+            self.model_dirty.insert(*m);
+            self.model_dirty_since.insert(*m, *t);
+            self.model_registry.insert(*m);
+        }
         rep.realized_lamports = l.realized_lamports;
         for h in &l.held {
             let x = crate::position::HeldExport {
@@ -362,8 +393,18 @@ impl Engine {
                     peak_fp: h.peak_fp,
                     trough_fp: h.trough_fp,
                     step: h.step,
-                    last_ask_ms: None,
-                    last_try_ms: i64::MIN / 2,
+                    last_ask_ms: l
+                        .decision
+                        .mgmt
+                        .iter()
+                        .find(|x| x.0 == h.mint)
+                        .and_then(|x| x.1),
+                    last_try_ms: l
+                        .decision
+                        .mgmt
+                        .iter()
+                        .find(|x| x.0 == h.mint)
+                        .map_or(i64::MIN / 2, |x| x.2),
                     version: h.version,
                     position_order: h.position_order,
                 },

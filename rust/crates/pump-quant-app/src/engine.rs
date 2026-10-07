@@ -16,6 +16,7 @@
 use std::time::Instant;
 
 pub mod model_admit;
+pub mod model_barrier;
 pub mod model_manage;
 pub mod model_restore;
 pub mod model_safety;
@@ -853,6 +854,8 @@ pub struct Engine {
     /// BEFORE any legacy priced print or gate, and re-offered to the model only when a genuinely new
     /// observation arrives (`model_dirty`). See `engine/model_admit.rs`.
     model_registry: BTreeSet<[u8; 32]>,
+    /// Recovery point restored from the held ledger: observations at or before it are overlap replays.
+    model_replay_through_ms: i64,
     model_dirty: BTreeSet<[u8; 32]>,
     /// When each currently-dirty market first became dirty (clock ms): queue-age measurement.
     model_dirty_since: BTreeMap<[u8; 32], i64>,
@@ -875,6 +878,8 @@ pub struct Engine {
     /// Mints whose open position is a paper-model routing fill that is NOT assessable. Their exits
     /// settle cash but feed no assessment consumer (see `book_exit`).
     model_quarantine: std::collections::BTreeSet<[u8; 32]>,
+    /// OFFLINE PAPER REPLAY BARRIER STATE (inert unless the daemon's replay harness enables it).
+    barrier: model_barrier::BarrierState,
     /// Held AMM positions: wire time of the last VERIFIED protection mark (an executed swap on the bound pool that
     /// passed every protect check and was applied). Never advanced by a hint, a rejected swap or the clock.
     model_protect_mark_ms: std::collections::BTreeMap<[u8; 32], i64>,
@@ -1499,6 +1504,7 @@ impl Engine {
             model_last_ask: BTreeMap::new(),
             model_first_cand: BTreeMap::new(),
             model_registry: BTreeSet::new(),
+            model_replay_through_ms: 0,
             model_dirty: BTreeSet::new(),
             model_dirty_since: BTreeMap::new(),
             model_uniq_seen: BTreeSet::new(),
@@ -1511,6 +1517,7 @@ impl Engine {
             model_position_order: BTreeMap::new(),
             model_fills: Vec::new(),
             model_quarantine: std::collections::BTreeSet::new(),
+            barrier: model_barrier::BarrierState::default(),
             model_protect_mark_ms: std::collections::BTreeMap::new(),
             model_protect_ignored: std::collections::BTreeMap::new(),
             model_excluded_exits: Vec::new(),
@@ -2280,8 +2287,21 @@ impl Engine {
                             liquidity_lamports,
                         );
                         // Rev-31: In live mode, skip exits for unconfirmed positions.
-                        let skip_exit = self.mode == RunMode::Live
-                            && !self.positions.is_onchain_confirmed(mint.as_bytes());
+                        // A print received BEFORE the model position's own fill cannot be evidence about that position (the
+                        // overlap replay after a restart re-delivers the history; the restored position must not be driven
+                        // by prints it never lived through).
+                        let predates_fill = self.paper_model_mode
+                            && self
+                                .model_mgmt
+                                .pos
+                                .get(mint.as_bytes())
+                                .is_some_and(|m| recv_unix_ms.is_some_and(|r| r < m.fill_ms));
+                        if predates_fill {
+                            self.mrep("protect:print_predates_position_fill_ignored");
+                        }
+                        let skip_exit = predates_fill
+                            || (self.mode == RunMode::Live
+                                && !self.positions.is_onchain_confirmed(mint.as_bytes()));
                         if !skip_exit {
                             if let Some(exit) = self.positions.on_trade(
                                 mint.as_bytes(),
@@ -4092,6 +4112,10 @@ impl Engine {
     }
 
     fn book_exit(&mut self, mut e: Exit) {
+        if self.paper_model_mode {
+            // Diagnostic only: which trigger closed a model-managed position (counted, never acted on).
+            self.mrep(format!("exit_reason:{:?}", e.reason));
+        }
         // E11: the sell leg's outbound-call duration, folded into the round-trip trace.
         let mut exit_call_us: u64 = 0;
         let mut exit_rpc_us: u64 = 0;

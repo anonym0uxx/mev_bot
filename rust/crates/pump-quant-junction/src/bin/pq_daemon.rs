@@ -325,6 +325,43 @@ struct DaemonArgs {
     wallet_address: String,
 }
 
+/// OFFLINE PAPER REPLAY BARRIERS ONLY. Next LaserStream update, except that an update whose wire receive time is at or
+/// past the current barrier clock is HELD (and `ready` is raised) so the engine has applied exactly the prefix before
+/// that source-time clock. With no barrier left the held update is released and delivery is the plain `try_recv`.
+fn next_ls_update(
+    rx: &mpsc::Receiver<LaserStreamUpdate>,
+    hold: &mut Option<LaserStreamUpdate>,
+    limit: Option<i64>,
+    ready: &mut bool,
+) -> Result<LaserStreamUpdate, mpsc::TryRecvError> {
+    let Some(limit) = limit else {
+        if let Some(h) = hold.take() {
+            return Ok(h);
+        }
+        return rx.try_recv();
+    };
+    if *ready {
+        return Err(mpsc::TryRecvError::Empty);
+    }
+    let item = match hold.take() {
+        Some(h) => h,
+        None => rx.try_recv()?,
+    };
+    let ms = match &item {
+        LaserStreamUpdate::Transaction(tx) => tx.recv_unix_ms,
+        LaserStreamUpdate::Account { recv_unix_ms, .. } => *recv_unix_ms,
+        _ => None,
+    };
+    match ms {
+        Some(m) if m >= limit => {
+            *hold = Some(item);
+            *ready = true;
+            Err(mpsc::TryRecvError::Empty)
+        }
+        _ => Ok(item),
+    }
+}
+
 fn parse_args() -> Result<DaemonArgs, u8> {
     let args: Vec<String> = std::env::args().collect();
     let mut a = DaemonArgs {
@@ -2410,6 +2447,29 @@ fn main() -> ExitCode {
 
     let tick_period = Duration::from_millis(tick_period_ms);
     let mut next_tick = Instant::now() + tick_period;
+    // OFFLINE PAPER REPLAY decision barriers (inert unless PQ_OFFLINE_PAPER_REPLAY=1 with the model lane armed AND an
+    // explicit barrier list). Production cadence, timestamp checks and monotonic deadlines are untouched.
+    let barrier_clocks: Vec<i64> = if replay_harness && model_armed {
+        std::env::var("PQ_REPLAY_BARRIERS")
+            .ok()
+            .map(|v| v.split(',').filter_map(|x| x.trim().parse().ok()).collect())
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let barrier_mode = !barrier_clocks.is_empty();
+    let mut barrier_idx: usize = 0;
+    let mut barrier_ready = false;
+    let mut barrier_hold: Option<LaserStreamUpdate> = None;
+    let mut barrier_seen_count: u64 = 0;
+    let mut barrier_last_input = Instant::now();
+    if barrier_mode {
+        engine.barrier_enable();
+        eprintln!(
+            "[pq-daemon] OFFLINE PAPER REPLAY: {} decision barriers at fixed source-time clocks; the timed tick is replaced by barrier ticks",
+            barrier_clocks.len()
+        );
+    }
     let status_path = std::path::Path::new(STATUS_PATH);
     let mut tick_counter: u64 = 0;
     let mut last_status_write_tick: u64 = 0;
@@ -2875,7 +2935,12 @@ fn main() -> ExitCode {
 
         // ── Poll LaserStream gRPC (PRIMARY ingest lane) ──────────────────
         loop {
-            match ls_rx.try_recv() {
+            match next_ls_update(
+                &ls_rx,
+                &mut barrier_hold,
+                barrier_clocks.get(barrier_idx).copied(),
+                &mut barrier_ready,
+            ) {
                 Ok(LaserStreamUpdate::Transaction(tx)) => {
                     did_work = true;
                     stats.ls_transactions_received += 1;
@@ -4349,12 +4414,36 @@ fn main() -> ExitCode {
         } // close if let Some(ref mut child) = fc_child
 
         // ── Periodic Tick (engine evaluate) ──────────────────────────────
-        if Instant::now() >= next_tick {
+        // The FINAL barrier has no later update to trigger it: it fires when the (finite, captured) input has been idle
+        // for 3 s of wall time and nothing is held back. Offline replay only.
+        if barrier_mode {
+            let seen = stats.ls_transactions_received + stats.ls_account_received;
+            if seen != barrier_seen_count {
+                barrier_seen_count = seen;
+                barrier_last_input = Instant::now();
+            }
+            if !barrier_ready
+                && barrier_idx + 1 == barrier_clocks.len()
+                && barrier_hold.is_none()
+                && barrier_last_input.elapsed() > Duration::from_secs(3)
+            {
+                barrier_ready = true;
+            }
+        }
+        let barrier_fire = barrier_mode && barrier_ready;
+        if barrier_fire || (!barrier_mode && Instant::now() >= next_tick) {
             // ── Wangr Rev-14: inject TimeSignal before each Tick ──
             // The engine stores (dow, hour_utc) and enriches Features at
             // gate-evaluate time, enabling the wangr day-of-week and hour-of-day
             // entry filters. Computed from wall-clock UTC (no chrono dep).
-            let (dow, hour_utc) = utc_dow_hour(SystemTime::now());
+            // Barrier mode derives the time signal from the SOURCE clock, not the wall clock.
+            let (dow, hour_utc) = if barrier_fire {
+                utc_dow_hour(
+                    UNIX_EPOCH + Duration::from_millis(engine.model_clock_ms_now().max(0) as u64),
+                )
+            } else {
+                utc_dow_hour(SystemTime::now())
+            };
             let ts_event = AppEvent::TimeSignal { dow, hour_utc };
             engine.tick(ts_event);
             if let Some(ref mut writer) = event_stream_writer {
@@ -4377,6 +4466,68 @@ fn main() -> ExitCode {
             }
             next_tick = Instant::now() + tick_period;
             tick_counter += 1;
+            // ── OFFLINE PAPER REPLAY barrier: settle the verdicts for the state cut at this source-time clock, apply
+            // them (in logical id order) through further PRODUCTION ticks at the SAME clock, then record the logical
+            // state. Nothing else about the tick path changes.
+            if barrier_fire {
+                let mut missing = engine.barrier_settle(Duration::from_secs(20));
+                for _ in 0..3 {
+                    engine.tick(pump_quant_app::event::AppEvent::Tick);
+                    let again = engine.barrier_settle(Duration::from_secs(20));
+                    missing = again;
+                    if again == 0 && engine.barrier_staged() == 0 {
+                        break;
+                    }
+                }
+                if std::env::var("PQ_REPLAY_PERSIST_AT_BARRIERS").as_deref() == Ok("1") {
+                    let f = engine.model_flow_flush(Duration::from_secs(20));
+                    let h = engine.model_held_persist_now();
+                    eprintln!("[pq-daemon] replay barrier {barrier_idx}: flow flush durable={f} held persisted={h}");
+                }
+                // Barrier mode only: the lane's funnel counters as of THIS barrier (the timed health writer is not run
+                // on a barrier schedule, so its copy would be stale).
+                if let Ok(j) = serde_json::to_string(&engine.model_lane_report()) {
+                    let _ = std::fs::write("data/model_lane_report.json", j);
+                }
+                let lines = engine.barrier_state_lines();
+                let digest = engine.barrier_state_digest();
+                let log = engine.barrier_take_log();
+                let rec = serde_json::json!({
+                    "barrier": barrier_idx,
+                    "clock": barrier_clocks[barrier_idx],
+                    "engine_clock_ms": engine.model_clock_ms_now(),
+                    "state_digest": digest,
+                    "state": lines,
+                    "dispatches": log.iter().map(|d| serde_json::json!({
+                        "id": d.id, "kind": d.kind,
+                        "mint": d.mint.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+                        "prompt_sha256": d.prompt_sha256,
+                    })).collect::<Vec<_>>(),
+                    "foreign_verdicts": engine.barrier_foreign(),
+                    "unsettled": missing,
+                });
+                if let Ok(mut f) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open("data/barrier_log.jsonl")
+                {
+                    use std::io::Write as _;
+                    let _ = writeln!(f, "{rec}");
+                }
+                if let Some(pause) = std::env::var("PQ_REPLAY_PAUSE_AFTER_BARRIER")
+                    .ok()
+                    .and_then(|v| v.parse::<usize>().ok())
+                {
+                    if barrier_idx == pause {
+                        let _ = std::fs::write("data/BARRIER_PAUSED", barrier_idx.to_string());
+                        while std::path::Path::new("data/BARRIER_PAUSED").exists() {
+                            std::thread::sleep(Duration::from_millis(50));
+                        }
+                    }
+                }
+                barrier_idx += 1;
+                barrier_ready = false;
+            }
 
             // ── E3: drain finished async submissions ────────────────────
             // The decision thread handed these off without waiting. Reporting the
@@ -4556,7 +4707,7 @@ fn main() -> ExitCode {
                 eprintln!("[pq-daemon] replay-harness flow flush: durable={ok}");
             }
             #[allow(clippy::manual_is_multiple_of)] // MSRV 1.85: is_multiple_of stabilised in 1.87
-            if model_armed && tick_counter % 20 == 0 {
+            if model_armed && (tick_counter % 20 == 0 || barrier_fire) {
                 let now_ms = engine.model_clock_ms_now();
                 for l in stale_callout.evaluate(&engine, now_ms, 60_000) {
                     eprintln!(

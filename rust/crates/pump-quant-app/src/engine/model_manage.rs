@@ -309,6 +309,7 @@ impl Engine {
                 system: snap.system_prompt.clone(),
                 user: snap.user_prompt.clone(),
             };
+            self.barrier_log_dispatch("mgmt", &mint, &job.user);
             let dispatched = self
                 .model_pool
                 .as_ref()

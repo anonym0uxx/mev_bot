@@ -100,6 +100,22 @@ pub struct HeldPending {
     pub discovery_lane_index: u8,
 }
 
+/// Decision-path scheduling state the model lane reads (re-ask windows, dirty-market queue, management cadence).
+/// ADVISORY: losing it can only cause an extra inference ask, never an execution effect; it is persisted so a restart
+/// does not silently reset it. Excluded from the change digest (written with the ledger, not on its own).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DecisionState {
+    /// (mint, last entry ask wire-ms) for answered asks.
+    pub last_ask: Vec<([u8; 32], i64)>,
+    /// (mint, dirty-since wire-ms): markets with observations not yet asked about.
+    pub dirty: Vec<([u8; 32], i64)>,
+    /// (mint, last management ask ms, last management try ms).
+    pub mgmt: Vec<([u8; 32], Option<i64>, i64)>,
+    /// Engine wire clock (ms) at which this state was captured: the recovery point. Observations at or before it
+    /// were already reflected in `dirty`/`last_ask`, so an overlap replay of them must not re-mark markets dirty.
+    pub through_ms: i64,
+}
+
 /// The whole durable record.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeldLedger {
@@ -117,6 +133,8 @@ pub struct HeldLedger {
     pub held: Vec<HeldEntry>,
     /// Pending orders.
     pub pending: Vec<HeldPending>,
+    /// Decision-path scheduling state (advisory; see [`DecisionState`]).
+    pub decision: DecisionState,
 }
 
 /// Why a ledger could not be read.
@@ -200,6 +218,12 @@ impl HeldLedger {
                 "lane_index": p.lane_index,
                 "discovery_lane_index": p.discovery_lane_index,
             })).collect::<Vec<_>>(),
+            "decision": {
+                "last_ask": self.decision.last_ask.iter().map(|(m, t)| json!([hex(m), t])).collect::<Vec<_>>(),
+                "dirty": self.decision.dirty.iter().map(|(m, t)| json!([hex(m), t])).collect::<Vec<_>>(),
+                "mgmt": self.decision.mgmt.iter().map(|(m, a, t)| json!([hex(m), a, t])).collect::<Vec<_>>(),
+                "through_ms": self.decision.through_ms,
+            },
         })
     }
 
@@ -277,7 +301,35 @@ impl HeldLedger {
                     .map_err(|_| bad("p.discovery_lane_index"))?,
             });
         }
+        let mut decision = DecisionState::default();
+        if let Some(d) = v.get("decision").filter(|d| d.is_object()) {
+            let pair = |x: &Value| -> Option<([u8; 32], i64)> {
+                Some((unhex(x[0].as_str()?)?, x[1].as_i64()?))
+            };
+            for x in d["last_ask"].as_array().ok_or(bad("decision.last_ask"))? {
+                decision
+                    .last_ask
+                    .push(pair(x).ok_or(bad("decision.last_ask"))?);
+            }
+            for x in d["dirty"].as_array().ok_or(bad("decision.dirty"))? {
+                decision.dirty.push(pair(x).ok_or(bad("decision.dirty"))?);
+            }
+            for x in d["mgmt"].as_array().ok_or(bad("decision.mgmt"))? {
+                let m = x[0].as_str().and_then(unhex).ok_or(bad("decision.mgmt"))?;
+                let a = match &x[1] {
+                    Value::Null => None,
+                    y => Some(y.as_i64().ok_or(bad("decision.mgmt"))?),
+                };
+                decision
+                    .mgmt
+                    .push((m, a, x[2].as_i64().ok_or(bad("decision.mgmt"))?));
+            }
+        }
+        if let Some(d) = v.get("decision").filter(|d| d.is_object()) {
+            decision.through_ms = d["through_ms"].as_i64().ok_or(bad("decision.through_ms"))?;
+        }
         Ok(Self {
+            decision,
             seed_lamports: u(v, "seed_lamports")?,
             realized_lamports: big(v, "realized_lamports")?,
             model_order_seq: u(v, "model_order_seq")?,
@@ -386,6 +438,7 @@ mod tests {
             model_order_seq: 4,
             mgmt_seq: 2,
             written_wall_ms: 0,
+            decision: DecisionState::default(),
             held: vec![HeldEntry {
                 mint: [9; 32],
                 entry_price_fp: 45_085,

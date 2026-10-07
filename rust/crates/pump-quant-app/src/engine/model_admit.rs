@@ -485,6 +485,27 @@ impl Engine {
         l
     }
 
+    /// Publish the trusted EMPTY ledger for a clean start (nothing was ever written, no exposure was restored).
+    ///
+    /// Without this a run that never sees a gap never writes the file, so a later restart that restores exposure
+    /// cannot tell "no gap" from "ledger deleted" and must refuse (`absent_with_restored_exposure`). This makes
+    /// "trusted, zero unresolved gaps as of this run" a durable fact. It never runs when continuity is untrusted
+    /// and never overwrites an existing file.
+    pub fn model_missing_publish_baseline(&mut self) -> bool {
+        if self.model_cache.history_continuity_unknown() {
+            return false;
+        }
+        let Some(w) = self.missing_store.writer.as_ref() else {
+            return false;
+        };
+        let body =
+            crate::missing_history_store::encode(&self.model_cache.missing_history_records());
+        self.missing_store.submitted_seq = w.submit(body);
+        self.missing_store.persisted_rev = self.model_cache.missing_rev();
+        self.missing_store.last_submit_ms = self.model_clock_ms;
+        true
+    }
+
     /// Test seam: attach with a caller-supplied writer (forced-failure injection).
     #[doc(hidden)]
     pub fn model_missing_attach_with_writer(&mut self, w: crate::missing_history_store::Writer) {
@@ -701,7 +722,11 @@ impl Engine {
 
     /// Register a stream-discovered market. Bounded; idempotent; never consults legacy state.
     pub(super) fn model_register(&mut self, mint: [u8; 32]) {
-        if self.model_dirty.insert(mint) {
+        // "Dirty" means an observation NEWER than the last answered ask. An overlap replay after a restart
+        // re-delivers observations that predate the restored ask; they rebuild the cache but are not new.
+        if self.model_clock_ms <= self.model_replay_through_ms {
+            self.mrep("queue:replayed_observation_not_dirty");
+        } else if self.model_dirty.insert(mint) {
             self.model_dirty_since.insert(mint, self.model_clock_ms);
         } else {
             // A further observation folded into an already-queued market: coalesced, not lost.
@@ -750,6 +775,7 @@ impl Engine {
                 .get(&mint)
                 .is_some_and(|t| clock - *t < MODEL_REASK_MS)
             {
+                self.mrep("sched:reask_window_wait");
                 continue; // stays dirty; re-offered after the window
             }
             self.model_dirty.remove(&mint);
@@ -1056,6 +1082,7 @@ impl Engine {
             system: snap.system_prompt.clone(),
             user: snap.user_prompt.clone(),
         };
+        self.barrier_log_dispatch("entry", &mint, &job.user);
         let dispatched = self
             .model_pool
             .as_ref()
@@ -1100,7 +1127,9 @@ impl Engine {
     pub(super) fn model_poll(&mut self) {
         let clock = self.model_clock_ms;
         let mut done = Vec::new();
-        if let Some(p) = &self.model_pool {
+        if self.barrier.on {
+            done = self.barrier_take_settled();
+        } else if let Some(p) = &self.model_pool {
             while let Some(v) = p.try_recv() {
                 done.push(v);
             }

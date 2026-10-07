@@ -147,6 +147,13 @@ impl InferencePool {
         self.rx.try_recv().ok()
     }
 
+    /// Wait up to `d` for one verdict. OFFLINE BARRIER SETTLE ONLY: the production engine thread never blocks on the
+    /// pool (it uses [`Self::try_recv`]).
+    #[must_use]
+    pub fn recv_timeout(&self, d: std::time::Duration) -> Option<Verdict> {
+        self.rx.recv_timeout(d).ok()
+    }
+
     /// The fixed number of worker threads. This, not the request count, bounds hung calls.
     #[must_use]
     pub fn workers(&self) -> usize {
