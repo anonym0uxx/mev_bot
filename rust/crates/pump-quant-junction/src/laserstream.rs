@@ -335,13 +335,16 @@ pub fn decode_amm_swaps(tx: &LaserStreamTx) -> (Vec<AmmSwapFacts>, u32) {
 /// Classification of a pump.fun instruction found in a LaserStream transaction.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PumpInstruction {
-    /// pump.fun buy (bonding curve): `amount_lamports` in, `min_tokens` out.
+    /// pump.fun buy (bonding curve). INSTRUCTION ARGUMENTS ONLY, never an executed quantity:
+    /// `token_amount_arg` (data[8..16], base units; equals the signer's token delta in 147 of 148
+    /// captured successful single-swap buys) and `max_sol_cost` (data[16..24], the spend LIMIT, which
+    /// may be `u64::MAX` = unlimited and is not the SOL actually spent).
     /// `buyer` is the signer's pubkey extracted from account index [6] of the
     /// buy instruction (the `ctx.user` per `venue_accounts::pump_buy_accounts`).
     Buy {
         mint: [u8; 32],
-        amount_lamports: u64,
-        min_tokens: u64,
+        token_amount_arg: u64,
+        max_sol_cost: u64,
         /// Buyer's wallet pubkey (account index [6] in the buy instruction).
         buyer: [u8; 32],
     },
@@ -350,8 +353,10 @@ pub enum PumpInstruction {
     /// sell instruction.
     Sell {
         mint: [u8; 32],
+        /// Tokens offered (instruction argument).
         amount_tokens: u64,
-        min_lamports: u64,
+        /// Minimum SOL out: a LIMIT, never the SOL received.
+        min_sol_out: u64,
         /// Seller's wallet pubkey (account index [6] in the sell instruction).
         seller: [u8; 32],
     },
@@ -359,8 +364,10 @@ pub enum PumpInstruction {
     /// `buyer` is the signer at account index [1] of the PumpSwap buy ix.
     PumpSwapBuy {
         pool: [u8; 32],
-        amount_lamports: u64,
-        min_tokens: u64,
+        /// `base_amount_out` (instruction argument: tokens requested).
+        base_amount_out: u64,
+        /// `max_quote_amount_in`: the spend LIMIT (may be `u64::MAX`), never the quote actually spent.
+        max_quote_amount_in: u64,
         /// Buyer's wallet pubkey (account index [1] in the PumpSwap buy ix).
         buyer: [u8; 32],
     },
@@ -368,8 +375,10 @@ pub enum PumpInstruction {
     /// `seller` is the signer at account index [1] of the PumpSwap sell ix.
     PumpSwapSell {
         pool: [u8; 32],
+        /// `base_amount_in` (instruction argument: tokens offered).
         amount_tokens: u64,
-        min_lamports: u64,
+        /// `min_quote_amount_out`: a LIMIT, never the quote received.
+        min_quote_amount_out: u64,
         /// Seller's wallet pubkey (account index [1] in the PumpSwap sell ix).
         seller: [u8; 32],
     },
@@ -407,14 +416,14 @@ pub fn classify_pump_instructions(tx: &LaserStreamTx) -> Vec<PumpInstruction> {
                     if let (Some(mint), Some(buyer)) =
                         (account_key_at(ix, tx, 2), account_key_at(ix, tx, 6))
                     {
-                        let amount =
+                        let token_amount_arg =
                             u64::from_le_bytes(ix.data[8..16].try_into().unwrap_or([0; 8]));
-                        let min_tokens =
+                        let max_sol_cost =
                             u64::from_le_bytes(ix.data[16..24].try_into().unwrap_or([0; 8]));
                         out.push(PumpInstruction::Buy {
                             mint,
-                            amount_lamports: amount,
-                            min_tokens,
+                            token_amount_arg,
+                            max_sol_cost,
                             buyer,
                         });
                     }
@@ -436,12 +445,12 @@ pub fn classify_pump_instructions(tx: &LaserStreamTx) -> Vec<PumpInstruction> {
                     {
                         let amount =
                             u64::from_le_bytes(ix.data[8..16].try_into().unwrap_or([0; 8]));
-                        let min_lamports =
+                        let min_sol_out =
                             u64::from_le_bytes(ix.data[16..24].try_into().unwrap_or([0; 8]));
                         out.push(PumpInstruction::Sell {
                             mint,
                             amount_tokens: amount,
-                            min_lamports,
+                            min_sol_out,
                             seller,
                         });
                     }
@@ -457,8 +466,8 @@ pub fn classify_pump_instructions(tx: &LaserStreamTx) -> Vec<PumpInstruction> {
                         {
                             out.push(PumpInstruction::PumpSwapBuy {
                                 pool,
-                                amount_lamports: args.max_quote_amount_in,
-                                min_tokens: args.base_amount_out,
+                                base_amount_out: args.base_amount_out,
+                                max_quote_amount_in: args.max_quote_amount_in,
                                 buyer,
                             });
                         }
@@ -471,7 +480,7 @@ pub fn classify_pump_instructions(tx: &LaserStreamTx) -> Vec<PumpInstruction> {
                             out.push(PumpInstruction::PumpSwapSell {
                                 pool,
                                 amount_tokens: args.base_amount_in,
-                                min_lamports: args.min_quote_amount_out,
+                                min_quote_amount_out: args.min_quote_amount_out,
                                 seller,
                             });
                         }
@@ -618,7 +627,7 @@ pub fn instructions_to_events_with_meta(
         match ix {
             PumpInstruction::Buy {
                 mint,
-                amount_lamports,
+                token_amount_arg,
                 buyer,
                 ..
             } => {
@@ -626,9 +635,12 @@ pub fn instructions_to_events_with_meta(
                     event: AppEvent::MarketTrade {
                         mint: Mint(*mint),
                         price_fp: 0, // Filled by reserve-delta or account snapshot
-                        quote_lamports: *amount_lamports,
+                        // An instruction carries a spend LIMIT, never the SOL spent: no executed quote is known
+                        // here, so none is claimed. Executed quantities come only from the verified event path.
+                        quote_lamports: 0,
                         liquidity_lamports: 0, // Filled by OnchainConfirm
-                        signed_base: i64::try_from(*amount_lamports).unwrap_or(i64::MAX),
+                        // Direction + the exact-out TOKEN argument (a token-side argument, not the limit).
+                        signed_base: i64::try_from(*token_amount_arg).unwrap_or(i64::MAX),
                         buyer_entity: wallet_entity_id(buyer),
                         trader_pubkey: Some(*buyer),
                         age_slots: 0, // Not available from ix data alone
@@ -679,7 +691,7 @@ pub fn instructions_to_events_with_meta(
             }
             PumpInstruction::PumpSwapBuy {
                 pool,
-                amount_lamports,
+                base_amount_out,
                 buyer,
                 ..
             } => {
@@ -687,9 +699,10 @@ pub fn instructions_to_events_with_meta(
                     event: AppEvent::MarketTrade {
                         mint: Mint(*pool),
                         price_fp: 0,
-                        quote_lamports: *amount_lamports,
+                        // `max_quote_amount_in` is a LIMIT (often u64::MAX): never a quote quantity.
+                        quote_lamports: 0,
                         liquidity_lamports: 0,
-                        signed_base: i64::try_from(*amount_lamports).unwrap_or(i64::MAX),
+                        signed_base: i64::try_from(*base_amount_out).unwrap_or(i64::MAX),
                         buyer_entity: wallet_entity_id(buyer),
                         trader_pubkey: Some(*buyer),
                         age_slots: 0,
@@ -1242,8 +1255,8 @@ mod tests {
         assert_eq!(classified.len(), 1);
         assert!(matches!(
             &classified[0],
-            PumpInstruction::Buy { mint, amount_lamports, buyer, .. }
-            if *mint == mint_bytes && *amount_lamports == 1_000_000 && *buyer != [0u8; 32]
+            PumpInstruction::Buy { mint, token_amount_arg, buyer, .. }
+            if *mint == mint_bytes && *token_amount_arg == 1_000_000 && *buyer != [0u8; 32]
         ));
     }
 
@@ -1305,8 +1318,8 @@ mod tests {
         let mint = [0xCC; 32];
         let instructions = vec![PumpInstruction::Buy {
             mint,
-            amount_lamports: 1_000_000,
-            min_tokens: 100,
+            token_amount_arg: 1_000_000,
+            max_sol_cost: 100,
             buyer: [0x42; 32],
         }];
 
@@ -1324,7 +1337,7 @@ mod tests {
             } => {
                 assert_eq!(m, &Mint(mint));
                 assert!(*signed_base > 0); // Buy = positive signed_base
-                assert_eq!(quote_lamports, &1_000_000u64);
+                assert_eq!(quote_lamports, &0u64, "an instruction carries a limit, not an executed quote");
             }
             _ => panic!("Expected MarketTrade event"),
         }
@@ -1336,7 +1349,7 @@ mod tests {
         let instructions = vec![PumpInstruction::Sell {
             mint,
             amount_tokens: 500_000,
-            min_lamports: 10,
+            min_sol_out: 10,
             seller: [0x43; 32],
         }];
 
@@ -1515,8 +1528,8 @@ mod tests {
         let mint = [0xAA; 32];
         let instructions = vec![PumpInstruction::Buy {
             mint,
-            amount_lamports: 100,
-            min_tokens: 10,
+            token_amount_arg: 100,
+            max_sol_cost: 10,
             buyer: [0x42; 32],
         }];
 
@@ -1952,14 +1965,14 @@ mod tests {
         let ixs = vec![
             PumpInstruction::Buy {
                 mint: [1; 32],
-                amount_lamports: 5,
-                min_tokens: 0,
+                token_amount_arg: 5,
+                max_sol_cost: 0,
                 buyer: [9; 32],
             },
             PumpInstruction::Sell {
                 mint: [2; 32],
                 amount_tokens: 7,
-                min_lamports: 0,
+                min_sol_out: 0,
                 seller: [8; 32],
             },
         ];
