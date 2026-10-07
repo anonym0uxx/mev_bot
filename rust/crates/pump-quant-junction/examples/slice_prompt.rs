@@ -8,7 +8,7 @@ use std::str::FromStr;
 use pump_quant_app::decision_join::{DecisionCache, TradeObs};
 use pump_quant_app::event::AppEvent;
 use pump_quant_app::state_ledger::VenueLabel;
-use pump_quant_junction::curve_trade_events::{ingest_curve_tx, EventDedup};
+use pump_quant_junction::curve_trade_events::{ingest_amm_rows, ingest_curve_tx, AmmRowStats, EventDedup};
 use pump_quant_junction::laserstream::{parse_ndjson_line, LaserStreamUpdate, PUMP_FUN_PROGRAM};
 use pump_quant_protocol::decode::decode_pump_curve;
 use pump_quant_protocol::pda::find_program_address;
@@ -90,6 +90,8 @@ fn main() {
     let mut ci = 0usize;
     let mut n_trades = 0u64;
     let mut n_other_mint = 0u64;
+    let mut n_amm_rows = 0u64;
+    let mut amm_stats = AmmRowStats::default();
     let mut emit = |cache: &DecisionCache, t: i64, n_trades: u64, dedup: &EventDedup| {
         let rec = match cache.snapshot(&mint, t) {
             Ok(s) => {
@@ -122,8 +124,62 @@ fn main() {
             match u {
                 LaserStreamUpdate::Transaction(tx) => {
                     let mut evs = Vec::new();
+                    // PRODUCTION PumpSwap corpus rows (same call the daemon makes), only when PS_ROWS=1.
+                    if std::env::var("PS_ROWS").as_deref() == Ok("1") {
+                        ingest_amm_rows(&tx, &mut dedup, &mut amm_stats, &mut evs);
+                    }
                     let _ = ingest_curve_tx(&tx, &mut dedup, &mut evs);
                     for pe in evs {
+                        if let AppEvent::CorpusFlowRow {
+                            mint: m,
+                            feature,
+                            recv_unix_ms,
+                            slot,
+                            fee_lamports,
+                            cu_consumed,
+                            event_id,
+                            ..
+                        } = pe.event
+                        {
+                            n_amm_rows += 1;
+                            if *m.as_bytes() == mint {
+                                n_trades += 1;
+                                cache.observe_trade(&TradeObs {
+                                    mint,
+                                    price_fp: 0,
+                                    quote_lamports: 0,
+                                    signed_base: 0,
+                                    buyer_entity: 0,
+                                    trader: Some(feature.trader),
+                                    recv_unix_ms,
+                                    slot,
+                                    fee_lamports,
+                                    cu_consumed,
+                                    venue: VenueLabel::Pumpswap,
+                                    event_id: Some(event_id),
+                                    feature: Some(feature),
+                                });
+                            } else if let (Some(sl), Some(fee), Some(rm)) =
+                                (slot, fee_lamports, recv_unix_ms)
+                            {
+                                cache.seed_flow_history(
+                                    &pump_quant_market_state::flow_reducer::FlowEvent {
+                                        mint: *m.as_bytes(),
+                                        trader: feature.trader,
+                                        side: if feature.sol_lamports < 0 {
+                                            pump_quant_market_state::flow_reducer::Side::Buy
+                                        } else {
+                                            pump_quant_market_state::flow_reducer::Side::Sell
+                                        },
+                                        slot: sl,
+                                        recv_unix_ms: rm,
+                                        sol_lamports: feature.sol_lamports,
+                                        fee_lamports: fee,
+                                        cu_consumed,
+                                    },
+                                );
+                            }
+                        }
                         if let AppEvent::MarketTrade {
                             mint: m,
                             price_fp,
@@ -254,5 +310,5 @@ fn main() {
         emit(&cache, clocks[ci], n_trades, &dedup);
         ci += 1;
     }
-    eprintln!("other-mint events skipped: {n_other_mint}");
+    eprintln!("other-mint events skipped: {n_other_mint}; amm corpus rows {n_amm_rows} (emitted {} rejects {} dup {})", amm_stats.emitted, amm_stats.resolver_rejects, amm_stats.duplicates);
 }

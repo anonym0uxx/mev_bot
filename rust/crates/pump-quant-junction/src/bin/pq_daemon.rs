@@ -1815,6 +1815,11 @@ fn main() -> ExitCode {
                     std::path::Path::new(&safety),
                 );
                 model_armed = true;
+                // The event path supplies corpus-definition rows for PumpSwap: the AMM swap's own print must not
+                // also feed the trained windows (double count).
+                engine.set_corpus_flow_rows(
+                    std::env::var("PQ_CURVE_TRADE_SOURCE").as_deref() != Ok("snapshot_delta"),
+                );
                 eprintln!(
                     "[pq-daemon] paper model lane ARMED endpoint={endpoint} safety_file={safety} load={:?} blocked_at_start={}",
                     armed.load, armed.blocked_at_start
@@ -2012,6 +2017,8 @@ fn main() -> ExitCode {
         _ => pump_quant_junction::curve_trade_events::CurveTradeSource::Events,
     };
     let mut curve_dedup = pump_quant_junction::curve_trade_events::EventDedup::new(65_536);
+    let mut amm_row_stats = pump_quant_junction::curve_trade_events::AmmRowStats::default();
+    let mut amm_row_status_unknown: u64 = 0;
     let mut curve_ev_produced: u64 = 0;
     let mut curve_ev_duplicates: u64 = 0;
     let mut curve_ev_incomplete: u64 = 0;
@@ -2666,6 +2673,10 @@ fn main() -> ExitCode {
                     "\"curve_events_duplicates\":{},",
                     "\"curve_events_incomplete\":{},",
                     "\"curve_events_incomplete_unnamed\":{},",
+                    "\"amm_rows_emitted\":{},",
+                    "\"amm_rows_resolver_rejects\":{},",
+                    "\"amm_rows_duplicates\":{},",
+                    "\"amm_rows_status_unknown\":{},",
                     "\"curve_producer_ready\":{},",
                     "\"uptime_secs\":{},",
                     "\"tick\":{},",
@@ -2702,6 +2713,10 @@ fn main() -> ExitCode {
                 curve_ev_duplicates,
                 curve_ev_incomplete,
                 curve_ev_incomplete_unnamed,
+                amm_row_stats.emitted,
+                amm_row_stats.resolver_rejects,
+                amm_row_stats.duplicates,
+                amm_row_status_unknown,
                 // Snapshot-delta mode has no producer-status requirement.
                 !events_mode_health || curve_compat.ready(),
                 uptime_secs,
@@ -2763,6 +2778,21 @@ fn main() -> ExitCode {
                             }
                         }
                         let mut ev_out = Vec::new();
+                        // PumpSwap corpus-definition FEATURE rows (wallet history; independent of execution scope).
+                        // Unknown tx status on a PumpSwap swap line is counted, never treated as success.
+                        if tx.instructions.iter().any(|i| {
+                            i.program_id == pump_quant_junction::laserstream::PUMP_SWAP_PROGRAM
+                        }) {
+                            if tx.tx_ok.is_none() {
+                                amm_row_status_unknown += 1;
+                            }
+                            pump_quant_junction::curve_trade_events::ingest_amm_rows(
+                                &tx,
+                                &mut curve_dedup,
+                                &mut amm_row_stats,
+                                &mut ev_out,
+                            );
+                        }
                         match ingest_curve_tx(&tx, &mut curve_dedup, &mut ev_out) {
                             EventIngest::Nothing => {}
                             EventIngest::Produced {

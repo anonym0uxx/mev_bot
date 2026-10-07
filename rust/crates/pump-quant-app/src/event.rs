@@ -180,6 +180,30 @@ pub enum AppEvent {
         feature: Option<FeatureBasis>,
     },
 
+    /// One corpus-definition TRADE ROW for FEATURE HISTORY only (the frozen builder's `renormalize_raw.py` row of a
+    /// corpus-known buy/sell instruction): resolved trader, trader native+WSOL delta, trader token delta, venue. It
+    /// carries NO reserve price, swap amount or quote: it can never reach order sizing, min-out/PRICE LIMIT, fills,
+    /// inventory valuation or emergency protection. Wallet-history participation is independent of whether the
+    /// market is executable; `venue_supported` records only what the producer knows about the market.
+    CorpusFlowRow {
+        /// The row's mint (the corpus's resolved candidate mint; may be a quote-side mint on routed USDC txs).
+        mint: Mint,
+        /// Venue of the instruction that produced the row.
+        venue: TradeVenue,
+        /// The trained basis (trader, native+WSOL delta, token delta).
+        feature: FeatureBasis,
+        /// Wire receive time, unix ms. `None` is refused downstream by name.
+        recv_unix_ms: Option<i64>,
+        /// Slot.
+        slot: Option<u64>,
+        /// Whole-transaction fee / CU, repeated on every row of the signature as the corpus does.
+        fee_lamports: Option<u64>,
+        /// Compute units consumed.
+        cu_consumed: Option<u64>,
+        /// Stable identity: digest of (signature, instruction index) in the `pq-corpus-row-v1` domain.
+        event_id: u128,
+    },
+
     /// A narrative attention sample for a market: how many fresh mentions arrived
     /// against how many were already active. Feeds the virality coefficient.
     NarrativeSample {
@@ -503,6 +527,7 @@ impl AppEvent {
             | AppEvent::OnchainConfirm { mint, .. }
             | AppEvent::CurveObserved { mint, .. }
             | AppEvent::AmmSwap { mint, .. }
+            | AppEvent::CorpusFlowRow { mint, .. }
             | AppEvent::LaunchObserved { mint, .. }
             | AppEvent::TokenMetadata { mint, .. }
             | AppEvent::CreatorAction { mint, .. }

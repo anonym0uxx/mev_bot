@@ -468,6 +468,7 @@ fn event_kind(event: &AppEvent) -> &'static str {
         AppEvent::OnchainConfirm { .. } => "OnchainConfirm",
         AppEvent::CurveObserved { .. } => "CurveObserved",
         AppEvent::AmmSwap { .. } => "AmmSwap",
+        AppEvent::CorpusFlowRow { .. } => "CorpusFlowRow",
         AppEvent::LaunchObserved { .. } => "LaunchObserved",
         AppEvent::TokenMetadata { .. } => "TokenMetadata",
         AppEvent::CreatorAction { .. } => "CreatorAction",
@@ -599,6 +600,23 @@ fn event_fields_json(event: &AppEvent) -> String {
                 parts.push(format!(r#""recv_unix_ms":{}"#, t));
             }
             parts.push(format!(r#""slot":{}"#, slot));
+        }
+        AppEvent::CorpusFlowRow {
+            feature,
+            recv_unix_ms,
+            slot,
+            event_id,
+            ..
+        } => {
+            parts.push(format!(r#""sol_lamports":{}"#, feature.sol_lamports));
+            parts.push(format!(r#""tokens_raw":{}"#, feature.tokens_raw));
+            parts.push(format!(r#""event_id":"{:032x}""#, event_id));
+            if let Some(t) = recv_unix_ms {
+                parts.push(format!(r#""recv_unix_ms":{}"#, t));
+            }
+            if let Some(sl) = slot {
+                parts.push(format!(r#""slot":{}"#, sl));
+            }
         }
         AppEvent::LaunchObserved { launch_unix_ms, .. } => {
             parts.push(format!(r#""launch_unix_ms":{}"#, launch_unix_ms));

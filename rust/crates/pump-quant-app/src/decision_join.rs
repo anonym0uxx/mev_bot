@@ -654,7 +654,10 @@ impl DecisionCache {
             self.counters.no_clock += 1;
             return Ingest::NoClock;
         };
-        if t.price_fp <= 0 {
+        // A corpus-basis row from the transaction-event producer carries its own trained price/volume (trader delta
+        // ratio); its `price_fp` is a placeholder that no trained window reads. Every other print needs a price.
+        let corpus_row = t.feature.is_some() && t.event_id.is_some();
+        if t.price_fp <= 0 && !corpus_row {
             self.counters.no_price += 1;
             return Ingest::NoPrice;
         }

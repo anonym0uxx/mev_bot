@@ -677,6 +677,9 @@ impl Engine {
             let signed = i64::try_from(a.token_amount).unwrap_or(i64::MAX);
             let entity =
                 pump_quant_wallet_graph::tracked_wallet_matcher::wallet_entity_id(&a.trader);
+            // With the corpus-row producer on, the TRAINED windows are fed by `CorpusFlowRow` (corpus trader-delta
+            // basis, once per instruction); feeding this swap's own legacy-basis print too would double-count it.
+            if !self.corpus_flow_rows {
             self.model_cache
                 .observe_trade(&crate::decision_join::TradeObs {
                     mint,
@@ -693,6 +696,7 @@ impl Engine {
                     event_id: None,
                     feature: None,
                 });
+            }
             // A HELD market is marked from the pool so the existing lifecycle can monitor it. This is
             // deliberately limited to held mints: the legacy numeric lane must not DISCOVER from it.
             if self.open_lane.contains_key(&mint) {

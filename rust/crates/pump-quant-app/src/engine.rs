@@ -824,6 +824,9 @@ pub struct Engine {
     /// source is installed. Never a fallback order: OFF means legacy, ON-without-source means
     /// fail closed.
     paper_model_mode: bool,
+    /// When true the transaction-event producer supplies corpus-definition rows for PumpSwap trades, so the AMM swap
+    /// event no longer feeds the trained windows with its own (legacy-basis) print: it would double-count the trade.
+    corpus_flow_rows: bool,
     /// The model lane's decision-time cache (see `decision_join`). Fed only when armed.
     model_cache: crate::decision_join::DecisionCache,
     /// Model-lane request discipline, worker pool, per-request bindings, pending paper orders and
@@ -1348,6 +1351,11 @@ impl Engine {
         self.model_source = Some(src);
     }
 
+    /// Declare that corpus-definition trade rows arrive as `CorpusFlowRow` (set by the daemon with the event path).
+    pub fn set_corpus_flow_rows(&mut self, on: bool) {
+        self.corpus_flow_rows = on;
+    }
+
     /// Whether the paper-model lane is armed.
     pub fn paper_model_enabled(&self) -> bool {
         self.paper_model_mode
@@ -1466,6 +1474,7 @@ impl Engine {
             cfg,
             mode,
             paper_model_mode: false,
+            corpus_flow_rows: false,
             model_cache: crate::decision_join::DecisionCache::new(),
             model_table: crate::model_lane::RequestTable::default(),
             model_pool: None,
@@ -2591,6 +2600,45 @@ impl Engine {
                         recv_unix_ms,
                         slot,
                     });
+                }
+            }
+            AppEvent::CorpusFlowRow {
+                mint,
+                venue,
+                feature,
+                recv_unix_ms,
+                slot,
+                fee_lamports,
+                cu_consumed,
+                event_id,
+            } => {
+                // FEATURE HISTORY ONLY. No numeric lane, no registration/discovery, no management price, no fills:
+                // the row has no reserve price or quote. Participation in wallet history is independent of whether
+                // the market is executable.
+                if self.paper_model_mode {
+                    if let Some(ms) = recv_unix_ms {
+                        self.model_note_clock(ms);
+                    }
+                    let venue = match venue {
+                        crate::event::TradeVenue::PumpFun => crate::state_ledger::VenueLabel::Pumpfun,
+                        crate::event::TradeVenue::PumpSwap => crate::state_ledger::VenueLabel::Pumpswap,
+                    };
+                    self.model_cache
+                        .observe_trade(&crate::decision_join::TradeObs {
+                            mint: *mint.as_bytes(),
+                            price_fp: 0,
+                            quote_lamports: 0,
+                            signed_base: 0,
+                            buyer_entity: 0,
+                            trader: Some(feature.trader),
+                            recv_unix_ms,
+                            slot,
+                            fee_lamports,
+                            cu_consumed,
+                            venue,
+                            event_id: Some(event_id),
+                            feature: Some(feature),
+                        });
                 }
             }
             AppEvent::Tick => self.evaluate(),

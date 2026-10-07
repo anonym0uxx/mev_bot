@@ -60,6 +60,11 @@ pub struct LaserStreamInstruction {
     pub data: Vec<u8>,
     /// Account key indices into the transaction's account list.
     pub accounts: Vec<u8>,
+    /// Invocation position, when the producer supplies it: the index of the OUTER instruction this one belongs to
+    /// (an outer instruction carries its own index) and its CPI stack height (outer = 1). `None` = the producer did
+    /// not say; invocation-level association is then unavailable and ambiguous attribution is refused.
+    pub outer: Option<u32>,
+    pub depth: Option<u32>,
 }
 
 /// A decoded LaserStream transaction notification.
@@ -131,6 +136,9 @@ pub struct AmmSwapFacts {
     pub quote_lamports: u64,
     /// The trader wallet.
     pub trader: [u8; 32],
+    /// Index (in the flattened instruction list) of the swap instruction that EMITTED this event, found by INVOCATION
+    /// parent when the producer supplies positions; `None` when it was found by the weaker pool-name rule.
+    pub swap_ix: Option<usize>,
     /// `pool == canonical_pool_for(mint)` AND the quote account is WSOL. Reserve/amount fields are
     /// token-oriented ONLY when this is true; otherwise the swap is counted, never used.
     pub canonical: bool,
@@ -174,7 +182,7 @@ pub fn decode_amm_swaps(tx: &LaserStreamTx) -> (Vec<AmmSwapFacts>, u32) {
     use pump_quant_protocol::pumpswap_event::{decode_pumpswap_event, PumpSwapEvent};
     let mut out = Vec::new();
     let mut excluded = 0u32;
-    for ix in &tx.instructions {
+    for (ev_idx, ix) in tx.instructions.iter().enumerate() {
         if ix.program_id != PUMP_SWAP_PROGRAM {
             continue;
         }
@@ -219,17 +227,42 @@ pub fn decode_amm_swaps(tx: &LaserStreamTx) -> (Vec<AmmSwapFacts>, u32) {
         // swap instruction in this transaction names the same pool (or the transaction holds more
         // than one swap event for it), which event belongs to which instruction is ambiguous, so
         // the event is EXCLUDED and counted. Another instruction's economics are never attached.
+        let is_event_ix = |sib: &LaserStreamInstruction| {
+            sib.data.get(0..8) == Some(&[0xe4, 0x45, 0xa5, 0x2e, 0x51, 0xcb, 0x9a, 0x1d][..])
+        };
+        // INVOCATION association first: the event self-CPI's parent is the swap instruction that emitted it.
+        let (swap_ix, positions_given) = match invocation_parent(tx, ev_idx) {
+            Ok(p) => {
+                let sib = &tx.instructions[p];
+                if sib.program_id == PUMP_SWAP_PROGRAM
+                    && !is_event_ix(sib)
+                    && account_key_at(sib, tx, 0) == Some(pool)
+                {
+                    (Some(p), true)
+                } else {
+                    // Parent is not the swap instruction of this pool: refuse by exclusion, never fall back.
+                    excluded += 1;
+                    continue;
+                }
+            }
+            Err("no_invocation_position") => (None, false),
+            Err(_) => {
+                excluded += 1;
+                continue;
+            }
+        };
+        // Producer without positions: ASSOCIATION GUARD. An event carries its pool but no instruction index; if more
+        // than one swap instruction names the same pool the association is ambiguous, so the event is EXCLUDED.
         let swap_ixs_on_pool = tx
             .instructions
             .iter()
             .filter(|sib| {
                 sib.program_id == PUMP_SWAP_PROGRAM
-                    && sib.data.get(0..8)
-                        != Some(&[0xe4, 0x45, 0xa5, 0x2e, 0x51, 0xcb, 0x9a, 0x1d][..])
+                    && !is_event_ix(sib)
                     && account_key_at(sib, tx, 0) == Some(pool)
             })
             .count();
-        if swap_ixs_on_pool > 1 {
+        if !positions_given && swap_ixs_on_pool > 1 {
             #[allow(clippy::arithmetic_side_effects)]
             // LINT-ALLOW(hot_arith,hot_cast): u64 excluded counter ×2
             {
@@ -237,12 +270,15 @@ pub fn decode_amm_swaps(tx: &LaserStreamTx) -> (Vec<AmmSwapFacts>, u32) {
             }
             continue;
         }
-        let mut found: Option<([u8; 32], bool, bool)> = None;
-        for sib in &tx.instructions {
-            if sib.program_id != PUMP_SWAP_PROGRAM
-                || sib.data.get(0..8) == Some(&[0xe4, 0x45, 0xa5, 0x2e, 0x51, 0xcb, 0x9a, 0x1d][..])
-            {
+        let mut found: Option<([u8; 32], bool, bool, usize)> = None;
+        for (sib_idx, sib) in tx.instructions.iter().enumerate() {
+            if sib.program_id != PUMP_SWAP_PROGRAM || is_event_ix(sib) {
                 continue;
+            }
+            if let Some(want) = swap_ix {
+                if sib_idx != want {
+                    continue;
+                }
             }
             if account_key_at(sib, tx, 0) != Some(pool) {
                 continue;
@@ -256,11 +292,12 @@ pub fn decode_amm_swaps(tx: &LaserStreamTx) -> (Vec<AmmSwapFacts>, u32) {
                     token,
                     quote_is_wsol,
                     quote_is_wsol && canonical_pool_for(&token) == pool,
+                    sib_idx,
                 ));
                 break;
             }
         }
-        let Some((mint, quote_is_wsol, canonical)) = found else {
+        let Some((mint, quote_is_wsol, canonical, found_ix)) = found else {
             #[allow(clippy::arithmetic_side_effects)]
             // LINT-ALLOW(hot_arith,hot_cast): u64 excluded counter ×2
             {
@@ -287,6 +324,7 @@ pub fn decode_amm_swaps(tx: &LaserStreamTx) -> (Vec<AmmSwapFacts>, u32) {
             token_amount: tok_amt,
             quote_lamports: quote_amt,
             trader: user,
+            swap_ix: Some(found_ix).filter(|_| positions_given),
             canonical,
             quote_is_wsol,
         });
@@ -460,6 +498,44 @@ pub fn classify_pump_instructions(tx: &LaserStreamTx) -> Vec<PumpInstruction> {
     let (swaps, _excluded) = decode_amm_swaps(tx);
     out.extend(swaps.into_iter().map(PumpInstruction::AmmSwap));
     out
+}
+
+/// Invocation parent of the instruction at `idx` in the flattened (outer-then-inner) list: the nearest preceding
+/// instruction of the SAME outer group whose CPI stack height is exactly one less. An event self-CPI is invoked by
+/// the instruction that emitted it, so this is the invocation-level association between an event and its swap
+/// instruction. Refuses (`Err`) when the producer did not supply invocation positions, or the structure is
+/// inconsistent: association is never inferred from adjacency, mint/side equality, or population counts.
+pub fn invocation_parent(tx: &LaserStreamTx, idx: usize) -> Result<usize, &'static str> {
+    let me = tx.instructions.get(idx).ok_or("ix_out_of_range")?;
+    let (Some(outer), Some(depth)) = (me.outer, me.depth) else {
+        return Err("no_invocation_position");
+    };
+    if depth < 2 {
+        return Err("outer_instruction_has_no_parent");
+    }
+    let want = depth - 1;
+    if want == 1 {
+        // The parent is the OUTER instruction itself (depth 1, carrying its own index).
+        return tx
+            .instructions
+            .iter()
+            .position(|i| i.outer == Some(outer) && i.depth == Some(1))
+            .ok_or("outer_parent_missing");
+    }
+    // Inner instructions of one group are recorded in invocation (pre-)order.
+    for j in (0..idx).rev() {
+        let c = &tx.instructions[j];
+        if c.outer != Some(outer) {
+            break;
+        }
+        match c.depth {
+            Some(d) if d == want => return Ok(j),
+            Some(d) if d < want => return Err("parent_not_found_in_group"),
+            Some(_) => {}
+            None => return Err("no_invocation_position"),
+        }
+    }
+    Err("parent_not_found_in_group")
 }
 
 /// Resolve an account key from an instruction's account index.
@@ -910,10 +986,13 @@ pub fn parse_ndjson_line(line: &str) -> Option<LaserStreamUpdate> {
                                         .collect::<Option<Vec<u8>>>()?,
                                     None => Vec::new(),
                                 };
+                            let g = |k: &str| ix.get(k).and_then(|n| n.as_u64()).and_then(|v| u32::try_from(v).ok());
                             Some(LaserStreamInstruction {
                                 program_id,
                                 data,
                                 accounts,
+                                outer: g("outer"),
+                                depth: g("depth"),
                             })
                         })
                         .collect()
@@ -1150,8 +1229,7 @@ mod tests {
                 d.extend_from_slice(&100u64.to_le_bytes());
                 d
             },
-            accounts: vec![0, 1, 2, 3, 4, 5, 6],
-        });
+            accounts: vec![0, 1, 2, 3, 4, 5, 6], outer: None, depth: None });
 
         let classified = classify_pump_instructions(&tx);
         assert_eq!(classified.len(), 1);
@@ -1185,8 +1263,7 @@ mod tests {
                 d.extend_from_slice(&10u64.to_le_bytes());
                 d
             },
-            accounts: vec![0, 1, 2, 3, 4, 5, 6],
-        });
+            accounts: vec![0, 1, 2, 3, 4, 5, 6], outer: None, depth: None });
 
         let classified = classify_pump_instructions(&tx);
         assert_eq!(classified.len(), 1);
@@ -1204,8 +1281,7 @@ mod tests {
         tx.instructions.push(LaserStreamInstruction {
             program_id: [0x0; 32],
             data: vec![0x2, 0x0, 0x0, 0x0],
-            accounts: vec![0, 1],
-        });
+            accounts: vec![0, 1], outer: None, depth: None });
 
         let classified = classify_pump_instructions(&tx);
         assert_eq!(classified.len(), 0);
@@ -1291,8 +1367,7 @@ mod tests {
         tx.instructions = vec![LaserStreamInstruction {
             program_id: PUMP_FUN_PROGRAM,
             data,
-            accounts: vec![1, 2, 0],
-        }];
+            accounts: vec![1, 2, 0], outer: None, depth: None }];
         let c = classify_pump_instructions(&tx);
         assert_eq!(
             c,
@@ -1345,8 +1420,7 @@ mod tests {
         let ix = LaserStreamInstruction {
             program_id: [0; 32],
             data: vec![],
-            accounts: vec![0, 1, 2],
-        };
+            accounts: vec![0, 1, 2], outer: None, depth: None };
         assert!(account_key_at(&ix, &tx, 0).is_none());
     }
 
@@ -1390,8 +1464,7 @@ mod tests {
                 d.extend_from_slice(&10u64.to_le_bytes());
                 d
             },
-            accounts: vec![0, 1, 2, 3, 4, 5, 6],
-        });
+            accounts: vec![0, 1, 2, 3, 4, 5, 6], outer: None, depth: None });
 
         // Sell instruction: accounts [0,3,4,5,7,8,9,10] = PUMP_GLOBAL, fee, mint2, bonding_curve, assoc_curve, assoc_user, creator, seller
         tx.instructions.push(LaserStreamInstruction {
@@ -1403,8 +1476,7 @@ mod tests {
                 d.extend_from_slice(&20u64.to_le_bytes());
                 d
             },
-            accounts: vec![0, 3, 4, 5, 7, 8, 9, 10],
-        });
+            accounts: vec![0, 3, 4, 5, 7, 8, 9, 10], outer: None, depth: None });
 
         let classified = classify_pump_instructions(&tx);
         assert_eq!(classified.len(), 2);
@@ -1784,8 +1856,7 @@ mod tests {
         let ix = LaserStreamInstruction {
             program_id: [0; 32],
             data: vec![],
-            accounts: vec![1, 2, 0],
-        };
+            accounts: vec![1, 2, 0], outer: None, depth: None };
         t.instructions.clear();
         assert!(
             account_key_at(&ix, &t, 0).is_none(),

@@ -212,6 +212,8 @@ pub fn decode_curve_trade_events(tx: &LaserStreamTx) -> TxDecode {
 pub struct EventDedup {
     seen: HashSet<([u8; 64], u32)>,
     order: VecDeque<([u8; 64], u32)>,
+    seen_rows: HashSet<([u8; 64], u32)>,
+    order_rows: VecDeque<([u8; 64], u32)>,
     cap: usize,
     pub duplicates: u64,
     /// Verified non-SOL quote (e.g. USDC) events: UNSUPPORTED_QUOTE_ASSET, outside every SOL denominator. Not a gap.
@@ -228,12 +230,31 @@ impl EventDedup {
         Self {
             seen: HashSet::new(),
             order: VecDeque::new(),
+            seen_rows: HashSet::new(),
+            order_rows: VecDeque::new(),
             cap: cap.max(1),
             duplicates: 0,
             unsupported_quote: 0,
             outside_corpus: std::collections::BTreeMap::new(),
             corpus_basis_resolved: 0,
         }
+    }
+    /// As [`Self::first_time`] for corpus ROW identities (a separate domain: a row and an event of the same signature
+    /// and index are different things).
+    pub fn first_time_row(&mut self, sig: &[u8; 64], ix: u32) -> bool {
+        let k = (*sig, ix);
+        if self.seen_rows.contains(&k) {
+            self.duplicates = self.duplicates.saturating_add(1);
+            return false;
+        }
+        if self.order_rows.len() >= self.cap {
+            if let Some(old) = self.order_rows.pop_front() {
+                self.seen_rows.remove(&old);
+            }
+        }
+        self.seen_rows.insert(k);
+        self.order_rows.push_back(k);
+        true
     }
     /// `true` the first time an identity is seen, `false` for a repeat.
     pub fn first_time(&mut self, sig: &[u8; 64], ordinal: u32) -> bool {
@@ -272,59 +293,85 @@ pub fn trade_event_id(sig: &[u8; 64], ix_ordinal: u32) -> u128 {
 }
 
 /// The corpus-definition basis (trader native+WSOL delta, trader token delta, resolved trader) of the instruction
-/// that EMITTED this event: the nearest preceding non-event pump.fun instruction in the wire's outer-then-inner
-/// order. `Err(reason)` = the trade is outside the frozen corpus population or its basis cannot be established; it
-/// is then admitted to the engine for discovery/state but never to the trained windows.
-pub fn corpus_basis_for(
+/// that EMITTED this event. Association is by INVOCATION: the event self-CPI's parent instruction (`invocation_parent`,
+/// from the wire's outer index and CPI stack height) is the instruction the corpus row was built from. The parent must
+/// be a corpus-known pump.fun buy/sell whose resolved row agrees with the event's mint and side.
+///
+/// Only when the producer supplied NO invocation positions is the weaker rule available: if exactly ONE corpus row in
+/// the transaction has the event's mint and side the association is unambiguous; with two or more it is refused
+/// (`attribution_ambiguous`), never resolved by order. `Err(reason)` = outside the frozen corpus population or the
+/// basis cannot be established; the trade is then admitted for discovery/state but never to the trained windows.
+fn corpus_basis_for(
     tx: &LaserStreamTx,
+    ev_idx: usize,
     t: &CurveTradeEvent,
     not_launch: &HashSet<[u8; 32]>,
-    used: &mut Vec<usize>,
 ) -> Result<FeatureBasis, &'static str> {
-    // Attribution is by MATCH, not adjacency: the wire flattens outer+inner instructions, so the corpus-known
-    // buy/sell is not always the nearest instruction before its event (measured: launch-slot buys). Every
-    // corpus-known pump.fun instruction is resolved exactly as the corpus does; the event takes the first
-    // unused row with the same mint, side and trader (the corpus row's trader is the resolved owner).
     let bal = tx.balances.as_ref().ok_or("no_balances_on_wire")?;
-    let mut saw_corpus_ix = false;
-    let mut saw_row = false;
-    for (i, ix) in tx.instructions.iter().enumerate() {
-        if ix.program_id != PUMP_FUN_PROGRAM || used.contains(&i) {
-            continue;
+    let resolve = |i: usize| -> Result<Option<crate::corpus_rows::CorpusRow>, &'static str> {
+        let ix = &tx.instructions[i];
+        if ix.program_id != PUMP_FUN_PROGRAM {
+            return Err("parent_not_pump_fun");
         }
         let Some(is_buy) = crate::corpus_rows::corpus_side(&ix.data) else {
-            continue;
+            return Err("instruction_not_in_corpus_table");
         };
-        saw_corpus_ix = true;
-        let Some(row) = crate::corpus_rows::resolve_row(
+        Ok(crate::corpus_rows::resolve_row(
+            Some(crate::corpus_rows::PUMP_FUN_TRADER_IX),
             is_buy,
             &ix.accounts,
             &tx.account_keys,
             &tx.invalid_key_idx,
             bal,
             not_launch,
-        ) else {
-            continue;
-        };
-        saw_row = true;
+        ))
+    };
+    let to_basis = |row: crate::corpus_rows::CorpusRow| -> Result<FeatureBasis, &'static str> {
         if row.mint != t.mint || row.is_buy != t.is_buy {
-            continue;
+            return Err("corpus_row_disagrees_with_event");
         }
         let tokens_raw = i64::try_from(row.tokens_raw).map_err(|_| "tokens_unrepresentable")?;
-        used.push(i);
-        return Ok(FeatureBasis {
+        Ok(FeatureBasis {
             sol_lamports: row.sol_lamports,
             tokens_raw,
             trader: row.trader,
-        });
+        })
+    };
+    match crate::laserstream::invocation_parent(tx, ev_idx) {
+        Ok(p) => match resolve(p)? {
+            Some(row) => to_basis(row),
+            None => Err("corpus_resolver_rejects"),
+        },
+        Err("no_invocation_position") => {
+            // Producer without invocation positions: unique-candidate rule only.
+            let mut cands: Vec<crate::corpus_rows::CorpusRow> = Vec::new();
+            let mut saw_corpus_ix = false;
+            for (i, ix) in tx.instructions.iter().enumerate() {
+                if ix.program_id != PUMP_FUN_PROGRAM
+                    || crate::corpus_rows::corpus_side(&ix.data).is_none()
+                {
+                    continue;
+                }
+                saw_corpus_ix = true;
+                if let Ok(Some(row)) = resolve(i) {
+                    if row.mint == t.mint && row.is_buy == t.is_buy {
+                        cands.push(row);
+                    }
+                }
+            }
+            match cands.len() {
+                1 => to_basis(cands[0]),
+                0 => Err(if saw_corpus_ix {
+                    "corpus_resolver_rejects"
+                } else {
+                    "instruction_not_in_corpus_table"
+                }),
+                _ => Err("attribution_ambiguous"),
+            }
+        }
+        // Positions supplied but the structure does not yield a parent: refuse by name.
+        Err(r) => Err(r),
     }
-    Err(if !saw_corpus_ix {
-        "instruction_not_in_corpus_table"
-    } else if !saw_row {
-        "corpus_resolver_rejects"
-    } else {
-        "corpus_row_disagrees_with_event"
-    })
 }
 
 /// Build the engine event for one decoded trade. `None` when a field cannot be represented
@@ -397,8 +444,7 @@ pub fn ingest_curve_tx(
         TxDecode::Events(evs) => {
             let (mut n, mut d) = (0usize, 0usize);
             let not_launch = crate::corpus_rows::not_a_launch_set();
-            let mut used_rows: Vec<usize> = Vec::new();
-            for e in &evs {
+                        for e in &evs {
                 // Quote identity comes from the event's own `quote_mint`. A verified non-SOL quote is counted and
                 // skipped (it is NOT a gap on a SOL market); an unestablished quote is a named refusal.
                 match e.quote {
@@ -419,7 +465,7 @@ pub fn ingest_curve_tx(
                     d += 1;
                     continue;
                 }
-                let feature = match corpus_basis_for(tx, e, &not_launch, &mut used_rows) {
+                let feature = match corpus_basis_for(tx, e.ix_ordinal as usize, e, &not_launch) {
                     Ok(f) => {
                         dedup.corpus_basis_resolved += 1;
                         Some(f)
@@ -446,6 +492,102 @@ pub fn ingest_curve_tx(
                 }
             }
         }
+    }
+}
+
+/// Stable identity of a corpus row: `sha256("pq-corpus-row-v1" || signature || instruction index)`. The instruction
+/// index is the row's own position in the flattened list (a row is per INSTRUCTION, as in the frozen builder).
+#[must_use]
+pub fn corpus_row_id(sig: &[u8; 64], ix_idx: u32) -> u128 {
+    let mut h = pump_quant_protocol::sha256::Sha256::new();
+    h.update(b"pq-corpus-row-v1");
+    h.update(sig);
+    h.update(&ix_idx.to_le_bytes());
+    let d = h.finalize();
+    u128::from_be_bytes(d[..16].try_into().unwrap_or([0; 16]))
+}
+
+/// Counters for the PumpSwap corpus-row producer (every outcome named).
+#[derive(Clone, Debug, Default)]
+pub struct AmmRowStats {
+    /// Corpus rows emitted.
+    pub emitted: u64,
+    /// Corpus-known PumpSwap swap instructions the resolver rejected (the frozen builder drops these too).
+    pub resolver_rejects: u64,
+    /// Redeliveries of a row already seen (adds nothing).
+    pub duplicates: u64,
+}
+
+/// Production step for PumpSwap: one corpus-definition feature row per corpus-known PumpSwap buy/sell instruction of
+/// a VERIFIED-successful transaction, exactly as `renormalize_raw.py` builds it (trader = instruction-account search
+/// without a preferred index, else whole-transaction net-position fallback; native+WSOL delta; token delta).
+///
+/// This is FEATURE HISTORY, independent of execution scope: a row is produced for every corpus-known swap whatever
+/// the pool (canonical or not, any quote), because the frozen builder consumed the whole tape. The trade-ability of
+/// the market is decided elsewhere (`decode_amm_swaps` -> `AmmSwap`). The row has no reserve price or quote.
+/// Failed or status-unknown transactions produce nothing here; the caller treats unknown status as a named gap.
+pub fn ingest_amm_rows(
+    tx: &LaserStreamTx,
+    dedup: &mut EventDedup,
+    stats: &mut AmmRowStats,
+    out: &mut Vec<ProvenancedEvent>,
+) {
+    if tx.tx_ok != Some(true) {
+        return;
+    }
+    let Some(bal) = tx.balances.as_ref() else {
+        return;
+    };
+    let not_launch = crate::corpus_rows::not_a_launch_set();
+    for (i, ix) in tx.instructions.iter().enumerate() {
+        if ix.program_id != crate::laserstream::PUMP_SWAP_PROGRAM {
+            continue;
+        }
+        let Some(is_buy) = crate::corpus_rows::corpus_swap_side(&ix.data) else {
+            continue;
+        };
+        let ordinal = u32::try_from(i).unwrap_or(u32::MAX);
+        let Some(row) = crate::corpus_rows::resolve_row(
+            None,
+            is_buy,
+            &ix.accounts,
+            &tx.account_keys,
+            &tx.invalid_key_idx,
+            bal,
+            &not_launch,
+        ) else {
+            stats.resolver_rejects += 1;
+            continue;
+        };
+        let Ok(tokens_raw) = i64::try_from(row.tokens_raw) else {
+            stats.resolver_rejects += 1;
+            continue;
+        };
+        // Row identity lives in its own domain, keyed by the row's instruction index.
+        if !dedup.first_time_row(&tx.signature, ordinal) {
+            stats.duplicates += 1;
+            continue;
+        }
+        stats.emitted += 1;
+        out.push(ProvenancedEvent {
+            event: AppEvent::CorpusFlowRow {
+                mint: Mint(row.mint),
+                venue: TradeVenue::PumpSwap,
+                feature: FeatureBasis {
+                    sol_lamports: row.sol_lamports,
+                    tokens_raw,
+                    trader: row.trader,
+                },
+                recv_unix_ms: tx.recv_unix_ms,
+                slot: Some(tx.slot),
+                fee_lamports: tx.fee_lamports,
+                cu_consumed: tx.cu_consumed,
+                event_id: corpus_row_id(&tx.signature, ordinal),
+            },
+            source: ProvenanceSource::LaserStreamTradeEvent,
+            slot: tx.slot,
+            is_live: tx.is_live,
+        });
     }
 }
 
@@ -558,14 +700,13 @@ mod tests {
             ix_ordinal: 4,
             quote: QuoteIdentity::Sol,
         };
-        let mut used = Vec::new();
         assert_eq!(
-            corpus_basis_for(&t, &e, &nl, &mut used).unwrap_err(),
+            corpus_basis_for(&t, 0, &e, &nl).unwrap_err(),
             "no_balances_on_wire"
         );
         t.instructions.push(ix(vec![0xaa; 16])); // unrelated pump ix, not corpus-known
         assert_eq!(
-            corpus_basis_for(&t, &e, &nl, &mut used).unwrap_err(),
+            corpus_basis_for(&t, 0, &e, &nl).unwrap_err(),
             "no_balances_on_wire"
         );
     }
@@ -622,6 +763,8 @@ mod tests {
             program_id: PUMP_FUN_PROGRAM,
             data,
             accounts: vec![],
+            outer: None,
+            depth: None,
         }
     }
     fn buy_ix() -> LaserStreamInstruction {
@@ -1017,79 +1160,23 @@ mod tests {
         let _ = decode_curve_trade_events(&t2);
     }
 
-    /// One transaction, TWO corpus-known buys on the SAME mint and side by two DIFFERENT traders, each followed by
-    /// its own TradeEvent. Attribution must be one-to-one: each event gets its own instruction's row (own trader
-    /// and own balance delta), each instruction is used once, and swapping the event order swaps the rows.
-    #[test]
-    fn repeated_same_mint_same_side_instructions_are_attributed_one_to_one() {
-        use crate::corpus_rows::{BalanceMeta, TokBal};
-        let key = |b: u8| [b; 32];
-        // account keys: 0..=9. Traders are keys 7 and 8 (the TradeEvent `user` bytes are [7;32] and [8;32]).
-        let keys: Vec<[u8; 32]> = (0u8..10).map(key).collect();
-        let mint = MINT;
-        let tb = |owner: u8, amt: u128| TokBal {
-            mint,
-            owner: key(owner),
-            amount: amt,
-        };
-        let bal = BalanceMeta {
-            pre_sol: vec![1000; 10],
-            // trader 7 pays 300, trader 8 pays 700 (balance deltas, not swap amounts)
-            post_sol: vec![1000, 1000, 1000, 1000, 1000, 1000, 1000, 700, 300, 1000],
-            pre_tok: vec![tb(7, 0), tb(8, 0), tb(9, 1000)],
-            post_tok: vec![tb(7, 30), tb(8, 70), tb(9, 900)],
-        };
-        let buy_ix_for = |trader_key: u8| {
-            let mut d = BUY_SELL_DISCS[0].to_vec();
-            d.extend_from_slice(&[0u8; 16]);
-            LaserStreamInstruction {
-                program_id: PUMP_FUN_PROGRAM,
-                data: d,
-                accounts: vec![trader_key],
-            }
-        };
-        let build = |first: u8, second: u8| {
-            let mut t = tx(
-                9,
-                Some(true),
-                vec![
-                    buy_ix_for(first),
-                    ix(ev_data(mint, first, true, 11, 5, 10, 10)),
-                    buy_ix_for(second),
-                    ix(ev_data(mint, second, true, 22, 5, 10, 10)),
-                ],
-            );
-            t.account_keys = keys.clone();
-            t.balances = Some(bal.clone());
-            t
-        };
-        for (first, second, exp_first, exp_second) in
-            [(7u8, 8u8, -300i64, -700i64), (8, 7, -700, -300)]
-        {
-            let t = build(first, second);
-            let mut dd = EventDedup::new(16);
-            let mut out = Vec::new();
-            let _ = ingest_curve_tx(&t, &mut dd, &mut out);
-            assert_eq!(out.len(), 2);
-            let basis = |i: usize| match out[i].event {
-                AppEvent::MarketTrade {
-                    feature: Some(f), ..
-                } => f,
-                _ => panic!("both events must resolve a basis"),
-            };
-            assert_eq!(basis(0).trader, key(first));
-            assert_eq!(basis(0).sol_lamports, exp_first);
-            assert_eq!(basis(1).trader, key(second));
-            assert_eq!(basis(1).sol_lamports, exp_second);
-            assert_eq!(dd.corpus_basis_resolved, 2);
-            assert!(dd.outside_corpus.is_empty());
+    fn pos(mut i: LaserStreamInstruction, outer: u32, depth: u32) -> LaserStreamInstruction {
+        i.outer = Some(outer);
+        i.depth = Some(depth);
+        i
+    }
+    fn buy_for(trader_key: u8) -> LaserStreamInstruction {
+        let mut d = BUY_SELL_DISCS[0].to_vec();
+        d.extend_from_slice(&[0u8; 16]);
+        LaserStreamInstruction {
+            program_id: PUMP_FUN_PROGRAM,
+            data: d,
+            accounts: vec![trader_key],
+            outer: None,
+            depth: None,
         }
     }
-
-    /// An instruction with NO matching TradeEvent never lends its row to another event, and a third event with no
-    /// unused instruction is refused by name instead of reusing a row.
-    #[test]
-    fn an_event_without_an_unused_matching_instruction_is_refused_not_reassigned() {
+    fn two_trader_balances() -> (Vec<[u8; 32]>, crate::corpus_rows::BalanceMeta) {
         use crate::corpus_rows::{BalanceMeta, TokBal};
         let key = |b: u8| [b; 32];
         let keys: Vec<[u8; 32]> = (0u8..10).map(key).collect();
@@ -1098,26 +1185,103 @@ mod tests {
             owner: key(owner),
             amount: amt,
         };
-        let bal = BalanceMeta {
-            pre_sol: vec![1000; 10],
-            post_sol: vec![1000, 1000, 1000, 1000, 1000, 1000, 1000, 700, 1000, 1000],
-            pre_tok: vec![tb(7, 0), tb(9, 100)],
-            post_tok: vec![tb(7, 30), tb(9, 70)],
-        };
-        let mut d = BUY_SELL_DISCS[0].to_vec();
-        d.extend_from_slice(&[0u8; 16]);
-        let one_ix = LaserStreamInstruction {
-            program_id: PUMP_FUN_PROGRAM,
-            data: d,
-            accounts: vec![7],
+        (
+            keys,
+            BalanceMeta {
+                pre_sol: vec![1000; 10],
+                // trader 7 pays 300, trader 8 pays 700 (balance deltas, not swap amounts)
+                post_sol: vec![1000, 1000, 1000, 1000, 1000, 1000, 1000, 700, 300, 1000],
+                pre_tok: vec![tb(7, 0), tb(8, 0), tb(9, 1000)],
+                post_tok: vec![tb(7, 30), tb(8, 70), tb(9, 900)],
+            },
+        )
+    }
+
+    /// INVOCATION-LEVEL association. One router transaction (outer 0, depth 1) CPIs into pump.fun twice (depth 2),
+    /// same mint, same side, different traders; each pump instruction has its own TradeEvent self-CPI (depth 3) and a
+    /// token-transfer CPI at depth 3-4 in between. Each event is bound to its PARENT instruction (nearest preceding
+    /// instruction of the same outer group at depth-1), not to an adjacent or first-unused one. The wire order below
+    /// puts the SECOND buy's inner transfer chain between its own call and event, and the event's `user` bytes are
+    /// deliberately swapped relative to the wire order of the pump instructions to prove the row comes from the parent,
+    /// not from the event payload.
+    #[test]
+    fn repeated_same_mint_same_side_events_are_bound_by_invocation_parent() {
+        let (keys, bal) = two_trader_balances();
+        let router = LaserStreamInstruction {
+            program_id: [0xEE; 32],
+            data: vec![],
+            accounts: vec![],
+            outer: None,
+            depth: None,
         };
         let mut t = tx(
-            10,
+            9,
             Some(true),
             vec![
-                one_ix,
+                pos(router, 0, 1),
+                pos(buy_for(7), 0, 2),
+                pos(ix(ev_data(MINT, 8, true, 11, 5, 10, 10)), 0, 3), // event of buy#1 (payload user deliberately 8)
+                pos(buy_for(8), 0, 2),
+                pos(
+                    LaserStreamInstruction {
+                        program_id: [0xDD; 32],
+                        data: vec![],
+                        accounts: vec![],
+                        outer: None,
+                        depth: None,
+                    },
+                    0,
+                    3,
+                ),
+                pos(
+                    LaserStreamInstruction {
+                        program_id: [0xDD; 32],
+                        data: vec![],
+                        accounts: vec![],
+                        outer: None,
+                        depth: None,
+                    },
+                    0,
+                    4,
+                ),
+                pos(ix(ev_data(MINT, 7, true, 22, 5, 10, 10)), 0, 3), // event of buy#2
+            ],
+        );
+        t.account_keys = keys.clone();
+        t.balances = Some(bal);
+        assert_eq!(crate::laserstream::invocation_parent(&t, 2), Ok(1));
+        assert_eq!(crate::laserstream::invocation_parent(&t, 6), Ok(3));
+        let mut dd = EventDedup::new(16);
+        let mut out = Vec::new();
+        let _ = ingest_curve_tx(&t, &mut dd, &mut out);
+        assert_eq!(out.len(), 2);
+        let basis = |i: usize| match out[i].event {
+            AppEvent::MarketTrade {
+                feature: Some(f), ..
+            } => f,
+            _ => panic!("both events must resolve a basis"),
+        };
+        // event 0's parent is buy#1 (trader 7, -300) even though its payload names user 8; event 1's parent is buy#2.
+        assert_eq!(basis(0).trader, keys[7]);
+        assert_eq!(basis(0).sol_lamports, -300);
+        assert_eq!(basis(1).trader, keys[8]);
+        assert_eq!(basis(1).sol_lamports, -700);
+        assert_eq!(dd.corpus_basis_resolved, 2);
+    }
+
+    /// With NO invocation positions from the producer, two candidate rows for one event are AMBIGUOUS and refused by
+    /// name; order is never used to pick one.
+    #[test]
+    fn without_invocation_positions_two_candidate_rows_are_refused_not_ordered() {
+        let (keys, bal) = two_trader_balances();
+        let mut t = tx(
+            9,
+            Some(true),
+            vec![
+                buy_for(7),
                 ix(ev_data(MINT, 7, true, 11, 5, 10, 10)),
-                ix(ev_data(MINT, 7, true, 22, 5, 10, 10)),
+                buy_for(8),
+                ix(ev_data(MINT, 8, true, 22, 5, 10, 10)),
             ],
         );
         t.account_keys = keys;
@@ -1125,24 +1289,55 @@ mod tests {
         let mut dd = EventDedup::new(16);
         let mut out = Vec::new();
         let _ = ingest_curve_tx(&t, &mut dd, &mut out);
-        assert_eq!(out.len(), 2, "both events are admitted");
-        let with_basis = out
-            .iter()
-            .filter(|p| {
-                matches!(
-                    p.event,
-                    AppEvent::MarketTrade {
-                        feature: Some(_),
-                        ..
-                    }
-                )
-            })
-            .count();
-        assert_eq!(
-            with_basis, 1,
-            "the single instruction's row is used exactly once"
+        assert_eq!(out.len(), 2, "both events still admitted for discovery");
+        assert!(out.iter().all(|p| matches!(
+            p.event,
+            AppEvent::MarketTrade { feature: None, .. }
+        )));
+        assert_eq!(dd.outside_corpus.get("attribution_ambiguous"), Some(&2));
+        assert_eq!(dd.corpus_basis_resolved, 0);
+    }
+
+    /// A single candidate with no positions is unambiguous; an event whose declared parent is NOT a pump.fun
+    /// corpus instruction is refused by name (never reassigned to a sibling).
+    #[test]
+    fn unique_candidate_without_positions_resolves_and_foreign_parent_is_refused() {
+        let (keys, bal) = two_trader_balances();
+        let mut t = tx(
+            9,
+            Some(true),
+            vec![buy_for(7), ix(ev_data(MINT, 7, true, 11, 5, 10, 10))],
         );
+        t.account_keys = keys.clone();
+        t.balances = Some(bal.clone());
+        let mut dd = EventDedup::new(16);
+        let mut out = Vec::new();
+        let _ = ingest_curve_tx(&t, &mut dd, &mut out);
         assert_eq!(dd.corpus_basis_resolved, 1);
-        assert_eq!(dd.outside_corpus.values().sum::<u64>(), 1);
+        // positions given, parent of the event is a foreign program
+        let foreign = LaserStreamInstruction {
+            program_id: [0xEE; 32],
+            data: vec![],
+            accounts: vec![],
+            outer: None,
+            depth: None,
+        };
+        let mut t2 = tx(
+            10,
+            Some(true),
+            vec![
+                pos(buy_for(7), 0, 2),
+                pos(foreign, 0, 2),
+                pos(ix(ev_data(MINT, 7, true, 11, 5, 10, 10)), 0, 3),
+            ],
+        );
+        t2.account_keys = keys;
+        t2.balances = Some(bal);
+        let mut dd2 = EventDedup::new(16);
+        let mut out2 = Vec::new();
+        let _ = ingest_curve_tx(&t2, &mut dd2, &mut out2);
+        assert_eq!(out2.len(), 1);
+        assert_eq!(dd2.outside_corpus.get("parent_not_pump_fun"), Some(&1));
+        assert_eq!(dd2.corpus_basis_resolved, 0);
     }
 }

@@ -51,11 +51,33 @@ const SELL_DISCS: [[u8; 8]; 2] = [
     [93, 246, 130, 60, 231, 233, 64, 178],
 ];
 /// Account index of the user in a pump.fun buy/sell instruction (tie-break only).
-const PUMP_FUN_TRADER_IX: usize = 6;
+/// Preferred trader account index of a pump.fun buy/sell (the corpus has none for PumpSwap: `SWAP_TRADER_IX = None`).
+pub const PUMP_FUN_TRADER_IX: usize = 6;
 const WSOL: [u8; 32] = [
     6, 155, 136, 87, 254, 171, 129, 132, 251, 104, 127, 99, 70, 24, 192, 53, 218, 196, 57, 220, 26,
     235, 59, 85, 152, 160, 240, 0, 0, 0, 0, 1,
 ];
+
+/// PumpSwap buy discriminators in the corpus table (`buy`, `buy_exact_quote_in`).
+const SWAP_BUY_DISCS: [[u8; 8]; 2] = [
+    [102, 6, 61, 18, 1, 218, 235, 234],
+    [198, 46, 21, 82, 180, 217, 232, 112],
+];
+/// PumpSwap sell discriminator in the corpus table.
+const SWAP_SELL_DISCS: [[u8; 8]; 1] = [[51, 230, 133, 164, 1, 127, 131, 173]];
+
+/// `Some(is_buy)` when `data` starts with a corpus-known PumpSwap buy/sell discriminator.
+#[must_use]
+pub fn corpus_swap_side(data: &[u8]) -> Option<bool> {
+    let d = data.get(..8)?;
+    if SWAP_BUY_DISCS.iter().any(|x| x[..] == *d) {
+        Some(true)
+    } else if SWAP_SELL_DISCS.iter().any(|x| x[..] == *d) {
+        Some(false)
+    } else {
+        None
+    }
+}
 
 /// `Some(is_buy)` when `data` starts with a corpus-known pump.fun buy/sell discriminator.
 #[must_use]
@@ -125,6 +147,7 @@ fn candidate_mints(m: &BalanceMeta, not_launch: &HashSet<[u8; 32]>) -> Vec<[u8; 
 /// indices into `keys`. `None` = the corpus would have rejected it (counted by the caller, never guessed).
 #[must_use]
 pub fn resolve_row(
+    prefer_ix: Option<usize>,
     is_buy: bool,
     ix_accounts: &[u8],
     keys: &[[u8; 32]],
@@ -157,7 +180,7 @@ pub fn resolve_row(
         }
         if !cands.is_empty() {
             let mut pick = None;
-            if let Some(&want) = ix_accounts.get(PUMP_FUN_TRADER_IX) {
+            if let Some(&want) = prefer_ix.and_then(|i| ix_accounts.get(i)) {
                 pick = cands.iter().find(|c| c.0 == usize::from(want)).copied();
             }
             let best = pick.unwrap_or_else(|| {
@@ -293,6 +316,7 @@ mod tests {
             vec![tb(k(MINT), k(TRADER), 200), tb(k(MINT), k(POOL), 300)],
         );
         let r = resolve_row(
+            Some(PUMP_FUN_TRADER_IX),
             true,
             &[0, 1, 2, 3, 4, 5, 7],
             &keys,
@@ -320,12 +344,12 @@ mod tests {
         let post_leak = vec![tb(k(MINT), k(TRADER), 200), tb(k(MINT), k(POOL), 100)];
         let sol_post = vec![1000, 1000, 1000, 1000, 1000, 1000, 1000, 900, 1100, 1000];
         let m_ok = meta(vec![1000; 10], sol_post.clone(), pre.clone(), post_ok);
-        let r = resolve_row(true, &[0, 1], &keys, &[], &m_ok, &not_a_launch_set()).unwrap();
+        let r = resolve_row(Some(PUMP_FUN_TRADER_IX), true, &[0, 1], &keys, &[], &m_ok, &not_a_launch_set()).unwrap();
         assert!(r.via_net_position);
         assert_eq!(r.trader, k(TRADER));
         let m_leak = meta(vec![1000; 10], sol_post, pre, post_leak);
         assert!(
-            resolve_row(true, &[0, 1], &keys, &[], &m_leak, &not_a_launch_set()).is_none(),
+            resolve_row(Some(PUMP_FUN_TRADER_IX), true, &[0, 1], &keys, &[], &m_leak, &not_a_launch_set()).is_none(),
             "non-conserving token totals are rejected, as the corpus rejects them"
         );
     }
@@ -352,6 +376,6 @@ mod tests {
     fn mismatched_balance_arrays_and_zero_deltas_are_rejected() {
         let keys: Vec<[u8; 32]> = (0u8..10).map(k).collect();
         let m = meta(vec![1000; 10], vec![1000; 9], vec![], vec![]);
-        assert!(resolve_row(true, &[7], &keys, &[], &m, &not_a_launch_set()).is_none());
+        assert!(resolve_row(Some(PUMP_FUN_TRADER_IX), true, &[7], &keys, &[], &m, &not_a_launch_set()).is_none());
     }
 }

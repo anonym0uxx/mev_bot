@@ -61,6 +61,7 @@ fn main() {
                 continue;
             };
             match resolve_row(
+                Some(pump_quant_junction::corpus_rows::PUMP_FUN_TRADER_IX),
                 is_buy,
                 &ix.accounts,
                 &tx.account_keys,
