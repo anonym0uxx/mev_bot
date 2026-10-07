@@ -159,12 +159,46 @@ pub struct WsUrl {
     pub path: String,
 }
 
+/// True only for an exact `127.0.0.1` / `localhost` / `[::1]` authority, with an optional numeric port. Userinfo
+/// (`user@`), a query/fragment glued to the authority, and lookalike names (`127.0.0.1.evil.com`,
+/// `localhost.evil.com`, `127.0.0.1@evil.com`) are all refused because the host must equal one of three literals.
+fn is_loopback_authority(rest: &str) -> bool {
+    let authority = rest.split('/').next().unwrap_or("");
+    if authority.contains(['@', '?', '#', '\\', ' ']) {
+        return false;
+    }
+    let (host, port) = if let Some(r) = authority.strip_prefix("[::1]") {
+        ("[::1]", r.strip_prefix(':'))
+    } else if let Some((h, p)) = authority.rsplit_once(':') {
+        (h, Some(p))
+    } else {
+        (authority, None)
+    };
+    if let Some(p) = port {
+        if p.is_empty() || !p.bytes().all(|b| b.is_ascii_digit()) {
+            return false;
+        }
+    }
+    matches!(host, "127.0.0.1" | "localhost" | "[::1]")
+}
+
 /// Parse a `wss://host[:port][/path][?query]` URL. Pure; `ws://` (cleartext)
 /// is refused — every lane this suite talks to is TLS.
 pub fn parse_wss_url(url: &str) -> Result<WsUrl, String> {
-    let rest = url
-        .strip_prefix("wss://")
-        .ok_or_else(|| format!("not a wss:// url: {url:?}"))?;
+    let rest = match url.strip_prefix("wss://") {
+        Some(r) => r,
+        None => {
+            // Test seam: cleartext is accepted ONLY for a loopback host (a local stub endpoint). Any other
+            // `ws://` target is still refused, so no real lane can ever run unencrypted.
+            let r = url
+                .strip_prefix("ws://")
+                .ok_or_else(|| format!("not a wss:// url: {url:?}"))?;
+            if !is_loopback_authority(r) {
+                return Err(format!("not a wss:// url: {url:?}"));
+            }
+            r
+        }
+    };
     let (authority, path) = match rest.find('/') {
         Some(i) => (&rest[..i], &rest[i..]),
         None => (rest, "/"),
@@ -530,9 +564,45 @@ pub enum WsEvent {
     Closed(String),
 }
 
+/// TLS in production; plain TCP only for the loopback test seam.
+enum WsStream {
+    Tls(Box<rustls::StreamOwned<rustls::ClientConnection, TcpStream>>),
+    Plain(TcpStream),
+}
+impl WsStream {
+    fn tcp(&self) -> &TcpStream {
+        match self {
+            WsStream::Tls(s) => s.get_ref(),
+            WsStream::Plain(s) => s,
+        }
+    }
+}
+impl std::io::Read for WsStream {
+    fn read(&mut self, b: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            WsStream::Tls(s) => s.read(b),
+            WsStream::Plain(s) => s.read(b),
+        }
+    }
+}
+impl std::io::Write for WsStream {
+    fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+        match self {
+            WsStream::Tls(s) => s.write(b),
+            WsStream::Plain(s) => s.write(b),
+        }
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self {
+            WsStream::Tls(s) => s.flush(),
+            WsStream::Plain(s) => s.flush(),
+        }
+    }
+}
+
 /// A connected WebSocket client over rustls TLS.
 pub struct WsConn {
-    stream: rustls::StreamOwned<rustls::ClientConnection, TcpStream>,
+    stream: WsStream,
     rx: Vec<u8>,
     asm: Reassembler,
     last_ping: Instant,
@@ -555,27 +625,41 @@ impl WsConn {
     /// Connect, upgrade, verify (RFC 6455 §4). `url` must be `wss://`.
     pub fn connect(url: &str) -> Result<Self, String> {
         let parsed = parse_wss_url(url)?;
-        let addr = (parsed.host.as_str(), parsed.port)
+        let cleartext = url.starts_with("ws://");
+        let mut addrs = (parsed.host.as_str(), parsed.port)
             .to_socket_addrs()
-            .map_err(|e| format!("resolve {}:{}: {e}", parsed.host, parsed.port))?
-            .next()
-            .ok_or_else(|| format!("no address for {}", parsed.host))?;
+            .map_err(|e| format!("resolve {}:{}: {e}", parsed.host, parsed.port))?;
+        // Cleartext is a loopback-only test seam: the RESOLVED address must itself be loopback, so a name that
+        // resolves elsewhere (DNS/hosts tampering) can never carry an unencrypted lane off this machine.
+        let addr = if cleartext {
+            addrs
+                .find(|a| a.ip().is_loopback())
+                .ok_or_else(|| format!("cleartext ws:// refused: {} does not resolve to loopback", parsed.host))?
+        } else {
+            addrs
+                .next()
+                .ok_or_else(|| format!("no address for {}", parsed.host))?
+        };
         let tcp = TcpStream::connect_timeout(&addr, Duration::from_secs(WS_CONNECT_TIMEOUT_SECS))
             .map_err(|e| format!("connect {addr}: {e}"))?;
         tcp.set_nodelay(true).map_err(|e| e.to_string())?;
         tcp.set_read_timeout(Some(Duration::from_secs(WS_READ_TIMEOUT_SECS)))
             .map_err(|e| e.to_string())?;
 
-        let mut roots = rustls::RootCertStore::empty();
-        roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-        let config = rustls::ClientConfig::builder()
-            .with_root_certificates(roots)
-            .with_no_client_auth();
-        let server_name = rustls_pki_types::ServerName::try_from(parsed.host.clone())
-            .map_err(|e| format!("bad server name {:?}: {e}", parsed.host))?;
-        let conn = rustls::ClientConnection::new(Arc::new(config), server_name)
-            .map_err(|e| format!("tls client: {e}"))?;
-        let mut stream = rustls::StreamOwned::new(conn, tcp);
+        let mut stream = if cleartext {
+            WsStream::Plain(tcp)
+        } else {
+            let mut roots = rustls::RootCertStore::empty();
+            roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+            let config = rustls::ClientConfig::builder()
+                .with_root_certificates(roots)
+                .with_no_client_auth();
+            let server_name = rustls_pki_types::ServerName::try_from(parsed.host.clone())
+                .map_err(|e| format!("bad server name {:?}: {e}", parsed.host))?;
+            let conn = rustls::ClientConnection::new(Arc::new(config), server_name)
+                .map_err(|e| format!("tls client: {e}"))?;
+            WsStream::Tls(Box::new(rustls::StreamOwned::new(conn, tcp)))
+        };
 
         let key = B64.encode(rand_bytes::<16>()?);
         let request = handshake_request(&parsed.host, parsed.port, &parsed.path, &key);
@@ -624,7 +708,7 @@ impl WsConn {
     /// to a wall-clock tick period shorter than the default 1 s.
     pub fn set_read_timeout(&mut self, timeout: Duration) -> Result<(), String> {
         self.stream
-            .get_ref()
+            .tcp()
             .set_read_timeout(Some(timeout))
             .map_err(|e| e.to_string())
     }
@@ -863,6 +947,64 @@ mod tests {
         );
         assert_eq!(parse_wss_url("wss://h:8443").unwrap().port, 8443);
         assert_eq!(parse_wss_url("wss://h").unwrap().path, "/");
+    }
+
+    #[test]
+    fn cleartext_is_accepted_only_for_exact_loopback_authorities() {
+        for ok in ["ws://127.0.0.1:18081", "ws://127.0.0.1/p?x=1", "ws://localhost:9", "ws://[::1]:7/x", "ws://127.0.0.1"] {
+            assert!(parse_wss_url(ok).is_ok(), "{ok}");
+        }
+        for bad in [
+            "ws://127.0.0.1.evil.com", "ws://localhost.evil.com:80", "ws://evil.com", "ws://127.0.0.1@evil.com",
+            "ws://evil.com@127.0.0.1", "ws://127.0.0.1:80@evil.com/", "ws://127.0.0.2", "ws://0.0.0.0:80",
+            "ws://127.0.0.1:/x", "ws://127.0.0.1:8a", "ws://127.0.0.1?@evil.com", "ws://127.0.0.1#@evil.com",
+            "ws://[::2]:1", "ws://LOCALHOST:1", "ws://127.0.0.1\\@evil.com", "WS://127.0.0.1", "ws:// 127.0.0.1",
+            "ws://localhost.:1", "ws://127.1:1", "ws://2130706433:1",
+        ] {
+            assert!(parse_wss_url(bad).is_err(), "{bad}");
+        }
+        // loopback is accepted only on ws://; the TLS scheme is unchanged and still takes any host
+        assert_eq!(parse_wss_url("wss://example.com").unwrap().port, 443);
+    }
+
+    #[test]
+    fn cleartext_connect_to_a_non_loopback_name_never_opens_a_socket() {
+        // "localhost" is allowed by the parser; a name that merely LOOKS loopback is refused before any resolution
+        let e = WsConn::connect("ws://localhost.invalid:1").err().unwrap();
+        assert!(e.contains("not a wss:// url"), "{e}");
+        let e = WsConn::connect("ws://example.com:1").err().unwrap();
+        assert!(e.contains("not a wss:// url"), "{e}");
+    }
+
+    #[test]
+    fn cleartext_loopback_handshake_works_end_to_end_with_a_local_server() {
+        use std::io::{Read, Write};
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        let h = std::thread::spawn(move || {
+            let (mut s, _) = l.accept().unwrap();
+            let mut buf = [0u8; 2048];
+            let n = s.read(&mut buf).unwrap();
+            let req = String::from_utf8_lossy(&buf[..n]).to_string();
+            let key = req.lines().find_map(|x| x.strip_prefix("Sec-WebSocket-Key: ")).unwrap().trim().to_string();
+            let resp = format!(
+                "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {}\r\n\r\n",
+                accept_for_key(&key)
+            );
+            s.write_all(resp.as_bytes()).unwrap();
+            s.write_all(&[0x81, 0x02, b'h', b'i']).unwrap();
+            req
+        });
+        let mut c = WsConn::connect(&format!("ws://127.0.0.1:{port}/x")).unwrap();
+        let mut got = None;
+        for _ in 0..5 {
+            if let Some(WsEvent::Text(t)) = c.poll_event().unwrap() {
+                got = Some(t);
+                break;
+            }
+        }
+        assert_eq!(got.as_deref(), Some("hi"));
+        assert!(h.join().unwrap().starts_with("GET /x HTTP/1.1"));
     }
 
     #[test]
