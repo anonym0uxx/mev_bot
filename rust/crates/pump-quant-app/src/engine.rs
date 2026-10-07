@@ -329,6 +329,8 @@ const TERMINAL_DELTA_T_TICKS: u64 = 240;
 const TERMINAL_CADENCE_VERSION: u32 = 1;
 /// §47a/§99 LAW 18 bound on the per-mint last-activity table (deterministic
 /// eviction of the lexicographically-smallest tracked mint past capacity).
+/// Recent executed-event identities remembered for aggregation dedup (bounded; oldest evicted).
+const AGG_SEEN_CAP: usize = 65_536;
 const LAST_TRADE_TABLE_CAP: usize = 8_192;
 
 /// Maximum number of `ReconTrade` records accumulated for tape export before
@@ -827,6 +829,10 @@ pub struct Engine {
     /// When true the transaction-event producer supplies corpus-definition rows for PumpSwap trades, so the AMM swap
     /// event no longer feeds the trained windows with its own (legacy-basis) print: it would double-count the trade.
     corpus_flow_rows: bool,
+    /// Bounded recent executed-event identities already folded into the shared aggregates (numeric/VPIN/ledgers).
+    /// A redelivered identity is not folded twice (replay/overlap safety independent of the model lane).
+    agg_seen_ids: std::collections::VecDeque<u128>,
+    agg_seen_set: std::collections::HashSet<u128>,
     /// The model lane's decision-time cache (see `decision_join`). Fed only when armed.
     model_cache: crate::decision_join::DecisionCache,
     /// Model-lane request discipline, worker pool, per-request bindings, pending paper orders and
@@ -1476,6 +1482,8 @@ impl Engine {
             mode,
             paper_model_mode: false,
             corpus_flow_rows: false,
+            agg_seen_ids: std::collections::VecDeque::new(),
+            agg_seen_set: std::collections::HashSet::new(),
             model_cache: crate::decision_join::DecisionCache::new(),
             model_table: crate::model_lane::RequestTable::default(),
             model_pool: None,
@@ -1970,6 +1978,7 @@ impl Engine {
                 event_id,
                 feature,
             } => {
+                let mut replayed_print = false;
                 // Model-lane ingest. A no-op unless the paper-model lane is armed, so every legacy
                 // and golden path is byte-identical.
                 if self.paper_model_mode {
@@ -1994,7 +2003,8 @@ impl Engine {
                     if price_fp > 0 && matches!(venue, crate::state_ledger::VenueLabel::Pumpfun) {
                         self.model_register(*mint.as_bytes());
                     }
-                    self.model_cache
+                    let ingest = self
+                        .model_cache
                         .observe_trade(&crate::decision_join::TradeObs {
                             mint: *mint.as_bytes(),
                             price_fp,
@@ -2010,7 +2020,35 @@ impl Engine {
                             event_id,
                             feature,
                         });
+                    // A redelivered executed print was already folded once: it must not be folded again.
+                    if matches!(ingest, crate::decision_join::Ingest::Duplicate) {
+                        self.mrep("replay:duplicate_print_not_aggregated");
+                        replayed_print = true;
+                    }
                 }
+                // An INSTRUCTION HINT (no executed price, no event identity, no corpus basis) tells us a swap was
+                // REQUESTED. Its amounts are instruction arguments (requested/bounded quantities), not executions, and
+                // its price is absent, so it is a discovery/clock hint only: it must not count as a trade, move
+                // imbalance, refresh executed-price freshness, feed VPIN/tick volume, or drive a held position's
+                // price-based protection (a price of 0 reads as a total collapse).
+                if let Some(id) = event_id {
+                    if self.agg_seen_set.contains(&id) {
+                        replayed_print = true;
+                    } else {
+                        if self.agg_seen_ids.len() >= AGG_SEEN_CAP {
+                            if let Some(o) = self.agg_seen_ids.pop_front() {
+                                self.agg_seen_set.remove(&o);
+                            }
+                        }
+                        self.agg_seen_ids.push_back(id);
+                        self.agg_seen_set.insert(id);
+                    }
+                }
+                let instruction_hint = price_fp <= 0 && event_id.is_none() && feature.is_none();
+                if instruction_hint && self.paper_model_mode {
+                    self.mrep("hint:instruction_print_not_aggregated");
+                }
+                if !(instruction_hint || replayed_print) {
                 self.numeric.observe(
                     mint,
                     price_fp,
@@ -2334,6 +2372,7 @@ impl Engine {
                             }
                         } // close `else if self.positions.has(...)`
                     } // Rev-31: close `if !skip_exit`
+                }
                 }
             }
             AppEvent::Migration { mint, slot } => {
