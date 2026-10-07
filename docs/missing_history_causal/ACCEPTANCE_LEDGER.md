@@ -32,3 +32,21 @@ pre-existing label quirk (a legacy trail exit at/below entry is labelled HardSto
   swap followed by silence is not detectable until a later swap's pre-trade state, or the 60 s pricing budget raises the gap.
 - Spot trigger is not an executable sell quote. AMM routing fills stay non-assessable.
 - No new liquidation rule: the gap alerts; it does not close anything.
+
+## Update: option-2 continuous fixture (milestone10, SHA ce2c1168 + this ledger commit)
+
+**Fixture.** s1 wire_0000..0004: 159,532 lines, 2026-09-09 14:49:07.168 to 14:52:22.338 UTC. Fresh flow history initialized at line 1 (seed_source `cold_start:segment_09_09_14_49_07`); no August state. Manifest with per-file SHA-256: `milestone10/fixture_manifest.json`.
+
+**Continuity evidence (and its limit).** One capture session (20260909_144906_000490), one lane. Over the whole 679,746-line s1 recording: max recv gap 542 ms, max slot step 2. No reconnect/gap record in the session log. NOT established: recorder-side drop counters do not exist, so "no loss" is inferred from recv-gap/slot-step bounds, not proven.
+
+**Readiness classes.** Daemon writes `data/flow_readiness.json`: `cold_start_declared_history_limited` vs missing/failed/incompatible bootstrap are distinct. Zeros under the declared class mean none observed in this history, not none globally. Prompt grammar unchanged. Does not enable history-poor production trading; the daemon's refusals are unchanged.
+
+**Replay clock.** `PQ_FLOW_RESUME_MS` is honoured only with `PQ_OFFLINE_PAPER_REPLAY=1`, no `--live`, model lane armed; else exit 96 with a named reason. Process-level: no flag -> NotInOfflineReplayMode, `12abc` -> InvalidValue, far future -> InTheFuture, all exit 96. Affects only the flow-history resume declaration; freshness, staleness, inference deadlines and monotonic timeouts untouched. The live-mode process case could not reach the check (exits earlier on missing creds), so live+flag is covered by the unit test only.
+
+**Recovery matrix** (`milestone10/recovery_matrix.log`):
+- u1/u2 (two uninterrupted runs): flushed checkpoints are byte-identical (payload sha 95352e2b...), 42 and 44 stub requests.
+- A->B (crash after publication at cursor 1788965446370; restart with overlap from line 70001): resume complete (unavailable_ms 0); final checkpoint identical to uninterrupted (95352e2b...).
+- C->C2 (SIGKILL with no flush; periodic writer had published through cursor 1788965410114; restart replays whole segment): complete; final checkpoint identical; 44 requests.
+- D (checkpoint at line 20000, restart at line 150001, hole 152,844 ms): Restored unavailable 152,845 ms, complete=false, gap recorded; 0 model requests (scoped refusal). The August-to-September 16.2-day hole case (milestone9) is retained as the negative test.
+
+**Not equivalent (stated, not hidden).** Request streams are NOT byte-identical even between two uninterrupted runs (42 vs 44; first t_dec differs by ~1 s): prompts are cut on wall-clock ticks against a replay that runs faster than real time, so decision clocks and tick-aligned state (staleness, t_dec, age) vary run to run. Flow history state converges exactly; prompt-level equivalence is not yet demonstrated. Held exposure, emergency order->paper fill->settlement, and callout emission through the real daemon are not yet run in this matrix.
