@@ -2794,6 +2794,15 @@ fn main() -> ExitCode {
                 stats.sub_cap_errors,
             );
             let _ = std::fs::write("data/daemon_health.json", health_json);
+            // The model lane's own funnel counters (discovery / refusal reasons / dispatch), written next to the health
+            // file so an operator or test can see WHERE a market stopped, with exact counts.
+            if model_armed {
+                let rep: std::collections::BTreeMap<&String, &u64> =
+                    engine.model_lane_report().iter().collect();
+                if let Ok(j) = serde_json::to_string(&rep) {
+                    let _ = std::fs::write("data/model_lane_report.json", j);
+                }
+            }
 
             last_status_write_tick = tick_counter;
             last_status_write_wallclock = Instant::now();
