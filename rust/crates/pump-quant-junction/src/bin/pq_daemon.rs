@@ -236,6 +236,8 @@ const WS_READ_TIMEOUT_MS: u64 = 100;
 /// refreshed at most this often, decoupling health reporting from event
 /// throughput so the watchdog never kills a healthy-but-starved daemon.
 const STATUS_HEARTBEAT_SECS: u64 = 15;
+/// Upper bound on the curve-PDA -> mint identity map (memory bound; overflow is counted).
+const PDA_MAP_CAP: usize = 500_000;
 /// Bounded sleep on WS reconnect failures (was 5s which blocked the entire
 /// event loop). 500ms gives the server time to recover without starving
 /// the tick loop.
@@ -785,6 +787,8 @@ struct SessionStats {
     ls_onchain_confirms_decoded: u64,
     /// Rev-30: LS account updates where PDA couldn't be resolved to a mint.
     ls_account_unresolved: u64,
+    pda_installed_from_tx: u64,
+    pda_map_full_refused: u64,
     fc_spawned: bool,
     fc_triggers_emitted: u64,
     fc_events_ingested: u64,
@@ -833,6 +837,8 @@ impl SessionStats {
             ls_account_received: 0,
             ls_onchain_confirms_decoded: 0,
             ls_account_unresolved: 0,
+            pda_installed_from_tx: 0,
+            pda_map_full_refused: 0,
             fc_spawned: false,
             fc_triggers_emitted: 0,
             fc_events_ingested: 0,
@@ -2707,7 +2713,7 @@ fn main() -> ExitCode {
                     "\"ls_active\":{},",
                     "\"ls_account_received\":{},",
                     "\"ls_onchain_confirms_decoded\":{},",
-                    "\"ls_account_unresolved\":{},",
+                    "\"ls_account_unresolved\":{},\"pda_installed_from_tx\":{},\"pda_map_full_refused\":{},",
                     "\"delta_trades_derived\":{},",
                     "\"delta_no_trade\":{},",
                     "\"delta_out_of_range\":{},",
@@ -2753,6 +2759,8 @@ fn main() -> ExitCode {
                 stats.ls_account_received,
                 stats.ls_onchain_confirms_decoded,
                 stats.ls_account_unresolved,
+                stats.pda_installed_from_tx,
+                stats.pda_map_full_refused,
                 stats.delta_trades_derived,
                 stats.delta_no_trade,
                 stats.delta_out_of_range,
@@ -2816,6 +2824,31 @@ fn main() -> ExitCode {
                     stats.ls_transactions_received += 1;
                     let classified = classify_pump_instructions(&tx);
                     stats.ls_instructions_classified += classified.len() as u64;
+                    // CURVE IDENTITY from verified pump.fun instructions. The curve PDA is a pure function of
+                    // (pump program, mint), so deriving it from the mint named by a decoded pump.fun buy / sell /
+                    // create instruction is itself the ownership check: an account update whose pubkey equals this
+                    // derivation IS this mint's bonding curve. Required for markets first seen mid-life: no launch
+                    // or PumpPortal create event is needed, and none is pretended (launch history stays a separate,
+                    // named input). Bounded; a full map is counted, never silently grown.
+                    for c in &classified {
+                        let m = match c {
+                            pump_quant_junction::laserstream::PumpInstruction::Buy { mint, .. }
+                            | pump_quant_junction::laserstream::PumpInstruction::Sell { mint, .. }
+                            | pump_quant_junction::laserstream::PumpInstruction::Launch { mint, .. } => Some(*mint),
+                            _ => None,
+                        };
+                        if let Some(m) = m {
+                            let pda = bonding_curve_pda(&m).to_bytes();
+                            if !pda_to_mint.contains_key(&pda) {
+                                if pda_to_mint.len() >= PDA_MAP_CAP {
+                                    stats.pda_map_full_refused += 1;
+                                } else {
+                                    pda_to_mint.insert(pda, m);
+                                    stats.pda_installed_from_tx += 1;
+                                }
+                            }
+                        }
+                    }
                     let events = instructions_to_events_with_meta(
                         &classified,
                         tx.slot,
