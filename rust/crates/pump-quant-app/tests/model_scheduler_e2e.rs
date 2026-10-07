@@ -296,3 +296,67 @@ fn lane_backpressure_keeps_the_queue_and_its_age_without_starving_management() {
         e.model_lane_report()
     );
 }
+
+#[test]
+fn more_than_the_examine_bound_of_ineligible_older_markets_cannot_starve_eligible_ones_behind_them()
+{
+    let (mut e, _calls) = armed();
+    e.barrier_enable();
+    // 70 OLDER markets (> the 64-examined bound) with prints only and no launch: each is refused by name.
+    let mut evs = Vec::new();
+    for i in 0..70u8 {
+        let mut mkt = feed(
+            m(0x80 + i),
+            T0 + 1_000 + i64::from(i),
+            3,
+            3,
+            100 * (u64::from(i) + 1),
+        );
+        mkt.retain(|x| matches!(x, AppEvent::MarketTrade { .. }));
+        evs.extend(mkt);
+    }
+    // 3 eligible markets observed AFTER them (younger dirty age), so they sit behind the whole ineligible prefix.
+    for (k, b) in [0xE0u8, 0xE1, 0xE2].iter().enumerate() {
+        evs.extend(feed(
+            m(*b),
+            T0 + 3_000 + 100 * k as i64,
+            40,
+            12,
+            20_000 + 1_000 * k as u64,
+        ));
+    }
+    for ev in &evs {
+        e.tick(*ev);
+    }
+    let refused = |e: &Engine| rep(e, "refuse:");
+    // Tick 1: exactly the 64-examined bound is spent on the oldest (ineligible) prefix; nothing is dispatched.
+    e.tick(AppEvent::Tick);
+    assert!(
+        order(&mut e).is_empty(),
+        "no eligible market is reachable yet"
+    );
+    assert_eq!(
+        refused(&e),
+        64,
+        "bound is spent on the old prefix: {:?}",
+        e.model_lane_report()
+    );
+    assert!(rep(&e, "sched_deferred_eval_bound") >= 1);
+    // Tick 2: the 6 remaining ineligible are examined ONCE, then the eligible ones, oldest first. The 64 already
+    // refused are not inspected again (they left the queue), so the refusal total is 70, not 134.
+    e.tick(AppEvent::Tick);
+    assert_eq!(
+        order(&mut e),
+        vec![0xE0, 0xE1, 0xE2],
+        "eligible markets dispatched oldest-first on the second tick: {:?}",
+        e.model_lane_report()
+    );
+    assert_eq!(
+        refused(&e),
+        70,
+        "every ineligible market was examined exactly once"
+    );
+    // The refused ones stay out of the queue until a NEW observation, so a third tick does no re-inspection.
+    e.tick(AppEvent::Tick);
+    assert_eq!(refused(&e), 70, "no re-inspection of the same old prefix");
+}

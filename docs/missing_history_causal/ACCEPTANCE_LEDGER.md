@@ -72,3 +72,14 @@ Not yet fixed. Options (decision for Alon, not taken unilaterally because it cha
  (c) keep legacy promotion and declare restart parity out of scope for tick-domain state.
 
 Instrumentation committed (env PQ_REPLAY_WATCH_MINT, barrier mode only, never in the digest): per-market scheduler trace in data/barrier_watch.log.
+
+## Update: scheduler + excursion fix + aligned recovery comparison (tested head fc37a768 + test-only commit)
+
+Binary identity: `/training/mh_build/proc/BINARY_IDENTITY_fc37a768.json` (source fc37a768, dev profile, sha256 62379d54...dba5ed; a forced rebuild reproduced the same hash).
+
+* 9c37b3ab (preserved evidence): one stream entry scheduler (oldest-dirty-first, stable mint tie-break, budget 8/tick, work bound 64 examined/tick); legacy promotion counted only. Baselines bS1/bS2 agree on 187/187 barriers, 79 dispatches. Entry result at 9c37b3ab: 62 post-crash requests in baseline and restart, entry prompts identical.
+* fc37a768: MFE/MAE tracker counts only prints with recv >= fill_ms. Tests (independent expected values, 3 mutations caught): pre-fill ignored, post-fill high/low exact, equal-time counted (documented conservative boundary: timestamp equality cannot distinguish before/after), duplicate/older prints do not regress extrema, restored extrema survive overlap replay and a genuinely new low applies once, and the current MARK is the newest accepted print (fails if the out-of-order guard is removed). 1,080 app+junction tests pass.
+* Aligned comparison on fc37a768: bT1/bT2 agree 187/187 (79 dispatches), bT1 == bS1. Restart after barrier 100 (rs8_2): 86 common barriers, 62 dispatches, 0 barriers with a differing dispatch or prompt hash (entry AND management). State digest still differs in exactly two categories at all 86 barriers: closed-order audit history ("order id" lines and "fill order" lines for orders closed before the crash: ids 1,2,4,6,7). Positions, extrema, pending orders, cash, committed capital and order_seq are IDENTICAL.
+* Open (NOT claimed closed): closed-order identity is not restored. Evidence-ingestion rejects `unknown_order` for a late report about an order closed before the crash; duplicate-fill prevention across restart for those ids is therefore not yet proven. Next item.
+* Scheduler progress: 70 ineligible older markets + 3 eligible behind them: tick 1 spends the 64 bound on the old prefix, tick 2 examines the remaining 6 once and dispatches the 3 eligible oldest-first; no re-inspection (mutation that re-queues refused markets fails the test).
+* Attribution: curve invocation-parent test established (b7080d8a). PumpSwap `ingest_amm_rows` has NO repeated-same-mint test and takes no invocation positions (identity = instruction index only). Not claimed equivalent.
