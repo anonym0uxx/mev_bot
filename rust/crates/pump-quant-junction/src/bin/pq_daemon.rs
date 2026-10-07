@@ -2469,6 +2469,9 @@ fn main() -> ExitCode {
             "[pq-daemon] OFFLINE PAPER REPLAY: {} decision barriers at fixed source-time clocks; the timed tick is replaced by barrier ticks",
             barrier_clocks.len()
         );
+        if let Ok(w) = std::env::var("PQ_REPLAY_WATCH_MINT") {
+            engine.barrier_watch(&w);
+        }
     }
     let status_path = std::path::Path::new(STATUS_PATH);
     let mut tick_counter: u64 = 0;
@@ -4488,6 +4491,19 @@ fn main() -> ExitCode {
                 // on a barrier schedule, so its copy would be stale).
                 if let Ok(j) = serde_json::to_string(&engine.model_lane_report()) {
                     let _ = std::fs::write("data/model_lane_report.json", j);
+                }
+                let watch_lines = engine.barrier_watch_drain();
+                if !watch_lines.is_empty() {
+                    if let Ok(mut f) = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open("data/barrier_watch.log")
+                    {
+                        use std::io::Write as _;
+                        for w in &watch_lines {
+                            let _ = writeln!(f, "barrier={barrier_idx} {w}");
+                        }
+                    }
                 }
                 let lines = engine.barrier_state_lines();
                 let digest = engine.barrier_state_digest();

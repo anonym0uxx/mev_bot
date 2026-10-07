@@ -50,3 +50,25 @@ pre-existing label quirk (a legacy trail exit at/below entry is labelled HardSto
 - D (checkpoint at line 20000, restart at line 150001, hole 152,844 ms): Restored unavailable 152,845 ms, complete=false, gap recorded; 0 model requests (scoped refusal). The August-to-September 16.2-day hole case (milestone9) is retained as the negative test.
 
 **Not equivalent (stated, not hidden).** Request streams are NOT byte-identical even between two uninterrupted runs (42 vs 44; first t_dec differs by ~1 s): prompts are cut on wall-clock ticks against a replay that runs faster than real time, so decision clocks and tick-aligned state (staleness, t_dec, age) vary run to run. Flow history state converges exactly; prompt-level equivalence is not yet demonstrated. Held exposure, emergency order->paper fill->settlement, and callout emission through the real daemon are not yet run in this matrix.
+
+## Barrier-mode restart divergence (fe3c45f2 → next)
+
+Status: WIP. Preserved: 187-barrier uninterrupted agreement (bU1/bU2/bV1/bV2/bW1/bX1/bY1 identical digests and prompt hashes);
+restart after barrier 100 matches on held positions, cash, committed capital, dirty set and receive times (86 aligned barriers).
+
+First divergent barrier (restart barrier 6 == baseline barrier 107, clock 1788965463929): market 7e888138.
+- Identical on both sides immediately before: last_ask=1788965446146, dirty_since=1788965437622, reask_ok=true, held_or_pending=false, dirty=true.
+- The STREAM scheduler did not dispatch it on either side (queue position ~306/594 against a budget of 8 per tick; `sched_deferred_budget` 118,298 in the restart run).
+- The baseline dispatched it through the LEGACY-PROMOTION path (`model_admit_candidate`, called from the watchlist promotion in `Engine::evaluate`):
+  watchlist rank_pos=7 of 45, rank 677,753 equal to the 8th-slot rank (kth_rank 677,753), min_rank=1, score 826,529, discovered_at=199, now=217.
+- In the restart the same market is NOT_PRESENT in the watchlist (size 30 against 44-45), `now`=13 against 217.
+- Earliest differing input: the legacy watchlist and numeric lane are driven by the engine TICK COUNTER (`self.now`), which advances once per evaluate and is neither persisted nor reproduced by the restart's ingest-only overlap replay. The restart therefore rebuilds that state at tick ~0.
+- Path split over the whole baseline (watch prefix empty): entry dispatches 28 via candidate_path, 7 via the stream scheduler. So 28 of the 35 baseline entry dispatches depend on legacy watchlist rank, i.e. the unproven `universe_promotable`/legacy-authority question is live here, not only a counter name.
+- Not a missing-history effect: continuity is Restored/complete in both runs; refusals are not the gate.
+
+Not yet fixed. Options (decision for Alon, not taken unilaterally because it changes which markets reach Qwen):
+ (a) make the stream scheduler fair (rotate or oldest-dirty-first instead of mint order) so legacy rank is not the de-facto entry path, then compare again;
+ (b) persist and restore the tick counter plus watchlist state, and replay with ticks;
+ (c) keep legacy promotion and declare restart parity out of scope for tick-domain state.
+
+Instrumentation committed (env PQ_REPLAY_WATCH_MINT, barrier mode only, never in the digest): per-market scheduler trace in data/barrier_watch.log.

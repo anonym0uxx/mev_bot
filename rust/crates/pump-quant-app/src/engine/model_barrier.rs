@@ -241,6 +241,16 @@ impl Engine {
         out
     }
 
+    /// Diagnostics only (never in the digest): trace one market's scheduling inputs and admit outcomes.
+    pub fn barrier_watch(&mut self, hex_prefix: &str) {
+        self.model_watch = Some(hex_prefix.to_string());
+    }
+
+    /// Drain the watched market's trace lines since the last call.
+    pub fn barrier_watch_drain(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.model_watch_log)
+    }
+
     /// SHA-256 over [`Self::barrier_state_lines`].
     #[must_use]
     pub fn barrier_state_digest(&self) -> String {

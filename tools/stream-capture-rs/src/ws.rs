@@ -632,9 +632,12 @@ impl WsConn {
         // Cleartext is a loopback-only test seam: the RESOLVED address must itself be loopback, so a name that
         // resolves elsewhere (DNS/hosts tampering) can never carry an unencrypted lane off this machine.
         let addr = if cleartext {
-            addrs
-                .find(|a| a.ip().is_loopback())
-                .ok_or_else(|| format!("cleartext ws:// refused: {} does not resolve to loopback", parsed.host))?
+            addrs.find(|a| a.ip().is_loopback()).ok_or_else(|| {
+                format!(
+                    "cleartext ws:// refused: {} does not resolve to loopback",
+                    parsed.host
+                )
+            })?
         } else {
             addrs
                 .next()
@@ -951,15 +954,36 @@ mod tests {
 
     #[test]
     fn cleartext_is_accepted_only_for_exact_loopback_authorities() {
-        for ok in ["ws://127.0.0.1:18081", "ws://127.0.0.1/p?x=1", "ws://localhost:9", "ws://[::1]:7/x", "ws://127.0.0.1"] {
+        for ok in [
+            "ws://127.0.0.1:18081",
+            "ws://127.0.0.1/p?x=1",
+            "ws://localhost:9",
+            "ws://[::1]:7/x",
+            "ws://127.0.0.1",
+        ] {
             assert!(parse_wss_url(ok).is_ok(), "{ok}");
         }
         for bad in [
-            "ws://127.0.0.1.evil.com", "ws://localhost.evil.com:80", "ws://evil.com", "ws://127.0.0.1@evil.com",
-            "ws://evil.com@127.0.0.1", "ws://127.0.0.1:80@evil.com/", "ws://127.0.0.2", "ws://0.0.0.0:80",
-            "ws://127.0.0.1:/x", "ws://127.0.0.1:8a", "ws://127.0.0.1?@evil.com", "ws://127.0.0.1#@evil.com",
-            "ws://[::2]:1", "ws://LOCALHOST:1", "ws://127.0.0.1\\@evil.com", "WS://127.0.0.1", "ws:// 127.0.0.1",
-            "ws://localhost.:1", "ws://127.1:1", "ws://2130706433:1",
+            "ws://127.0.0.1.evil.com",
+            "ws://localhost.evil.com:80",
+            "ws://evil.com",
+            "ws://127.0.0.1@evil.com",
+            "ws://evil.com@127.0.0.1",
+            "ws://127.0.0.1:80@evil.com/",
+            "ws://127.0.0.2",
+            "ws://0.0.0.0:80",
+            "ws://127.0.0.1:/x",
+            "ws://127.0.0.1:8a",
+            "ws://127.0.0.1?@evil.com",
+            "ws://127.0.0.1#@evil.com",
+            "ws://[::2]:1",
+            "ws://LOCALHOST:1",
+            "ws://127.0.0.1\\@evil.com",
+            "WS://127.0.0.1",
+            "ws:// 127.0.0.1",
+            "ws://localhost.:1",
+            "ws://127.1:1",
+            "ws://2130706433:1",
         ] {
             assert!(parse_wss_url(bad).is_err(), "{bad}");
         }
@@ -986,7 +1010,12 @@ mod tests {
             let mut buf = [0u8; 2048];
             let n = s.read(&mut buf).unwrap();
             let req = String::from_utf8_lossy(&buf[..n]).to_string();
-            let key = req.lines().find_map(|x| x.strip_prefix("Sec-WebSocket-Key: ")).unwrap().trim().to_string();
+            let key = req
+                .lines()
+                .find_map(|x| x.strip_prefix("Sec-WebSocket-Key: "))
+                .unwrap()
+                .trim()
+                .to_string();
             let resp = format!(
                 "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {}\r\n\r\n",
                 accept_for_key(&key)

@@ -717,7 +717,22 @@ impl Engine {
         let cm = cand.mint.bytes();
         let (venue, _, _) = self.model_cache.describe(&cm, clock);
         self.model_uniq("legacy_promoted", &cm, venue);
+        let watched = self.model_watch.as_ref().is_some_and(|w| {
+            cm.iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
+                .starts_with(w.as_str())
+        });
+        let before = self.model_last_ask.get(&cm).copied();
         self.model_admit_mint(cand.mint.bytes(), cand.lane, cand.discovery_lane);
+        if watched {
+            let after = self.model_last_ask.get(&cm).copied();
+            self.model_watch_log.push(format!(
+                "candidate_path clock={clock} last_ask_before={before:?} dispatched={} last_refusal={:?}",
+                after != before,
+                self.model_last_refusal.get(&cm)
+            ));
+        }
     }
 
     /// Register a stream-discovered market. Bounded; idempotent; never consults legacy state.
@@ -763,6 +778,25 @@ impl Engine {
         let clock = self.model_clock_ms;
         let dirty: Vec<[u8; 32]> = self.model_dirty.iter().copied().collect();
         let mut budget = SCHEDULE_PER_TICK;
+        let watch_pos = self.model_watch.as_ref().and_then(|w| {
+            dirty.iter().position(|m| {
+                m.iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<String>()
+                    .starts_with(w.as_str())
+            })
+        });
+        if let Some(p) = watch_pos {
+            let m = dirty[p];
+            self.model_watch_log.push(format!(
+                "sched clock={clock} queue_pos={p}/{} last_ask={:?} since={:?} reask_ok={} held_or_pending={}",
+                dirty.len(),
+                self.model_last_ask.get(&m),
+                self.model_dirty_since.get(&m),
+                self.model_last_ask.get(&m).is_none_or(|t| clock - *t >= MODEL_REASK_MS),
+                self.open_lane.contains_key(&m) || self.model_orders.contains_key(&m) || self.model_table.has_live_for(&m)
+            ));
+        }
         for mint in dirty {
             if budget == 0 {
                 self.mrep("sched_deferred_budget");
@@ -796,7 +830,22 @@ impl Engine {
                 self.mrep_add("queue_age_ms_sum", age as u64);
             }
             budget -= 1;
+            let watched = self.model_watch.as_ref().is_some_and(|w| {
+                mint.iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<String>()
+                    .starts_with(w.as_str())
+            });
+            let before = self.model_last_ask.get(&mint).copied();
             self.model_admit_mint(mint, WlLane::ActiveMarketScalp, DiscoveryLane::ActiveMarket);
+            if watched {
+                let after = self.model_last_ask.get(&mint).copied();
+                self.model_watch_log.push(format!(
+                    "admit clock={clock} budget_left={budget} dispatched={} last_refusal={:?}",
+                    after != before,
+                    self.model_last_refusal.get(&mint)
+                ));
+            }
         }
     }
 

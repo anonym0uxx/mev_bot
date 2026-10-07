@@ -856,6 +856,9 @@ pub struct Engine {
     model_registry: BTreeSet<[u8; 32]>,
     /// Recovery point restored from the held ledger: observations at or before it are overlap replays.
     model_replay_through_ms: i64,
+    /// Barrier-mode diagnostics only: hex prefix of a market to trace, and the lines recorded for it.
+    model_watch: Option<String>,
+    model_watch_log: Vec<String>,
     model_dirty: BTreeSet<[u8; 32]>,
     /// When each currently-dirty market first became dirty (clock ms): queue-age measurement.
     model_dirty_since: BTreeMap<[u8; 32], i64>,
@@ -1505,6 +1508,8 @@ impl Engine {
             model_first_cand: BTreeMap::new(),
             model_registry: BTreeSet::new(),
             model_replay_through_ms: 0,
+            model_watch: None,
+            model_watch_log: Vec::new(),
             model_dirty: BTreeSet::new(),
             model_dirty_since: BTreeMap::new(),
             model_uniq_seen: BTreeSet::new(),
@@ -3353,6 +3358,35 @@ impl Engine {
             self.cfg.promote_k,
             self.cfg.promote_min_rank,
         );
+        if let Some(w) = self.model_watch.clone() {
+            let ranked = self.watchlist.ranked(self.now);
+            let pos = ranked.iter().position(|(_, c)| {
+                c.mint
+                    .bytes()
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<String>()
+                    .starts_with(w.as_str())
+            });
+            let kth = ranked
+                .get(self.cfg.promote_k.saturating_sub(1))
+                .map(|(r, _)| *r);
+            let line = match pos {
+                Some(i) => {
+                    let (r, c) = &ranked[i];
+                    format!(
+                        "watchlist now={} size={} rank_pos={i} rank={r} score={} discovered_at={} lane={:?} kth_rank={kth:?} min_rank={}",
+                        self.now, ranked.len(), c.discovery_score, c.discovered_at, c.lane, self.cfg.promote_min_rank
+                    )
+                }
+                None => format!(
+                    "watchlist now={} size={} NOT_PRESENT kth_rank={kth:?}",
+                    self.now,
+                    ranked.len()
+                ),
+            };
+            self.model_watch_log.push(line);
+        }
         let quota = self.cfg.promote_corroboration_quota.min(self.cfg.promote_k);
         if quota > 0 {
             let have = promoted
@@ -3401,6 +3435,20 @@ impl Engine {
             // numeric age evidence pass through — the gate still demands
             // on-chain confirmation, so this can only remove dead weight,
             // never authorize anything.
+            if self.model_watch.as_ref().is_some_and(|w| {
+                cand.mint
+                    .bytes()
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<String>()
+                    .starts_with(w.as_str())
+            }) {
+                let ok = self.universe_promotable(&cand);
+                self.model_watch_log.push(format!(
+                    "promoted_candidate now={} universe_promotable={ok} discovery_score={} lane={:?}",
+                    self.now, cand.discovery_score, cand.lane
+                ));
+            }
             if !self.universe_promotable(&cand) {
                 self.universe_filtered += 1;
                 continue;
