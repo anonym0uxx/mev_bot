@@ -11,13 +11,17 @@
 //! operator evidence settles them. Nothing is guessed: any inconsistency refuses the WHOLE restore by name
 //! and the file is left untouched. A restored position keeps its true fill time, step and extremes.
 
+/// Settled-order records retained (see `model_compact_order_log`).
+pub const SETTLED_ORDER_CAP: usize = 4_096;
+
 use std::path::{Path, PathBuf};
 
 use super::model_manage::{MgmtKind, MgmtOrder, MgmtPos};
 use super::{Engine, OpenAttribution};
 use crate::expected_move::SignalObs;
 use crate::held_state::{
-    HeldEntry, HeldLedger, HeldPending, LedgerReadError, RestoreRefusal, RestoreReport,
+    HeldEntry, HeldFault, HeldLedger, HeldOrder, HeldOutcome, HeldPending, LedgerReadError,
+    RestoreRefusal, RestoreReport,
 };
 use pump_quant_watchlist::candidate::{DiscoveryLane, Lane as WlLane};
 
@@ -129,7 +133,47 @@ impl Engine {
             });
         }
         pending.sort_by(|a, b| (a.mint, a.id, &a.kind).cmp(&(b.mint, b.id, &b.kind)));
+        let orders: Vec<HeldOrder> = self
+            .model_order_log
+            .values()
+            .filter_map(|r| {
+                let state = match r.state {
+                    super::model_admit::OrderState::Filled => 2,
+                    super::model_admit::OrderState::NotFilled => 3,
+                    super::model_admit::OrderState::Closed => 4,
+                    _ => return None,
+                };
+                Some(HeldOrder {
+                    id: r.id,
+                    mint: r.mint,
+                    attempt: r.attempt,
+                    clip_lamports: r.clip_lamports,
+                    filled_clip_lamports: r.filled_clip_lamports,
+                    state,
+                    terminal: r.terminal.map(to_held_outcome),
+                })
+            })
+            .collect();
+        let faults: Vec<HeldFault> = self
+            .model_recon_faults
+            .values()
+            .map(|f| HeldFault {
+                order_id: f.order_id,
+                mint: f.mint,
+                first: f.first.map(to_held_outcome),
+                first_source: f.first_source.to_string(),
+                contradicting: f
+                    .contradicting
+                    .iter()
+                    .copied()
+                    .map(to_held_outcome)
+                    .collect(),
+            })
+            .collect();
         HeldLedger {
+            orders,
+            faults,
+            order_floor: self.model_order_floor,
             seed_lamports: self.bankroll_origin.seed_lamports(),
             realized_lamports: self.bankroll_realized,
             model_order_seq: self.model_order_seq,
@@ -176,6 +220,7 @@ impl Engine {
         let Some(path) = self.model_held.path.clone() else {
             return;
         };
+        self.model_compact_order_log();
         let ledger = self.model_held_ledger();
         let digest = Self::model_held_digest(&ledger);
         let due = digest != self.model_held.last_digest
@@ -203,6 +248,47 @@ impl Engine {
                 }
             }
         }
+    }
+
+    /// Retention: settled-order records are kept up to `SETTLED_ORDER_CAP`; beyond it the OLDEST settled records
+    /// (never one with an unresolved fault, never a pending order) are dropped and `model_order_floor` is raised to
+    /// the highest dropped id. A later report for such an id is rejected as `compacted_order` (named, unresolved,
+    /// never applied), so expiry cannot turn a conflict into a harmless "unknown". Compaction removes records only;
+    /// it never touches balances, positions or faults.
+    pub(super) fn model_compact_order_log(&mut self) {
+        let settled: Vec<u64> = self
+            .model_order_log
+            .values()
+            .filter(|r| {
+                matches!(
+                    r.state,
+                    super::model_admit::OrderState::Filled
+                        | super::model_admit::OrderState::NotFilled
+                        | super::model_admit::OrderState::Closed
+                ) && !self.model_recon_faults.contains_key(&r.id)
+                    // An open position's own order stays: its identity backs the held record.
+                    && self.model_position_order.get(&r.mint) != Some(&r.id)
+            })
+            .map(|r| r.id)
+            .collect();
+        if settled.len() <= self.settled_order_cap() {
+            return;
+        }
+        let drop_n = settled.len() - self.settled_order_cap();
+        for id in settled.into_iter().take(drop_n) {
+            self.model_order_log.remove(&id);
+            self.model_order_floor = self.model_order_floor.max(id);
+            self.mrep("held_state:order_record_compacted");
+        }
+    }
+
+    fn settled_order_cap(&self) -> usize {
+        self.model_settled_order_cap.unwrap_or(SETTLED_ORDER_CAP)
+    }
+
+    /// Test control for the retention bound (the production cap is `SETTLED_ORDER_CAP`).
+    pub fn model_set_settled_order_cap(&mut self, cap: usize) {
+        self.model_settled_order_cap = Some(cap);
     }
 
     /// Persist failures so far.
@@ -309,6 +395,20 @@ impl Engine {
         let balance = i128::from(seed) + l.realized_lamports;
         if i128::try_from(committed).unwrap_or(i128::MAX) > balance.max(0) {
             return Err(RestoreRefusal::CommittedExceedsBalance);
+        }
+        for o in &l.orders {
+            if o.id > l.model_order_seq {
+                return Err(RestoreRefusal::OrderIdBeyondSequence);
+            }
+        }
+        for f in &l.faults {
+            let known = l.orders.iter().any(|o| o.id == f.order_id)
+                || l.pending
+                    .iter()
+                    .any(|p| p.kind == "entry" && p.id == f.order_id);
+            if !known {
+                return Err(RestoreRefusal::FaultWithoutOrder);
+            }
         }
         for p in &l.pending {
             match p.kind.as_str() {
@@ -488,6 +588,51 @@ impl Engine {
                     terminal: None,
                 });
         }
+        // Settled-order identity and terminal evidence: restored AS RECORDS, never by replaying financial effects
+        // (balances and positions came from `realized_lamports`/`held` above).
+        self.model_order_floor = l.order_floor;
+        for o in &l.orders {
+            self.model_order_log.insert(
+                o.id,
+                super::model_admit::OrderRec {
+                    id: o.id,
+                    mint: o.mint,
+                    attempt: o.attempt,
+                    clip_lamports: o.clip_lamports,
+                    filled_clip_lamports: o.filled_clip_lamports,
+                    state: match o.state {
+                        2 => super::model_admit::OrderState::Filled,
+                        3 => super::model_admit::OrderState::NotFilled,
+                        _ => super::model_admit::OrderState::Closed,
+                    },
+                    terminal: o.terminal.map(from_held_outcome),
+                },
+            );
+        }
+        for f in &l.faults {
+            let source: &'static str = crate::held_state::FAULT_SOURCES
+                .iter()
+                .copied()
+                .find(|s| *s == f.first_source)
+                .unwrap_or("first_terminal_evidence");
+            self.model_recon_faults.insert(
+                f.order_id,
+                super::model_admit::ReconFault {
+                    order_id: f.order_id,
+                    mint: f.mint,
+                    first: f.first.map(from_held_outcome),
+                    first_source: source,
+                    contradicting: f
+                        .contradicting
+                        .iter()
+                        .copied()
+                        .map(from_held_outcome)
+                        .collect(),
+                },
+            );
+        }
+        self.mrep_add("held_state:restored_settled_orders", l.orders.len() as u64);
+        self.mrep_add("held_state:restored_faults", l.faults.len() as u64);
         self.model_held.last_digest = Self::model_held_digest(l);
         self.mrep_add("held_state:restored_positions", rep.positions as u64);
         self.mrep_add(
@@ -505,6 +650,29 @@ pub enum RestoreOutcomeError {
     Untrusted(&'static str),
     /// Valid file, inconsistent with this engine: nothing applied.
     Refused(RestoreRefusal),
+}
+
+fn to_held_outcome(o: super::model_admit::ReconcileOutcome) -> HeldOutcome {
+    match o {
+        super::model_admit::ReconcileOutcome::NotFilled => HeldOutcome::NotFilled,
+        super::model_admit::ReconcileOutcome::Filled(f) => HeldOutcome::Filled {
+            entry_price_fp: f.entry_price_fp,
+            reserve_sol_lamports: f.reserve_sol_lamports,
+        },
+    }
+}
+
+fn from_held_outcome(o: HeldOutcome) -> super::model_admit::ReconcileOutcome {
+    match o {
+        HeldOutcome::NotFilled => super::model_admit::ReconcileOutcome::NotFilled,
+        HeldOutcome::Filled {
+            entry_price_fp,
+            reserve_sol_lamports,
+        } => super::model_admit::ReconcileOutcome::Filled(super::model_admit::FillReport {
+            entry_price_fp,
+            reserve_sol_lamports,
+        }),
+    }
 }
 
 fn lane_index(l: WlLane) -> u8 {

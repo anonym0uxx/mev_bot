@@ -1514,3 +1514,347 @@ fn a_post_fill_replay_cannot_regress_the_mark_even_when_it_leaves_the_extrema_al
         "mark {got} must be the newest accepted print {want}, not a replayed older/duplicate price"
     );
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// Settled-order identity and terminal evidence across a restart (no financial effect is replayed).
+// ---------------------------------------------------------------------------------------------------------------
+use pump_quant_app::engine::model_admit::{
+    Evidence, EvidenceResult, FillReport, OrderState, ReconcileOutcome,
+};
+
+fn filled_report() -> ReconcileOutcome {
+    ReconcileOutcome::Filled(FillReport {
+        entry_price_fp: 22_000,
+        reserve_sol_lamports: VSOL,
+    })
+}
+
+/// Entry filled, then closed through an EXIT fill; first terminal evidence (Filled) applied; ledger written.
+fn closed_order_world(tag: &str) -> (std::path::PathBuf, u64, u64, i128, u64) {
+    let hp = held_path(tag);
+    let mut r = rig(|step| if step == 0 { EXIT } else { HOLD });
+    r.e.model_held_attach(&hp);
+    let id = r.e.model_position_order_id(&MINT).expect("entry order id");
+    let q = r.e.model_order_rec(id).unwrap().clip_lamports;
+    r.advance_to_order(120_000);
+    r.landing(250_000_000);
+    assert!(!r.e.model_position_open(&MINT));
+    assert_eq!(r.e.model_order_rec(id).unwrap().state, OrderState::Closed);
+    let first = r.e.model_ingest_evidence(Evidence {
+        order_id: id,
+        attempt: 1,
+        clip_lamports: q,
+        outcome: filled_report(),
+    });
+    assert_eq!(first, EvidenceResult::Applied);
+    assert!(r.e.model_held_persist_now());
+    let realized = r.e.model_accounting_view(&MINT).realized;
+    let seq = r.e.model_held_ledger().model_order_seq;
+    (hp, id, q, realized, seq)
+}
+
+#[test]
+fn a_closed_order_keeps_its_identity_and_terminal_evidence_across_a_restart_without_replaying_money(
+) {
+    let (hp, id, q, realized, seq) = closed_order_world("ord_a");
+    let mut e2 = fresh_engine(2_000_000_000, &hp);
+    e2.model_held_restore().unwrap().unwrap();
+    let rec = e2
+        .model_order_rec(id)
+        .expect("settled order restored as a record");
+    assert_eq!(rec.state, OrderState::Closed);
+    assert_eq!(rec.clip_lamports, q);
+    assert_eq!(rec.terminal, Some(filled_report()));
+    // Money came from the ledger totals, never from replaying the order.
+    let v = e2.model_accounting_view(&MINT);
+    assert_eq!(v.realized, realized);
+    assert_eq!(v.committed, 0);
+    assert!(
+        e2.model_all_fills().is_empty(),
+        "no fill record was re-created"
+    );
+    assert!(e2.model_mgmt_fills().is_empty());
+    assert_eq!(
+        e2.model_held_ledger().model_order_seq,
+        seq,
+        "ids never repeat"
+    );
+
+    // (1) IDENTICAL late report -> duplicate, nothing changes.
+    let before = e2.model_held_ledger();
+    assert_eq!(
+        e2.model_ingest_evidence(Evidence {
+            order_id: id,
+            attempt: 1,
+            clip_lamports: q,
+            outcome: filled_report()
+        }),
+        EvidenceResult::Duplicate
+    );
+    let mut after = e2.model_held_ledger();
+    let (mut b, a) = (before, &mut after);
+    b.written_wall_ms = 0;
+    a.written_wall_ms = 0;
+    assert_eq!(&b, a, "a duplicate changes nothing");
+    assert_eq!(e2.model_accounting_view(&MINT).realized, realized);
+    assert!(e2.model_recon_faults().is_empty());
+
+    // (2) CONFLICTING report -> evidence preserved, the established fault raised, books untouched.
+    assert_eq!(
+        e2.model_ingest_evidence(Evidence {
+            order_id: id,
+            attempt: 1,
+            clip_lamports: q,
+            outcome: ReconcileOutcome::NotFilled
+        }),
+        EvidenceResult::Fault
+    );
+    let f = e2.model_recon_faults().get(&id).expect("fault");
+    assert_eq!(
+        f.first,
+        Some(filled_report()),
+        "first terminal evidence kept verbatim"
+    );
+    assert_eq!(f.contradicting, vec![ReconcileOutcome::NotFilled]);
+    assert_eq!(
+        e2.model_accounting_view(&MINT).realized,
+        realized,
+        "no second credit or debit"
+    );
+    assert!(
+        e2.model_mint_is_blocked(&MINT),
+        "new exposure on the faulted mint is blocked"
+    );
+
+    // (3) A genuinely unknown id (never issued) stays unresolved and is not applied.
+    let unknown = seq + 50;
+    assert_eq!(
+        e2.model_ingest_evidence(Evidence {
+            order_id: unknown,
+            attempt: 1,
+            clip_lamports: q,
+            outcome: filled_report()
+        }),
+        EvidenceResult::Rejected("unknown_order")
+    );
+    assert!(e2.model_order_rec(unknown).is_none());
+    assert_eq!(e2.model_accounting_view(&MINT).realized, realized);
+}
+
+#[test]
+fn an_unresolved_fault_survives_a_second_restart_and_still_blocks_the_mint() {
+    let (hp, id, q, _realized, _seq) = closed_order_world("ord_b");
+    let mut e2 = fresh_engine(2_000_000_000, &hp);
+    e2.model_held_restore().unwrap().unwrap();
+    assert_eq!(
+        e2.model_ingest_evidence(Evidence {
+            order_id: id,
+            attempt: 1,
+            clip_lamports: q,
+            outcome: ReconcileOutcome::NotFilled
+        }),
+        EvidenceResult::Fault
+    );
+    assert!(e2.model_held_persist_now());
+    let mut e3 = fresh_engine(2_000_000_000, &hp);
+    e3.model_held_restore().unwrap().unwrap();
+    let f = e3.model_recon_faults().get(&id).expect("fault restored");
+    assert_eq!(f.first, Some(filled_report()));
+    assert_eq!(f.contradicting, vec![ReconcileOutcome::NotFilled]);
+    assert!(
+        e3.model_mint_is_blocked(&MINT),
+        "the block survives the restart"
+    );
+}
+
+#[test]
+fn compaction_names_a_dropped_order_and_never_drops_a_faulted_one() {
+    let (hp, id, q, realized, _seq) = closed_order_world("ord_c");
+    let ev = |outcome| Evidence {
+        order_id: id,
+        attempt: 1,
+        clip_lamports: q,
+        outcome,
+    };
+    // (a) Unfaulted settled record + cap 0: compacted on the next tick, floor raised, and a late report is
+    // NAMED compacted (unresolved, never applied) -- not a plain stranger and not silently harmless.
+    let mut e2 = fresh_engine(2_000_000_000, &hp);
+    e2.model_held_restore().unwrap().unwrap();
+    e2.model_set_settled_order_cap(0);
+    e2.tick(AppEvent::Tick);
+    assert!(e2.model_order_rec(id).is_none(), "record compacted");
+    assert_eq!(
+        e2.model_held_ledger().order_floor,
+        id,
+        "floor = highest dropped id"
+    );
+    assert_eq!(
+        e2.model_ingest_evidence(ev(ReconcileOutcome::NotFilled)),
+        EvidenceResult::Rejected("compacted_order")
+    );
+    assert_eq!(e2.model_accounting_view(&MINT).realized, realized);
+    assert!(e2.model_held_persist_now());
+    // The floor survives another restart, so the name does too.
+    let mut e3 = fresh_engine(2_000_000_000, &hp);
+    e3.model_held_restore().unwrap().unwrap();
+    assert_eq!(
+        e3.model_ingest_evidence(ev(ReconcileOutcome::Filled(FillReport {
+            entry_price_fp: 1,
+            reserve_sol_lamports: 1
+        }))),
+        EvidenceResult::Rejected("compacted_order")
+    );
+
+    // (b) The same order with an UNRESOLVED FAULT is never compacted, whatever the cap.
+    let (hp2, id2, q2, _r2, _s2) = closed_order_world("ord_d");
+    let mut f = fresh_engine(2_000_000_000, &hp2);
+    f.model_held_restore().unwrap().unwrap();
+    let ev2 = |outcome| Evidence {
+        order_id: id2,
+        attempt: 1,
+        clip_lamports: q2,
+        outcome,
+    };
+    assert_eq!(
+        f.model_ingest_evidence(ev2(ReconcileOutcome::NotFilled)),
+        EvidenceResult::Fault
+    );
+    f.model_set_settled_order_cap(0);
+    f.tick(AppEvent::Tick);
+    assert!(
+        f.model_order_rec(id2).is_some(),
+        "a faulted order is retained"
+    );
+    assert_eq!(f.model_held_ledger().order_floor, 0);
+    assert_eq!(
+        f.model_ingest_evidence(ev2(ReconcileOutcome::NotFilled)),
+        EvidenceResult::Fault
+    );
+    assert!(f.model_mint_is_blocked(&MINT));
+}
+
+/// A world stopped with the ENTRY order accepted but not yet filled (no landing state has arrived).
+fn pending_entry_world(tag: &str) -> (std::path::PathBuf, u64, u64) {
+    let hp = held_path(tag);
+    let prompts = Arc::new(Mutex::new(Vec::new()));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut c = cfg();
+    c.bankroll_initial_lamports = 2_000_000_000;
+    c.floor_fraction_bps = 2_500;
+    let mut e = Engine::new(c, RunMode::Paper);
+    e.enable_paper_model(Script {
+        prompts,
+        calls,
+        answer: |_| HOLD,
+    });
+    e.model_held_attach(&hp);
+    for ev in &events(40) {
+        e.tick(*ev);
+    }
+    ticks(&mut e, 8);
+    assert!(
+        !e.model_position_open(&MINT),
+        "setup: no fill yet: {:?}",
+        e.model_lane_report()
+    );
+    let (id, _attempt, q) = e
+        .model_pending_order(&MINT)
+        .expect("setup: the BUY verdict made a pending entry order");
+    assert!(e.model_held_persist_now());
+    (hp, id, q)
+}
+
+fn landing_after(e: &mut Engine, dsol: u64) {
+    let t = T0 + 1_000 + 40 * 2_000 + 1_500;
+    curve(e, t, 2_100, dsol);
+}
+
+#[test]
+fn an_uncertain_entry_order_is_restored_unbooked_then_filled_exactly_once() {
+    let (hp, id, q) = pending_entry_world("unc_a");
+    let mut e2 = fresh_engine(2_000_000_000, &hp);
+    let rep = e2.model_held_restore().unwrap().unwrap();
+    assert_eq!(rep.pending_uncertain, 1);
+    // Restored, not resubmitted, not booked.
+    assert_eq!(
+        e2.model_pending_order(&MINT).map(|p| (p.0, p.2)),
+        Some((id, q))
+    );
+    assert!(!e2.model_position_open(&MINT));
+    let v = e2.model_accounting_view(&MINT);
+    assert_eq!((v.realized, v.committed), (0, 0));
+    assert_eq!(
+        e2.model_order_rec(id).unwrap().state,
+        OrderState::PendingUncertain
+    );
+    // The simulator must not settle an order whose acknowledgement died with the old process.
+    landing_after(&mut e2, 200_000_000);
+    assert!(
+        !e2.model_position_open(&MINT),
+        "uncertain: never auto-filled"
+    );
+    assert_eq!(e2.model_pending_orders(), 1);
+    // Reconcile FILLED through the normal path.
+    let ev = Evidence {
+        order_id: id,
+        attempt: 1,
+        clip_lamports: q,
+        outcome: filled_report(),
+    };
+    assert_eq!(e2.model_ingest_evidence(ev), EvidenceResult::Applied);
+    landing_after(&mut e2, 210_000_000);
+    assert!(
+        e2.model_position_open(&MINT),
+        "{:?}",
+        e2.model_lane_report()
+    );
+    assert_eq!(e2.model_pending_orders(), 0);
+    let once = e2.model_accounting_view(&MINT);
+    assert_eq!(once.committed, once.attribution_entry_spend.unwrap());
+    let fills = e2.model_all_fills().len();
+    assert_eq!(fills, 1);
+    // Repeats: exactly-once.
+    for _ in 0..3 {
+        assert_eq!(e2.model_ingest_evidence(ev), EvidenceResult::Duplicate);
+        landing_after(&mut e2, 220_000_000);
+    }
+    assert_eq!(e2.model_all_fills().len(), 1, "no second fill");
+    let again = e2.model_accounting_view(&MINT);
+    assert_eq!(
+        (again.committed, again.balance, again.realized),
+        (once.committed, once.balance, once.realized)
+    );
+}
+
+#[test]
+fn an_uncertain_entry_order_reconciled_not_filled_is_cleared_once_and_never_filled_later() {
+    let (hp, id, q) = pending_entry_world("unc_b");
+    let mut e2 = fresh_engine(2_000_000_000, &hp);
+    e2.model_held_restore().unwrap().unwrap();
+    let ev = Evidence {
+        order_id: id,
+        attempt: 1,
+        clip_lamports: q,
+        outcome: ReconcileOutcome::NotFilled,
+    };
+    assert_eq!(e2.model_ingest_evidence(ev), EvidenceResult::Applied);
+    assert_eq!(e2.model_pending_orders(), 0);
+    assert!(!e2.model_position_open(&MINT));
+    let v = e2.model_accounting_view(&MINT);
+    assert_eq!((v.committed, v.realized), (0, 0));
+    // Repeated report: duplicate. A later contradicting FILLED report: fault, not applied.
+    assert_eq!(e2.model_ingest_evidence(ev), EvidenceResult::Duplicate);
+    landing_after(&mut e2, 200_000_000);
+    assert!(
+        !e2.model_position_open(&MINT),
+        "a cleared order never fills"
+    );
+    let fill = Evidence {
+        outcome: filled_report(),
+        ..ev
+    };
+    assert_eq!(e2.model_ingest_evidence(fill), EvidenceResult::Fault);
+    assert!(!e2.model_position_open(&MINT));
+    assert!(e2.model_mint_is_blocked(&MINT));
+    assert_eq!(e2.model_accounting_view(&MINT).committed, 0);
+}

@@ -15,7 +15,7 @@ use std::path::Path;
 use serde_json::{json, Value};
 
 /// Schema of this file.
-pub const HELD_SCHEMA: u64 = 1;
+pub const HELD_SCHEMA: u64 = 2;
 
 /// One held position, everything needed to rebuild the store entry, its attribution and its management
 /// state. Fixed-point / integer, no floats.
@@ -100,6 +100,42 @@ pub struct HeldPending {
     pub discovery_lane_index: u8,
 }
 
+/// Terminal evidence about one entry order (the durable form of the engine's `ReconcileOutcome`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeldOutcome {
+    NotFilled,
+    Filled {
+        entry_price_fp: u64,
+        reserve_sol_lamports: u64,
+    },
+}
+
+/// Durable identity of one SETTLED entry order (filled, closed, or cleared as not filled): the minimum a restarted
+/// process needs to recognise a duplicate report, preserve a conflicting one, and never double-apply a fill. It
+/// carries NO financial effect: balances and positions are restored from `realized_lamports`/`held`, never by
+/// replaying these records. `state`: 2 = Filled, 3 = NotFilled, 4 = Closed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HeldOrder {
+    pub id: u64,
+    pub mint: [u8; 32],
+    pub attempt: u32,
+    pub clip_lamports: u64,
+    pub filled_clip_lamports: u64,
+    pub state: u8,
+    pub terminal: Option<HeldOutcome>,
+}
+
+/// An unresolved reconciliation fault, preserved verbatim. It blocks new exposure on its mint until resolved.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeldFault {
+    pub order_id: u64,
+    pub mint: [u8; 32],
+    pub first: Option<HeldOutcome>,
+    /// One of the engine's fixed fault sources (an unknown name makes the file untrusted).
+    pub first_source: String,
+    pub contradicting: Vec<HeldOutcome>,
+}
+
 /// Decision-path scheduling state the model lane reads (re-ask windows, dirty-market queue, management cadence).
 /// ADVISORY: losing it can only cause an extra inference ask, never an execution effect; it is persisted so a restart
 /// does not silently reset it. Excluded from the change digest (written with the ledger, not on its own).
@@ -135,6 +171,13 @@ pub struct HeldLedger {
     pub pending: Vec<HeldPending>,
     /// Decision-path scheduling state (advisory; see [`DecisionState`]).
     pub decision: DecisionState,
+    /// Settled entry-order identity + terminal evidence (see [`HeldOrder`]).
+    pub orders: Vec<HeldOrder>,
+    /// Unresolved reconciliation faults.
+    pub faults: Vec<HeldFault>,
+    /// Compaction floor: an order id at or below it that is absent from `orders` was COMPACTED (named, never
+    /// "unknown"). Zero when nothing was ever compacted.
+    pub order_floor: u64,
 }
 
 /// Why a ledger could not be read.
@@ -166,6 +209,41 @@ fn wall_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_millis() as u64)
 }
+
+fn outcome_json(o: Option<HeldOutcome>) -> Value {
+    match o {
+        None => Value::Null,
+        Some(HeldOutcome::NotFilled) => json!({"k": "not_filled"}),
+        Some(HeldOutcome::Filled {
+            entry_price_fp,
+            reserve_sol_lamports,
+        }) => {
+            json!({"k": "filled", "px": entry_price_fp, "res": reserve_sol_lamports})
+        }
+    }
+}
+
+/// `Ok(None)` for JSON null; `Err(())` for anything malformed.
+fn outcome_from(v: &Value) -> Result<Option<HeldOutcome>, ()> {
+    if v.is_null() {
+        return Ok(None);
+    }
+    match v["k"].as_str() {
+        Some("not_filled") => Ok(Some(HeldOutcome::NotFilled)),
+        Some("filled") => Ok(Some(HeldOutcome::Filled {
+            entry_price_fp: v["px"].as_u64().ok_or(())?,
+            reserve_sol_lamports: v["res"].as_u64().ok_or(())?,
+        })),
+        _ => Err(()),
+    }
+}
+
+/// The fault sources the engine can write; anything else makes the file untrusted.
+pub const FAULT_SOURCES: [&str; 3] = [
+    "first_terminal_evidence",
+    "paper_fill",
+    "expired_or_cleared_without_evidence",
+];
 
 impl HeldLedger {
     /// Serialise (stable key order is not required; the digest is computed over the entries instead).
@@ -217,6 +295,17 @@ impl HeldLedger {
                 "snap_price_bits": p.snap_price_bits,
                 "lane_index": p.lane_index,
                 "discovery_lane_index": p.discovery_lane_index,
+            })).collect::<Vec<_>>(),
+            "order_floor": self.order_floor,
+            "orders": self.orders.iter().map(|o| json!({
+                "id": o.id, "mint": hex(&o.mint), "attempt": o.attempt,
+                "clip": o.clip_lamports, "filled_clip": o.filled_clip_lamports,
+                "state": o.state, "terminal": outcome_json(o.terminal),
+            })).collect::<Vec<_>>(),
+            "faults": self.faults.iter().map(|f| json!({
+                "order_id": f.order_id, "mint": hex(&f.mint), "first": outcome_json(f.first),
+                "first_source": f.first_source,
+                "contradicting": f.contradicting.iter().map(|c| outcome_json(Some(*c))).collect::<Vec<_>>(),
             })).collect::<Vec<_>>(),
             "decision": {
                 "last_ask": self.decision.last_ask.iter().map(|(m, t)| json!([hex(m), t])).collect::<Vec<_>>(),
@@ -328,7 +417,61 @@ impl HeldLedger {
         if let Some(d) = v.get("decision").filter(|d| d.is_object()) {
             decision.through_ms = d["through_ms"].as_i64().ok_or(bad("decision.through_ms"))?;
         }
+        let mut orders = Vec::new();
+        let mut seen_ids = std::collections::BTreeSet::new();
+        for o in v["orders"].as_array().ok_or(bad("orders"))? {
+            let rec = HeldOrder {
+                id: u(o, "id")?,
+                mint: o["mint"]
+                    .as_str()
+                    .and_then(unhex)
+                    .ok_or(bad("orders.mint"))?,
+                attempt: u32::try_from(u(o, "attempt")?).map_err(|_| bad("orders.attempt"))?,
+                clip_lamports: u(o, "clip")?,
+                filled_clip_lamports: u(o, "filled_clip")?,
+                state: u8::try_from(u(o, "state")?).map_err(|_| bad("orders.state"))?,
+                terminal: outcome_from(&o["terminal"]).map_err(|()| bad("orders.terminal"))?,
+            };
+            if !(2..=4).contains(&rec.state) || !seen_ids.insert(rec.id) {
+                return Err(bad("orders.state_or_duplicate"));
+            }
+            orders.push(rec);
+        }
+        let mut faults = Vec::new();
+        for f in v["faults"].as_array().ok_or(bad("faults"))? {
+            let src = f["first_source"]
+                .as_str()
+                .ok_or(bad("faults.first_source"))?;
+            if !FAULT_SOURCES.contains(&src) {
+                return Err(bad("faults.first_source"));
+            }
+            let mut contradicting = Vec::new();
+            for c in f["contradicting"]
+                .as_array()
+                .ok_or(bad("faults.contradicting"))?
+            {
+                contradicting.push(
+                    outcome_from(c)
+                        .ok()
+                        .flatten()
+                        .ok_or(bad("faults.contradicting"))?,
+                );
+            }
+            faults.push(HeldFault {
+                order_id: u(f, "order_id")?,
+                mint: f["mint"]
+                    .as_str()
+                    .and_then(unhex)
+                    .ok_or(bad("faults.mint"))?,
+                first: outcome_from(&f["first"]).map_err(|()| bad("faults.first"))?,
+                first_source: src.to_string(),
+                contradicting,
+            });
+        }
         Ok(Self {
+            orders,
+            faults,
+            order_floor: u(v, "order_floor")?,
             decision,
             seed_lamports: u(v, "seed_lamports")?,
             realized_lamports: big(v, "realized_lamports")?,
@@ -410,6 +553,10 @@ pub enum RestoreRefusal {
     NotModelManaged,
     /// A pending order has an unknown kind.
     UnknownOrderKind,
+    /// A settled order carries an id the order sequence never issued (the files do not describe one history).
+    OrderIdBeyondSequence,
+    /// A fault names an order that is in neither the settled records nor the pending list.
+    FaultWithoutOrder,
 }
 
 /// What a successful restore rebuilt.
@@ -439,6 +586,26 @@ mod tests {
             mgmt_seq: 2,
             written_wall_ms: 0,
             decision: DecisionState::default(),
+            orders: vec![HeldOrder {
+                id: 3,
+                mint: [4; 32],
+                attempt: 1,
+                clip_lamports: 5,
+                filled_clip_lamports: 5,
+                state: 4,
+                terminal: Some(HeldOutcome::Filled {
+                    entry_price_fp: 9,
+                    reserve_sol_lamports: 8,
+                }),
+            }],
+            faults: vec![HeldFault {
+                order_id: 3,
+                mint: [4; 32],
+                first: Some(HeldOutcome::NotFilled),
+                first_source: "paper_fill".into(),
+                contradicting: vec![HeldOutcome::NotFilled],
+            }],
+            order_floor: 2,
             held: vec![HeldEntry {
                 mint: [9; 32],
                 entry_price_fp: 45_085,
@@ -513,12 +680,42 @@ mod tests {
             Err(LedgerReadError::Untrusted(_))
         ));
         let mut v = sample().to_json();
-        v["schema"] = json!(2);
+        // An OLD schema (1: no settled-order identity) is refused by name, never upgraded by guessing.
+        v["schema"] = json!(1);
         fs::write(&p, v.to_string()).unwrap();
         assert!(matches!(
             HeldLedger::read(&p),
             Err(LedgerReadError::Untrusted("schema"))
         ));
+        for (field, key) in [
+            ("orders", "orders"),
+            ("faults", "faults"),
+            ("order_floor", "order_floor"),
+        ] {
+            let mut v = sample().to_json();
+            v.as_object_mut().unwrap().remove(field);
+            fs::write(&p, v.to_string()).unwrap();
+            assert!(HeldLedger::read(&p).is_err(), "missing {key} must refuse");
+        }
+        let mut v = sample().to_json();
+        v["faults"][0]["first_source"] = json!("made_up_source");
+        fs::write(&p, v.to_string()).unwrap();
+        assert!(
+            HeldLedger::read(&p).is_err(),
+            "an unknown fault source refuses"
+        );
+        let mut v = sample().to_json();
+        v["orders"][0]["state"] = json!(1);
+        fs::write(&p, v.to_string()).unwrap();
+        assert!(HeldLedger::read(&p).is_err(), "a non-settled state refuses");
+        let mut v = sample().to_json();
+        let dup = v["orders"][0].clone();
+        v["orders"].as_array_mut().unwrap().push(dup);
+        fs::write(&p, v.to_string()).unwrap();
+        assert!(
+            HeldLedger::read(&p).is_err(),
+            "a duplicated order id refuses"
+        );
         let mut v = sample().to_json();
         v["held"][0]["peak_fp"] = json!("x");
         fs::write(&p, v.to_string()).unwrap();

@@ -868,6 +868,9 @@ pub struct Engine {
     /// Monotonic id of the next model order. Every order, fill, evidence report and fault is keyed by
     /// this, never by mint alone, so evidence for one order cannot touch another order's state.
     model_order_seq: u64,
+    /// Settled-order records at or below this id may have been compacted away (never silently "unknown").
+    model_order_floor: u64,
+    model_settled_order_cap: Option<usize>,
     model_held: model_restore::HeldPersist,
     /// Durable missing-history ledger (writer + bookkeeping); `None` until attached.
     missing_store: model_admit::MissingStore,
@@ -1515,6 +1518,8 @@ impl Engine {
             model_uniq_seen: BTreeSet::new(),
             model_amm_fee: BTreeMap::new(),
             model_order_seq: 0,
+            model_order_floor: 0,
+            model_settled_order_cap: None,
             model_held: model_restore::HeldPersist::default(),
             missing_store: model_admit::MissingStore::default(),
             flow_store: model_admit::FlowStore::default(),

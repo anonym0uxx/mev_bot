@@ -1702,6 +1702,14 @@ impl Engine {
     /// inventory. Conflicting terminal evidence is a durable fault; settled history is never rewritten.
     pub fn model_ingest_evidence(&mut self, ev: Evidence) -> EvidenceResult {
         let Some(rec) = self.model_order_log.get(&ev.order_id).copied() else {
+            // Never applied, never guessed. An id at or below the compaction floor is NAMED as compacted (an order
+            // we once settled and later dropped from the log): it must not read as a harmless stranger, and it can
+            // never be matched to a position. An id this process never issued stays plainly unknown.
+            if ev.order_id <= self.model_order_floor {
+                self.mrep("evidence:unresolved:compacted_order");
+                return EvidenceResult::Rejected("compacted_order");
+            }
+            self.mrep("evidence:unresolved:unknown_order");
             self.mrep("evidence:rejected:unknown_order");
             return EvidenceResult::Rejected("unknown_order");
         };
@@ -1957,6 +1965,12 @@ impl Engine {
     }
 
     /// New exposure on `mint` is blocked while ANY of its orders has an unresolved fault.
+    /// Whether an unresolved reconciliation fault blocks new exposure on `mint` (the entry gate reads this).
+    #[must_use]
+    pub fn model_mint_is_blocked(&self, mint: &[u8; 32]) -> bool {
+        self.model_mint_blocked(mint)
+    }
+
     pub(super) fn model_mint_blocked(&self, mint: &[u8; 32]) -> bool {
         self.model_recon_faults.values().any(|f| f.mint == *mint)
     }
