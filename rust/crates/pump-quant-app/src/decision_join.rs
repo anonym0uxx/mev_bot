@@ -155,7 +155,7 @@ pub enum JoinRefusal {
     HistoryContinuityUnknown,
     /// The durable flow-history (wallet state) cannot be relied on for this decision, by dependency scope:
     /// `late_event_in_window` (an unseen older event of this mint was recorded, not applied), `late_overflow`,
-    /// `feed_gap` (an unwaived unavailable interval before the decision), or `flow_state_untrusted`.
+    /// `feed_gap` (an unavailable interval before the decision; nothing in the process clears it), or `flow_state_untrusted`.
     FlowStateScope {
         why: &'static str,
         from_ms: i64,
@@ -514,7 +514,7 @@ pub enum RestoreRefusal {
 pub struct DecisionCache {
     ledger: StateLedger,
     flow: FlowReducer,
-    /// Cursors / coverage / late records / waivers for the durable flow history. `None` until durability is attached.
+    /// Cursors / coverage / late records / acknowledgements for the durable flow history. `None` until durability is attached.
     flow_meta: Option<crate::flow_checkpoint::FlowMeta>,
     /// Set when a persisted flow checkpoint existed but could not be trusted: every prompt refuses by name.
     flow_state_untrusted: Option<&'static str>,
@@ -693,7 +693,15 @@ impl DecisionCache {
                 (&mut self.flow_meta, t.event_id, t.feature.is_some())
             {
                 let mut st = crate::flow_checkpoint::IngestStats::default();
-                fm.record_late("live", id, recv, t.mint, &mut st);
+                fm.record_late(
+                    "live",
+                    id,
+                    recv,
+                    t.mint,
+                    t.feature.map_or([0u8; 32], |f| f.trader),
+                    t.feature.is_some_and(|f| f.sol_lamports < 0),
+                    &mut st,
+                );
                 self.flow_rev = self.flow_rev.wrapping_add(1);
             }
             return Ingest::OutOfOrder;
@@ -831,13 +839,29 @@ impl DecisionCache {
                 let admit = match (&mut self.flow_meta, t.event_id) {
                     (Some(fm), Some(id)) => {
                         let mut st = crate::flow_checkpoint::IngestStats::default();
-                        Some(fm.admit("live", id, recv, t.mint, &mut st))
+                        Some(fm.admit(
+                            "live",
+                            id,
+                            recv,
+                            t.mint,
+                            e.trader,
+                            e.side == pump_quant_market_state::flow_reducer::Side::Buy,
+                            &mut st,
+                        ))
                     }
                     (Some(fm), None) => {
                         // An id-less print has no provable identity: derive a stable key from its own fields.
                         let key = u128::from(t.slot.unwrap_or(0)) << 64 | u128::from(recv as u64);
                         let mut st = crate::flow_checkpoint::IngestStats::default();
-                        Some(fm.admit("live-noid", key, recv, t.mint, &mut st))
+                        Some(fm.admit(
+                            "live-noid",
+                            key,
+                            recv,
+                            t.mint,
+                            e.trader,
+                            e.side == pump_quant_market_state::flow_reducer::Side::Buy,
+                            &mut st,
+                        ))
                     }
                     _ => None,
                 };
@@ -869,7 +893,7 @@ impl DecisionCache {
     }
 
     /// Declare the live feed resumes at `resume_ms` after a restore: an interval no source can account for becomes a
-    /// named gap (entry refuses by scope until waived). Returns the report.
+    /// named gap (every later prompt refuses by scope until the interval is reconstructed into the state). Returns the report.
     pub fn flow_restore_resume(
         &mut self,
         resume_ms: i64,
@@ -900,10 +924,11 @@ impl DecisionCache {
         self.flow_meta.as_ref()
     }
 
-    /// Install a verified operator waiver of an unavailable interval. Reported, and the gap itself stays on record.
-    pub fn flow_waive_gap(&mut self, from_ms: i64, to_ms: i64, reason: &str) {
+    /// Record an operator ACKNOWLEDGEMENT of an unavailable interval. AUDIT ONLY: it never clears a refusal and never
+    /// makes coverage complete (the scope check does not read it). Only reconstructing the interval into the state does.
+    pub fn flow_acknowledge_gap(&mut self, from_ms: i64, to_ms: i64, note: &str) {
         if let Some(m) = self.flow_meta.as_mut() {
-            m.waived.push((from_ms, to_ms, reason.to_string()));
+            m.acknowledged.push((from_ms, to_ms, note.to_string()));
             self.flow_rev = self.flow_rev.wrapping_add(1);
         }
     }
@@ -1230,9 +1255,7 @@ impl DecisionCache {
             });
         }
         if let Some(fm) = &self.flow_meta {
-            if let Some((why, a, b)) =
-                fm.scope_refusal(mint, t_dec_ms, matches!(audience, Audience::Entry))
-            {
+            if let Some((why, a, b)) = fm.scope_refusal(&self.flow, mint, t_dec_ms) {
                 return Err(JoinRefusal::FlowStateScope {
                     why,
                     from_ms: a,
@@ -2292,7 +2315,7 @@ mod tests {
 
     /// A valid but old checkpoint across a hole: entry refuses by a NAMED scope; it does not render "complete".
     #[test]
-    fn an_old_checkpoint_across_a_feed_hole_refuses_entry_by_name_until_waived() {
+    fn an_old_checkpoint_across_a_feed_hole_refuses_by_name_and_an_acknowledgement_cannot_clear_it() {
         let part = durable_cache(25);
         let resume = T0 + 1_000 + 25 * 2_000 + 3_600_000; // an hour later
         let mut r = restart(&part, &tdir("hole"), resume);
@@ -2321,11 +2344,31 @@ mod tests {
         }
         let g = r.flow_meta().unwrap().coverage.gaps.clone();
         assert_eq!(g.len(), 1, "the unavailable interval is on record");
-        r.flow_waive_gap(g[0].0, g[0].1, "operator");
-        assert!(
-            !r.flow_meta().unwrap().coverage.gaps.is_empty(),
-            "waiver does not erase the gap"
-        );
+        // An operator ACKNOWLEDGEMENT is audit only: it must not clear the refusal for either audience, and must not
+        // make coverage complete.
+        r.flow_acknowledge_gap(g[0].0, g[0].1, "operator says fine");
+        r.flow_acknowledge_gap(i64::MIN / 2, i64::MAX / 2, "blanket acknowledgement");
+        assert_eq!(r.flow_meta().unwrap().coverage.gaps.len(), 1, "gap still on record");
+        match r.snapshot(&MINT, td) {
+            Err(JoinRefusal::FlowStateScope { why: "feed_gap", .. }) => {}
+            other => panic!("acknowledgement bypassed the entry refusal: {:?}", other.map(|s| s.mint)),
+        }
+        let pos = mgmt_inputs();
+        match r.management_snapshot(&MINT, td, &pos) {
+            Err(JoinRefusal::FlowStateScope { why: "feed_gap", .. }) => {}
+            other => panic!("acknowledgement bypassed the management refusal: {:?}", other.is_ok()),
+        }
+        // and it survives a persist/reload unchanged: still refuses, acknowledgement still only audit
+        let reloaded = {
+            let (red, meta) = r.flow_snapshot().unwrap();
+            let body = meta.encode_with(&red);
+            match crate::flow_checkpoint::decode(pump_quant_market_state::flow_reducer::FlowParams::default(), &body) {
+                crate::flow_checkpoint::Load::Loaded(h) => h,
+                _ => panic!("reload"),
+            }
+        };
+        assert_eq!(reloaded.meta.acknowledged.len(), 2);
+        assert!(reloaded.meta.scope_refusal(&reloaded.reducer, &MINT, td).is_some());
     }
 
     /// A corrupt checkpoint refuses every prompt by name and is never overwritten.
@@ -2371,7 +2414,7 @@ mod tests {
         // ...so the early window is now refused (it cannot be known complete) rather than served silently
         match c.snapshot(&MINT, early_td) {
             Err(JoinRefusal::FlowStateScope {
-                why: "late_event_in_window",
+                why: "late_event_same_mint",
                 ..
             }) => {}
             _ => panic!("early window containing the late event must refuse"),
@@ -2409,7 +2452,7 @@ mod tests {
         assert!(matches!(
             r.snapshot(&MINT, t_dec(40)),
             Err(JoinRefusal::FlowStateScope {
-                why: "late_event_in_window",
+                why: "late_event_same_mint",
                 ..
             })
         ));

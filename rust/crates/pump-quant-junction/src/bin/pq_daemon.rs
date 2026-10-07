@@ -1890,7 +1890,7 @@ fn main() -> ExitCode {
                     "[pq-daemon] ALERT: flow-history UNTRUSTED ({why}) - Qwen entry and management refuse by name; monitoring, reconciliation and hard safeguards continue; the file is left untouched"
                 ),
                 pump_quant_app::engine::model_admit::FlowAttach::Restored { unavailable_ms, complete: false, late } => eprintln!(
-                    "[pq-daemon] ALERT: flow-history restored across an UNAVAILABLE interval of {unavailable_ms} ms (late records: {late}) - ENTRY refuses by scope until the interval is reconstructed or waived; coverage is NOT complete"
+                    "[pq-daemon] ALERT: flow-history restored across an UNAVAILABLE interval of {unavailable_ms} ms (late records: {late}) - every Qwen prompt after the gap refuses by scope until the interval is reconstructed into the state; an acknowledgement does not clear it; coverage is NOT complete"
                 ),
                 pump_quant_app::engine::model_admit::FlowAttach::Restored { late, .. } if *late > 0 => eprintln!(
                     "[pq-daemon] ALERT: flow-history restored with {late} durable late-event records - affected windows refuse by scope"

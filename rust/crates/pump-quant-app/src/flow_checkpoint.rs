@@ -27,7 +27,7 @@ use pump_quant_protocol::sha256::sha256;
 use serde_json::{json, Value};
 
 pub const MAGIC: &str = "pq-flow-checkpoint";
-pub const FILE_SCHEMA: u64 = 1;
+pub const FILE_SCHEMA: u64 = 2;
 /// Two events further apart than this are NOT bridged into one observed segment.
 pub const MAX_BRIDGE_MS: i64 = 60_000;
 
@@ -54,6 +54,11 @@ pub struct LateRecord {
     pub recv_ms: i64,
     pub high_water_ms: i64,
     pub mint: [u8; 32],
+    /// The event's trader: a late event changes THIS wallet's cumulative state (and its co-entry links), so every
+    /// prompt whose flow window contains this wallet reads incomplete history, on any mint.
+    pub trader: [u8; 32],
+    /// The late event was a BUY (a late buy can add co-entry links between its trader and the mint's early buyers).
+    pub buy: bool,
 }
 
 /// Result of offering one event.
@@ -109,7 +114,7 @@ pub struct IngestStats {
     pub late_unseen: u64,
 }
 
-/// Everything about the history EXCEPT the reducer: provenance, per-source cursors, coverage, late records, waivers.
+/// Everything about the history EXCEPT the reducer: provenance, per-source cursors, coverage, late records, acknowledgements.
 /// Small (late records are capped); cloned together with the reducer to make one consistent snapshot.
 #[derive(Clone, Debug)]
 pub struct FlowMeta {
@@ -120,8 +125,25 @@ pub struct FlowMeta {
     pub late: Vec<LateRecord>,
     /// Late events beyond [`LATE_CAP`] (counted, mint unknown): entry is refused everywhere while nonzero.
     pub late_overflow: u64,
-    /// Operator waivers `(from, to, reason)` of interval gaps: REPORTED, never described as complete coverage.
-    pub waived: Vec<(i64, i64, String)>,
+    /// Operator ACKNOWLEDGEMENTS `(from, to, note)` of interval gaps. AUDIT ONLY: an acknowledgement never clears a
+    /// refusal, never marks coverage complete and is never read by [`FlowMeta::scope_refusal`]. A gap is cleared only
+    /// by reconstructing the missing interval into the state (a rebuilt checkpoint), which no in-process call does.
+    pub acknowledged: Vec<(i64, i64, String)>,
+    /// Delivery attempts vs unique evidence, kept separate (cumulative, persisted).
+    pub counters: Counters,
+}
+
+/// Delivery attempts and unique evidence are different quantities: redelivery inflates the first and never the second.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Counters {
+    /// Every event offered (including redeliveries).
+    pub attempts: u64,
+    /// Unique events applied to the reducer.
+    pub applied: u64,
+    /// Redeliveries proven by id (recent window or a durable late record).
+    pub duplicates: u64,
+    /// Unique unseen events recorded as late (not applied).
+    pub late_unique: u64,
 }
 
 /// The live flow-history state: the reducer plus its metadata.
@@ -161,7 +183,15 @@ impl FlowHistory {
     ) -> Offer {
         let o = self
             .meta
-            .admit(source, event_id, e.recv_unix_ms, e.mint, st);
+            .admit(
+            source,
+            event_id,
+            e.recv_unix_ms,
+            e.mint,
+            e.trader,
+            e.side == pump_quant_market_state::flow_reducer::Side::Buy,
+            st,
+        );
         if o == Offer::Applied {
             self.reducer.on_event(e);
         }
@@ -222,41 +252,51 @@ impl FlowMeta {
             coverage: Coverage::default(),
             late: Vec::new(),
             late_overflow: 0,
-            waived: Vec::new(),
+            acknowledged: Vec::new(),
+            counters: Counters::default(),
         }
     }
 
-    /// Admission decision for one event of `source` (no reducer access). Proven duplicates add nothing. An unseen
-    /// event older than the source's high-water mark is NEVER discarded as if it were a duplicate: it is recorded
-    /// durably as a late event and NOT applied (the reducer is order-dependent, so an in-place repair is not exact),
-    /// and the affected prompts refuse by dependency scope.
+    /// Admission decision for one event of `source` (no reducer access).
+    ///
+    /// * An id in the cursor's recent window, or already held as a durable late record, is a PROVEN duplicate.
+    /// * An unseen event older than the source's high-water mark is NEVER discarded as a duplicate: it is recorded
+    ///   durably as a late event and NOT applied (the reducer is order-dependent, so an in-place repair is not exact).
+    /// * An id older than the retention window and not held as a late record cannot be proven new or duplicate. That
+    ///   case is treated as late (recorded, refusing by scope), never double-counted. `counters` keeps attempts and
+    ///   unique evidence apart.
     pub fn admit(
         &mut self,
         source: &str,
         event_id: u128,
         t: i64,
         mint: [u8; 32],
+        trader: [u8; 32],
+        buy: bool,
         st: &mut IngestStats,
     ) -> Offer {
+        self.counters.attempts += 1;
+        if self
+            .late
+            .iter()
+            .any(|l| l.id == event_id && l.source == source)
+        {
+            st.duplicate += 1;
+            self.counters.duplicates += 1;
+            return Offer::Duplicate;
+        }
         let c = self.cursors.entry(source.to_string()).or_default();
         if c.recent.contains_key(&event_id) {
             st.duplicate += 1;
+            self.counters.duplicates += 1;
             return Offer::Duplicate;
         }
         if t < c.high_water_ms {
             c.recent.insert(event_id, t);
+            let hw = c.high_water_ms;
             st.late_unseen += 1;
-            if self.late.len() < LATE_CAP {
-                self.late.push(LateRecord {
-                    source: source.to_string(),
-                    id: event_id,
-                    recv_ms: t,
-                    high_water_ms: c.high_water_ms,
-                    mint,
-                });
-            } else {
-                self.late_overflow += 1;
-            }
+            self.counters.late_unique += 1;
+            self.push_late(source, event_id, t, hw, mint, trader, buy);
             return Offer::LateUnseen;
         }
         c.high_water_ms = t;
@@ -267,7 +307,33 @@ impl FlowMeta {
         }
         self.coverage.observe(t);
         st.applied += 1;
+        self.counters.applied += 1;
         Offer::Applied
+    }
+
+    fn push_late(
+        &mut self,
+        source: &str,
+        id: u128,
+        t: i64,
+        hw: i64,
+        mint: [u8; 32],
+        trader: [u8; 32],
+        buy: bool,
+    ) {
+        if self.late.len() < LATE_CAP {
+            self.late.push(LateRecord {
+                source: source.to_string(),
+                id,
+                recv_ms: t,
+                high_water_ms: hw,
+                mint,
+                trader,
+                buy,
+            });
+        } else {
+            self.late_overflow += 1;
+        }
     }
 
     /// Record an event the caller could not apply (e.g. older than its mint's newest print) as a durable late record,
@@ -278,60 +344,83 @@ impl FlowMeta {
         event_id: u128,
         t: i64,
         mint: [u8; 32],
+        trader: [u8; 32],
+        buy: bool,
         st: &mut IngestStats,
     ) -> Offer {
-        let c = self.cursors.entry(source.to_string()).or_default();
-        if c.recent.contains_key(&event_id) {
+        self.counters.attempts += 1;
+        if self
+            .late
+            .iter()
+            .any(|l| l.id == event_id && l.source == source)
+            || self
+                .cursors
+                .get(source)
+                .is_some_and(|c| c.recent.contains_key(&event_id))
+        {
             st.duplicate += 1;
+            self.counters.duplicates += 1;
             return Offer::Duplicate;
         }
-        c.recent.insert(event_id, t);
+        let hw = {
+            let c = self.cursors.entry(source.to_string()).or_default();
+            c.recent.insert(event_id, t);
+            c.high_water_ms.max(t)
+        };
         st.late_unseen += 1;
-        if self.late.len() < LATE_CAP {
-            self.late.push(LateRecord {
-                source: source.to_string(),
-                id: event_id,
-                recv_ms: t,
-                high_water_ms: c.high_water_ms.max(t),
-                mint,
-            });
-        } else {
-            self.late_overflow += 1;
-        }
+        self.counters.late_unique += 1;
+        self.push_late(source, event_id, t, hw, mint, trader, buy);
         Offer::LateUnseen
     }
 
-    /// Dependency-scoped readiness: why (if at all) a decision at `t_dec_ms` for `mint` cannot rely on this history.
-    /// * a late event of THIS mint inside the decision's 300 s window (both audiences);
-    /// * late-record overflow (entry);
-    /// * an unwaived feed gap: entry refuses once any such gap lies before the decision (cumulative wallet state is
-    ///   short by an unknown amount); management refuses only if the gap overlaps its 300 s window.
+
+    /// Dependency-scoped readiness: why (if at all) a prompt at `t_dec_ms` for `mint` cannot rely on this history.
+    /// Entry and management read the SAME flow block and the same per-mint cumulative/holder state, so the scope is
+    /// the same for both audiences; held-position INVENTORY, cost basis and hard safeguards are engine state and are
+    /// never read here.
+    ///
+    /// A late event (an unseen event older than its source's high-water mark, NOT applied) is a missing input to:
+    /// * its own mint's cumulative ledger and holder enrichment, for every later decision (`late_event_same_mint`);
+    /// * its trader's cumulative wallet state (`smart_*`, `fresh_wallet_share`), for every later decision on ANY mint
+    ///   whose 300 s window contains that wallet as a buyer (`late_event_shared_wallet`);
+    /// * for a late BUY, the co-entry links between its trader and the mint's early buyers, for any later decision on
+    ///   a mint whose window contains one of those wallets (`late_event_coentry_link`).
+    /// A decision EARLIER than the late event never contained it, so it is unaffected. Overflow of the late record
+    /// loses the mint/wallet scope, so it refuses everywhere (`late_overflow_unscoped`).
+    ///
+    /// A feed gap leaves cumulative wallet state short by an unknown amount for an unknown wallet set, so every
+    /// decision after it refuses (`feed_gap`); nothing in the process clears it. [`Self::acknowledged`] is never read.
     #[must_use]
     pub fn scope_refusal(
         &self,
+        reducer: &FlowReducer,
         mint: &[u8; 32],
         t_dec_ms: i64,
-        entry: bool,
     ) -> Option<(&'static str, i64, i64)> {
-        let lo = t_dec_ms.saturating_sub(pump_quant_market_state::flow_reducer::WINDOW_300_MS);
-        if let Some(l) = self
-            .late
-            .iter()
-            .find(|l| l.mint == *mint && l.recv_ms >= lo && l.recv_ms < t_dec_ms)
-        {
-            return Some(("late_event_in_window", l.recv_ms, l.high_water_ms));
+        if self.late_overflow > 0 {
+            return Some(("late_overflow_unscoped", 0, 0));
         }
-        if entry && self.late_overflow > 0 {
-            return Some(("late_overflow", 0, 0));
+        if !self.late.is_empty() {
+            let buyers = reducer.window_buyers(mint, t_dec_ms);
+            for l in self.late.iter().filter(|l| l.recv_ms < t_dec_ms) {
+                if l.mint == *mint {
+                    return Some(("late_event_same_mint", l.recv_ms, l.high_water_ms));
+                }
+                if buyers.contains(&l.trader) {
+                    return Some(("late_event_shared_wallet", l.recv_ms, l.high_water_ms));
+                }
+                if l.buy
+                    && reducer
+                        .early_buyers_of(&l.mint)
+                        .iter()
+                        .any(|w| buyers.contains(w))
+                {
+                    return Some(("late_event_coentry_link", l.recv_ms, l.high_water_ms));
+                }
+            }
         }
         for &(a, b) in &self.coverage.gaps {
-            if self.waived.iter().any(|w| w.0 <= a && b <= w.1) {
-                continue;
-            }
-            if b > t_dec_ms {
-                continue;
-            }
-            if entry || b > lo {
+            if b <= t_dec_ms {
                 return Some(("feed_gap", a, b));
             }
         }
@@ -360,9 +449,11 @@ impl FlowMeta {
             "cursors": cursors,
             "coverage": {"segments": self.coverage.segments, "gaps": self.coverage.gaps},
             "late": self.late.iter().map(|l| json!({"source": l.source, "id": format!("{:032x}", l.id), "recv_ms": l.recv_ms,
-                       "high_water_ms": l.high_water_ms, "mint": l.mint.iter().map(|b| format!("{b:02x}")).collect::<String>()})).collect::<Vec<_>>(),
+                       "high_water_ms": l.high_water_ms, "mint": l.mint.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+                       "trader": l.trader.iter().map(|b| format!("{b:02x}")).collect::<String>(), "buy": l.buy})).collect::<Vec<_>>(),
             "late_overflow": self.late_overflow,
-            "waived": self.waived.iter().map(|w| json!([w.0, w.1, w.2])).collect::<Vec<_>>(),
+            "acknowledged": self.acknowledged.iter().map(|w| json!([w.0, w.1, w.2])).collect::<Vec<_>>(),
+            "counters": [self.counters.attempts, self.counters.applied, self.counters.duplicates, self.counters.late_unique],
         });
         let mut out = serde_json::to_vec(&hdr).unwrap_or_default();
         out.push(b'\n');
@@ -636,7 +727,7 @@ pub fn decode(params: FlowParams, body: &[u8]) -> Load {
             }
             Some(o)
         };
-        let (Some(src), Some(id), Some(rm), Some(hw), Some(mint)) = (
+        let (Some(src), Some(id), Some(rm), Some(hw), Some(mint), Some(trader), Some(buy)) = (
             l["source"].as_str(),
             l["id"]
                 .as_str()
@@ -644,6 +735,8 @@ pub fn decode(params: FlowParams, body: &[u8]) -> Load {
             l["recv_ms"].as_i64(),
             l["high_water_ms"].as_i64(),
             hex32(&l["mint"]),
+            hex32(&l["trader"]),
+            l["buy"].as_bool(),
         ) else {
             return Load::Untrusted("checkpoint_bad_late");
         };
@@ -653,19 +746,30 @@ pub fn decode(params: FlowParams, body: &[u8]) -> Load {
             recv_ms: rm,
             high_water_ms: hw,
             mint,
+            trader,
+            buy,
         });
     }
-    let mut waived = Vec::new();
-    for w in h["waived"].as_array().cloned().unwrap_or_default() {
+    let mut acknowledged = Vec::new();
+    for w in h["acknowledged"].as_array().cloned().unwrap_or_default() {
         let (Some(a), Some(b), Some(r)) = (
             w.get(0).and_then(Value::as_i64),
             w.get(1).and_then(Value::as_i64),
             w.get(2).and_then(Value::as_str),
         ) else {
-            return Load::Untrusted("checkpoint_bad_waiver");
+            return Load::Untrusted("checkpoint_bad_acknowledgement");
         };
-        waived.push((a, b, r.to_string()));
+        acknowledged.push((a, b, r.to_string()));
     }
+    let counters = match h["counters"].as_array().map(|a| a.iter().map(Value::as_u64).collect::<Vec<_>>()) {
+        Some(v) if v.len() == 4 && v.iter().all(Option::is_some) => Counters {
+            attempts: v[0].unwrap_or(0),
+            applied: v[1].unwrap_or(0),
+            duplicates: v[2].unwrap_or(0),
+            late_unique: v[3].unwrap_or(0),
+        },
+        _ => return Load::Untrusted("checkpoint_bad_counters"),
+    };
     Load::Loaded(Box::new(FlowHistory {
         reducer,
         meta: FlowMeta {
@@ -674,7 +778,8 @@ pub fn decode(params: FlowParams, body: &[u8]) -> Load {
             coverage: Coverage { segments, gaps },
             late,
             late_overflow: h["late_overflow"].as_u64().unwrap_or(0),
-            waived,
+            acknowledged,
+            counters,
         },
     }))
 }
@@ -850,6 +955,7 @@ mod tests {
         let mut h = hist();
         fill(&mut h);
         let bytes = h.encode();
+        let (applied0, late0) = (h.counters.applied, h.counters.late_unique);
         let mut st = IngestStats::default();
         // replay the whole stream again from the start (as a restart overlap would)
         for i in 0..40i64 {
@@ -879,12 +985,12 @@ mod tests {
             .unwrap()
             .encode_state()
         );
-        // coverage is the only other thing that could move; it must not
-        assert_eq!(
-            h.encode(),
-            bytes,
-            "overlap replay is a no-op on the persisted state"
-        );
+        // the reducer payload is byte-identical after overlap replay, and so are the UNIQUE-evidence counters;
+        // only delivery attempts and proven duplicates (reported separately) rise
+        let split = |b: &[u8]| b[b.iter().position(|x| *x == b'\n').unwrap() + 1..].to_vec();
+        assert_eq!(split(&h.encode()), split(&bytes), "overlap replay is a no-op on the reducer payload");
+        assert_eq!(h.counters.applied, applied0);
+        assert_eq!(h.counters.late_unique, late0);
         // same-millisecond DISTINCT id at the boundary is applied, same id is not
         let mut st2 = IngestStats::default();
         let hw = h.cursors["live"].high_water_ms;
@@ -933,7 +1039,7 @@ mod tests {
             Load::Untrusted("checkpoint_params_mismatch")
         ));
         let s = String::from_utf8_lossy(&good[..good.iter().position(|b| *b == b'\n').unwrap()])
-            .replace("\"file_schema\":1", "\"file_schema\":2");
+            .replace("\"file_schema\":2", "\"file_schema\":3");
         let mut bad_schema = s.into_bytes();
         bad_schema.push(b'\n');
         bad_schema.extend_from_slice(&good[good.iter().position(|b| *b == b'\n').unwrap() + 1..]);
@@ -1054,14 +1160,23 @@ mod tests {
         assert_eq!(h.reducer.serve(&mint, 20_000), before);
         // dependency-scoped: this mint's window containing it refuses; another mint and a later window do not
         assert_eq!(
-            h.scope_refusal(&mint, 16_000, true).map(|x| x.0),
-            Some("late_event_in_window")
+            h.scope_refusal(&h.reducer, &mint, 16_000).map(|x| x.0),
+            Some("late_event_same_mint")
         );
-        assert_eq!(h.scope_refusal(&[1u8; 32], 16_000, true), None);
         assert_eq!(
-            h.scope_refusal(&mint, 16_000 + 400_000, true),
+            h.scope_refusal(&h.reducer, &[1u8; 32], 16_000),
             None,
-            "leaves the 300 s window"
+            "an unrelated mint with no shared wallet is not affected"
+        );
+        assert_eq!(
+            h.scope_refusal(&h.reducer, &mint, 15_500),
+            None,
+            "a decision at or before the late event never contained it"
+        );
+        assert_eq!(
+            h.scope_refusal(&h.reducer, &mint, 16_000 + 400_000).map(|x| x.0),
+            Some("late_event_same_mint"),
+            "the mint's cumulative ledger stays short for every later decision, not only its 300 s window"
         );
         let _ = t_dec;
         // restart: the durable late record and cursor come back; the same late id redelivered is a DUPLICATE
@@ -1071,8 +1186,8 @@ mod tests {
         };
         assert_eq!(r.late.len(), 1);
         assert_eq!(
-            r.scope_refusal(&mint, 16_000, true).map(|x| x.0),
-            Some("late_event_in_window")
+            r.scope_refusal(&r.reducer, &mint, 16_000).map(|x| x.0),
+            Some("late_event_same_mint")
         );
         let mut st2 = IngestStats::default();
         assert_eq!(
@@ -1130,36 +1245,132 @@ mod tests {
         assert_eq!(h.late.len(), LATE_CAP);
         assert_eq!(h.late_overflow, 5);
         assert_eq!(
-            h.scope_refusal(&[77u8; 32], 2_000_000, true).map(|x| x.0),
-            Some("late_overflow")
+            h.scope_refusal(&h.reducer, &[77u8; 32], 2_000_000).map(|x| x.0),
+            Some("late_overflow_unscoped")
         );
     }
 
+
+    /// A late event changes ITS TRADER's cumulative wallet state, so another mint whose window contains that wallet
+    /// reads incomplete smart-wallet history; a mint sharing no wallet is untouched.
     #[test]
-    fn a_feed_gap_blocks_entry_until_waived_and_a_waiver_is_reported_not_complete() {
+    fn a_late_event_scopes_to_every_mint_that_shares_its_wallet() {
+        let mut h = hist();
+        for m in [9u8, 8, 7, 4] {
+            h.reducer.track_mint([m; 32]); // production tracks a mint at its launch; windows exist only for tracked mints
+        }
+        let mut st = IngestStats::default();
+        // wallet 5 buys mint 9 and mint 8 (both inside the later decision's window)
+        h.ingest("live", 1, &ev(1_000_000, 5, 9, Side::Buy, -1), &mut st);
+        h.ingest("live", 2, &ev(1_001_000, 5, 8, Side::Buy, -1), &mut st);
+        h.ingest("live", 3, &ev(1_002_000, 6, 7, Side::Buy, -1), &mut st); // mint 7: different wallet
+        // wallet 5's earlier trade arrives late, on a THIRD mint (4)
+        assert_eq!(
+            h.offer("live", 99, &ev(900_000, 5, 4, Side::Sell, 7_000_000_000), &mut st),
+            Offer::LateUnseen
+        );
+        let t = 1_100_000;
+        assert_eq!(
+            h.scope_refusal(&h.reducer, &[9u8; 32], t).map(|x| x.0),
+            Some("late_event_shared_wallet")
+        );
+        assert_eq!(
+            h.scope_refusal(&h.reducer, &[8u8; 32], t).map(|x| x.0),
+            Some("late_event_shared_wallet")
+        );
+        assert_eq!(
+            h.scope_refusal(&h.reducer, &[7u8; 32], t),
+            None,
+            "wallet 6 never appears in the late event: untouched"
+        );
+        // a decision whose window no longer contains wallet 5 is not affected through the wallet
+        assert_eq!(h.scope_refusal(&h.reducer, &[9u8; 32], 1_000_000 + 400_000).map(|x| x.0), None);
+    }
+
+    /// A late BUY adds co-entry links between its trader and the late mint's early buyers: a mint whose window holds
+    /// one of those early buyers reads an incomplete co-entry graph even though it shares no wallet with the late trader.
+    #[test]
+    fn a_late_buy_scopes_through_coentry_links() {
+        let mut h = hist();
+        for m in [9u8, 4] {
+            h.reducer.track_mint([m; 32]);
+        }
+        let mut st = IngestStats::default();
+        // mint 4: early buyer wallet 1 (so a late buy on mint 4 would link its trader to wallet 1)
+        h.ingest("live", 1, &ev(1_000_000, 1, 4, Side::Buy, -1), &mut st);
+        // mint 9: wallet 1 is a buyer in the decision window
+        h.ingest("live", 2, &ev(1_050_000, 1, 9, Side::Buy, -1), &mut st);
+        // wallet 2 (a stranger to mint 9) buys mint 4, but ARRIVES LATE
+        assert_eq!(
+            h.offer("live", 50, &ev(1_000_500, 2, 4, Side::Buy, -1), &mut st),
+            Offer::LateUnseen
+        );
+        let r = h.scope_refusal(&h.reducer, &[9u8; 32], 1_100_000).map(|x| x.0);
+        assert!(
+            matches!(r, Some("late_event_coentry_link") | Some("late_event_shared_wallet")),
+            "{r:?}"
+        );
+        // a SELL by the same stranger adds no co-entry link and no wallet in mint 9's window: unaffected
+        let mut h2 = hist();
+        for m in [9u8, 4] {
+            h2.reducer.track_mint([m; 32]);
+        }
+        let mut st2 = IngestStats::default();
+        h2.ingest("live", 1, &ev(1_000_000, 1, 4, Side::Buy, -1), &mut st2);
+        h2.ingest("live", 2, &ev(1_050_000, 1, 9, Side::Buy, -1), &mut st2);
+        assert_eq!(
+            h2.offer("live", 51, &ev(1_000_500, 2, 4, Side::Sell, 1), &mut st2),
+            Offer::LateUnseen
+        );
+        assert_eq!(h2.scope_refusal(&h2.reducer, &[9u8; 32], 1_100_000), None);
+    }
+
+    /// A GENUINE duplicate older than the retention horizon (its id was pruned) is never applied twice and never
+    /// creates more than one durable record; redelivering that same id again adds nothing. Attempts and unique
+    /// evidence are counted separately.
+    #[test]
+    fn a_genuine_duplicate_older_than_the_retention_horizon_is_not_double_counted() {
         let mut h = hist();
         let mut st = IngestStats::default();
-        h.ingest("live", 1, &ev(1_000, 1, 9, Side::Buy, -1), &mut st);
-        h.coverage.gaps.push((2_000, 900_000));
-        let m = [9u8; 32];
-        assert_eq!(
-            h.scope_refusal(&m, 2_000_000, true).map(|x| x.0),
-            Some("feed_gap")
-        );
-        assert_eq!(
-            h.scope_refusal(&m, 2_000_000, false),
-            None,
-            "management window no longer overlaps the gap"
-        );
-        assert_eq!(
-            h.scope_refusal(&m, 1_000_000, false).map(|x| x.0),
-            Some("feed_gap")
-        );
-        h.waived.push((2_000, 900_000, "operator".into()));
-        assert_eq!(h.scope_refusal(&m, 2_000_000, true), None);
+        // first delivery of id 1 at t=1_000, then enough later traffic to prune it from the recent window
+        assert!(h.ingest("live", 1, &ev(1_000, 1, 9, Side::Buy, -1_000_000_000), &mut st));
+        for i in 0..1500i64 {
+            h.ingest("live", 100 + i as u128, &ev(1_000 + OVERLAP_MS + 10 + i, 2, 9, Side::Buy, -1), &mut st);
+        }
         assert!(
-            !h.coverage.gaps.is_empty(),
-            "the gap itself is still on record"
+            !h.cursors["live"].recent.contains_key(&1),
+            "id 1 was pruned: bounded storage can no longer prove it a duplicate"
+        );
+        let wallets_before = h.reducer.sizes();
+        let enc_before = h.reducer.encode_state();
+        let applied_before = h.counters.applied;
+        // the genuine redelivery of id 1
+        assert_eq!(
+            h.offer("live", 1, &ev(1_000, 1, 9, Side::Buy, -1_000_000_000), &mut st),
+            Offer::LateUnseen,
+            "unprovable as new or duplicate: fail closed, never applied"
+        );
+        assert_eq!(h.reducer.encode_state(), enc_before, "never double-counted into the reducer");
+        assert_eq!(h.reducer.sizes(), wallets_before);
+        assert_eq!(h.counters.applied, applied_before, "unique applied evidence did not move");
+        assert_eq!(h.late.len(), 1);
+        // redelivered AGAIN (and again): one record, never more; attempts rise, unique evidence does not
+        let attempts_mid = h.counters.attempts;
+        for _ in 0..5 {
+            assert_eq!(
+                h.offer("live", 1, &ev(1_000, 1, 9, Side::Buy, -1_000_000_000), &mut st),
+                Offer::Duplicate
+            );
+        }
+        assert_eq!(h.late.len(), 1, "no repeated gap creation");
+        assert_eq!(h.counters.attempts, attempts_mid + 5);
+        assert_eq!(h.counters.late_unique, 1);
+        assert_eq!(h.counters.duplicates, 5);
+        // and the refusal it causes is the SAME named scope, not a hidden one
+        assert_eq!(
+            h.scope_refusal(&h.reducer, &[9u8; 32], 2_000_000).map(|x| x.0),
+            Some("late_event_same_mint")
         );
     }
+
 }

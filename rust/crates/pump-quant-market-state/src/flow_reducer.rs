@@ -841,6 +841,24 @@ impl FlowReducer {
             .unwrap_or_default()
     }
 
+    /// The first (up to `early_n`) distinct buyers of `mint`, in arrival order (co-entry graph membership). Read-only.
+    #[must_use]
+    pub fn early_buyers_of(&self, mint: &MintId) -> Vec<Wallet> {
+        self.early_buyers.get(mint).cloned().unwrap_or_default()
+    }
+
+    /// Whether `mint`'s early-buyer list can still grow (a late BUY could then change the co-entry graph).
+    #[must_use]
+    pub fn early_list_open(&self, mint: &MintId) -> bool {
+        self.early_buyers.get(mint).map_or(0, Vec::len) < self.p.early_n
+    }
+
+    /// The creator registered for `mint`, if any.
+    #[must_use]
+    pub fn creator_of(&self, mint: &MintId) -> Option<Wallet> {
+        self.creator_of.get(mint).copied()
+    }
+
     /// Wallets / co-entry links held (resource accounting; the graph is unpruned by design).
     #[must_use]
     pub fn sizes(&self) -> (usize, usize) {
