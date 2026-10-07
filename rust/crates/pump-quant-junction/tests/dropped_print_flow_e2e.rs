@@ -547,8 +547,8 @@ fn the_dropped_mints_own_management_is_unavailable_until_its_history_is_reconstr
         e.model_lane_report()
     );
     assert!(
-        e.model_position_open(&AFFECTED) || rep(&e, "skip:held_or_pending") > 0,
-        "the held position must stay TRACKED (open or pending) — only Qwen management is \
+        e.model_position_open(&AFFECTED) || rep(&e, "exit_reason:") > 0,
+        "the held position must stay TRACKED (open, or closed by a NAMED protective exit) — only Qwen management is \
          unavailable: open={} rep={:?}",
         e.model_position_open(&AFFECTED),
         e.model_lane_report()
@@ -582,7 +582,7 @@ fn the_dropped_mints_own_management_is_unavailable_until_its_history_is_reconstr
         "management must never be reported blocked by this path"
     );
     assert!(
-        e.model_position_open(&AFFECTED) || rep(&e, "skip:held_or_pending") > 0,
+        e.model_position_open(&AFFECTED) || rep(&e, "exit_reason:") > 0,
         "emergency protection must not abandon the held position"
     );
 

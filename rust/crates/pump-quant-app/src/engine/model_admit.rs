@@ -54,8 +54,24 @@ const FIRST_CAND_CAP: usize = 100_000;
 const REGISTRY_CAP: usize = 100_000;
 /// Maximum asks started per tick: a coalescing bound, not a strategy filter.
 const SCHEDULE_PER_TICK: usize = 8;
+/// Work bound: markets EXAMINED per tick (dispatched or refused). Unexamined markets stay queued, oldest first.
+const EVAL_PER_TICK: usize = 64;
 /// Bound on the in-memory order log (oldest terminal records are the only candidates to evict).
 const ORDER_LOG_CAP: usize = 100_000;
+
+/// Outcome of one admit attempt. The scheduler uses it to keep an INELIGIBLE market from consuming the
+/// per-tick budget that an eligible one could use; it never changes what a market is eligible for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Admit {
+    /// A request was handed to the pool.
+    Dispatched,
+    /// Not eligible now (identity/data/readiness/held/pending/re-ask): the market stays queued, no budget used.
+    Ineligible,
+    /// Eligible but the lane is full (request table or pool queue): stop starting entries this tick.
+    Backpressure,
+    /// The lane cannot admit anything (live forbidden, no source, no pool, no feed clock).
+    Blocked,
+}
 
 /// A canonical-pool swap handed to the engine (see `AppEvent::AmmSwap`).
 #[derive(Debug, Clone, Copy)]
@@ -707,32 +723,14 @@ impl Engine {
         s
     }
 
-    /// The legacy-promoted admit-site branch (kept as a SECOND source; the stream registry below
-    /// is the one that does not depend on legacy admission).
+    /// A legacy watchlist promotion in paper-model mode. It is COUNTED and nothing else: legacy rank, score and
+    /// tick state neither dispatch, prioritise nor exclude a Qwen entry request. Every supported, data-ready
+    /// market reaches the model through the one stream scheduler (`model_stream_schedule`).
     pub(super) fn model_admit_candidate(&mut self, cand: Candidate) {
-        // Admission-SOURCE evidence for the old-vs-new comparison: this market reached the model
-        // through the legacy priced-print promotion path.
-        let clock = self.model_clock_ms;
-        self.mrep("admit_attempt|src=legacy_promoted");
+        self.mrep("legacy_promotion_observed_not_dispatched");
         let cm = cand.mint.bytes();
-        let (venue, _, _) = self.model_cache.describe(&cm, clock);
+        let (venue, _, _) = self.model_cache.describe(&cm, self.model_clock_ms);
         self.model_uniq("legacy_promoted", &cm, venue);
-        let watched = self.model_watch.as_ref().is_some_and(|w| {
-            cm.iter()
-                .map(|b| format!("{b:02x}"))
-                .collect::<String>()
-                .starts_with(w.as_str())
-        });
-        let before = self.model_last_ask.get(&cm).copied();
-        self.model_admit_mint(cand.mint.bytes(), cand.lane, cand.discovery_lane);
-        if watched {
-            let after = self.model_last_ask.get(&cm).copied();
-            self.model_watch_log.push(format!(
-                "candidate_path clock={clock} last_ask_before={before:?} dispatched={} last_refusal={:?}",
-                after != before,
-                self.model_last_refusal.get(&cm)
-            ));
-        }
     }
 
     /// Register a stream-discovered market. Bounded; idempotent; never consults legacy state.
@@ -770,83 +768,94 @@ impl Engine {
         }
     }
 
-    /// Coalesced, bounded scheduling of stream-discovered markets: at most `SCHEDULE_PER_TICK`
-    /// asks per tick, each only for a market with a NEW observation since its last ask and outside
-    /// its re-ask window. A market the model SKIPped stays registered and is re-offered when new
-    /// observations arrive; nothing is dropped for having been skipped.
+    /// THE entry scheduler. Every market with an observation newer than its last answered ask is queued
+    /// (`model_dirty`, with the time it FIRST became dirty, preserved across coalesced updates). Each tick:
+    /// * markets are visited OLDEST-DIRTY-FIRST with the mint as the stable tie-break;
+    /// * at most `SCHEDULE_PER_TICK` requests are dispatched (the existing budget);
+    /// * a market that is ineligible now (readiness, identity, held/pending, re-ask) does NOT consume that
+    ///   budget, so it cannot block an eligible one; at most `EVAL_PER_TICK` markets are examined per tick as a
+    ///   work bound, and the unexamined stay queued in the same order (no starvation: oldest first);
+    /// * lane backpressure (request table / pool queue full) or a lane-wide block stops entry starts for the
+    ///   tick and leaves the rest queued.
+    /// Held-position management has its OWN request table and runs BEFORE this in the tick, so an entry
+    /// backlog cannot take its slots. Legacy watchlist state is never read here.
     pub(super) fn model_stream_schedule(&mut self) {
         let clock = self.model_clock_ms;
-        let dirty: Vec<[u8; 32]> = self.model_dirty.iter().copied().collect();
-        let mut budget = SCHEDULE_PER_TICK;
-        let watch_pos = self.model_watch.as_ref().and_then(|w| {
-            dirty.iter().position(|m| {
-                m.iter()
-                    .map(|b| format!("{b:02x}"))
-                    .collect::<String>()
-                    .starts_with(w.as_str())
-            })
-        });
-        if let Some(p) = watch_pos {
-            let m = dirty[p];
-            self.model_watch_log.push(format!(
-                "sched clock={clock} queue_pos={p}/{} last_ask={:?} since={:?} reask_ok={} held_or_pending={}",
-                dirty.len(),
-                self.model_last_ask.get(&m),
-                self.model_dirty_since.get(&m),
-                self.model_last_ask.get(&m).is_none_or(|t| clock - *t >= MODEL_REASK_MS),
-                self.open_lane.contains_key(&m) || self.model_orders.contains_key(&m) || self.model_table.has_live_for(&m)
-            ));
-        }
-        for mint in dirty {
-            if budget == 0 {
+        let mut order: Vec<(i64, [u8; 32])> = self
+            .model_dirty
+            .iter()
+            .map(|m| (self.model_dirty_since.get(m).copied().unwrap_or(0), *m))
+            .collect();
+        order.sort_unstable();
+        let queued = order.len();
+        let mut dispatched = 0usize;
+        let mut examined = 0usize;
+        for (pos, (since, mint)) in order.into_iter().enumerate() {
+            if dispatched >= SCHEDULE_PER_TICK {
                 self.mrep("sched_deferred_budget");
-                let (v, _, _) = self.model_cache.describe(&mint, clock);
-                self.mrep(format!("sched_deferred|venue={v}"));
-                continue;
+                break;
+            }
+            if examined >= EVAL_PER_TICK {
+                self.mrep("sched_deferred_eval_bound");
+                break;
             }
             if self
                 .model_last_ask
                 .get(&mint)
                 .is_some_and(|t| clock - *t < MODEL_REASK_MS)
             {
+                // Not eligible yet and costs nothing: stays queued at its original position, uses no budget.
                 self.mrep("sched:reask_window_wait");
-                continue; // stays dirty; re-offered after the window
+                continue;
             }
+            examined += 1;
             self.model_dirty.remove(&mint);
+            self.model_dirty_since.remove(&mint);
             self.mrep("admit_attempt|src=stream");
-            if let Some(since) = self.model_dirty_since.remove(&mint) {
-                // Queue age at dispatch (ms), bucketed, split by venue so starvation is visible.
-                let age = (clock - since).max(0);
-                let (v, _, _) = self.model_cache.describe(&mint, clock);
-                let b = match age {
-                    0..=999 => "lt1s",
-                    1_000..=4_999 => "1to5s",
-                    5_000..=29_999 => "5to30s",
-                    30_000..=299_999 => "30sto5m",
-                    _ => "ge5m",
-                };
-                self.mrep(format!("queue_age|{b}|venue={v}"));
-                self.mrep("queue_age_n");
-                self.mrep_add("queue_age_ms_sum", age as u64);
-            }
-            budget -= 1;
+            let age = (clock - since).max(0);
+            let (v, _, _) = self.model_cache.describe(&mint, clock);
+            let b = match age {
+                0..=999 => "lt1s",
+                1_000..=4_999 => "1to5s",
+                5_000..=29_999 => "5to30s",
+                30_000..=299_999 => "30sto5m",
+                _ => "ge5m",
+            };
+            self.mrep(format!("queue_age|{b}|venue={v}"));
+            self.mrep("queue_age_n");
+            self.mrep_add("queue_age_ms_sum", age as u64);
             let watched = self.model_watch.as_ref().is_some_and(|w| {
                 mint.iter()
                     .map(|b| format!("{b:02x}"))
                     .collect::<String>()
                     .starts_with(w.as_str())
             });
-            let before = self.model_last_ask.get(&mint).copied();
-            self.model_admit_mint(mint, WlLane::ActiveMarketScalp, DiscoveryLane::ActiveMarket);
             if watched {
-                let after = self.model_last_ask.get(&mint).copied();
                 self.model_watch_log.push(format!(
-                    "admit clock={clock} budget_left={budget} dispatched={} last_refusal={:?}",
-                    after != before,
-                    self.model_last_refusal.get(&mint)
+                    "sched clock={clock} queue_pos={pos}/{queued} since={since} dispatched_so_far={dispatched}"
                 ));
             }
+            let out =
+                self.model_admit_mint(mint, WlLane::ActiveMarketScalp, DiscoveryLane::ActiveMarket);
+            match out {
+                Admit::Dispatched => dispatched += 1,
+                Admit::Ineligible => {}
+                Admit::Backpressure | Admit::Blocked => {
+                    // The lane cannot start more entries now: keep this market (and the rest) queued with its
+                    // ORIGINAL dirty time and stop for this tick.
+                    self.model_dirty.insert(mint);
+                    self.model_dirty_since.insert(mint, since);
+                    self.mrep(if out == Admit::Backpressure {
+                        "sched_stopped_backpressure"
+                    } else {
+                        "sched_stopped_lane_blocked"
+                    });
+                    break;
+                }
+            }
         }
+        self.mrep_add("sched_queue_depth_sum", queued as u64);
+        self.mrep("sched_ticks");
     }
 
     /// A canonical-pool PumpSwap swap, token-oriented and pool-bound by the decoder. Non-canonical
@@ -1038,34 +1047,39 @@ impl Engine {
         }
     }
 
-    fn model_admit_mint(&mut self, mint: [u8; 32], cand_lane: WlLane, cand_dlane: DiscoveryLane) {
+    fn model_admit_mint(
+        &mut self,
+        mint: [u8; 32],
+        cand_lane: WlLane,
+        cand_dlane: DiscoveryLane,
+    ) -> Admit {
         if self.mode == RunMode::Live || self.outbound_sink.is_some() {
             self.mrep("refuse:live_forbidden");
-            return;
+            return Admit::Blocked;
         }
         if let Err(fault) = self.model_source() {
             self.mrep(format!("fault:{fault:?}"));
-            return;
+            return Admit::Blocked;
         }
         if self.model_pool.is_none() {
             self.mrep("fault:missing_pool");
-            return;
+            return Admit::Blocked;
         }
         let clock = self.model_clock_ms;
         if clock == 0 {
             self.mrep("refuse:no_feed_clock");
-            return;
+            return Admit::Blocked;
         }
         if self.model_mint_blocked(&mint) {
             self.mrep("refuse:recon_fault_blocks_exposure");
-            return;
+            return Admit::Ineligible;
         }
         if self.open_lane.contains_key(&mint)
             || self.model_orders.contains_key(&mint)
             || self.model_table.has_live_for(&mint)
         {
             self.mrep("skip:held_or_pending");
-            return;
+            return Admit::Ineligible;
         }
         if self
             .model_last_ask
@@ -1073,7 +1087,7 @@ impl Engine {
             .is_some_and(|t| clock - *t < MODEL_REASK_MS)
         {
             self.mrep("skip:reask_window");
-            return;
+            return Admit::Ineligible;
         }
         if self.model_first_cand.len() < FIRST_CAND_CAP {
             self.model_first_cand.entry(mint).or_insert(clock);
@@ -1091,7 +1105,7 @@ impl Engine {
                     self.model_last_refusal.insert(mint, r.as_str().to_string());
                 }
                 self.mrep(format!("refuse:{}|{dims}", r.as_str()));
-                return;
+                return Admit::Ineligible;
             }
         };
         self.mrep(format!("snapshot_ok|{dims}"));
@@ -1122,7 +1136,11 @@ impl Engine {
                     SubmitRefusal::AtCapacity => "refuse:request_capacity",
                     SubmitRefusal::EntriesBlocked => "refuse:entries_blocked",
                 });
-                return;
+                return match e {
+                    SubmitRefusal::AtCapacity => Admit::Backpressure,
+                    SubmitRefusal::DuplicateForMint => Admit::Ineligible,
+                    SubmitRefusal::EntriesBlocked => Admit::Blocked,
+                };
             }
         };
         let job = Job {
@@ -1143,7 +1161,10 @@ impl Engine {
                 DispatchRefusal::QueueFull => "refuse:dispatch_queue_full",
                 DispatchRefusal::PoolClosed => "refuse:dispatch_pool_closed",
             });
-            return;
+            return match e {
+                DispatchRefusal::QueueFull => Admit::Backpressure,
+                DispatchRefusal::PoolClosed => Admit::Blocked,
+            };
         }
         self.model_last_ask.insert(mint, clock);
         self.model_meta.insert(
@@ -1169,6 +1190,7 @@ impl Engine {
         self.model_uniq("dispatched", &mint, venue);
         self.mrep(format!("dispatched|venue={venue}"));
         self.mrep("dispatched");
+        Admit::Dispatched
     }
 
     /// Non-blocking: collect finished verdicts, expire deadlines, then try pending fills. Runs at the
