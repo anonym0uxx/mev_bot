@@ -2327,7 +2327,8 @@ mod tests {
 
     /// A valid but old checkpoint across a hole: entry refuses by a NAMED scope; it does not render "complete".
     #[test]
-    fn an_old_checkpoint_across_a_feed_hole_refuses_by_name_and_an_acknowledgement_cannot_clear_it() {
+    fn an_old_checkpoint_across_a_feed_hole_refuses_by_name_and_an_acknowledgement_cannot_clear_it()
+    {
         let part = durable_cache(25);
         let resume = T0 + 1_000 + 25 * 2_000 + 3_600_000; // an hour later
         let mut r = restart(&part, &tdir("hole"), resume);
@@ -2360,27 +2361,47 @@ mod tests {
         // make coverage complete.
         r.flow_acknowledge_gap(g[0].0, g[0].1, "operator says fine");
         r.flow_acknowledge_gap(i64::MIN / 2, i64::MAX / 2, "blanket acknowledgement");
-        assert_eq!(r.flow_meta().unwrap().coverage.gaps.len(), 1, "gap still on record");
+        assert_eq!(
+            r.flow_meta().unwrap().coverage.gaps.len(),
+            1,
+            "gap still on record"
+        );
         match r.snapshot(&MINT, td) {
-            Err(JoinRefusal::FlowStateScope { why: "feed_gap", .. }) => {}
-            other => panic!("acknowledgement bypassed the entry refusal: {:?}", other.map(|s| s.mint)),
+            Err(JoinRefusal::FlowStateScope {
+                why: "feed_gap", ..
+            }) => {}
+            other => panic!(
+                "acknowledgement bypassed the entry refusal: {:?}",
+                other.map(|s| s.mint)
+            ),
         }
         let pos = mgmt_inputs();
         match r.management_snapshot(&MINT, td, &pos) {
-            Err(JoinRefusal::FlowStateScope { why: "feed_gap", .. }) => {}
-            other => panic!("acknowledgement bypassed the management refusal: {:?}", other.is_ok()),
+            Err(JoinRefusal::FlowStateScope {
+                why: "feed_gap", ..
+            }) => {}
+            other => panic!(
+                "acknowledgement bypassed the management refusal: {:?}",
+                other.is_ok()
+            ),
         }
         // and it survives a persist/reload unchanged: still refuses, acknowledgement still only audit
         let reloaded = {
             let (red, meta) = r.flow_snapshot().unwrap();
             let body = meta.encode_with(&red);
-            match crate::flow_checkpoint::decode(pump_quant_market_state::flow_reducer::FlowParams::default(), &body) {
+            match crate::flow_checkpoint::decode(
+                pump_quant_market_state::flow_reducer::FlowParams::default(),
+                &body,
+            ) {
                 crate::flow_checkpoint::Load::Loaded(h) => h,
                 _ => panic!("reload"),
             }
         };
         assert_eq!(reloaded.meta.acknowledged.len(), 2);
-        assert!(reloaded.meta.scope_refusal(&reloaded.reducer, &MINT, td).is_some());
+        assert!(reloaded
+            .meta
+            .scope_refusal(&reloaded.reducer, &MINT, td)
+            .is_some());
     }
 
     /// A corrupt checkpoint refuses every prompt by name and is never overwritten.

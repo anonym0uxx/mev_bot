@@ -890,15 +890,24 @@ impl Engine {
         self.model_swap_ctx = None;
     }
 
-    fn model_amm_protect(&mut self, mint: &[u8; 32], pool_s: &str, a: &AmmSwapIn, applied: bool, ts_ms: i64) {
+    fn model_amm_protect(
+        &mut self,
+        mint: &[u8; 32],
+        pool_s: &str,
+        a: &AmmSwapIn,
+        applied: bool,
+        ts_ms: i64,
+    ) {
         if !applied {
             self.mrep("protect:amm_mark_ignored_out_of_order");
-            self.model_protect_ignored.insert(*mint, ("out_of_order", ts_ms));
+            self.model_protect_ignored
+                .insert(*mint, ("out_of_order", ts_ms));
             return;
         }
         if self.model_cache.pool_conflicting(mint) || !self.model_cache.pool_is(mint, pool_s) {
             self.mrep("protect:amm_mark_ignored_wrong_pool");
-            self.model_protect_ignored.insert(*mint, ("wrong_pool", ts_ms));
+            self.model_protect_ignored
+                .insert(*mint, ("wrong_pool", ts_ms));
             return;
         }
         if self.model_clock_ms.saturating_sub(ts_ms) > crate::curve_annotation::PRICING_BUDGET_MS {
@@ -910,9 +919,13 @@ impl Engine {
         // in PRICE_SCALE lamports per raw token - the SAME basis the AMM entry price is computed on. A single swap's
         // execution price (it embeds fees and size impact) swings far more than the pool moved and would trip the
         // single-swap rug-precursor step on noise, so it is not the trigger basis. Not an executable sell quote.
-        let (Some(vq), true) = (a.virtual_quote, a.token_reserve_pre > 0 && a.quote_reserve_pre > 0) else {
+        let (Some(vq), true) = (
+            a.virtual_quote,
+            a.token_reserve_pre > 0 && a.quote_reserve_pre > 0,
+        ) else {
             self.mrep("protect:amm_mark_ignored_no_spot_basis");
-            self.model_protect_ignored.insert(*mint, ("no_spot_basis", ts_ms));
+            self.model_protect_ignored
+                .insert(*mint, ("no_spot_basis", ts_ms));
             return;
         };
         let id = amm_swap_identity(a, ts_ms);
@@ -924,12 +937,14 @@ impl Engine {
             / u128::from(a.token_reserve_pre);
         let Ok(price_u) = u64::try_from(px) else {
             self.mrep("protect:amm_mark_ignored_no_spot_basis");
-            self.model_protect_ignored.insert(*mint, ("no_spot_basis", ts_ms));
+            self.model_protect_ignored
+                .insert(*mint, ("no_spot_basis", ts_ms));
             return;
         };
         if price_u == 0 {
             self.mrep("protect:amm_mark_ignored_no_spot_basis");
-            self.model_protect_ignored.insert(*mint, ("no_spot_basis", ts_ms));
+            self.model_protect_ignored
+                .insert(*mint, ("no_spot_basis", ts_ms));
             return;
         }
         let signed_quote = if a.is_buy {
@@ -939,13 +954,10 @@ impl Engine {
         };
         self.mrep("protect:amm_mark_applied");
         self.model_protect_mark_ms.insert(*mint, ts_ms);
-        if let Some(exit) = self.positions.on_trade(
-            mint,
-            price_u,
-            signed_quote,
-            self.now,
-            a.quote_reserve_pre,
-        ) {
+        if let Some(exit) =
+            self.positions
+                .on_trade(mint, price_u, signed_quote, self.now, a.quote_reserve_pre)
+        {
             self.mrep(format!("protect:amm_exit:{:?}", exit.reason));
             self.book_exit(exit);
         }
@@ -1466,7 +1478,10 @@ impl Engine {
             self.model_position_order.insert(mint, order.id);
             if order.amm {
                 // The AMM fill is priced from the verified landing-state swap observed now: that is the first verified mark.
-                self.model_protect_mark_ms.insert(mint, self.model_swap_ctx.map_or(self.model_clock_ms, |(t, _)| t));
+                self.model_protect_mark_ms.insert(
+                    mint,
+                    self.model_swap_ctx.map_or(self.model_clock_ms, |(t, _)| t),
+                );
                 self.model_protect_ignored.remove(&mint);
             }
             // The fill is the ONLY source of inventory: tokens delivered at the fill price.
@@ -1921,7 +1936,26 @@ fn amm_swap_identity(a: &AmmSwapIn, ts_ms: i64) -> u128 {
     use std::hash::{Hash, Hasher};
     let mut h1 = std::collections::hash_map::DefaultHasher::new();
     let mut h2 = std::collections::hash_map::DefaultHasher::new();
-    (a.mint.as_bytes(), a.pool, a.slot, a.trader, a.is_buy, a.token_amount, a.quote_lamports, ts_ms).hash(&mut h1);
-    (0xA55u16, ts_ms, a.slot, a.token_amount, a.quote_lamports, a.pool, a.trader).hash(&mut h2);
+    (
+        a.mint.as_bytes(),
+        a.pool,
+        a.slot,
+        a.trader,
+        a.is_buy,
+        a.token_amount,
+        a.quote_lamports,
+        ts_ms,
+    )
+        .hash(&mut h1);
+    (
+        0xA55u16,
+        ts_ms,
+        a.slot,
+        a.token_amount,
+        a.quote_lamports,
+        a.pool,
+        a.trader,
+    )
+        .hash(&mut h2);
     (u128::from(h1.finish()) << 64) | u128::from(h2.finish())
 }

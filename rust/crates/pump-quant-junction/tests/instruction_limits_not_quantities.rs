@@ -55,13 +55,20 @@ fn run(name: &str, expect_limit: u64) {
         match &e.event {
             AppEvent::MarketTrade { quote_lamports, .. } => {
                 assert_ne!(*quote_lamports, expect_limit, "a bound is never a quote");
-                assert_eq!(*quote_lamports, 0, "an instruction print claims no executed quote");
+                assert_eq!(
+                    *quote_lamports, 0,
+                    "an instruction print claims no executed quote"
+                );
             }
             AppEvent::AmmSwap { quote_lamports, .. } => executed.push(*quote_lamports),
             _ => {}
         }
     }
-    assert_eq!(executed.len(), 1, "executed quantity arrives exactly once, from the verified event");
+    assert_eq!(
+        executed.len(),
+        1,
+        "executed quantity arrives exactly once, from the verified event"
+    );
     assert_ne!(executed[0], expect_limit);
     assert!(executed[0] > 0 && executed[0] < u64::MAX / 2);
     // Whatever the limit, nothing but the executed amount is a quote anywhere.

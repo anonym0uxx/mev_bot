@@ -181,9 +181,7 @@ impl FlowHistory {
         e: &FlowEvent,
         st: &mut IngestStats,
     ) -> Offer {
-        let o = self
-            .meta
-            .admit(
+        let o = self.meta.admit(
             source,
             event_id,
             e.recv_unix_ms,
@@ -372,7 +370,6 @@ impl FlowMeta {
         self.push_late(source, event_id, t, hw, mint, trader, buy);
         Offer::LateUnseen
     }
-
 
     /// Dependency-scoped readiness: why (if at all) a prompt at `t_dec_ms` for `mint` cannot rely on this history.
     /// Entry and management read the SAME flow block and the same per-mint cumulative/holder state, so the scope is
@@ -761,7 +758,10 @@ pub fn decode(params: FlowParams, body: &[u8]) -> Load {
         };
         acknowledged.push((a, b, r.to_string()));
     }
-    let counters = match h["counters"].as_array().map(|a| a.iter().map(Value::as_u64).collect::<Vec<_>>()) {
+    let counters = match h["counters"]
+        .as_array()
+        .map(|a| a.iter().map(Value::as_u64).collect::<Vec<_>>())
+    {
         Some(v) if v.len() == 4 && v.iter().all(Option::is_some) => Counters {
             attempts: v[0].unwrap_or(0),
             applied: v[1].unwrap_or(0),
@@ -988,7 +988,11 @@ mod tests {
         // the reducer payload is byte-identical after overlap replay, and so are the UNIQUE-evidence counters;
         // only delivery attempts and proven duplicates (reported separately) rise
         let split = |b: &[u8]| b[b.iter().position(|x| *x == b'\n').unwrap() + 1..].to_vec();
-        assert_eq!(split(&h.encode()), split(&bytes), "overlap replay is a no-op on the reducer payload");
+        assert_eq!(
+            split(&h.encode()),
+            split(&bytes),
+            "overlap replay is a no-op on the reducer payload"
+        );
         assert_eq!(h.counters.applied, applied0);
         assert_eq!(h.counters.late_unique, late0);
         // same-millisecond DISTINCT id at the boundary is applied, same id is not
@@ -1245,11 +1249,11 @@ mod tests {
         assert_eq!(h.late.len(), LATE_CAP);
         assert_eq!(h.late_overflow, 5);
         assert_eq!(
-            h.scope_refusal(&h.reducer, &[77u8; 32], 2_000_000).map(|x| x.0),
+            h.scope_refusal(&h.reducer, &[77u8; 32], 2_000_000)
+                .map(|x| x.0),
             Some("late_overflow_unscoped")
         );
     }
-
 
     /// A late event changes ITS TRADER's cumulative wallet state, so another mint whose window contains that wallet
     /// reads incomplete smart-wallet history; a mint sharing no wallet is untouched.
@@ -1264,9 +1268,14 @@ mod tests {
         h.ingest("live", 1, &ev(1_000_000, 5, 9, Side::Buy, -1), &mut st);
         h.ingest("live", 2, &ev(1_001_000, 5, 8, Side::Buy, -1), &mut st);
         h.ingest("live", 3, &ev(1_002_000, 6, 7, Side::Buy, -1), &mut st); // mint 7: different wallet
-        // wallet 5's earlier trade arrives late, on a THIRD mint (4)
+                                                                           // wallet 5's earlier trade arrives late, on a THIRD mint (4)
         assert_eq!(
-            h.offer("live", 99, &ev(900_000, 5, 4, Side::Sell, 7_000_000_000), &mut st),
+            h.offer(
+                "live",
+                99,
+                &ev(900_000, 5, 4, Side::Sell, 7_000_000_000),
+                &mut st
+            ),
             Offer::LateUnseen
         );
         let t = 1_100_000;
@@ -1284,7 +1293,11 @@ mod tests {
             "wallet 6 never appears in the late event: untouched"
         );
         // a decision whose window no longer contains wallet 5 is not affected through the wallet
-        assert_eq!(h.scope_refusal(&h.reducer, &[9u8; 32], 1_000_000 + 400_000).map(|x| x.0), None);
+        assert_eq!(
+            h.scope_refusal(&h.reducer, &[9u8; 32], 1_000_000 + 400_000)
+                .map(|x| x.0),
+            None
+        );
     }
 
     /// A late BUY adds co-entry links between its trader and the late mint's early buyers: a mint whose window holds
@@ -1305,9 +1318,14 @@ mod tests {
             h.offer("live", 50, &ev(1_000_500, 2, 4, Side::Buy, -1), &mut st),
             Offer::LateUnseen
         );
-        let r = h.scope_refusal(&h.reducer, &[9u8; 32], 1_100_000).map(|x| x.0);
+        let r = h
+            .scope_refusal(&h.reducer, &[9u8; 32], 1_100_000)
+            .map(|x| x.0);
         assert!(
-            matches!(r, Some("late_event_coentry_link") | Some("late_event_shared_wallet")),
+            matches!(
+                r,
+                Some("late_event_coentry_link") | Some("late_event_shared_wallet")
+            ),
             "{r:?}"
         );
         // a SELL by the same stranger adds no co-entry link and no wallet in mint 9's window: unaffected
@@ -1333,9 +1351,19 @@ mod tests {
         let mut h = hist();
         let mut st = IngestStats::default();
         // first delivery of id 1 at t=1_000, then enough later traffic to prune it from the recent window
-        assert!(h.ingest("live", 1, &ev(1_000, 1, 9, Side::Buy, -1_000_000_000), &mut st));
+        assert!(h.ingest(
+            "live",
+            1,
+            &ev(1_000, 1, 9, Side::Buy, -1_000_000_000),
+            &mut st
+        ));
         for i in 0..1500i64 {
-            h.ingest("live", 100 + i as u128, &ev(1_000 + OVERLAP_MS + 10 + i, 2, 9, Side::Buy, -1), &mut st);
+            h.ingest(
+                "live",
+                100 + i as u128,
+                &ev(1_000 + OVERLAP_MS + 10 + i, 2, 9, Side::Buy, -1),
+                &mut st,
+            );
         }
         assert!(
             !h.cursors["live"].recent.contains_key(&1),
@@ -1346,19 +1374,36 @@ mod tests {
         let applied_before = h.counters.applied;
         // the genuine redelivery of id 1
         assert_eq!(
-            h.offer("live", 1, &ev(1_000, 1, 9, Side::Buy, -1_000_000_000), &mut st),
+            h.offer(
+                "live",
+                1,
+                &ev(1_000, 1, 9, Side::Buy, -1_000_000_000),
+                &mut st
+            ),
             Offer::LateUnseen,
             "unprovable as new or duplicate: fail closed, never applied"
         );
-        assert_eq!(h.reducer.encode_state(), enc_before, "never double-counted into the reducer");
+        assert_eq!(
+            h.reducer.encode_state(),
+            enc_before,
+            "never double-counted into the reducer"
+        );
         assert_eq!(h.reducer.sizes(), wallets_before);
-        assert_eq!(h.counters.applied, applied_before, "unique applied evidence did not move");
+        assert_eq!(
+            h.counters.applied, applied_before,
+            "unique applied evidence did not move"
+        );
         assert_eq!(h.late.len(), 1);
         // redelivered AGAIN (and again): one record, never more; attempts rise, unique evidence does not
         let attempts_mid = h.counters.attempts;
         for _ in 0..5 {
             assert_eq!(
-                h.offer("live", 1, &ev(1_000, 1, 9, Side::Buy, -1_000_000_000), &mut st),
+                h.offer(
+                    "live",
+                    1,
+                    &ev(1_000, 1, 9, Side::Buy, -1_000_000_000),
+                    &mut st
+                ),
                 Offer::Duplicate
             );
         }
@@ -1368,9 +1413,9 @@ mod tests {
         assert_eq!(h.counters.duplicates, 5);
         // and the refusal it causes is the SAME named scope, not a hidden one
         assert_eq!(
-            h.scope_refusal(&h.reducer, &[9u8; 32], 2_000_000).map(|x| x.0),
+            h.scope_refusal(&h.reducer, &[9u8; 32], 2_000_000)
+                .map(|x| x.0),
             Some("late_event_same_mint")
         );
     }
-
 }

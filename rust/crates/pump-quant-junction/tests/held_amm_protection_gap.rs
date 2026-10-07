@@ -206,7 +206,6 @@ fn rep(e: &Engine, prefix: &str) -> u64 {
         .sum()
 }
 
-
 const POOL: &str = "99f330f5fa2da45f65bcc92828d0b5e793670aa710c44a070e360b691c5fe6d1";
 
 fn held() -> (Run, DomainMint) {
@@ -227,7 +226,15 @@ fn held() -> (Run, DomainMint) {
             e.tick(AppEvent::Tick);
             std::thread::sleep(std::time::Duration::from_millis(2));
             if rep(&e, "fill:position_opened_amm") >= 1 && e.model_position_open(m.as_bytes()) {
-                return (Run { e, calls, first_amm_ms: 0, first_position_ms: Some(t) }, m);
+                return (
+                    Run {
+                        e,
+                        calls,
+                        first_amm_ms: 0,
+                        first_position_ms: Some(t),
+                    },
+                    m,
+                );
             }
         }
     }
@@ -235,11 +242,31 @@ fn held() -> (Run, DomainMint) {
 }
 
 fn swap(m: DomainMint, pool: &str, t: i64, slot: u64, buy: bool, tok: u64, sol: u64) -> AppEvent {
-    swap_at(m, pool, t, slot, buy, tok, sol, 200_000_000_000_000, 60_000_000_000)
+    swap_at(
+        m,
+        pool,
+        t,
+        slot,
+        buy,
+        tok,
+        sol,
+        200_000_000_000_000,
+        60_000_000_000,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
-fn swap_at(m: DomainMint, pool: &str, t: i64, slot: u64, buy: bool, tok: u64, sol: u64, bres: u64, qres: u64) -> AppEvent {
+fn swap_at(
+    m: DomainMint,
+    pool: &str,
+    t: i64,
+    slot: u64,
+    buy: bool,
+    tok: u64,
+    sol: u64,
+    bres: u64,
+    qres: u64,
+) -> AppEvent {
     AppEvent::AmmSwap {
         mint: m,
         pool: hex32(pool),
@@ -305,18 +332,24 @@ fn snap(e: &Engine, m: &DomainMint) -> Snap {
     }
 }
 
-
 use pump_quant_app::engine::model_manage::amm_protection_gap;
 use pump_quant_junction::model_lifecycle::{held_data_report, StaleCallout};
 
 const BUDGET: i64 = pump_quant_app::curve_annotation::PRICING_BUDGET_MS;
 
 fn status_of(e: &Engine, m: &DomainMint) -> pump_quant_app::engine::model_manage::HeldDataStatus {
-    e.model_held_data_status().into_iter().find(|s| &DomainMint::from_bytes(s.mint) == m).expect("held status")
+    e.model_held_data_status()
+        .into_iter()
+        .find(|s| &DomainMint::from_bytes(s.mint) == m)
+        .expect("held status")
 }
 
 fn protected_alerts(c: &mut StaleCallout, e: &Engine, now: i64) -> Vec<String> {
-    c.evaluate(e, now, 60_000).into_iter().filter(|l| l.alert && l.text.contains("UNPROTECTED (price-based)")).map(|l| l.text).collect()
+    c.evaluate(e, now, 60_000)
+        .into_iter()
+        .filter(|l| l.alert && l.text.contains("UNPROTECTED (price-based)"))
+        .map(|l| l.text)
+        .collect()
 }
 
 #[test]
@@ -344,12 +377,28 @@ fn time_advancing_with_no_further_swap_surfaces_a_named_protection_gap_through_t
 fn hints_and_rejected_swaps_never_refresh_the_verified_mark_time() {
     let (mut r, m) = held();
     let t0 = r.e.model_clock_ms_now();
-    let verified0 = status_of(&r.e, &m).protect_mark_ms.expect("verified mark at the fill");
+    let verified0 = status_of(&r.e, &m)
+        .protect_mark_ms
+        .expect("verified mark at the fill");
     // A hint (instruction) and an out-of-order swap on the bound pool (older than the newest observation).
     r.e.tick(hint(m, t0 + 10_000, u64::MAX));
-    r.e.tick(swap_at(m, POOL, t0 - 5_000, 910_000_001, false, 1_000_000_000_000, 1_000, 200_000_000_000_000, 60_000_000_000));
+    r.e.tick(swap_at(
+        m,
+        POOL,
+        t0 - 5_000,
+        910_000_001,
+        false,
+        1_000_000_000_000,
+        1_000,
+        200_000_000_000_000,
+        60_000_000_000,
+    ));
     let st = status_of(&r.e, &m);
-    assert_eq!(st.protect_mark_ms, Some(verified0), "neither a hint nor a rejected swap is a verified mark");
+    assert_eq!(
+        st.protect_mark_ms,
+        Some(verified0),
+        "neither a hint nor a rejected swap is a verified mark"
+    );
     // The ignored swap is named and timed, but the AGE comes from the verified mark.
     assert_eq!(st.protect_ignored.map(|x| x.0), Some("out_of_order"));
     let now = r.e.model_clock_ms_now();
@@ -357,17 +406,35 @@ fn hints_and_rejected_swaps_never_refresh_the_verified_mark_time() {
         amm_protection_gap(&st, verified0 + BUDGET + 1).as_deref(),
         Some("protection_mark_stale:no_valid_update")
     );
-    assert!(now >= t0 + 10_000, "the clock advanced on the hint; the verified mark did not");
+    assert!(
+        now >= t0 + 10_000,
+        "the clock advanced on the hint; the verified mark did not"
+    );
     // A genuine verified swap on the bound pool DOES refresh it and clears the gap, with a RECOVERED line.
     let mut c = StaleCallout::default();
     let late = verified0 + BUDGET + 1;
     assert_eq!(protected_alerts(&mut c, &r.e, late).len(), 1);
-    r.e.tick(swap_at(m, POOL, late, 910_000_050, true, 1_000_000_000_000, 300_000, 200_000_000_000_000, 60_000_000_000));
+    r.e.tick(swap_at(
+        m,
+        POOL,
+        late,
+        910_000_050,
+        true,
+        1_000_000_000_000,
+        300_000,
+        200_000_000_000_000,
+        60_000_000_000,
+    ));
     let st2 = status_of(&r.e, &m);
     assert_eq!(st2.protect_mark_ms, Some(late));
     assert!(amm_protection_gap(&st2, late).is_none());
     let lines = c.evaluate(&r.e, late + 1, 60_000);
-    assert!(lines.iter().any(|l| !l.alert && l.text.starts_with("RECOVERED")), "{lines:?}");
+    assert!(
+        lines
+            .iter()
+            .any(|l| !l.alert && l.text.starts_with("RECOVERED")),
+        "{lines:?}"
+    );
 }
 
 #[test]
@@ -375,39 +442,85 @@ fn a_swap_with_no_spot_basis_is_a_named_unprotected_state_and_alerts() {
     let (mut r, m) = held();
     let t0 = r.e.model_clock_ms_now();
     // virtual quote absent: the bound pool's swap cannot yield the spot mark the entry used.
-    let mut ev = swap_at(m, POOL, t0 + 1_000, 910_000_100, true, 1_000_000_000_000, 300_000, 200_000_000_000_000, 60_000_000_000);
+    let mut ev = swap_at(
+        m,
+        POOL,
+        t0 + 1_000,
+        910_000_100,
+        true,
+        1_000_000_000_000,
+        300_000,
+        200_000_000_000_000,
+        60_000_000_000,
+    );
     if let AppEvent::AmmSwap { virtual_quote, .. } = &mut ev {
         *virtual_quote = None;
     }
     r.e.tick(ev);
     let st = status_of(&r.e, &m);
     assert_eq!(st.protect_ignored.map(|x| x.0), Some("no_spot_basis"));
-    assert_eq!(amm_protection_gap(&st, t0 + 1_000).as_deref(), Some("protection_mark_unavailable:missing_spot_basis"));
+    assert_eq!(
+        amm_protection_gap(&st, t0 + 1_000).as_deref(),
+        Some("protection_mark_unavailable:missing_spot_basis")
+    );
     let mut c = StaleCallout::default();
     let a = protected_alerts(&mut c, &r.e, t0 + 1_000);
     assert_eq!(a.len(), 1);
     assert!(a[0].contains("missing_spot_basis"));
     let (report, degraded) = held_data_report(&r.e);
     assert!(degraded, "{report}");
-    assert!(report.contains("missing_spot_basis") && !report.contains("READY"), "never healthy from a hint: {report}");
+    assert!(
+        report.contains("missing_spot_basis") && !report.contains("READY"),
+        "never healthy from a hint: {report}"
+    );
 }
 
 #[test]
-fn a_price_moving_swap_then_silence_is_visible_only_to_the_next_pre_trade_state_and_then_the_budget() {
+fn a_price_moving_swap_then_silence_is_visible_only_to_the_next_pre_trade_state_and_then_the_budget(
+) {
     // PRE-TRADE marks: the swap's own impact is NOT in its own mark. A swap that collapses the pool is invisible to
     // protection until some LATER swap reveals the new reserves (or the budget elapses and the gap is raised).
     let (mut r, m) = held();
     let t0 = r.e.model_clock_ms_now();
     // Big sell, pre-trade reserves still the healthy ones: marks healthy; the position stays open.
-    r.e.tick(swap_at(m, POOL, t0 + 1_000, 910_000_200, false, 150_000_000_000_000, 50_000_000_000, 200_000_000_000_000, 60_000_000_000));
-    assert!(r.e.model_position_open(m.as_bytes()), "its own impact is not visible in its own pre-trade mark");
+    r.e.tick(swap_at(
+        m,
+        POOL,
+        t0 + 1_000,
+        910_000_200,
+        false,
+        150_000_000_000_000,
+        50_000_000_000,
+        200_000_000_000_000,
+        60_000_000_000,
+    ));
+    assert!(
+        r.e.model_position_open(m.as_bytes()),
+        "its own impact is not visible in its own pre-trade mark"
+    );
     // Silence: nothing detects the collapse inside the budget...
     assert!(amm_protection_gap(&status_of(&r.e, &m), t0 + 1_000 + BUDGET).is_none());
     assert!(r.e.model_position_open(m.as_bytes()));
     // ...and after the budget the unprotected state is named, with no forced liquidation.
     assert!(amm_protection_gap(&status_of(&r.e, &m), t0 + 1_000 + BUDGET + 1).is_some());
-    assert!(r.e.model_position_open(m.as_bytes()), "no new automatic liquidation rule");
+    assert!(
+        r.e.model_position_open(m.as_bytes()),
+        "no new automatic liquidation rule"
+    );
     // The next swap's PRE-trade state reveals the collapsed pool (qres 60e9 -> 3e9): the hard stop sees it.
-    r.e.tick(swap_at(m, POOL, t0 + 5_000, 910_000_201, true, 1_000_000_000, 100, 200_000_000_000_000, 3_000_000_000));
-    assert!(!r.e.model_position_open(m.as_bytes()), "resulting account state, once observed, triggers the safeguard");
+    r.e.tick(swap_at(
+        m,
+        POOL,
+        t0 + 5_000,
+        910_000_201,
+        true,
+        1_000_000_000,
+        100,
+        200_000_000_000_000,
+        3_000_000_000,
+    ));
+    assert!(
+        !r.e.model_position_open(m.as_bytes()),
+        "resulting account state, once observed, triggers the safeguard"
+    );
 }

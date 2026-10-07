@@ -206,7 +206,6 @@ fn rep(e: &Engine, prefix: &str) -> u64 {
         .sum()
 }
 
-
 const POOL: &str = "99f330f5fa2da45f65bcc92828d0b5e793670aa710c44a070e360b691c5fe6d1";
 
 fn held() -> (Run, DomainMint) {
@@ -227,7 +226,15 @@ fn held() -> (Run, DomainMint) {
             e.tick(AppEvent::Tick);
             std::thread::sleep(std::time::Duration::from_millis(2));
             if rep(&e, "fill:position_opened_amm") >= 1 && e.model_position_open(m.as_bytes()) {
-                return (Run { e, calls, first_amm_ms: 0, first_position_ms: Some(t) }, m);
+                return (
+                    Run {
+                        e,
+                        calls,
+                        first_amm_ms: 0,
+                        first_position_ms: Some(t),
+                    },
+                    m,
+                );
             }
         }
     }
@@ -235,11 +242,31 @@ fn held() -> (Run, DomainMint) {
 }
 
 fn swap(m: DomainMint, pool: &str, t: i64, slot: u64, buy: bool, tok: u64, sol: u64) -> AppEvent {
-    swap_at(m, pool, t, slot, buy, tok, sol, 200_000_000_000_000, 60_000_000_000)
+    swap_at(
+        m,
+        pool,
+        t,
+        slot,
+        buy,
+        tok,
+        sol,
+        200_000_000_000_000,
+        60_000_000_000,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
-fn swap_at(m: DomainMint, pool: &str, t: i64, slot: u64, buy: bool, tok: u64, sol: u64, bres: u64, qres: u64) -> AppEvent {
+fn swap_at(
+    m: DomainMint,
+    pool: &str,
+    t: i64,
+    slot: u64,
+    buy: bool,
+    tok: u64,
+    sol: u64,
+    bres: u64,
+    qres: u64,
+) -> AppEvent {
     AppEvent::AmmSwap {
         mint: m,
         pool: hex32(pool),
@@ -317,8 +344,14 @@ fn instruction_hints_cannot_change_a_held_amm_positions_evidence_or_trigger_an_e
         r.e.tick(hint(m, clock0 + 1 + i as i64, q));
     }
     let after = snap(&r.e, &m);
-    assert_eq!(after, before, "a hint changed the mark/freshness/inventory/cash/realized");
-    assert!(r.e.model_position_open(m.as_bytes()), "a hint triggered an exit");
+    assert_eq!(
+        after, before,
+        "a hint changed the mark/freshness/inventory/cash/realized"
+    );
+    assert!(
+        r.e.model_position_open(m.as_bytes()),
+        "a hint triggered an exit"
+    );
     assert_eq!(rep(&r.e, "hint:instruction_print_not_aggregated"), rep0 + 4);
     assert_eq!(rep(&r.e, "protect:amm_exit"), 0);
     // the clock MAY advance for scheduling; it never refreshes market evidence
@@ -328,36 +361,86 @@ fn instruction_hints_cannot_change_a_held_amm_positions_evidence_or_trigger_an_e
 }
 
 #[test]
-fn a_verified_pool_swap_marks_the_held_position_and_a_crash_exits_once_with_routing_evidence_only() {
+fn a_verified_pool_swap_marks_the_held_position_and_a_crash_exits_once_with_routing_evidence_only()
+{
     let (mut r, m) = held();
     let t0 = r.e.model_clock_ms_now();
     let inv0 = r.e.model_inventory_tokens(m.as_bytes()).unwrap();
     let fills0 = r.e.model_all_fills().len();
     // NORMAL: an executed swap near the entry price marks without exiting. Price = sol/tok in PRICE_SCALE.
     let ok_px_tok = 1_000_000_000_000u64; // 1e12 raw tokens
-    // mark equals roughly the pool's own spot: quote_reserve/token_reserve = 60e9/2e14
+                                          // mark equals roughly the pool's own spot: quote_reserve/token_reserve = 60e9/2e14
     let ok_sol = (u128::from(ok_px_tok) * 60_000_000_000 / 200_000_000_000_000) as u64;
-    r.e.tick(swap(m, POOL, t0 + 1_000, 900_000_001, true, ok_px_tok, ok_sol));
+    r.e.tick(swap(
+        m,
+        POOL,
+        t0 + 1_000,
+        900_000_001,
+        true,
+        ok_px_tok,
+        ok_sol,
+    ));
     assert_eq!(rep(&r.e, "protect:amm_mark_applied"), 1);
     // DUPLICATE: the same executed swap again is not applied twice
-    r.e.tick(swap(m, POOL, t0 + 1_000, 900_000_001, true, ok_px_tok, ok_sol));
+    r.e.tick(swap(
+        m,
+        POOL,
+        t0 + 1_000,
+        900_000_001,
+        true,
+        ok_px_tok,
+        ok_sol,
+    ));
     assert_eq!(rep(&r.e, "protect:amm_mark_applied"), 1);
     assert_eq!(rep(&r.e, "protect:amm_mark_replay_not_applied"), 1);
     // CRASH: executed price collapses by far more than the hard stop
     let cash_before = r.e.model_accounting_view(m.as_bytes()).balance;
-    r.e.tick(swap_at(m, POOL, t0 + 2_000, 900_000_002, false, 1_000_000_000_000, 1_000, 200_000_000_000_000, 3_000_000_000));
-    assert!(!r.e.model_position_open(m.as_bytes()), "emergency did not close the position");
+    r.e.tick(swap_at(
+        m,
+        POOL,
+        t0 + 2_000,
+        900_000_002,
+        false,
+        1_000_000_000_000,
+        1_000,
+        200_000_000_000_000,
+        3_000_000_000,
+    ));
+    assert!(
+        !r.e.model_position_open(m.as_bytes()),
+        "emergency did not close the position"
+    );
     assert_eq!(rep(&r.e, "protect:amm_exit"), 1);
     // exactly once: replaying the crash swap changes nothing
     let after = r.e.model_accounting_view(m.as_bytes());
-    r.e.tick(swap_at(m, POOL, t0 + 2_000, 900_000_002, false, 1_000_000_000_000, 1_000, 200_000_000_000_000, 3_000_000_000));
+    r.e.tick(swap_at(
+        m,
+        POOL,
+        t0 + 2_000,
+        900_000_002,
+        false,
+        1_000_000_000_000,
+        1_000,
+        200_000_000_000_000,
+        3_000_000_000,
+    ));
     assert_eq!(r.e.model_accounting_view(m.as_bytes()), after);
     assert_eq!(rep(&r.e, "protect:amm_exit"), 1);
     // settlement: the held inventory is gone; cash moved by the booked net, and this is routing evidence only
-    assert!(r.e.model_inventory_tokens(m.as_bytes()).is_none() || r.e.model_inventory_tokens(m.as_bytes()) != Some(inv0));
+    assert!(
+        r.e.model_inventory_tokens(m.as_bytes()).is_none()
+            || r.e.model_inventory_tokens(m.as_bytes()) != Some(inv0)
+    );
     assert!(after.balance != cash_before || after.realized != 0);
-    assert_eq!(r.e.model_all_fills().len(), fills0, "an exit is not a new BUY fill");
-    assert!(r.e.model_assessable_fills().is_empty(), "AMM routing fills are never assessable");
+    assert_eq!(
+        r.e.model_all_fills().len(),
+        fills0,
+        "an exit is not a new BUY fill"
+    );
+    assert!(
+        r.e.model_assessable_fills().is_empty(),
+        "AMM routing fills are never assessable"
+    );
 }
 
 #[test]
@@ -365,8 +448,21 @@ fn a_wrong_pool_swap_never_marks_or_exits_a_held_position() {
     let (mut r, m) = held();
     let t0 = r.e.model_clock_ms_now();
     let other = "11".repeat(32);
-    r.e.tick(swap_at(m, &other, t0 + 1_000, 900_000_010, false, 1_000_000_000_000, 1_000, 200_000_000_000_000, 3_000_000_000));
-    assert!(r.e.model_position_open(m.as_bytes()), "an unrelated pool's print exited the position");
+    r.e.tick(swap_at(
+        m,
+        &other,
+        t0 + 1_000,
+        900_000_010,
+        false,
+        1_000_000_000_000,
+        1_000,
+        200_000_000_000_000,
+        3_000_000_000,
+    ));
+    assert!(
+        r.e.model_position_open(m.as_bytes()),
+        "an unrelated pool's print exited the position"
+    );
     assert_eq!(rep(&r.e, "protect:amm_mark_applied"), 0);
     assert!(rep(&r.e, "protect:amm_mark_ignored_wrong_pool") >= 1);
 }
@@ -378,12 +474,23 @@ fn a_stale_swap_does_not_mark_and_the_position_is_reported_degraded_not_healthy(
     // a hint advances the CLOCK two minutes: scheduling only
     r.e.tick(hint(m, t0 + 120_000, 1));
     // an executed swap whose own time is >60 s behind the clock is stale evidence
-    r.e.tick(swap(m, POOL, t0 + 1, 900_000_020, false, 1_000_000_000_000, 1_000));
+    r.e.tick(swap(
+        m,
+        POOL,
+        t0 + 1,
+        900_000_020,
+        false,
+        1_000_000_000_000,
+        1_000,
+    ));
     assert!(r.e.model_position_open(m.as_bytes()));
     assert_eq!(rep(&r.e, "protect:amm_mark_applied"), 0);
     assert!(rep(&r.e, "protect:amm_mark_ignored_stale") >= 1);
     let st = r.e.model_held_data_status();
-    assert!(!st[0].reserve_fresh, "a hint made stale evidence look fresh");
+    assert!(
+        !st[0].reserve_fresh,
+        "a hint made stale evidence look fresh"
+    );
     assert!(
         !r.e.model_held_degraded().is_empty(),
         "position with no fresh evidence must surface DEGRADED, never healthy"

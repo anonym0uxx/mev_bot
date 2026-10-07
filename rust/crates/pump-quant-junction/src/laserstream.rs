@@ -1337,7 +1337,10 @@ mod tests {
             } => {
                 assert_eq!(m, &Mint(mint));
                 assert!(*signed_base > 0); // Buy = positive signed_base
-                assert_eq!(quote_lamports, &0u64, "an instruction carries a limit, not an executed quote");
+                assert_eq!(
+                    quote_lamports, &0u64,
+                    "an instruction carries a limit, not an executed quote"
+                );
             }
             _ => panic!("Expected MarketTrade event"),
         }

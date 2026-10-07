@@ -2056,330 +2056,334 @@ impl Engine {
                     self.mrep("hint:instruction_print_not_aggregated");
                 }
                 if !(instruction_hint || replayed_print) {
-                self.numeric.observe(
-                    mint,
-                    price_fp,
-                    quote_lamports,
-                    liquidity_lamports,
-                    signed_base,
-                    buyer_entity,
-                    age_slots,
-                    self.now,
-                );
-                // §47a LAW 18: record the mint's last-trade info-time (tick) for the
-                // terminal-state reflection cadence. Bounded (§99): a new mint past
-                // capacity evicts the lexicographically-smallest tracked mint.
-                {
-                    let m = *mint.as_bytes();
-                    if !self.last_trade_tick.contains_key(&m)
-                        && self.last_trade_tick.len() >= LAST_TRADE_TABLE_CAP
-                    {
-                        if let Some(&victim) = self.last_trade_tick.keys().next() {
-                            self.last_trade_tick.remove(&victim);
-                        }
-                    }
-                    self.last_trade_tick.insert(m, self.now);
-                }
-                // §70.1 CONTINUOUS HOLDER ACCOUNTING — the WATCH phase.
-                //
-                // Folded for EVERY decoded swap on EVERY mint, not just admitted
-                // ones, so that by the time a candidate reaches the gate its holder
-                // series already exists. This is the canonical (§6.1) derivation:
-                // the holder count comes from the `buyer_entity` + `signed_base` we
-                // decoded ourselves, never from a third-party holder endpoint (§6.6
-                // keeps Birdeye/DAS strictly corroboration-tier).
-                //
-                // The fold returns a sample only on the bounded
-                // `HOLDER_SAMPLE_INTERVAL_TICKS` cadence: the §70.1 acceleration
-                // estimator refuses comparison points closer than its 1 s minimum
-                // interval, so sampling per-swap would push samples that are simply
-                // dropped for a non-advancing information time. Three ticks
-                // (1.2 s at BRAIN_TICK_NS) is the smallest whole-tick cadence at or
-                // above that floor — asserted at compile time in `holder_flow`.
-                {
-                    let ns = self.now.saturating_mul(BRAIN_TICK_NS);
-                    // The swap's market age in slots is passed through so the
-                    // ledger can classify an entity's FIRST buy as a bundle
-                    // (creation slot) or a sniper (within
-                    // `holder_flow::SNIPER_SLOT_WINDOW`) — arXiv 2601.08641. It is
-                    // a first-sighting fact that cannot be recovered later, so it
-                    // is captured in the fold or not at all (§20).
-                    let fold = self.holder_flow.observe_swap_aged(
-                        mint.as_bytes(),
-                        buyer_entity,
-                        signed_base,
-                        self.now,
-                        ns,
-                        Some(age_slots),
-                    );
-                    if let Some(count) = fold.sample {
-                        self.measured
-                            .record_holder_count(fnv1a_64(mint.as_bytes()), count, ns);
-                        // …and, on the SAME bounded cadence, fold the tracked
-                        // cohort's INTERNAL concentration into its own series
-                        // (§21.7 parallel stream).
-                        //
-                        // Concentration used to be a point reading derived on
-                        // demand at admit. A point reading can answer "is this
-                        // concentrated?" but not "is it concentratING?", and the
-                        // second question is the one with a tradeable answer. The
-                        // derivation is `O(n)` over a bounded ledger and runs once
-                        // per 1.2 s of information time per mint — the same cost
-                        // discipline the holder sample already pays, reusing the
-                        // same compile-time-proven cadence rather than inventing a
-                        // second one.
-                        //
-                        // Note this is the INTERNAL statistic, gated on
-                        // `admits_growth` and therefore live on the delta-only
-                        // ledgers where the absolute share refuses. It is a
-                        // different quantity in a different type and can never be
-                        // read as a share of the float.
-                        let internal =
-                            internal_concentration_of(&self.holder_flow, mint.as_bytes());
-                        self.conc_trajectory
-                            .observe(mint.as_bytes(), internal, self.now, ns);
-                    }
-                }
-                // On-chain-led category flow: a trade contributes to per-category
-                // MetaRotationState measures ONLY if its mint has a known (on-chain-
-                // assigned) category. Guarded by an O(1) `is_empty` check first, so a
-                // run that never ingests `TokenMetadata` pays a single branch and is
-                // byte-identical to one before this layer (the golden hot path).
-                // Unknown-category trades are NOT silently bucketed into UNCLASSIFIED
-                // (§6.4 UNKNOWN discipline).
-                if !self.mint_category.is_empty() {
-                    self.route_category_flow(*mint.as_bytes(), signed_base);
-                }
-                // Market context (§21.3 regime + §28 cluster breadth + phase) and the
-                // flow/wallet screens (§21.7 authenticity, §28 lagged-shadow feed).
-                self.context.on_trade(
-                    mint.as_bytes(),
-                    buyer_entity,
-                    signed_base >= 0,
-                    quote_lamports,
-                    signed_base.unsigned_abs(),
-                    liquidity_lamports,
-                );
-                self.flow_screen.record(
-                    mint.as_bytes(),
-                    buyer_entity,
-                    signed_base >= 0,
-                    quote_lamports,
-                );
-                // §21.6 trade-count bars + §21.5 activity window: O(1) fold per
-                // decoded trade (open-bar update + fixed-ring write).
-                self.structure.record(
-                    *mint.as_bytes(),
-                    &crate::structure::TradeObs {
-                        now: self.now,
+                    self.numeric.observe(
+                        mint,
                         price_fp,
-                        base_qty: signed_base.unsigned_abs(),
                         quote_lamports,
+                        liquidity_lamports,
+                        signed_base,
                         buyer_entity,
-                        is_buy: signed_base >= 0,
-                    },
-                );
-                self.wallet_screen.record(
-                    buyer_entity,
-                    mint.as_bytes(),
-                    signed_base >= 0,
-                    quote_lamports,
-                    self.now,
-                );
-                // §27 amendment (G5): record tracked-wallet buys for the trust
-                // boost corroboration counter. Only BUYs (signed_base >= 0)
-                // count toward corroboration. The `buyer_entity` is the u64
-                // entity id extracted from the LaserStream `account_keys[6]`
-                // (the buyer's wallet pubkey, hashed via splitmix64 — G1 fix).
-                if signed_base >= 0 {
-                    self.record_tracked_buy(mint.as_bytes(), buyer_entity, self.now);
-                }
-                // §27/§28 amendment (G6 wiring): record the most recent buyer or
-                // seller entity on this mint and build a funding edge between the
-                // current buyer and the previous seller (or current seller and
-                // previous buyer) on the same mint. This is the wallet-graph
-                // cluster-detection feed per arXiv:2505.09313 — the graph is
-                // BOUNDED (§99): `wallet_graph_node` grows the graph one node at
-                // a time and `add_edge` is O(1). The last-mint maps use the same
-                // bounded-eviction convention as `last_trade_tick` (§99).
-                {
-                    let m = *mint.as_bytes();
-                    let cap = self
-                        .cfg
-                        .watchlist_capacity
-                        .saturating_mul(self.cfg.confirmed_capacity_mult)
-                        .max(1);
-                    if signed_base >= 0 {
-                        // BUY: edge from this buyer to the last seller (if any).
-                        if let Some(&seller) = self.last_mint_seller.get(&m) {
-                            if seller != buyer_entity {
-                                self.add_wallet_funding_edge(buyer_entity, seller, self.now);
-                            }
-                        }
-                        // Update last buyer with bounded eviction.
-                        if !self.last_mint_buyer.contains_key(&m)
-                            && self.last_mint_buyer.len() >= cap
-                        {
-                            if let Some(&victim) = self.last_mint_buyer.keys().next() {
-                                self.last_mint_buyer.remove(&victim);
-                            }
-                        }
-                        self.last_mint_buyer.insert(m, buyer_entity);
-                    } else {
-                        // SELL: edge from the last buyer to this seller (if any).
-                        if let Some(&buyer) = self.last_mint_buyer.get(&m) {
-                            if buyer != buyer_entity {
-                                self.add_wallet_funding_edge(buyer, buyer_entity, self.now);
-                            }
-                        }
-                        // Update last seller with bounded eviction.
-                        if !self.last_mint_seller.contains_key(&m)
-                            && self.last_mint_seller.len() >= cap
-                        {
-                            if let Some(&victim) = self.last_mint_seller.keys().next() {
-                                self.last_mint_seller.remove(&victim);
-                            }
-                        }
-                        self.last_mint_seller.insert(m, buyer_entity);
-                    }
-                }
-                // VPIN-X toxicity accumulation (§21.7): fold the swap's exact-sign
-                // quote volume into the mint's volume-clocked buckets. O(1) amortized;
-                // bounded map with deterministic eviction (§99).
-                {
-                    let vp = self.vpin_params();
-                    let cap = self
-                        .cfg
-                        .watchlist_capacity
-                        .saturating_mul(self.cfg.confirmed_capacity_mult)
-                        .max(1);
-                    let key = *mint.as_bytes();
-                    if !self.vpin.contains_key(&key) && self.vpin.len() >= cap {
-                        if let Some(&victim) = self.vpin.keys().next() {
-                            self.vpin.remove(&victim);
-                        }
-                    }
-                    let st = self.vpin.entry(key).or_insert_with(|| VpinState::new(&vp));
-                    st.on_trade(signed_base >= 0, quote_lamports, self.now, &vp);
-                }
-                // Held-position lifecycle (§24 per-swap management): advance any open
-                // scalp on this market and book an exit if a trigger fires. Guarded by
-                // an O(1) `is_empty` so a run holding nothing pays only one branch.
-                if !self.positions.is_empty() {
-                    let signed_quote = if signed_base >= 0 {
-                        i128::from(quote_lamports)
-                    } else {
-                        -i128::from(quote_lamports)
-                    };
-                    let price_u = u64::try_from(price_fp.max(0)).unwrap_or(u64::MAX);
-                    self.tournament.on_trade(
-                        mint.as_bytes(),
-                        price_u,
-                        signed_quote,
+                        age_slots,
                         self.now,
+                    );
+                    // §47a LAW 18: record the mint's last-trade info-time (tick) for the
+                    // terminal-state reflection cadence. Bounded (§99): a new mint past
+                    // capacity evicts the lexicographically-smallest tracked mint.
+                    {
+                        let m = *mint.as_bytes();
+                        if !self.last_trade_tick.contains_key(&m)
+                            && self.last_trade_tick.len() >= LAST_TRADE_TABLE_CAP
+                        {
+                            if let Some(&victim) = self.last_trade_tick.keys().next() {
+                                self.last_trade_tick.remove(&victim);
+                            }
+                        }
+                        self.last_trade_tick.insert(m, self.now);
+                    }
+                    // §70.1 CONTINUOUS HOLDER ACCOUNTING — the WATCH phase.
+                    //
+                    // Folded for EVERY decoded swap on EVERY mint, not just admitted
+                    // ones, so that by the time a candidate reaches the gate its holder
+                    // series already exists. This is the canonical (§6.1) derivation:
+                    // the holder count comes from the `buyer_entity` + `signed_base` we
+                    // decoded ourselves, never from a third-party holder endpoint (§6.6
+                    // keeps Birdeye/DAS strictly corroboration-tier).
+                    //
+                    // The fold returns a sample only on the bounded
+                    // `HOLDER_SAMPLE_INTERVAL_TICKS` cadence: the §70.1 acceleration
+                    // estimator refuses comparison points closer than its 1 s minimum
+                    // interval, so sampling per-swap would push samples that are simply
+                    // dropped for a non-advancing information time. Three ticks
+                    // (1.2 s at BRAIN_TICK_NS) is the smallest whole-tick cadence at or
+                    // above that floor — asserted at compile time in `holder_flow`.
+                    {
+                        let ns = self.now.saturating_mul(BRAIN_TICK_NS);
+                        // The swap's market age in slots is passed through so the
+                        // ledger can classify an entity's FIRST buy as a bundle
+                        // (creation slot) or a sniper (within
+                        // `holder_flow::SNIPER_SLOT_WINDOW`) — arXiv 2601.08641. It is
+                        // a first-sighting fact that cannot be recovered later, so it
+                        // is captured in the fold or not at all (§20).
+                        let fold = self.holder_flow.observe_swap_aged(
+                            mint.as_bytes(),
+                            buyer_entity,
+                            signed_base,
+                            self.now,
+                            ns,
+                            Some(age_slots),
+                        );
+                        if let Some(count) = fold.sample {
+                            self.measured
+                                .record_holder_count(fnv1a_64(mint.as_bytes()), count, ns);
+                            // …and, on the SAME bounded cadence, fold the tracked
+                            // cohort's INTERNAL concentration into its own series
+                            // (§21.7 parallel stream).
+                            //
+                            // Concentration used to be a point reading derived on
+                            // demand at admit. A point reading can answer "is this
+                            // concentrated?" but not "is it concentratING?", and the
+                            // second question is the one with a tradeable answer. The
+                            // derivation is `O(n)` over a bounded ledger and runs once
+                            // per 1.2 s of information time per mint — the same cost
+                            // discipline the holder sample already pays, reusing the
+                            // same compile-time-proven cadence rather than inventing a
+                            // second one.
+                            //
+                            // Note this is the INTERNAL statistic, gated on
+                            // `admits_growth` and therefore live on the delta-only
+                            // ledgers where the absolute share refuses. It is a
+                            // different quantity in a different type and can never be
+                            // read as a share of the float.
+                            let internal =
+                                internal_concentration_of(&self.holder_flow, mint.as_bytes());
+                            self.conc_trajectory
+                                .observe(mint.as_bytes(), internal, self.now, ns);
+                        }
+                    }
+                    // On-chain-led category flow: a trade contributes to per-category
+                    // MetaRotationState measures ONLY if its mint has a known (on-chain-
+                    // assigned) category. Guarded by an O(1) `is_empty` check first, so a
+                    // run that never ingests `TokenMetadata` pays a single branch and is
+                    // byte-identical to one before this layer (the golden hot path).
+                    // Unknown-category trades are NOT silently bucketed into UNCLASSIFIED
+                    // (§6.4 UNKNOWN discipline).
+                    if !self.mint_category.is_empty() {
+                        self.route_category_flow(*mint.as_bytes(), signed_base);
+                    }
+                    // Market context (§21.3 regime + §28 cluster breadth + phase) and the
+                    // flow/wallet screens (§21.7 authenticity, §28 lagged-shadow feed).
+                    self.context.on_trade(
+                        mint.as_bytes(),
+                        buyer_entity,
+                        signed_base >= 0,
+                        quote_lamports,
+                        signed_base.unsigned_abs(),
                         liquidity_lamports,
                     );
-                    // Rev-31: In live mode, skip exits for unconfirmed positions.
-                    let skip_exit = self.mode == RunMode::Live
-                        && !self.positions.is_onchain_confirmed(mint.as_bytes());
-                    if !skip_exit {
-                        if let Some(exit) = self.positions.on_trade(
+                    self.flow_screen.record(
+                        mint.as_bytes(),
+                        buyer_entity,
+                        signed_base >= 0,
+                        quote_lamports,
+                    );
+                    // §21.6 trade-count bars + §21.5 activity window: O(1) fold per
+                    // decoded trade (open-bar update + fixed-ring write).
+                    self.structure.record(
+                        *mint.as_bytes(),
+                        &crate::structure::TradeObs {
+                            now: self.now,
+                            price_fp,
+                            base_qty: signed_base.unsigned_abs(),
+                            quote_lamports,
+                            buyer_entity,
+                            is_buy: signed_base >= 0,
+                        },
+                    );
+                    self.wallet_screen.record(
+                        buyer_entity,
+                        mint.as_bytes(),
+                        signed_base >= 0,
+                        quote_lamports,
+                        self.now,
+                    );
+                    // §27 amendment (G5): record tracked-wallet buys for the trust
+                    // boost corroboration counter. Only BUYs (signed_base >= 0)
+                    // count toward corroboration. The `buyer_entity` is the u64
+                    // entity id extracted from the LaserStream `account_keys[6]`
+                    // (the buyer's wallet pubkey, hashed via splitmix64 — G1 fix).
+                    if signed_base >= 0 {
+                        self.record_tracked_buy(mint.as_bytes(), buyer_entity, self.now);
+                    }
+                    // §27/§28 amendment (G6 wiring): record the most recent buyer or
+                    // seller entity on this mint and build a funding edge between the
+                    // current buyer and the previous seller (or current seller and
+                    // previous buyer) on the same mint. This is the wallet-graph
+                    // cluster-detection feed per arXiv:2505.09313 — the graph is
+                    // BOUNDED (§99): `wallet_graph_node` grows the graph one node at
+                    // a time and `add_edge` is O(1). The last-mint maps use the same
+                    // bounded-eviction convention as `last_trade_tick` (§99).
+                    {
+                        let m = *mint.as_bytes();
+                        let cap = self
+                            .cfg
+                            .watchlist_capacity
+                            .saturating_mul(self.cfg.confirmed_capacity_mult)
+                            .max(1);
+                        if signed_base >= 0 {
+                            // BUY: edge from this buyer to the last seller (if any).
+                            if let Some(&seller) = self.last_mint_seller.get(&m) {
+                                if seller != buyer_entity {
+                                    self.add_wallet_funding_edge(buyer_entity, seller, self.now);
+                                }
+                            }
+                            // Update last buyer with bounded eviction.
+                            if !self.last_mint_buyer.contains_key(&m)
+                                && self.last_mint_buyer.len() >= cap
+                            {
+                                if let Some(&victim) = self.last_mint_buyer.keys().next() {
+                                    self.last_mint_buyer.remove(&victim);
+                                }
+                            }
+                            self.last_mint_buyer.insert(m, buyer_entity);
+                        } else {
+                            // SELL: edge from the last buyer to this seller (if any).
+                            if let Some(&buyer) = self.last_mint_buyer.get(&m) {
+                                if buyer != buyer_entity {
+                                    self.add_wallet_funding_edge(buyer, buyer_entity, self.now);
+                                }
+                            }
+                            // Update last seller with bounded eviction.
+                            if !self.last_mint_seller.contains_key(&m)
+                                && self.last_mint_seller.len() >= cap
+                            {
+                                if let Some(&victim) = self.last_mint_seller.keys().next() {
+                                    self.last_mint_seller.remove(&victim);
+                                }
+                            }
+                            self.last_mint_seller.insert(m, buyer_entity);
+                        }
+                    }
+                    // VPIN-X toxicity accumulation (§21.7): fold the swap's exact-sign
+                    // quote volume into the mint's volume-clocked buckets. O(1) amortized;
+                    // bounded map with deterministic eviction (§99).
+                    {
+                        let vp = self.vpin_params();
+                        let cap = self
+                            .cfg
+                            .watchlist_capacity
+                            .saturating_mul(self.cfg.confirmed_capacity_mult)
+                            .max(1);
+                        let key = *mint.as_bytes();
+                        if !self.vpin.contains_key(&key) && self.vpin.len() >= cap {
+                            if let Some(&victim) = self.vpin.keys().next() {
+                                self.vpin.remove(&victim);
+                            }
+                        }
+                        let st = self.vpin.entry(key).or_insert_with(|| VpinState::new(&vp));
+                        st.on_trade(signed_base >= 0, quote_lamports, self.now, &vp);
+                    }
+                    // Held-position lifecycle (§24 per-swap management): advance any open
+                    // scalp on this market and book an exit if a trigger fires. Guarded by
+                    // an O(1) `is_empty` so a run holding nothing pays only one branch.
+                    if !self.positions.is_empty() {
+                        let signed_quote = if signed_base >= 0 {
+                            i128::from(quote_lamports)
+                        } else {
+                            -i128::from(quote_lamports)
+                        };
+                        let price_u = u64::try_from(price_fp.max(0)).unwrap_or(u64::MAX);
+                        self.tournament.on_trade(
                             mint.as_bytes(),
                             price_u,
                             signed_quote,
                             self.now,
                             liquidity_lamports,
-                        ) {
-                            self.book_exit(exit);
-                        } else if self.positions.has(mint.as_bytes()) {
-                            // §33 probe→confirm scale-in (one-shot; scale_in refuses after
-                            // any de-risking): in profit + authentic flow ⇒ full target.
-                            // §21.6 reduce-only structure block: never ADD risk while the
-                            // bar-structure trend contradicts the long (Downtrend). The
-                            // probe keeps managing itself — structure blocks additions,
-                            // never authorizes anything.
-                            if price_fp > 0
-                                && self
-                                    .structure
-                                    .trend(mint.as_bytes(), self.cfg.structure_min_bars)
-                                    != TrendStructure::Downtrend
-                            {
-                                // §6.4: the flow screen's thin-sample NEUTRAL PRIOR is a
-                                // label for missing evidence, never confirmation. Adding
-                                // risk requires an EVIDENCED authenticity reading at or
-                                // above the operator's bar — absence of evidence can no
-                                // longer scale a probe to full target.
-                                let (auth, _) = self.flow_screen.authenticity(mint.as_bytes());
-                                if self.flow_screen.has_auth_evidence(mint.as_bytes())
-                                    && auth >= self.cfg.scale_confirm_auth_min_bp
+                        );
+                        // Rev-31: In live mode, skip exits for unconfirmed positions.
+                        let skip_exit = self.mode == RunMode::Live
+                            && !self.positions.is_onchain_confirmed(mint.as_bytes());
+                        if !skip_exit {
+                            if let Some(exit) = self.positions.on_trade(
+                                mint.as_bytes(),
+                                price_u,
+                                signed_quote,
+                                self.now,
+                                liquidity_lamports,
+                            ) {
+                                self.book_exit(exit);
+                            } else if self.positions.has(mint.as_bytes()) {
+                                // §33 probe→confirm scale-in (one-shot; scale_in refuses after
+                                // any de-risking): in profit + authentic flow ⇒ full target.
+                                // §21.6 reduce-only structure block: never ADD risk while the
+                                // bar-structure trend contradicts the long (Downtrend). The
+                                // probe keeps managing itself — structure blocks additions,
+                                // never authorizes anything.
+                                if price_fp > 0
+                                    && self
+                                        .structure
+                                        .trend(mint.as_bytes(), self.cfg.structure_min_bars)
+                                        != TrendStructure::Downtrend
                                 {
-                                    if let Some(att) = self.open_lane.get(mint.as_bytes()).copied()
+                                    // §6.4: the flow screen's thin-sample NEUTRAL PRIOR is a
+                                    // label for missing evidence, never confirmation. Adding
+                                    // risk requires an EVIDENCED authenticity reading at or
+                                    // above the operator's bar — absence of evidence can no
+                                    // longer scale a probe to full target.
+                                    let (auth, _) = self.flow_screen.authenticity(mint.as_bytes());
+                                    if self.flow_screen.has_auth_evidence(mint.as_bytes())
+                                        && auth >= self.cfg.scale_confirm_auth_min_bp
                                     {
-                                        if att.scale_add > 0
-                                            && self.positions.scale_in(
-                                                mint.as_bytes(),
-                                                att.scale_add,
-                                                att.scale_cost,
-                                                // The mark the added lamports are ACTUALLY
-                                                // bought at — blends the cost basis so the
-                                                // add cannot book phantom profit.
-                                                price_u,
-                                            )
+                                        if let Some(att) =
+                                            self.open_lane.get(mint.as_bytes()).copied()
                                         {
-                                            if let Some(e) = self.open_lane.get_mut(mint.as_bytes())
+                                            if att.scale_add > 0
+                                                && self.positions.scale_in(
+                                                    mint.as_bytes(),
+                                                    att.scale_add,
+                                                    att.scale_cost,
+                                                    // The mark the added lamports are ACTUALLY
+                                                    // bought at — blends the cost basis so the
+                                                    // add cannot book phantom profit.
+                                                    price_u,
+                                                )
                                             {
-                                                e.scale_add = 0;
+                                                if let Some(e) =
+                                                    self.open_lane.get_mut(mint.as_bytes())
+                                                {
+                                                    e.scale_add = 0;
+                                                }
                                             }
                                         }
                                     }
                                 }
-                            }
-                            // §32 thesis evaluation: deterministic invalidation forces the
-                            // exit; no score may override it.
-                            // Rev-31: gate on on-chain confirmation in live mode.
-                            // A model-managed position's discretionary thesis/VPIN exits stand down;
-                            // the model is shown the same flow state and decides.
-                            let model_owned = self.positions.is_model_managed(mint.as_bytes());
-                            let thesis_exit = !model_owned
-                                && self.thesis_forces_exit(mint.as_bytes())
-                                && !(self.mode == RunMode::Live
-                                    && !self.positions.is_onchain_confirmed(mint.as_bytes()));
-                            if thesis_exit {
-                                if let Some(exit) = self.positions.close_at(
-                                    mint.as_bytes(),
-                                    price_u,
-                                    ExitReason::ThesisInvalidation,
-                                ) {
-                                    self.book_exit(exit);
-                                }
-                            } else {
-                                // VPIN exit escalation: the extreme sell-dominant tier is a
-                                // distributed multi-swap dump the single-print rug-precursor
-                                // cannot see — force the thesis-invalidation exit (§21.7/§32).
+                                // §32 thesis evaluation: deterministic invalidation forces the
+                                // exit; no score may override it.
                                 // Rev-31: gate on on-chain confirmation in live mode.
-                                let vpin_ok = !model_owned
+                                // A model-managed position's discretionary thesis/VPIN exits stand down;
+                                // the model is shown the same flow state and decides.
+                                let model_owned = self.positions.is_model_managed(mint.as_bytes());
+                                let thesis_exit = !model_owned
+                                    && self.thesis_forces_exit(mint.as_bytes())
                                     && !(self.mode == RunMode::Live
                                         && !self.positions.is_onchain_confirmed(mint.as_bytes()));
-                                if vpin_ok {
-                                    let vp = self.vpin_params();
-                                    let reading = self
-                                        .vpin
-                                        .get(mint.as_bytes())
-                                        .and_then(|v| v.reading(self.now, &vp));
-                                    if vpin_exit_escalates(reading, &self.vpin_thresholds()) {
-                                        if let Some(exit) = self.positions.close_at(
-                                            mint.as_bytes(),
-                                            price_u,
-                                            ExitReason::ThesisInvalidation,
-                                        ) {
-                                            self.book_exit(exit);
+                                if thesis_exit {
+                                    if let Some(exit) = self.positions.close_at(
+                                        mint.as_bytes(),
+                                        price_u,
+                                        ExitReason::ThesisInvalidation,
+                                    ) {
+                                        self.book_exit(exit);
+                                    }
+                                } else {
+                                    // VPIN exit escalation: the extreme sell-dominant tier is a
+                                    // distributed multi-swap dump the single-print rug-precursor
+                                    // cannot see — force the thesis-invalidation exit (§21.7/§32).
+                                    // Rev-31: gate on on-chain confirmation in live mode.
+                                    let vpin_ok = !model_owned
+                                        && !(self.mode == RunMode::Live
+                                            && !self
+                                                .positions
+                                                .is_onchain_confirmed(mint.as_bytes()));
+                                    if vpin_ok {
+                                        let vp = self.vpin_params();
+                                        let reading = self
+                                            .vpin
+                                            .get(mint.as_bytes())
+                                            .and_then(|v| v.reading(self.now, &vp));
+                                        if vpin_exit_escalates(reading, &self.vpin_thresholds()) {
+                                            if let Some(exit) = self.positions.close_at(
+                                                mint.as_bytes(),
+                                                price_u,
+                                                ExitReason::ThesisInvalidation,
+                                            ) {
+                                                self.book_exit(exit);
+                                            }
                                         }
                                     }
                                 }
-                            }
-                        } // close `else if self.positions.has(...)`
-                    } // Rev-31: close `if !skip_exit`
-                }
+                            } // close `else if self.positions.has(...)`
+                        } // Rev-31: close `if !skip_exit`
+                    }
                 }
             }
             AppEvent::Migration { mint, slot } => {

@@ -2379,7 +2379,8 @@ mod tests {
     }
 
     #[test]
-    fn the_trail_leg_is_actually_disabled_a_big_run_up_then_a_giveback_does_not_exit_a_managed_position() {
+    fn the_trail_leg_is_actually_disabled_a_big_run_up_then_a_giveback_does_not_exit_a_managed_position(
+    ) {
         let m = [1u8; 32];
         let mut lc = held_with_fill(1_000_000);
         assert!(lc.set_model_managed(&m));
@@ -2389,7 +2390,10 @@ mod tests {
         let mut t = 1;
         while px < 3 * PX {
             px = px / 100 * 125;
-            assert!(lc.on_trade(&m, px, 1, t, TEST_LIQ_LAMPORTS).is_none(), "run-up at {px}");
+            assert!(
+                lc.on_trade(&m, px, 1, t, TEST_LIQ_LAMPORTS).is_none(),
+                "run-up at {px}"
+            );
             t += 1;
         }
         while px > PX / 2 * 3 {
@@ -2410,14 +2414,22 @@ mod tests {
         // protection leaf is unchanged for the legacy arguments.
         let m = [1u8; 32];
         let mut lc = held_with_fill(1_000_000);
-        assert!(lc.on_trade(&m, PX / 100 * 80, -1, 1, TEST_LIQ_LAMPORTS).is_none(), "0.80x is above the 0.78x trail");
+        assert!(
+            lc.on_trade(&m, PX / 100 * 80, -1, 1, TEST_LIQ_LAMPORTS)
+                .is_none(),
+            "0.80x is above the 0.78x trail"
+        );
         let ex = lc
             .on_trade(&m, PX / 100 * 77, -1, 2, TEST_LIQ_LAMPORTS)
             .expect("0.77x is below the 0.78x trail");
         // The legacy classifier passes `trail_bps = 0` when LABELLING, so any legacy exit at/below entry is labelled
         // HardStop even when the trail level (0.78x) is what fired. That is a pre-existing LABEL quirk on the legacy
         // path; the exit itself (and its timing) is what this pins, and the legacy path is deliberately unedited.
-        assert_eq!(ex.reason, ExitReason::HardStop, "legacy label behaviour, unchanged");
+        assert_eq!(
+            ex.reason,
+            ExitReason::HardStop,
+            "legacy label behaviour, unchanged"
+        );
         let trail = P.trail_base_bps;
         assert_eq!(
             protection_level_fp(PX, PX, trail, 3_500),

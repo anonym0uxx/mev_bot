@@ -246,7 +246,13 @@ pub fn held_data_report(engine: &Engine) -> (String, bool) {
     for s in &status {
         let age = |v: Option<i64>| v.map_or("none".to_string(), |a| format!("{a}ms"));
         match &s.management_ready {
-            Ok(()) if pump_quant_app::engine::model_manage::amm_protection_gap(s, engine.model_clock_ms_now()).is_some() => {
+            Ok(())
+                if pump_quant_app::engine::model_manage::amm_protection_gap(
+                    s,
+                    engine.model_clock_ms_now(),
+                )
+                .is_some() =>
+            {
                 degraded = true;
                 lines.push(format!(
                     "held {} venue=amm DEGRADED: {} (last verified mark age={}); price-based protection (hard stop / rug precursor) is NOT observing this position",
@@ -538,5 +544,143 @@ impl StaleCallout {
     #[must_use]
     pub fn degraded_count(&self) -> usize {
         self.state.len() + self.protect.len()
+    }
+}
+
+/// Why a replay resume clock was refused. Every variant is fatal at startup: a daemon never runs on a clock it cannot trust.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ResumeClockRefusal {
+    /// `PQ_FLOW_RESUME_MS` set without the offline-paper-replay declaration.
+    NotInOfflineReplayMode,
+    /// The offline-paper-replay declaration combined with `--live`.
+    LiveMode,
+    /// The offline-paper-replay declaration without the paper model lane armed (no inference endpoint).
+    ModelLaneNotArmed,
+    /// The value is not a plain positive integer of milliseconds (sign, whitespace, hex, empty, overflow, zero).
+    InvalidValue,
+    /// The value lies in the future of the wall clock: a replay clock describes a PAST instant.
+    InTheFuture,
+}
+
+/// The ONLY consumer of `PQ_FLOW_RESUME_MS`: the instant at which the durable flow history declares the feed resumes
+/// (so a hole between the checkpoint's newest cursor and that instant becomes a NAMED gap). It is honoured only when the
+/// process is explicitly declared an offline paper replay (`PQ_OFFLINE_PAPER_REPLAY=1`), is not `--live`, and has the paper
+/// model lane armed. It does NOT touch the wire clock, any freshness/staleness bound, the inference deadlines (those run on
+/// `Instant`), the missing-history ledger or the held-state ledger. Returns `(resume_ms, declared)`.
+pub fn resolve_flow_resume_clock(
+    live_mode: bool,
+    model_armed: bool,
+    offline_replay_flag: Option<&str>,
+    resume_env: Option<&str>,
+    wall_ms: i64,
+) -> Result<(i64, bool), ResumeClockRefusal> {
+    let replay_declared = offline_replay_flag == Some("1");
+    let Some(v) = resume_env else {
+        // Not asking for a replay clock: the wall clock, exactly as before. A bare replay declaration changes nothing.
+        return Ok((wall_ms, false));
+    };
+    if live_mode {
+        return Err(ResumeClockRefusal::LiveMode);
+    }
+    if !replay_declared {
+        return Err(ResumeClockRefusal::NotInOfflineReplayMode);
+    }
+    if !model_armed {
+        return Err(ResumeClockRefusal::ModelLaneNotArmed);
+    }
+    if v.is_empty() || !v.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(ResumeClockRefusal::InvalidValue);
+    }
+    let ms: i64 = v.parse().map_err(|_| ResumeClockRefusal::InvalidValue)?;
+    if ms <= 0 {
+        return Err(ResumeClockRefusal::InvalidValue);
+    }
+    if ms > wall_ms {
+        return Err(ResumeClockRefusal::InTheFuture);
+    }
+    Ok((ms, true))
+}
+
+#[cfg(test)]
+mod resume_clock_tests {
+    use super::*;
+    const WALL: i64 = 1_790_000_000_000;
+    const T: i64 = 1_788_965_347_168;
+    fn r(
+        live: bool,
+        armed: bool,
+        flag: Option<&str>,
+        v: Option<&str>,
+    ) -> Result<(i64, bool), ResumeClockRefusal> {
+        resolve_flow_resume_clock(live, armed, flag, v, WALL)
+    }
+    #[test]
+    fn no_resume_env_is_the_wall_clock_whatever_the_flag() {
+        assert_eq!(r(false, true, None, None), Ok((WALL, false)));
+        assert_eq!(r(false, true, Some("1"), None), Ok((WALL, false)));
+        assert_eq!(r(true, false, None, None), Ok((WALL, false)));
+    }
+    #[test]
+    fn honoured_only_in_declared_offline_paper_replay_with_the_model_lane_armed() {
+        assert_eq!(
+            r(false, true, Some("1"), Some("1788965347168")),
+            Ok((T, true))
+        );
+        assert_eq!(
+            r(false, true, None, Some("1788965347168")),
+            Err(ResumeClockRefusal::NotInOfflineReplayMode)
+        );
+        assert_eq!(
+            r(false, true, Some("0"), Some("1788965347168")),
+            Err(ResumeClockRefusal::NotInOfflineReplayMode)
+        );
+        assert_eq!(
+            r(false, true, Some("true"), Some("1788965347168")),
+            Err(ResumeClockRefusal::NotInOfflineReplayMode)
+        );
+        assert_eq!(
+            r(true, true, Some("1"), Some("1788965347168")),
+            Err(ResumeClockRefusal::LiveMode)
+        );
+        assert_eq!(
+            r(true, false, None, Some("1788965347168")),
+            Err(ResumeClockRefusal::LiveMode)
+        );
+        assert_eq!(
+            r(false, false, Some("1"), Some("1788965347168")),
+            Err(ResumeClockRefusal::ModelLaneNotArmed)
+        );
+    }
+    #[test]
+    fn invalid_values_are_refused_never_defaulted() {
+        for bad in [
+            "",
+            " ",
+            "0",
+            "-5",
+            "+5",
+            "12 ",
+            " 12",
+            "0x10",
+            "1e9",
+            "1.5",
+            "abc",
+            "99999999999999999999999",
+            "1788965347168\n",
+        ] {
+            assert_eq!(
+                r(false, true, Some("1"), Some(bad)),
+                Err(ResumeClockRefusal::InvalidValue),
+                "{bad:?}"
+            );
+        }
+        assert_eq!(
+            r(false, true, Some("1"), Some("1790000000001")),
+            Err(ResumeClockRefusal::InTheFuture)
+        );
+        assert_eq!(
+            r(false, true, Some("1"), Some("1790000000000")),
+            Ok((WALL, true))
+        );
     }
 }

@@ -270,7 +270,11 @@ fn amm_fill_is_applied_once_and_duplicates_do_not_add_inventory() {
     let fills = r.e.model_all_fills();
     let amm_fills: Vec<_> = fills.iter().filter(|f| f.amm).collect();
     let opened = rep(&r.e, "fill:position_opened_amm") as usize;
-    assert_eq!(amm_fills.len(), opened, "one fill record per opened position");
+    assert_eq!(
+        amm_fills.len(),
+        opened,
+        "one fill record per opened position"
+    );
     let mut ids: Vec<u64> = amm_fills.iter().map(|f| f.order_id).collect();
     ids.sort_unstable();
     let n = ids.len();
@@ -542,7 +546,6 @@ fn amm_management_reduce_then_exit_runs_through_the_real_engine_with_unassessed_
     assert_eq!(rep(&e, "mgmt:fill_amm_sell_fee_unverified"), 2, "{r:?}");
 }
 
-
 /// INDEPENDENT LEDGER over the whole captured replay. After EVERY fed event the test samples the engine's public
 /// state and keeps its own books; the invariants below are checked against that ledger, not against engine counters:
 ///   * a position opens only from flat, with exactly one new fill record and inventory established by that fill;
@@ -552,7 +555,8 @@ fn amm_management_reduce_then_exit_runs_through_the_real_engine_with_unassessed_
 ///     transition, and an open changes `committed` (not realized);
 ///   * every order id appears once in the fill ledger.
 #[test]
-fn amm_lifecycle_independent_ledger_every_close_has_inventory_every_reentry_follows_a_close_cash_applies_once() {
+fn amm_lifecycle_independent_ledger_every_close_has_inventory_every_reentry_follows_a_close_cash_applies_once(
+) {
     let mut cfg = Config::dev_portable();
     cfg.bankroll_initial_lamports = 2_000_000_000;
     let calls = Arc::new(AtomicUsize::new(0));
@@ -645,11 +649,23 @@ fn amm_lifecycle_independent_ledger_every_close_has_inventory_every_reentry_foll
         }
     }
     let _ = open_inventory;
-    assert!(opens >= 1, "the replay must open at least one AMM position ({opens})");
+    assert!(
+        opens >= 1,
+        "the replay must open at least one AMM position ({opens})"
+    );
     assert_eq!(closes_without_inventory, 0, "every close had inventory");
-    assert_eq!(reentry_without_close, 0, "every re-entry followed a completed close");
-    assert_eq!(identity_broken, 0, "balance = seed + realized, one fill record per open, inventory gone after close");
-    assert_eq!(cash_changed_off_transition, 0, "cash changed with no open/close/inventory transition");
+    assert_eq!(
+        reentry_without_close, 0,
+        "every re-entry followed a completed close"
+    );
+    assert_eq!(
+        identity_broken, 0,
+        "balance = seed + realized, one fill record per open, inventory gone after close"
+    );
+    assert_eq!(
+        cash_changed_off_transition, 0,
+        "cash changed with no open/close/inventory transition"
+    );
     // Fill ledger: every order id once, and the sampled opens equal the engine's own fill records.
     let fills = e.model_all_fills();
     let amm: Vec<_> = fills.iter().filter(|f| f.amm).collect();
@@ -659,6 +675,12 @@ fn amm_lifecycle_independent_ledger_every_close_has_inventory_every_reentry_foll
     ids.dedup();
     assert_eq!(ids.len(), n, "each order id once");
     assert_eq!(amm.len() as u32, opens, "sampled opens == fill records");
-    assert!(closes <= opens && opens - closes <= 1, "at most one position remains open ({opens} opens, {closes} closes)");
-    assert!(e.model_assessable_fills().is_empty(), "routing fills are never assessable");
+    assert!(
+        closes <= opens && opens - closes <= 1,
+        "at most one position remains open ({opens} opens, {closes} closes)"
+    );
+    assert!(
+        e.model_assessable_fills().is_empty(),
+        "routing fills are never assessable"
+    );
 }

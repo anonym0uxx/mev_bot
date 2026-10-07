@@ -270,6 +270,8 @@ const EXIT_EMERGENCY: u8 = 99;
 const EXIT_MODEL_LIVE_CONFLICT: u8 = 98;
 /// A held-state ledger exists but cannot be applied: refusing to start rather than orphan exposure.
 const EXIT_HELD_STATE_REFUSED: u8 = 97;
+/// `PQ_FLOW_RESUME_MS` was set outside a declared offline paper replay, or its value is invalid.
+const EXIT_RESUME_CLOCK_REFUSED: u8 = 96;
 /// Path (relative to CWD) for the graceful-shutdown sentinel file.
 const DAEMON_STOP_FILE: &str = "data/DAEMON_STOP";
 /// Path (relative to CWD) for the emergency-stop sentinel file.
@@ -1871,17 +1873,29 @@ fn main() -> ExitCode {
         {
             let fh_file = std::env::var("PQ_FLOW_HISTORY_FILE")
                 .unwrap_or_else(|_| "data/flow_history.ckpt".to_string());
-            // The resume time is the wall clock UNLESS the operator declares a replay clock: historical playback must state
-            // which instant the feed resumes at (explicit and logged), never inherit "now" and manufacture a gap.
-            let resume_ms = match std::env::var("PQ_FLOW_RESUME_MS").ok().and_then(|v| v.parse::<i64>().ok()) {
-                Some(v) => {
-                    eprintln!("[pq-daemon] flow-history resume clock DECLARED (replay): {v}");
-                    v
+            // The resume time is the wall clock. An operator-declared replay clock is accepted ONLY in an explicitly declared
+            // offline paper replay (see `resolve_flow_resume_clock`); anywhere else it is a startup refusal, never ignored.
+            let wall_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0);
+            let resume_ms = match pump_quant_junction::model_lifecycle::resolve_flow_resume_clock(
+                args.live_mode,
+                model_armed,
+                std::env::var("PQ_OFFLINE_PAPER_REPLAY").ok().as_deref(),
+                std::env::var("PQ_FLOW_RESUME_MS").ok().as_deref(),
+                wall_ms,
+            ) {
+                Ok((ms, declared)) => {
+                    if declared {
+                        eprintln!("[pq-daemon] OFFLINE PAPER REPLAY: flow-history resume clock DECLARED = {ms} (wall clock is {wall_ms}); no other clock is affected");
+                    }
+                    ms
                 }
-                None => std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as i64)
-                    .unwrap_or(0),
+                Err(why) => {
+                    eprintln!("[pq-daemon] FATAL: PQ_FLOW_RESUME_MS refused ({why:?}). It is honoured only with PQ_OFFLINE_PAPER_REPLAY=1, no --live, and the paper model lane armed; refusing to start.");
+                    return ExitCode::from(EXIT_RESUME_CLOCK_REFUSED);
+                }
             };
             let prov = pump_quant_app::flow_checkpoint::Provenance {
                 seed_source: std::env::var("PQ_FLOW_SEED_SOURCE").unwrap_or_else(|_| "none".into()),
@@ -1899,6 +1913,39 @@ fn main() -> ExitCode {
                 resume_ms,
             );
             eprintln!("[pq-daemon] flow-history {fh_file}: {a:?}");
+            // READINESS CLASS (reporting only; no refusal or trading behaviour changes here). An intentional cold start is
+            // DECLARED (`PQ_FLOW_SEED_SOURCE=cold_start:<label>`) and its zeros mean "none observed in the declared history".
+            // A fresh history with no declaration is a MISSING expected bootstrap; an untrusted file is a FAILED one.
+            {
+                let declared = std::env::var("PQ_FLOW_SEED_SOURCE").unwrap_or_default();
+                let class = match &a {
+                    pump_quant_app::engine::model_admit::FlowAttach::Fresh
+                        if declared.starts_with("cold_start:") =>
+                    {
+                        "cold_start_declared_history_limited"
+                    }
+                    pump_quant_app::engine::model_admit::FlowAttach::Fresh => {
+                        "bootstrap_missing_undeclared"
+                    }
+                    pump_quant_app::engine::model_admit::FlowAttach::Untrusted(_) => {
+                        "bootstrap_failed_untrusted"
+                    }
+                    pump_quant_app::engine::model_admit::FlowAttach::Restored {
+                        complete: true,
+                        ..
+                    } => "restored_complete",
+                    pump_quant_app::engine::model_admit::FlowAttach::Restored { .. } => {
+                        "restored_with_unavailable_interval"
+                    }
+                };
+                if class == "bootstrap_missing_undeclared" {
+                    eprintln!("[pq-daemon] ALERT: flow-history has NO checkpoint and NO declared cold start: the expected bootstrap is MISSING. Smart-wallet/co-entry/lookback fields are 'none observed', not 'none exist'.");
+                }
+                let _ = std::fs::write(
+                    "data/flow_readiness.json",
+                    format!("{{\"class\":\"{class}\",\"seed_source\":\"{}\",\"resume_clock_declared\":{},\"note\":\"history-limited classes: zeros mean none observed in this declared history, not none globally\"}}", declared.replace('"', "'"), std::env::var("PQ_FLOW_RESUME_MS").is_ok()),
+                );
+            }
             match &a {
                 pump_quant_app::engine::model_admit::FlowAttach::Untrusted(why) => eprintln!(
                     "[pq-daemon] ALERT: flow-history UNTRUSTED ({why}) - Qwen entry and management refuse by name; monitoring, reconciliation and hard safeguards continue; the file is left untouched"
@@ -1946,6 +1993,8 @@ fn main() -> ExitCode {
     let mut model_stop_last_alert = Instant::now() - Duration::from_secs(3600);
     let mut model_stop_session = pump_quant_junction::model_lifecycle::StopSession::new();
     let mut stale_callout = pump_quant_junction::model_lifecycle::StaleCallout::default();
+    let replay_harness =
+        !args.live_mode && std::env::var("PQ_OFFLINE_PAPER_REPLAY").as_deref() == Ok("1");
 
     // Run-mode tag for tape/journal exports — derived from the ENGINE's actual
     // RunMode, NOT the --live CLI flag. This prevents paper-mode fallback from
@@ -2840,9 +2889,17 @@ fn main() -> ExitCode {
                     // named input). Bounded; a full map is counted, never silently grown.
                     for c in &classified {
                         let m = match c {
-                            pump_quant_junction::laserstream::PumpInstruction::Buy { mint, .. }
-                            | pump_quant_junction::laserstream::PumpInstruction::Sell { mint, .. }
-                            | pump_quant_junction::laserstream::PumpInstruction::Launch { mint, .. } => Some(*mint),
+                            pump_quant_junction::laserstream::PumpInstruction::Buy {
+                                mint, ..
+                            }
+                            | pump_quant_junction::laserstream::PumpInstruction::Sell {
+                                mint,
+                                ..
+                            }
+                            | pump_quant_junction::laserstream::PumpInstruction::Launch {
+                                mint,
+                                ..
+                            } => Some(*mint),
                             _ => None,
                         };
                         if let Some(m) = m {
@@ -4488,6 +4545,15 @@ fn main() -> ExitCode {
                     }
                     pump_quant_junction::model_lifecycle::Headroom::Ok { .. } => {}
                 }
+            }
+            // OFFLINE PAPER REPLAY HARNESS ONLY: a sentinel file asks for a blocking durable flow-history flush, so a test can
+            // compare checkpoints at a fixed cursor (graceful stop with held positions deliberately does not terminate, so the
+            // shutdown flush is unreachable there). Inert unless PQ_OFFLINE_PAPER_REPLAY=1; never reachable in a normal daemon.
+            if model_armed && replay_harness && std::path::Path::new("data/FLOW_FLUSH").exists() {
+                let ok = engine.model_flow_flush(std::time::Duration::from_secs(20));
+                let _ = std::fs::remove_file("data/FLOW_FLUSH");
+                let _ = std::fs::write("data/FLOW_FLUSHED", if ok { "ok" } else { "timeout" });
+                eprintln!("[pq-daemon] replay-harness flow flush: durable={ok}");
             }
             #[allow(clippy::manual_is_multiple_of)] // MSRV 1.85: is_multiple_of stabilised in 1.87
             if model_armed && tick_counter % 20 == 0 {

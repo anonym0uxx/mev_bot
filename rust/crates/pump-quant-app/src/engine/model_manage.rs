@@ -743,8 +743,16 @@ impl Engine {
                     last_print_age_ms,
                     reserve_fresh,
                     management_ready,
-                    protect_mark_ms: if amm { self.model_protect_mark_ms.get(&h.mint).copied() } else { None },
-                    protect_ignored: if amm { self.model_protect_ignored.get(&h.mint).copied() } else { None },
+                    protect_mark_ms: if amm {
+                        self.model_protect_mark_ms.get(&h.mint).copied()
+                    } else {
+                        None
+                    },
+                    protect_ignored: if amm {
+                        self.model_protect_ignored.get(&h.mint).copied()
+                    } else {
+                        None
+                    },
                 }
             })
             .collect()
@@ -1390,10 +1398,7 @@ mod add_planner_tests {
 /// pre-trade state reveals; a price-moving swap followed by silence is invisible until the budget elapses and this
 /// gap is raised.
 #[must_use]
-pub fn amm_protection_gap(
-    status: &HeldDataStatus,
-    now_ms: i64,
-) -> Option<String> {
+pub fn amm_protection_gap(status: &HeldDataStatus, now_ms: i64) -> Option<String> {
     if !status.amm {
         return None;
     }

@@ -134,7 +134,8 @@ impl VpinState {
                     if whole > VPIN_N_BUCKETS as u64 + 1 {
                         let skip = whole - (VPIN_N_BUCKETS as u64 + 1);
                         q -= skip * cap;
-                        self.head = (self.head + (skip % VPIN_N_BUCKETS as u64) as usize) % VPIN_N_BUCKETS;
+                        self.head =
+                            (self.head + (skip % VPIN_N_BUCKETS as u64) as usize) % VPIN_N_BUCKETS;
                     }
                 }
             }
@@ -350,13 +351,17 @@ mod tests {
     }
 }
 
-
 #[cfg(test)]
 mod bulk_fill_tests {
     use super::*;
 
     fn params() -> VpinParams {
-        VpinParams { v_min_lamports: 7, v_max_lamports: 1_000, min_buckets: 3, stale_ticks: 1_000 }
+        VpinParams {
+            v_min_lamports: 7,
+            v_max_lamports: 1_000,
+            min_buckets: 3,
+            stale_ticks: 1_000,
+        }
     }
 
     /// The pre-fix algorithm, kept verbatim as the reference.
@@ -369,10 +374,18 @@ mod bulk_fill_tests {
             let filled = s.cur.v_buy.saturating_add(s.cur.v_sell);
             let room = s.cur.cap.saturating_sub(filled);
             let take = q.min(room);
-            if buy { s.cur.v_buy = s.cur.v_buy.saturating_add(take); } else { s.cur.v_sell = s.cur.v_sell.saturating_add(take); }
+            if buy {
+                s.cur.v_buy = s.cur.v_buy.saturating_add(take);
+            } else {
+                s.cur.v_sell = s.cur.v_sell.saturating_add(take);
+            }
             q -= take;
-            if take == room { s.complete_bucket(tick, p); }
-            if take == 0 { break; }
+            if take == room {
+                s.complete_bucket(tick, p);
+            }
+            if take == 0 {
+                break;
+            }
         }
     }
 
@@ -388,8 +401,15 @@ mod bulk_fill_tests {
             let (mut fast, mut slow) = (VpinState::new(&p), VpinState::new(&p));
             let mut tick = 1;
             for _ in 0..40 {
-                x ^= x << 13; x ^= x >> 7; x ^= x << 17;
-                let q = match x % 4 { 0 => x % 50, 1 => x % 5_000, 2 => x % 400_000, _ => x % 6_000_000 };
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                let q = match x % 4 {
+                    0 => x % 50,
+                    1 => x % 5_000,
+                    2 => x % 400_000,
+                    _ => x % 6_000_000,
+                };
                 let buy = (x >> 20) & 1 == 0;
                 tick += (x >> 30) % 5;
                 fast.on_trade(buy, q, tick, &p);
@@ -401,11 +421,20 @@ mod bulk_fill_tests {
 
     #[test]
     fn a_max_slippage_sentinel_print_costs_microseconds_and_still_folds_everything() {
-        let p = VpinParams { v_min_lamports: 250_000_000, v_max_lamports: 20_000_000_000, min_buckets: 3, stale_ticks: 1_000 };
+        let p = VpinParams {
+            v_min_lamports: 250_000_000,
+            v_max_lamports: 20_000_000_000,
+            min_buckets: 3,
+            stale_ticks: 1_000,
+        };
         let mut s = VpinState::new(&p);
         let t = std::time::Instant::now();
         s.on_trade(true, u64::MAX, 5, &p);
-        assert!(t.elapsed() < std::time::Duration::from_millis(50), "took {:?}", t.elapsed());
+        assert!(
+            t.elapsed() < std::time::Duration::from_millis(50),
+            "took {:?}",
+            t.elapsed()
+        );
         assert_eq!(s.len, VPIN_N_BUCKETS);
         // the ring is entirely whole buy buckets at the capped size, and the reading is defined
         assert!(s.reading(5, &p).is_some());
