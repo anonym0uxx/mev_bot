@@ -4065,6 +4065,21 @@ impl Engine {
     /// the position fully closes, release its committed risk budget, ratchet the
     /// high-water mark, and attribute the market's total realized net back to its
     /// social callers (§82).
+    /// Remember an executed-event identity. `false` = already folded (a replay), `true` = new (now remembered).
+    pub(crate) fn agg_remember(&mut self, id: u128) -> bool {
+        if self.agg_seen_set.contains(&id) {
+            return false;
+        }
+        if self.agg_seen_ids.len() >= AGG_SEEN_CAP {
+            if let Some(o) = self.agg_seen_ids.pop_front() {
+                self.agg_seen_set.remove(&o);
+            }
+        }
+        self.agg_seen_ids.push_back(id);
+        self.agg_seen_set.insert(id);
+        true
+    }
+
     fn book_exit(&mut self, mut e: Exit) {
         // E11: the sell leg's outbound-call duration, folded into the round-trip trace.
         let mut exit_call_us: u64 = 0;

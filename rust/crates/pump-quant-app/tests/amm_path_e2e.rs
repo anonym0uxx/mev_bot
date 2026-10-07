@@ -263,12 +263,24 @@ fn an_amm_market_is_discovered_from_stream_events_and_bought_through_the_real_en
 #[test]
 fn amm_fill_is_applied_once_and_duplicates_do_not_add_inventory() {
     let r = amm_run_with_fill();
-    assert_eq!(
-        rep(&r.e, "fill:position_opened_amm"),
-        1,
-        "exactly one fill for one order"
+    // Once-per-order, not once-per-run: held-position protection (a -35% hard stop on verified pool marks)
+    // can legitimately close the position, after which the stub may BUY again as a NEW order. What must hold
+    // is that no order filled twice, every fill is an AMM fill, every re-entry follows an exit, and no order
+    // is left pending.
+    let fills = r.e.model_all_fills();
+    let amm_fills: Vec<_> = fills.iter().filter(|f| f.amm).collect();
+    let opened = rep(&r.e, "fill:position_opened_amm") as usize;
+    assert_eq!(amm_fills.len(), opened, "one fill record per opened position");
+    let mut ids: Vec<u64> = amm_fills.iter().map(|f| f.order_id).collect();
+    ids.sort_unstable();
+    let n = ids.len();
+    ids.dedup();
+    assert_eq!(ids.len(), n, "no order id filled twice");
+    let exits = rep(&r.e, "protect:amm_exit:") + rep(&r.e, "mgmt:fill:complete");
+    assert!(
+        exits + 1 >= opened as u64,
+        "every re-entry must follow a close ({opened} fills, {exits} closes)"
     );
-    assert_eq!(r.e.model_all_fills().iter().filter(|f| f.amm).count(), 1);
     assert_eq!(
         r.e.model_pending_orders(),
         0,

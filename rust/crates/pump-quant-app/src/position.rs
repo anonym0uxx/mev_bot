@@ -1220,8 +1220,11 @@ impl ScalpLifecycle {
         if pos.model_managed {
             // MODEL MODE: the hard stop is a safeguard the model cannot be asked to keep; the
             // trailing stop and every other discretionary trigger below stand down.
+            // `trail_bps = 10_000` disables the trail leg (trail level 0) so ONLY the documented stop,
+            // entry x (1 - hard_sl), applies. Passing 0 here made the trail level equal ENTRY, which turned
+            // this catastrophic backstop into a break-even stop that fired on any print at/below entry.
             let hard_level =
-                protection_level_fp(pos.entry_price_fp, pos.entry_price_fp, 0, hard_sl);
+                protection_level_fp(pos.entry_price_fp, pos.entry_price_fp, 10_000, hard_sl);
             if price_fp <= hard_level {
                 return Some(self.close(mint, mult, ExitReason::HardStop));
             }

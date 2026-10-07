@@ -871,6 +871,15 @@ impl Engine {
                 );
             }
         }
+        // PRINT-DRIVEN SAFEGUARD ON A HELD AMM POSITION (hard stop / rug precursor). Fed ONLY by a verified EXECUTED
+        // pool swap: successful transaction, canonical WSOL pool, the pool this mint is bound to, a real executed
+        // price, a fresh and in-order observation, and an identity not already folded. Never from an instruction
+        // hint, a requested quantity, a zero/missing price, or another pool. The mark is the swap's own execution
+        // price (SOL per raw token, the same basis as the AMM entry price): a SPOT-TRIGGER mark. It is not an
+        // executable sell quote, and a fill it triggers is routing evidence only (the quarantine flag stays set).
+        if self.positions.has(&mint) {
+            self.model_amm_protect(&mint, &pool_s_for_protect(&a), &a, applied, ts_ms);
+        }
         self.model_register(mint);
         // Event-driven: the FIRST eligible landing state fills the order, not whatever is newest at
         // the next tick.
@@ -879,6 +888,60 @@ impl Engine {
         self.model_try_fills(c);
         self.model_mgmt_try_fills(c);
         self.model_swap_ctx = None;
+    }
+
+    fn model_amm_protect(&mut self, mint: &[u8; 32], pool_s: &str, a: &AmmSwapIn, applied: bool, ts_ms: i64) {
+        if !applied {
+            self.mrep("protect:amm_mark_ignored_out_of_order");
+            return;
+        }
+        if self.model_cache.pool_conflicting(mint) || !self.model_cache.pool_is(mint, pool_s) {
+            self.mrep("protect:amm_mark_ignored_wrong_pool");
+            return;
+        }
+        if self.model_clock_ms.saturating_sub(ts_ms) > crate::curve_annotation::PRICING_BUDGET_MS {
+            self.mrep("protect:amm_mark_ignored_stale");
+            return;
+        }
+        // SPOT-TRIGGER MARK: the pool's own pre-trade effective price, (vault quote + virtual quote) / base reserve,
+        // in PRICE_SCALE lamports per raw token - the SAME basis the AMM entry price is computed on. A single swap's
+        // execution price (it embeds fees and size impact) swings far more than the pool moved and would trip the
+        // single-swap rug-precursor step on noise, so it is not the trigger basis. Not an executable sell quote.
+        let (Some(vq), true) = (a.virtual_quote, a.token_reserve_pre > 0 && a.quote_reserve_pre > 0) else {
+            self.mrep("protect:amm_mark_ignored_no_spot_basis");
+            return;
+        };
+        let id = amm_swap_identity(a, ts_ms);
+        if !self.agg_remember(id) {
+            self.mrep("protect:amm_mark_replay_not_applied");
+            return;
+        }
+        let px = (u128::from(a.quote_reserve_pre) + u128::from(vq)) * 1_000_000_000
+            / u128::from(a.token_reserve_pre);
+        let Ok(price_u) = u64::try_from(px) else {
+            self.mrep("protect:amm_mark_ignored_no_spot_basis");
+            return;
+        };
+        if price_u == 0 {
+            self.mrep("protect:amm_mark_ignored_no_spot_basis");
+            return;
+        }
+        let signed_quote = if a.is_buy {
+            i128::from(a.quote_lamports)
+        } else {
+            -i128::from(a.quote_lamports)
+        };
+        self.mrep("protect:amm_mark_applied");
+        if let Some(exit) = self.positions.on_trade(
+            mint,
+            price_u,
+            signed_quote,
+            self.now,
+            a.quote_reserve_pre,
+        ) {
+            self.mrep(format!("protect:amm_exit:{:?}", exit.reason));
+            self.book_exit(exit);
+        }
     }
 
     fn model_admit_mint(&mut self, mint: [u8; 32], cand_lane: WlLane, cand_dlane: DiscoveryLane) {
@@ -1834,4 +1897,19 @@ impl Engine {
         }
         out
     }
+}
+
+fn pool_s_for_protect(a: &AmmSwapIn) -> String {
+    a.pool.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Identity of one executed pool swap for aggregate/protection dedup (no signature is carried on the event, so it is
+/// the tuple that fixes one swap: market, pool, slot, trader, side, both legs, receive time).
+fn amm_swap_identity(a: &AmmSwapIn, ts_ms: i64) -> u128 {
+    use std::hash::{Hash, Hasher};
+    let mut h1 = std::collections::hash_map::DefaultHasher::new();
+    let mut h2 = std::collections::hash_map::DefaultHasher::new();
+    (a.mint.as_bytes(), a.pool, a.slot, a.trader, a.is_buy, a.token_amount, a.quote_lamports, ts_ms).hash(&mut h1);
+    (0xA55u16, ts_ms, a.slot, a.token_amount, a.quote_lamports, a.pool, a.trader).hash(&mut h2);
+    (u128::from(h1.finish()) << 64) | u128::from(h2.finish())
 }

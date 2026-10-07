@@ -659,6 +659,18 @@ impl DecisionCache {
         }
     }
 
+    /// Whether `pool` is the pool this mint is bound to.
+    #[must_use]
+    pub fn pool_is(&self, mint: &[u8; 32], pool: &str) -> bool {
+        self.pools.get(mint).is_some_and(|b| b.pool == pool)
+    }
+
+    /// Whether the mint has seen two different pools (binding refused).
+    #[must_use]
+    pub fn pool_conflicting(&self, mint: &[u8; 32]) -> bool {
+        self.pools.get(mint).is_some_and(|b| b.conflicting)
+    }
+
     pub fn observe_amm(
         &mut self,
         mint: [u8; 32],

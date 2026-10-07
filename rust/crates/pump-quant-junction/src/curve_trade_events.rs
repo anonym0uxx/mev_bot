@@ -307,7 +307,8 @@ pub fn trade_event_id(sig: &[u8; 64], ix_ordinal: u32) -> u128 {
 /// the transaction has the event's mint and side the association is unambiguous; with two or more it is refused
 /// (`attribution_ambiguous`), never resolved by order. `Err(reason)` = outside the frozen corpus population or the
 /// basis cannot be established; the trade is then admitted for discovery/state but never to the trained windows.
-fn corpus_basis_for(
+/// Public so the population census example calls the SAME attribution the daemon path uses.
+pub fn corpus_basis_for(
     tx: &LaserStreamTx,
     ev_idx: usize,
     t: &CurveTradeEvent,
