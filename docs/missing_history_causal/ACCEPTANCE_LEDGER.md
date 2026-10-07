@@ -19,7 +19,7 @@ pre-existing label quirk (a legacy trail exit at/below entry is labelled HardSto
 | 1 | Hard stop pinned, isolated from other triggers | DONE | position tests; mutation (restore `0`) fails 2 isolated tests |
 | 2 | AMM lifecycle independent ledger | DONE | `amm_lifecycle_independent_ledger_*`; mutation (double fill record) fails it |
 | 3 | Protection-gap surfacing (named, last VERIFIED mark, alert path) | DONE | `held_amm_protection_gap.rs` (4 tests) |
-| 4 | Seeded daemon baseline | OPEN | |
+| 4 | Seeded daemon baseline | BLOCKED (decision) | schema-2 seed rebuilt from the same tape/cutoff (6,389,425 events, sha in seed2/build.out); daemon restores it and, with an explicit replay clock (PQ_FLOW_RESUME_MS=first wire recv), reports an UNAVAILABLE interval of 1,397,631,566 ms (16.2 d): seed coverage ends 2026-08-24T10:35:15Z, capture starts 2026-09-09T14:49:07Z. Prompts correctly refuse by scope; 0 stub-model requests. Clearing it needs a separately approved contract, not a waiver. |
 | 5 | Real-process recovery | OPEN | |
 | 6 | universe_promotable trace / Qwen eligibility | OPEN | |
 | 7 | Identity-registration negative tests, mid-life discovery | OPEN | |

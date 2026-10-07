@@ -1871,10 +1871,18 @@ fn main() -> ExitCode {
         {
             let fh_file = std::env::var("PQ_FLOW_HISTORY_FILE")
                 .unwrap_or_else(|_| "data/flow_history.ckpt".to_string());
-            let resume_ms = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis() as i64)
-                .unwrap_or(0);
+            // The resume time is the wall clock UNLESS the operator declares a replay clock: historical playback must state
+            // which instant the feed resumes at (explicit and logged), never inherit "now" and manufacture a gap.
+            let resume_ms = match std::env::var("PQ_FLOW_RESUME_MS").ok().and_then(|v| v.parse::<i64>().ok()) {
+                Some(v) => {
+                    eprintln!("[pq-daemon] flow-history resume clock DECLARED (replay): {v}");
+                    v
+                }
+                None => std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or(0),
+            };
             let prov = pump_quant_app::flow_checkpoint::Provenance {
                 seed_source: std::env::var("PQ_FLOW_SEED_SOURCE").unwrap_or_else(|_| "none".into()),
                 seed_sha256: std::env::var("PQ_FLOW_SEED_SHA256").unwrap_or_else(|_| "none".into()),
