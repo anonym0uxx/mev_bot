@@ -916,7 +916,7 @@ impl Engine {
         if a.token_amount > 0 && a.quote_lamports > 0 {
             let price_fp =
                 (i128::from(a.quote_lamports) * 1_000_000_000) / i128::from(a.token_amount);
-            self.model_mgmt_note_price(&mint, price_fp);
+            self.model_mgmt_note_price(&mint, price_fp, Some(ts_ms));
             let signed = i64::try_from(a.token_amount).unwrap_or(i64::MAX);
             let entity =
                 pump_quant_wallet_graph::tracked_wallet_matcher::wallet_entity_id(&a.trader);

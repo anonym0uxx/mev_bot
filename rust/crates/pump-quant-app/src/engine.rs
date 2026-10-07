@@ -2005,7 +2005,7 @@ impl Engine {
                         self.model_note_clock(ms);
                     }
                     if price_fp > 0 {
-                        self.model_mgmt_note_price(mint.as_bytes(), price_fp);
+                        self.model_mgmt_note_price(mint.as_bytes(), price_fp, recv_unix_ms);
                     }
                     let venue = match venue {
                         Some(crate::event::TradeVenue::PumpFun) => {

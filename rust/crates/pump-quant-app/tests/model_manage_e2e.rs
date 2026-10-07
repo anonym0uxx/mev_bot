@@ -1298,3 +1298,219 @@ fn no_legacy_config_value_can_close_or_resize_a_model_managed_position() {
     );
     assert!(m.e.model_mgmt_fills().iter().any(|f| f.closed));
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// MFE/MAE ("max favourable / adverse so far") tracker: causal, once-only, and restart-safe.
+//
+// Time basis: `fill_ms` is the FEED clock at the moment the paper fill was applied (the newest receive time seen),
+// and a print's own time is its wire `recv_unix_ms`. Both are on the same wire clock. A print with
+// recv < fill_ms was received before the position existed; a print with recv >= fill_ms was not. Equal time is
+// NOT distinguishable from timestamps alone, so it is treated as "after the fill" (the conservative side for a
+// held position: an equal-time adverse print is counted, never silently dropped).
+// ---------------------------------------------------------------------------------------------------------------
+
+fn held_extrema(e: &Engine) -> (u64, u64, u64, i64) {
+    let l = e.model_held_ledger();
+    let h = &l.held[0];
+    (h.entry_price_fp, h.peak_fp, h.trough_fp, h.fill_ms)
+}
+
+fn print_at(e: &mut Engine, i: u32, ts: i64, slot: u64, price: i128) {
+    e.tick(AppEvent::MarketTrade {
+        mint: mint(),
+        price_fp: price,
+        quote_lamports: 500_000_000 + u64::from(i),
+        liquidity_lamports: VSOL,
+        signed_base: 30_000_000_000,
+        buyer_entity: 1 + u64::from(i),
+        age_slots: 30,
+        recv_unix_ms: Some(ts),
+        trader_pubkey: Some(wallet(i)),
+        slot: Some(slot),
+        fee_lamports: Some(60_000 + u64::from(i) * 100),
+        cu_consumed: Some(90_000 + u64::from(i)),
+        venue: Some(TradeVenue::PumpFun),
+        event_id: None,
+        feature: None,
+    });
+}
+
+#[test]
+fn excursions_ignore_pre_fill_prints_count_post_fill_ones_once_and_the_equal_time_print() {
+    let mut r = rig(|_| HOLD);
+    let (entry, peak0, trough0, fill_ms) = held_extrema(&r.e);
+    assert_eq!(
+        peak0, entry,
+        "a fresh position's extrema start at its entry price"
+    );
+    assert_eq!(trough0, entry);
+    // Independently calculated expectations (fixed-point price units, no engine arithmetic reused).
+    let high = entry + entry / 5; // +20 %
+    let low = entry - entry / 10; // -10 %  (well above the 35 % hard stop, so the position stays open)
+    let mut i = 5_000u32;
+    let mut slot = 9_000u64;
+    let mut next = |dt: i64| {
+        i += 1;
+        slot += 1;
+        (i, fill_ms + dt, slot)
+    };
+    // 1. PRE-FILL prints (an overlap replay re-delivers history): a wildly high and a wildly low price,
+    //    received BEFORE the fill. Neither may touch the extrema.
+    // The cache refuses out-of-order prints, so deliver them through a fresh restart below as well; here a
+    // directly-late print is the in-process analogue.
+    let (a, t, s) = next(-1);
+    print_at(&mut r.e, a, t, s, i128::from(entry) * 10);
+    let (a, t, s) = next(-2);
+    print_at(&mut r.e, a, t, s, 1);
+    let (_, p, tr, _) = held_extrema(&r.e);
+    assert_eq!(
+        (p, tr),
+        (entry, entry),
+        "pre-fill prints must not move the extrema"
+    );
+    // 2. A genuine POST-fill high and low move them to exactly those values.
+    let (a, t, s) = next(1_000);
+    print_at(&mut r.e, a, t, s, i128::from(high));
+    let (a, t, s) = next(2_000);
+    print_at(&mut r.e, a, t, s, i128::from(low));
+    let (_, p, tr, _) = held_extrema(&r.e);
+    assert_eq!(p, high, "post-fill high");
+    assert_eq!(tr, low, "post-fill low");
+    // 3. A DUPLICATE delivery (same identity) applies once: re-delivering the high-then-low pair changes nothing,
+    //    and a lower-than-peak, higher-than-trough print does not regress either extremum.
+    let (a, t, s) = (5_003u32, fill_ms + 3_000, 9_050u64);
+    print_at(&mut r.e, a, t, s, i128::from(entry));
+    let (_, p, tr, _) = held_extrema(&r.e);
+    assert_eq!(
+        (p, tr),
+        (high, low),
+        "an in-range print must not regress either extremum"
+    );
+}
+
+#[test]
+fn an_equal_time_print_is_counted_as_after_the_fill_and_a_one_ms_earlier_print_is_not() {
+    let r = rig(|_| HOLD);
+    let mut e = r.e;
+    let (entry, _, _, fill_ms) = held_extrema(&e);
+    let low = entry - entry / 20; // -5 %, independently computed
+                                  // One millisecond BEFORE the fill: ignored.
+    print_at(&mut e, 7_001, fill_ms - 1, 9_101, i128::from(low));
+    assert_eq!(
+        held_extrema(&e).2,
+        entry,
+        "recv = fill_ms - 1 is before the fill"
+    );
+    // Exactly AT the fill millisecond: counted (documented conservative boundary).
+    print_at(&mut e, 7_002, fill_ms, 9_102, i128::from(low));
+    assert_eq!(
+        held_extrema(&e).2,
+        low,
+        "recv = fill_ms is treated as after the fill"
+    );
+}
+
+#[test]
+fn restored_extrema_survive_an_overlap_replay_which_applies_each_new_observation_once() {
+    let hp = held_path("exc");
+    let mut r = rig(|_| HOLD);
+    r.e.model_held_attach(&hp);
+    let (entry, _, _, fill_ms) = held_extrema(&r.e);
+    let high = entry + entry / 5;
+    let low = entry - entry / 10;
+    print_at(&mut r.e, 6_001, fill_ms + 1_000, 9_201, i128::from(high));
+    print_at(&mut r.e, 6_002, fill_ms + 2_000, 9_202, i128::from(low));
+    ticks(&mut r.e, 2);
+    assert!(r.e.model_held_persist_now());
+    let led = r.e.model_held_ledger();
+    assert_eq!((led.held[0].peak_fp, led.held[0].trough_fp), (high, low));
+    drop(r);
+
+    let mut e2 = fresh_engine(2_000_000_000, &hp);
+    e2.model_held_restore().expect("restore").expect("ledger");
+    assert_eq!(
+        held_extrema(&e2),
+        (entry, high, low, fill_ms),
+        "restored extrema and fill time are the ones written, not reset"
+    );
+    // OVERLAP REPLAY: the whole pre-fill history is delivered again (extreme prices, all before the fill), then the
+    // two post-fill prints again, then one genuinely NEW post-fill observation.
+    for k in 0..20u32 {
+        let px = if k % 2 == 0 {
+            i128::from(entry) * 10
+        } else {
+            1
+        };
+        print_at(
+            &mut e2,
+            100 + k,
+            fill_ms - 20_000 + i64::from(k) * 500,
+            9_300 + u64::from(k),
+            px,
+        );
+    }
+    print_at(&mut e2, 6_001, fill_ms + 1_000, 9_201, i128::from(high));
+    print_at(&mut e2, 6_002, fill_ms + 2_000, 9_202, i128::from(low));
+    let (_, p, t, _) = held_extrema(&e2);
+    assert_eq!((p, t), (high, low), "replay changed nothing it should not");
+    let new_low = low - entry / 20; // a genuinely new, lower post-fill price (-15 %, above the hard stop)
+    print_at(&mut e2, 6_003, fill_ms + 4_000, 9_203, i128::from(new_low));
+    let (_, p, t, _) = held_extrema(&e2);
+    assert_eq!(p, high, "peak preserved");
+    assert_eq!(t, new_low, "the genuinely new low applies exactly once");
+    assert!(
+        e2.model_position_open(&MINT),
+        "no spurious exit from replayed history"
+    );
+}
+
+fn mark_of(prompt: &str) -> f64 {
+    let line = prompt
+        .lines()
+        .find(|l| {
+            l.trim_start()
+                .starts_with("mark price (lamports per raw token):")
+        })
+        .expect("a management prompt shows its mark");
+    line.rsplit(':')
+        .next()
+        .unwrap()
+        .trim()
+        .parse()
+        .expect("mark parses")
+}
+
+#[test]
+fn a_post_fill_replay_cannot_regress_the_mark_even_when_it_leaves_the_extrema_alone() {
+    let mut r = rig(|_| HOLD);
+    let (entry, _, _, _) = held_extrema(&r.e);
+    // Newest print: +2 % of entry, inside the extrema range, so replay can matter ONLY through the mark.
+    let last_px = entry + entry / 50;
+    r.advance(62_000);
+    let t_last = r.clock + 1_000;
+    print_at(&mut r.e, 8_001, t_last, 9_401, i128::from(last_px));
+    let extrema = held_extrema(&r.e);
+    // Replay AFTER it: an older in-range post-fill print, and a duplicate identity of the newest carrying another price.
+    print_at(&mut r.e, 8_002, t_last - 500, 9_402, i128::from(entry) + 3);
+    print_at(&mut r.e, 8_001, t_last, 9_401, i128::from(entry) + 5);
+    assert_eq!(held_extrema(&r.e), extrema, "replay left the extrema alone");
+    // Let the management cadence come due with NO newer print: curve observations advance the feed clock only.
+    let before = r.prompts.lock().unwrap().len();
+    let mut t = t_last;
+    for k in 0..8u64 {
+        t += 5_000;
+        curve_quiet(&mut r.e, t, 9_500 + k);
+        ticks(&mut r.e, 3);
+    }
+    let ps = r.prompts.lock().unwrap().clone();
+    assert!(
+        ps.len() > before,
+        "a management prompt must be asked after the replay"
+    );
+    let got = mark_of(ps.last().unwrap());
+    let want = last_px as f64 / 1e9; // independent: fixed-point / PRICE_SCALE
+    assert!(
+        ((got - want) / want).abs() < 1e-9,
+        "mark {got} must be the newest accepted print {want}, not a replayed older/duplicate price"
+    );
+}

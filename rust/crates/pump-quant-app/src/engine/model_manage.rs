@@ -198,10 +198,22 @@ impl Engine {
     }
 
     /// Causal MFE/MAE tracker: every priced print on a held mint since the fill.
-    pub(super) fn model_mgmt_note_price(&mut self, mint: &[u8; 32], price_fp: i128) {
+    pub(super) fn model_mgmt_note_price(
+        &mut self,
+        mint: &[u8; 32],
+        price_fp: i128,
+        recv_unix_ms: Option<i64>,
+    ) {
         let Some(mp) = self.model_mgmt.pos.get_mut(mint) else {
             return;
         };
+        // The excursion is "since the fill". An overlap replay after a restart re-delivers prints that PREDATE the
+        // fill; they rebuild market state but are not part of this position's life. A print with no wire time cannot
+        // be ordered against the fill, so it does not count either.
+        match recv_unix_ms {
+            Some(t) if t >= mp.fill_ms => {}
+            _ => return,
+        }
         let Ok(p) = u64::try_from(price_fp) else {
             return;
         };
