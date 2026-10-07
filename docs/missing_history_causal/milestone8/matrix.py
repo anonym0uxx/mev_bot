@@ -28,7 +28,7 @@ CAUSE={
  'staleness_ms':'implementation (curve snapshot timing vs corpus curve state)',
 }
 tot=collections.Counter(); per=collections.defaultdict(collections.Counter); n=0
-for f in sorted(glob.glob('/tmp/mh_recon2/slice/samp_*.diff.json')):
+for f in sorted(glob.glob('/tmp/mh_recon2/slice/prod_S*.diff.json')):
     d=json.load(open(f)); tag=f.split('/')[-1].replace('.diff.json','').replace('.json','')
     for x in d:
         if 'diffs' not in x: continue

@@ -2620,8 +2620,12 @@ impl Engine {
                         self.model_note_clock(ms);
                     }
                     let venue = match venue {
-                        crate::event::TradeVenue::PumpFun => crate::state_ledger::VenueLabel::Pumpfun,
-                        crate::event::TradeVenue::PumpSwap => crate::state_ledger::VenueLabel::Pumpswap,
+                        crate::event::TradeVenue::PumpFun => {
+                            crate::state_ledger::VenueLabel::Pumpfun
+                        }
+                        crate::event::TradeVenue::PumpSwap => {
+                            crate::state_ledger::VenueLabel::Pumpswap
+                        }
                     };
                     self.model_cache
                         .observe_trade(&crate::decision_join::TradeObs {

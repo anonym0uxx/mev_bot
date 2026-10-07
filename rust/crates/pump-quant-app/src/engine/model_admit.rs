@@ -680,22 +680,22 @@ impl Engine {
             // With the corpus-row producer on, the TRAINED windows are fed by `CorpusFlowRow` (corpus trader-delta
             // basis, once per instruction); feeding this swap's own legacy-basis print too would double-count it.
             if !self.corpus_flow_rows {
-            self.model_cache
-                .observe_trade(&crate::decision_join::TradeObs {
-                    mint,
-                    price_fp,
-                    quote_lamports: a.quote_lamports,
-                    signed_base: if a.is_buy { signed } else { -signed },
-                    buyer_entity: entity,
-                    trader: Some(a.trader),
-                    recv_unix_ms: Some(ts_ms),
-                    slot: Some(a.slot),
-                    fee_lamports: a.fee_lamports,
-                    cu_consumed: a.cu_consumed,
-                    venue: crate::state_ledger::VenueLabel::Pumpswap,
-                    event_id: None,
-                    feature: None,
-                });
+                self.model_cache
+                    .observe_trade(&crate::decision_join::TradeObs {
+                        mint,
+                        price_fp,
+                        quote_lamports: a.quote_lamports,
+                        signed_base: if a.is_buy { signed } else { -signed },
+                        buyer_entity: entity,
+                        trader: Some(a.trader),
+                        recv_unix_ms: Some(ts_ms),
+                        slot: Some(a.slot),
+                        fee_lamports: a.fee_lamports,
+                        cu_consumed: a.cu_consumed,
+                        venue: crate::state_ledger::VenueLabel::Pumpswap,
+                        event_id: None,
+                        feature: None,
+                    });
             }
             // A HELD market is marked from the pool so the existing lifecycle can monitor it. This is
             // deliberately limited to held mints: the legacy numeric lane must not DISCOVER from it.
