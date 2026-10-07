@@ -146,7 +146,7 @@ fn candidate_mints(m: &BalanceMeta, not_launch: &HashSet<[u8; 32]>) -> Vec<[u8; 
 /// Resolve the corpus row for ONE corpus-known pump.fun instruction. `ix_accounts` are the instruction's account
 /// indices into `keys`. `None` = the corpus would have rejected it (counted by the caller, never guessed).
 #[must_use]
-pub fn resolve_row(
+pub fn resolve_row_why(
     prefer_ix: Option<usize>,
     is_buy: bool,
     ix_accounts: &[u8],
@@ -154,15 +154,17 @@ pub fn resolve_row(
     invalid_key_idx: &[usize],
     m: &BalanceMeta,
     not_launch: &HashSet<[u8; 32]>,
-) -> Option<CorpusRow> {
+) -> Result<CorpusRow, RowReject> {
     if m.pre_sol.len() != m.post_sol.len() {
-        return None;
+        return Err(RowReject::BalanceLenMismatch);
     }
     let mints = candidate_mints(m, not_launch);
     if mints.is_empty() {
-        return None;
+        return Err(RowReject::NoCandidateMint);
     }
     let mut found: Option<([u8; 32], [u8; 32], i128, bool)> = None; // (mint, owner, sd, via_net)
+    let mut saw_wide_hits = false;
+    let mut conservation_failed = false;
     for mint in &mints {
         // ---- instruction-scoped search (resolve_trader)
         let mut cands: Vec<(usize, [u8; 32], i128, i128)> = Vec::new();
@@ -215,6 +217,7 @@ pub fn resolve_row(
             if hits.is_empty() {
                 continue;
             }
+            saw_wide_hits = true;
             let mut owners: Vec<[u8; 32]> = Vec::new();
             for e in m.pre_tok.iter().chain(m.post_tok.iter()) {
                 if e.mint == *mint && !owners.contains(&e.owner) {
@@ -232,25 +235,91 @@ pub fn resolve_row(
                 }
             }
             if tot.unsigned_abs() > std::cmp::max(1, best.2.unsigned_abs() / 1000) {
+                conservation_failed = true;
                 continue; // corpus: `return None` for THIS mint, then the next mint is tried
             }
             found = Some((*mint, best.1, best.3, true));
             break;
         }
     }
-    let (mint, owner, sd, via) = found?;
+    let Some((mint, owner, sd, via)) = found else {
+        return Err(if conservation_failed {
+            RowReject::WideConservationFailed
+        } else if saw_wide_hits {
+            RowReject::NoSignPatternAnywhere
+        } else {
+            RowReject::NoSignPatternAnywhere
+        });
+    };
     let tok = first_amt(&m.post_tok, &owner, &mint) - first_amt(&m.pre_tok, &owner, &mint);
     if sd == 0 || tok == 0 {
-        return None;
+        return Err(RowReject::ZeroSolOrToken);
     }
-    Some(CorpusRow {
+    let Ok(sol_lamports) = i64::try_from(sd) else {
+        return Err(RowReject::SolOverflow);
+    };
+    Ok(CorpusRow {
         mint,
         trader: owner,
         is_buy,
-        sol_lamports: i64::try_from(sd).ok()?,
+        sol_lamports,
         tokens_raw: tok,
         via_net_position: via,
     })
+}
+
+/// Why the frozen resolver produced no row. Each variant is a rule of `renormalize_raw.py`, not a new filter.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum RowReject {
+    /// pre/post SOL balance vectors differ in length.
+    BalanceLenMismatch,
+    /// No token mint outside WSOL/system/token programs in the transaction's token balances.
+    NoCandidateMint,
+    /// No account (instruction-scoped, then whole transaction) shows the buy/sell sign pattern for any candidate mint.
+    NoSignPatternAnywhere,
+    /// Whole-transaction candidates existed but the mint's token total did not conserve (vault/hop, not a swap).
+    WideConservationFailed,
+    /// Resolved trader has a zero SOL or zero token delta (the corpus drops it).
+    ZeroSolOrToken,
+    /// SOL delta does not fit i64.
+    SolOverflow,
+}
+
+impl RowReject {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::BalanceLenMismatch => "balance_len_mismatch",
+            Self::NoCandidateMint => "no_candidate_mint",
+            Self::NoSignPatternAnywhere => "no_sign_pattern_anywhere",
+            Self::WideConservationFailed => "wide_conservation_failed",
+            Self::ZeroSolOrToken => "zero_sol_or_token",
+            Self::SolOverflow => "sol_overflow",
+        }
+    }
+}
+
+/// [`resolve_row_why`] without the reason.
+#[must_use]
+pub fn resolve_row(
+    trader_ix: Option<usize>,
+    is_buy: bool,
+    ix_accounts: &[u8],
+    keys: &[[u8; 32]],
+    invalid_key_idx: &[usize],
+    m: &BalanceMeta,
+    not_launch: &HashSet<[u8; 32]>,
+) -> Option<CorpusRow> {
+    resolve_row_why(
+        trader_ix,
+        is_buy,
+        ix_accounts,
+        keys,
+        invalid_key_idx,
+        m,
+        not_launch,
+    )
+    .ok()
 }
 
 /// The corpus's NOT_A_LAUNCH mint set (WSOL, system program, SPL token, Token-2022).
@@ -344,12 +413,30 @@ mod tests {
         let post_leak = vec![tb(k(MINT), k(TRADER), 200), tb(k(MINT), k(POOL), 100)];
         let sol_post = vec![1000, 1000, 1000, 1000, 1000, 1000, 1000, 900, 1100, 1000];
         let m_ok = meta(vec![1000; 10], sol_post.clone(), pre.clone(), post_ok);
-        let r = resolve_row(Some(PUMP_FUN_TRADER_IX), true, &[0, 1], &keys, &[], &m_ok, &not_a_launch_set()).unwrap();
+        let r = resolve_row(
+            Some(PUMP_FUN_TRADER_IX),
+            true,
+            &[0, 1],
+            &keys,
+            &[],
+            &m_ok,
+            &not_a_launch_set(),
+        )
+        .unwrap();
         assert!(r.via_net_position);
         assert_eq!(r.trader, k(TRADER));
         let m_leak = meta(vec![1000; 10], sol_post, pre, post_leak);
         assert!(
-            resolve_row(Some(PUMP_FUN_TRADER_IX), true, &[0, 1], &keys, &[], &m_leak, &not_a_launch_set()).is_none(),
+            resolve_row(
+                Some(PUMP_FUN_TRADER_IX),
+                true,
+                &[0, 1],
+                &keys,
+                &[],
+                &m_leak,
+                &not_a_launch_set()
+            )
+            .is_none(),
             "non-conserving token totals are rejected, as the corpus rejects them"
         );
     }
@@ -376,6 +463,15 @@ mod tests {
     fn mismatched_balance_arrays_and_zero_deltas_are_rejected() {
         let keys: Vec<[u8; 32]> = (0u8..10).map(k).collect();
         let m = meta(vec![1000; 10], vec![1000; 9], vec![], vec![]);
-        assert!(resolve_row(Some(PUMP_FUN_TRADER_IX), true, &[7], &keys, &[], &m, &not_a_launch_set()).is_none());
+        assert!(resolve_row(
+            Some(PUMP_FUN_TRADER_IX),
+            true,
+            &[7],
+            &keys,
+            &[],
+            &m,
+            &not_a_launch_set()
+        )
+        .is_none());
     }
 }

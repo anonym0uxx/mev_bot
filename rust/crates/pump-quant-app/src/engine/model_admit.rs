@@ -262,7 +262,166 @@ pub(super) struct MissingStore {
     pub failure_reported: bool,
 }
 
+/// Flow-history durability bookkeeping (one field on the engine).
+#[derive(Default)]
+pub(super) struct FlowStore {
+    pub writer: Option<crate::flow_checkpoint::CkptWriter>,
+    pub persisted_rev: u64,
+    pub submitted_seq: u64,
+    pub last_submit_ms: i64,
+    pub failure_reported: bool,
+    /// Wall time the engine thread spent cloning the last snapshot (the only engine-thread cost), microseconds.
+    pub last_clone_us: u64,
+    pub max_clone_us: u64,
+}
+
+impl std::fmt::Debug for FlowStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("FlowStore")
+    }
+}
+
+const FLOW_CKPT_MIN_INTERVAL_MS: i64 = 30_000;
+
+/// Startup result of attaching durable flow history.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FlowAttach {
+    /// No checkpoint on disk: a fresh history (prompts need a seed or refuse as before).
+    Fresh,
+    /// Restored; `unavailable_ms` is the interval between the newest cursor and the resume time that no source covers.
+    Restored {
+        unavailable_ms: i64,
+        complete: bool,
+        late: usize,
+    },
+    /// A checkpoint existed but cannot be trusted: every prompt refuses by name; the file is left untouched.
+    Untrusted(&'static str),
+}
+
 impl Engine {
+    /// Attach durable flow history BEFORE any inference. Restores and validates the checkpoint, then declares the
+    /// resume time so any interval between the persisted cursors and the live feed becomes a NAMED gap. A valid but
+    /// old checkpoint is therefore never taken as proof of uninterrupted history.
+    pub fn model_flow_attach(
+        &mut self,
+        path: &std::path::Path,
+        params: pump_quant_market_state::flow_reducer::FlowParams,
+        provenance: crate::flow_checkpoint::Provenance,
+        resume_ms: i64,
+    ) -> FlowAttach {
+        use crate::flow_checkpoint::{load, CkptWriter, FlowHistory, Load};
+        let out = match load(params, path) {
+            Load::NeverWritten => {
+                self.model_cache
+                    .attach_flow_history(FlowHistory::new(params, provenance));
+                FlowAttach::Fresh
+            }
+            Load::Loaded(h) => {
+                self.model_cache.attach_flow_history(*h);
+                let late = self.model_cache.flow_meta().map_or(0, |m| m.late.len());
+                match self.model_cache.flow_restore_resume(resume_ms) {
+                    Some(r) => FlowAttach::Restored {
+                        unavailable_ms: r.unavailable_ms,
+                        complete: r.complete,
+                        late,
+                    },
+                    None => FlowAttach::Untrusted("flow_attach_failed"),
+                }
+            }
+            Load::Untrusted(why) => {
+                self.model_cache.flow_state_untrusted(why);
+                self.mrep(format!("flow_history:untrusted:{why}"));
+                FlowAttach::Untrusted(why)
+            }
+        };
+        if !matches!(out, FlowAttach::Untrusted(_)) {
+            // An untrusted file is never overwritten (the evidence stays on disk): no writer is started for it.
+            self.flow_store.writer = Some(CkptWriter::start(path.to_path_buf(), None));
+            self.flow_store.persisted_rev = 0;
+        }
+        out
+    }
+
+    /// Test seam: attach a writer with a forced-failure hook.
+    #[doc(hidden)]
+    pub fn model_flow_attach_writer(&mut self, w: crate::flow_checkpoint::CkptWriter) {
+        self.flow_store.writer = Some(w);
+        self.flow_store.persisted_rev = 0;
+    }
+
+    /// Tick path: one integer compare when nothing changed (or too soon). A change hands ONE consistent clone to the
+    /// background writer; the tick never waits on disk. The durable cursor advances only when the file is on disk.
+    pub(super) fn model_flow_persist_if_changed(&mut self) {
+        let Some((durable, fails)) = self.flow_store.writer.as_ref().map(|w| {
+            (
+                w.durable(),
+                w.consecutive_failures
+                    .load(std::sync::atomic::Ordering::SeqCst),
+            )
+        }) else {
+            return;
+        };
+        if fails > 0 && !self.flow_store.failure_reported {
+            self.flow_store.failure_reported = true;
+            self.mrep("flow_history:persist_failed");
+        }
+        if fails == 0 {
+            self.flow_store.failure_reported = false;
+        }
+        let _ = durable;
+        let rev = self.model_cache.flow_rev();
+        let due = self.model_clock_ms - self.flow_store.last_submit_ms >= FLOW_CKPT_MIN_INTERVAL_MS;
+        let retry = fails > 0 && due;
+        if (rev == self.flow_store.persisted_rev || !due) && !retry {
+            return;
+        }
+        let t0 = std::time::Instant::now();
+        let Some((r, m)) = self.model_cache.flow_snapshot() else {
+            return;
+        };
+        let us = t0.elapsed().as_micros() as u64;
+        self.flow_store.last_clone_us = us;
+        self.flow_store.max_clone_us = self.flow_store.max_clone_us.max(us);
+        let Some(w) = self.flow_store.writer.as_ref() else {
+            return;
+        };
+        self.flow_store.submitted_seq = w.submit(r, m);
+        self.flow_store.persisted_rev = rev;
+        self.flow_store.last_submit_ms = self.model_clock_ms;
+    }
+
+    /// Shutdown / tests only: force a snapshot now and block (bounded) until durable.
+    pub fn model_flow_flush(&mut self, timeout: std::time::Duration) -> bool {
+        self.flow_store.last_submit_ms = i64::MIN / 2;
+        self.flow_store.persisted_rev = u64::MAX;
+        self.model_flow_persist_if_changed();
+        match self.flow_store.writer.as_ref() {
+            Some(w) => w.wait_durable(self.flow_store.submitted_seq, timeout),
+            None => false,
+        }
+    }
+
+    /// (durable seq, submitted seq, consecutive failures, total failures, last clone us, max clone us, last bytes,
+    /// last encode us, last write us).
+    #[must_use]
+    pub fn model_flow_health(&self) -> (u64, u64, u64, u64, u64, u64, u64, u64, u64) {
+        use std::sync::atomic::Ordering::SeqCst;
+        match self.flow_store.writer.as_ref() {
+            Some(w) => (
+                w.durable(),
+                self.flow_store.submitted_seq,
+                w.consecutive_failures.load(SeqCst),
+                w.total_failures.load(SeqCst),
+                self.flow_store.last_clone_us,
+                self.flow_store.max_clone_us,
+                w.last_bytes.load(SeqCst),
+                w.last_encode_us.load(SeqCst),
+                w.last_write_us.load(SeqCst),
+            ),
+            None => (0, 0, 0, 0, 0, 0, 0, 0, 0),
+        }
+    }
+
     pub(super) fn mrep(&mut self, key: impl Into<String>) {
         *self.model_report.entry(key.into()).or_insert(0) += 1;
     }

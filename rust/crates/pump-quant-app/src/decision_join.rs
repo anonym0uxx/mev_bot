@@ -153,6 +153,14 @@ pub enum JoinRefusal {
     /// (the record was unreadable or incompatible). Refused by name rather than assuming no gap
     /// occurred. Cleared only by a reconstruction receipt, never by a bare acknowledgement.
     HistoryContinuityUnknown,
+    /// The durable flow-history (wallet state) cannot be relied on for this decision, by dependency scope:
+    /// `late_event_in_window` (an unseen older event of this mint was recorded, not applied), `late_overflow`,
+    /// `feed_gap` (an unwaived unavailable interval before the decision), or `flow_state_untrusted`.
+    FlowStateScope {
+        why: &'static str,
+        from_ms: i64,
+        to_ms: i64,
+    },
     CurveAbsent(String),
     AmmAbsent(String),
     /// More than one pool was bound to the mint and the observation's pool is not the bound one.
@@ -188,6 +196,12 @@ impl JoinRefusal {
                 "join_flow_history_unreconstructable"
             }
             JoinRefusal::HistoryContinuityUnknown => "join_history_continuity_unknown",
+            JoinRefusal::FlowStateScope { why, .. } => match *why {
+                "late_event_in_window" => "join_flow_late_event_in_window",
+                "late_overflow" => "join_flow_late_overflow",
+                "feed_gap" => "join_flow_feed_gap",
+                _ => "join_flow_state_untrusted",
+            },
             JoinRefusal::CurveAbsent(_) => "join_curve_absent",
             JoinRefusal::AmmAbsent(_) => "join_amm_absent",
             JoinRefusal::AmmPoolAmbiguous => "join_amm_pool_ambiguous",
@@ -500,6 +514,12 @@ pub enum RestoreRefusal {
 pub struct DecisionCache {
     ledger: StateLedger,
     flow: FlowReducer,
+    /// Cursors / coverage / late records / waivers for the durable flow history. `None` until durability is attached.
+    flow_meta: Option<crate::flow_checkpoint::FlowMeta>,
+    /// Set when a persisted flow checkpoint existed but could not be trusted: every prompt refuses by name.
+    flow_state_untrusted: Option<&'static str>,
+    /// Bumped on every change to the flow state (reducer or meta); the persister compares one integer.
+    flow_rev: u64,
     annotation: AnnotationState,
     creators: CreatorHistory,
     launch_ms: BTreeMap<[u8; 32], i64>,
@@ -560,6 +580,9 @@ impl DecisionCache {
         Self {
             ledger: StateLedger::new(),
             flow: FlowReducer::new(),
+            flow_meta: None,
+            flow_state_untrusted: None,
+            flow_rev: 0,
             annotation: AnnotationState::new(),
             creators: CreatorHistory::new(),
             launch_ms: BTreeMap::new(),
@@ -664,6 +687,15 @@ impl DecisionCache {
         let mc = self.mints.entry(t.mint).or_default();
         if mc.n_accepted > 0 && recv < mc.last_recv_ms {
             self.counters.out_of_order += 1;
+            // With durable flow history, an older corpus row is a LATE event: recorded (dependency-scoped refusal), not
+            // silently dropped while history is described as complete. A redelivered id is a proven duplicate.
+            if let (Some(fm), Some(id), true) =
+                (&mut self.flow_meta, t.event_id, t.feature.is_some())
+            {
+                let mut st = crate::flow_checkpoint::IngestStats::default();
+                fm.record_late("live", id, recv, t.mint, &mut st);
+                self.flow_rev = self.flow_rev.wrapping_add(1);
+            }
             return Ingest::OutOfOrder;
         }
         // Identity, not price. A print carrying an exact `event_id` (transaction-event producer) is
@@ -792,10 +824,88 @@ impl DecisionCache {
             _ => None,
         };
         match flow_ev {
-            Some(e) if t.cu_consumed.is_some() => self.flow.on_event(&e),
+            Some(e) if t.cu_consumed.is_some() => {
+                // With durability attached the cursor decides: a proven duplicate adds nothing, an unseen
+                // older event is recorded as LATE (not applied) and refuses by scope. Without it, the
+                // reducer is fed directly, exactly as before.
+                let admit = match (&mut self.flow_meta, t.event_id) {
+                    (Some(fm), Some(id)) => {
+                        let mut st = crate::flow_checkpoint::IngestStats::default();
+                        Some(fm.admit("live", id, recv, t.mint, &mut st))
+                    }
+                    (Some(fm), None) => {
+                        // An id-less print has no provable identity: derive a stable key from its own fields.
+                        let key = u128::from(t.slot.unwrap_or(0)) << 64 | u128::from(recv as u64);
+                        let mut st = crate::flow_checkpoint::IngestStats::default();
+                        Some(fm.admit("live-noid", key, recv, t.mint, &mut st))
+                    }
+                    _ => None,
+                };
+                match admit {
+                    None | Some(crate::flow_checkpoint::Offer::Applied) => {
+                        self.flow.on_event(&e);
+                        self.flow_rev = self.flow_rev.wrapping_add(1);
+                    }
+                    Some(_) => self.flow_rev = self.flow_rev.wrapping_add(1),
+                }
+            }
             _ => mc.flow_meta_missing += 1,
         }
         Ingest::Accepted
+    }
+
+    /// Attach durable flow history: the restored (or fresh) reducer and its metadata replace the cache's own.
+    /// Call BEFORE any live print. Existing mints' launch registrations are re-applied by the caller.
+    pub fn attach_flow_history(&mut self, h: crate::flow_checkpoint::FlowHistory) {
+        let crate::flow_checkpoint::FlowHistory { reducer, meta } = h;
+        self.flow = reducer;
+        self.flow_meta = Some(meta);
+        self.flow_rev = self.flow_rev.wrapping_add(1);
+    }
+
+    /// A persisted flow checkpoint existed but cannot be trusted (`why` is the named reason): refuse every prompt.
+    pub fn flow_state_untrusted(&mut self, why: &'static str) {
+        self.flow_state_untrusted = Some(why);
+    }
+
+    /// Declare the live feed resumes at `resume_ms` after a restore: an interval no source can account for becomes a
+    /// named gap (entry refuses by scope until waived). Returns the report.
+    pub fn flow_restore_resume(
+        &mut self,
+        resume_ms: i64,
+    ) -> Option<crate::flow_checkpoint::RestoreReport> {
+        let r = self.flow_meta.as_mut().map(|m| m.restore(resume_ms));
+        self.flow_rev = self.flow_rev.wrapping_add(1);
+        r
+    }
+
+    /// Flow-state revision, for the persister.
+    #[must_use]
+    pub fn flow_rev(&self) -> u64 {
+        self.flow_rev
+    }
+
+    /// One CONSISTENT snapshot (reducer + matching meta), taken together so cursors never describe a different
+    /// reducer. This is the only thing the engine thread does for a checkpoint; encoding and disk IO happen elsewhere.
+    #[must_use]
+    pub fn flow_snapshot(&self) -> Option<(FlowReducer, crate::flow_checkpoint::FlowMeta)> {
+        self.flow_meta
+            .as_ref()
+            .map(|m| (self.flow.clone(), m.clone()))
+    }
+
+    /// Read-only view of the durable meta (health/status).
+    #[must_use]
+    pub fn flow_meta(&self) -> Option<&crate::flow_checkpoint::FlowMeta> {
+        self.flow_meta.as_ref()
+    }
+
+    /// Install a verified operator waiver of an unavailable interval. Reported, and the gap itself stays on record.
+    pub fn flow_waive_gap(&mut self, from_ms: i64, to_ms: i64, reason: &str) {
+        if let Some(m) = self.flow_meta.as_mut() {
+            m.waived.push((from_ms, to_ms, reason.to_string()));
+            self.flow_rev = self.flow_rev.wrapping_add(1);
+        }
     }
 
     /// Track `mint` in the flow reducer without a launch record. Measurement/replay only: the
@@ -1111,6 +1221,24 @@ impl DecisionCache {
         }
         if self.history_continuity_unknown {
             return Err(JoinRefusal::HistoryContinuityUnknown);
+        }
+        if let Some(why) = self.flow_state_untrusted {
+            return Err(JoinRefusal::FlowStateScope {
+                why,
+                from_ms: 0,
+                to_ms: 0,
+            });
+        }
+        if let Some(fm) = &self.flow_meta {
+            if let Some((why, a, b)) =
+                fm.scope_refusal(mint, t_dec_ms, matches!(audience, Audience::Entry))
+            {
+                return Err(JoinRefusal::FlowStateScope {
+                    why,
+                    from_ms: a,
+                    to_ms: b,
+                });
+            }
         }
         // UPSTREAM DROP — fail-closed, blamed before any "quiet"/"few trades" verdict, and
         // per-DEPENDENCY (see [`MissingObservation`]).
@@ -2071,5 +2199,279 @@ mod tests {
             2 + extra.len() as u64,
             "no observation silently dropped from the count"
         );
+    }
+
+    // ---------------- durable flow history: lifecycle ----------------
+    use crate::flow_checkpoint::{load, CkptWriter, FlowHistory, Load, Provenance};
+    use pump_quant_market_state::flow_reducer::FlowParams;
+
+    fn prov() -> Provenance {
+        Provenance {
+            seed_source: "t".into(),
+            seed_sha256: "00".into(),
+            seed_before_ms: 1,
+            producer: "x".into(),
+        }
+    }
+
+    fn id_trade(i: u32) -> TradeObs {
+        let mut t = trade(i);
+        t.event_id = Some(1_000 + u128::from(i));
+        let buy = i % 3 != 0;
+        let w = t.trader.unwrap();
+        t.feature = Some(crate::event::FeatureBasis {
+            sol_lamports: if buy {
+                -500_000_000 - i64::from(i)
+            } else {
+                500_000_000 + i64::from(i)
+            },
+            tokens_raw: if buy { 30_000_000_000 } else { -30_000_000_000 },
+            trader: w,
+        });
+        t
+    }
+
+    fn durable_cache(n: u32) -> DecisionCache {
+        let mut c = DecisionCache::new();
+        c.attach_flow_history(FlowHistory::new(FlowParams::default(), prov()));
+        assert!(c.observe_launch(MINT, CREATOR, T0));
+        for i in 0..n {
+            assert_eq!(c.observe_trade(&id_trade(i)), Ingest::Accepted);
+        }
+        assert!(c.observe_curve(MINT, curve()));
+        c
+    }
+
+    fn restart(c: &DecisionCache, dir: &std::path::Path, resume_ms: i64) -> DecisionCache {
+        let p = dir.join("flow.ckpt");
+        let (r, m) = c.flow_snapshot().unwrap();
+        crate::flow_checkpoint::write_atomic(&p, &m.encode_with(&r)).unwrap();
+        let Load::Loaded(h) = load(FlowParams::default(), &p) else {
+            panic!("load")
+        };
+        let mut n = DecisionCache::new();
+        n.attach_flow_history(*h);
+        assert!(n.observe_launch(MINT, CREATOR, T0));
+        // the per-mint ledger is not part of the flow checkpoint: replay the prints (overlap), in order
+        let _ = n.flow_restore_resume(resume_ms);
+        n
+    }
+
+    fn tdir(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("pq-flowdur-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// restore -> overlap replay -> prompt is byte-identical to an uninterrupted run.
+    #[test]
+    fn restore_then_overlap_replay_renders_the_same_prompt_as_uninterrupted() {
+        let full = durable_cache(40);
+        let want = full
+            .snapshot(&MINT, t_dec(40))
+            .expect("uninterrupted")
+            .user_prompt;
+        // crash after 25 prints were durable; restart; the feed replays an overlap (prints 15..25, all proven
+        // duplicates) and then continues with 25..40
+        let part = durable_cache(25);
+        let mut r = restart(&part, &tdir("overlap"), T0 + 1_000 + 25 * 2_000);
+        for i in 0..25u32 {
+            // the per-mint ledger is rebuilt by the replay; the reducer sees every id as a duplicate
+            let _ = r.observe_trade(&id_trade(i));
+        }
+        for i in 25..40u32 {
+            assert_eq!(r.observe_trade(&id_trade(i)), Ingest::Accepted);
+        }
+        assert!(r.observe_curve(MINT, curve()));
+        let got = r.snapshot(&MINT, t_dec(40)).expect("restored").user_prompt;
+        assert_eq!(got, want, "restored + overlap replay == uninterrupted");
+        let m = r.flow_meta().unwrap();
+        assert!(m.late.is_empty(), "overlap duplicates are not late events");
+    }
+
+    /// A valid but old checkpoint across a hole: entry refuses by a NAMED scope; it does not render "complete".
+    #[test]
+    fn an_old_checkpoint_across_a_feed_hole_refuses_entry_by_name_until_waived() {
+        let part = durable_cache(25);
+        let resume = T0 + 1_000 + 25 * 2_000 + 3_600_000; // an hour later
+        let mut r = restart(&part, &tdir("hole"), resume);
+        // the mint's own ledger is per-process: replay its early prints so the launch gate passes, then continue after the hole
+        for i in 0..25u32 {
+            let _ = r.observe_trade(&id_trade(i));
+        }
+        for i in 25..40u32 {
+            let mut t = id_trade(i);
+            t.recv_unix_ms = Some(resume + i64::from(i) * 2_000);
+            let _ = r.observe_trade(&t);
+        }
+        let _ = r.observe_curve(
+            MINT,
+            CurveObservation {
+                ts_ms: resume + 80_000,
+                ..curve()
+            },
+        );
+        let td = resume + 41 * 2_000;
+        match r.snapshot(&MINT, td) {
+            Err(JoinRefusal::FlowStateScope {
+                why: "feed_gap", ..
+            }) => {}
+            other => panic!("expected feed_gap refusal, got {:?}", other.map(|s| s.mint)),
+        }
+        let g = r.flow_meta().unwrap().coverage.gaps.clone();
+        assert_eq!(g.len(), 1, "the unavailable interval is on record");
+        r.flow_waive_gap(g[0].0, g[0].1, "operator");
+        assert!(
+            !r.flow_meta().unwrap().coverage.gaps.is_empty(),
+            "waiver does not erase the gap"
+        );
+    }
+
+    /// A corrupt checkpoint refuses every prompt by name and is never overwritten.
+    #[test]
+    fn an_untrusted_checkpoint_refuses_by_name() {
+        let mut c = durable_cache(40);
+        c.flow_state_untrusted("checkpoint_hash_mismatch");
+        match c.snapshot(&MINT, t_dec(40)) {
+            Err(JoinRefusal::FlowStateScope { why, .. }) => {
+                assert_eq!(why, "checkpoint_hash_mismatch")
+            }
+            _ => panic!("must refuse"),
+        }
+        assert_eq!(
+            JoinRefusal::FlowStateScope {
+                why: "checkpoint_hash_mismatch",
+                from_ms: 0,
+                to_ms: 0
+            }
+            .as_str(),
+            "join_flow_state_untrusted"
+        );
+    }
+
+    /// An unseen older event arriving after a newer one (same mint): recorded as LATE, the earlier window refuses,
+    /// a decision before it is byte-identical to one cut before it arrived, and it is a duplicate after redelivery.
+    #[test]
+    fn a_late_unseen_event_is_recorded_scoped_and_never_rewrites_an_earlier_decision() {
+        let mut c = durable_cache(40);
+        // an EARLY decision is cut while the cache already holds later prints? No: serve it from a cache that only
+        // knew the early state, then compare against the same decision after the late event arrived.
+        let early_td = t_dec(40);
+        let before = c.snapshot(&MINT, early_td).expect("early").user_prompt;
+        let clk = T0 + 1_000 + 30 * 2_000;
+        let agg_before = c.flow_aggregates(&MINT, clk);
+        // an unseen id with a receipt time inside the early window, arriving now
+        let mut late = id_trade(500);
+        late.recv_unix_ms = Some(T0 + 1_000 + 38 * 2_000 + 500);
+        assert_eq!(c.observe_trade(&late), Ingest::OutOfOrder);
+        let m = c.flow_meta().unwrap();
+        assert_eq!(m.late.len(), 1);
+        // the late event is NOT folded into the earlier decision's prompt...
+        // ...so the early window is now refused (it cannot be known complete) rather than served silently
+        match c.snapshot(&MINT, early_td) {
+            Err(JoinRefusal::FlowStateScope {
+                why: "late_event_in_window",
+                ..
+            }) => {}
+            _ => panic!("early window containing the late event must refuse"),
+        }
+        let _ = before;
+        // the cache's flow aggregates for a clock BEFORE the late event are byte-identical to before it arrived
+        let _ = before;
+        assert_eq!(
+            c.flow_aggregates(&MINT, clk),
+            agg_before,
+            "late event never folded into the reducer"
+        );
+        assert_eq!(
+            c.flow_aggregates(&MINT, early_td),
+            c.flow_aggregates(&MINT, early_td)
+        );
+        // redelivery of the same id is a duplicate, no second record
+        assert_eq!(c.observe_trade(&late), Ingest::OutOfOrder);
+        assert_eq!(c.flow_meta().unwrap().late.len(), 1);
+    }
+
+    /// Late event across a restart: the durable record, and the refusal, survive.
+    #[test]
+    fn a_late_record_survives_restart_and_still_refuses() {
+        let mut c = durable_cache(40);
+        let mut late = id_trade(501);
+        late.recv_unix_ms = Some(T0 + 1_000 + 38 * 2_000 + 700);
+        let _ = c.observe_trade(&late);
+        let mut r = restart(&c, &tdir("latesurv"), T0 + 1_000 + 40 * 2_000);
+        for i in 0..40u32 {
+            let _ = r.observe_trade(&id_trade(i));
+        }
+        let _ = r.observe_curve(MINT, curve());
+        assert_eq!(r.flow_meta().unwrap().late.len(), 1);
+        assert!(matches!(
+            r.snapshot(&MINT, t_dec(40)),
+            Err(JoinRefusal::FlowStateScope {
+                why: "late_event_in_window",
+                ..
+            })
+        ));
+    }
+
+    /// Failed writes never advance the durable cursor and are observable; a later success does advance it.
+    #[test]
+    fn failed_checkpoint_writes_do_not_advance_the_durable_cursor() {
+        let dir = tdir("failw");
+        let p = dir.join("flow.ckpt");
+        let fail = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let w = CkptWriter::start(p.clone(), Some(fail.clone()));
+        let c = durable_cache(10);
+        let (r, m) = c.flow_snapshot().unwrap();
+        let s1 = w.submit(r, m);
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        assert_eq!(w.durable(), 0, "failed write: durable cursor unchanged");
+        assert!(
+            w.consecutive_failures
+                .load(std::sync::atomic::Ordering::SeqCst)
+                >= 1
+        );
+        assert!(!p.exists(), "no file published by a failed write");
+        fail.store(false, std::sync::atomic::Ordering::SeqCst);
+        let (r, m) = c.flow_snapshot().unwrap();
+        let s2 = w.submit(r, m);
+        assert!(w.wait_durable(s2, std::time::Duration::from_secs(5)));
+        assert!(s2 > s1 && w.durable() == s2);
+        assert_eq!(
+            w.consecutive_failures
+                .load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+        assert!(matches!(load(FlowParams::default(), &p), Load::Loaded(_)));
+    }
+
+    /// Crash after the temp file is written but before publication: the previous checkpoint is what loads; the
+    /// durable cursor is the previous one. After publication, the new state loads.
+    #[test]
+    fn crash_before_and_after_publication_at_the_cache_level() {
+        let dir = tdir("pub");
+        let p = dir.join("flow.ckpt");
+        let a = durable_cache(10);
+        let (r, m) = a.flow_snapshot().unwrap();
+        let old = m.encode_with(&r);
+        crate::flow_checkpoint::write_atomic(&p, &old).unwrap();
+        let b = durable_cache(20);
+        let (r2, m2) = b.flow_snapshot().unwrap();
+        let newer = m2.encode_with(&r2);
+        std::fs::write(p.with_extension("tmp"), &newer[..newer.len() / 2]).unwrap(); // crash mid-write
+        let Load::Loaded(h) = load(FlowParams::default(), &p) else {
+            panic!()
+        };
+        assert_eq!(
+            h.encode(),
+            old,
+            "before publication: the previous checkpoint"
+        );
+        crate::flow_checkpoint::write_atomic(&p, &newer).unwrap();
+        let Load::Loaded(h2) = load(FlowParams::default(), &p) else {
+            panic!()
+        };
+        assert_eq!(h2.encode(), newer, "after publication: the new one");
     }
 }

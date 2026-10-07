@@ -14,10 +14,10 @@
 //!
 //! Source cursors. An event is ordered only within its own source, so each source has its own cursor:
 //! `(high_water_recv_ms, ids seen AT that millisecond)`. Replay rule per source: `recv < high_water` => already
-//! applied or late (dropped, counted `late_or_replayed`, never applied: a late event never rewrites earlier decisions);
+//! applied or late (recorded durably as LATE (not a duplicate), never applied: a late event never rewrites earlier decisions);
 //! `recv == high_water` => applied only if its id is not in the boundary set; `recv > high_water` => applied.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
 use std::path::Path;
@@ -31,11 +31,39 @@ pub const FILE_SCHEMA: u64 = 1;
 /// Two events further apart than this are NOT bridged into one observed segment.
 pub const MAX_BRIDGE_MS: i64 = 60_000;
 
-/// Per-source resume cursor.
+/// Ids seen are remembered this far behind the high-water mark. An id older than that is no longer provable as a
+/// duplicate, so an unseen-looking event older than the window is treated as LATE (a gap), never silently dropped.
+pub const OVERLAP_MS: i64 = 120_000;
+/// Late-event records kept durably; beyond this the overflow counter makes the whole history entry-refusing.
+pub const LATE_CAP: usize = 4096;
+
+/// Per-source resume cursor. Source guarantee assumed: events of ONE source are delivered in nondecreasing receipt
+/// time except for redelivery (at-least-once). An event that violates this and is not a proven duplicate is LATE.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Cursor {
     pub high_water_ms: i64,
-    pub boundary_ids: BTreeSet<u128>,
+    /// id -> recv_ms for ids at/after `high_water_ms - OVERLAP_MS` (applied or recorded-late).
+    pub recent: BTreeMap<u128, i64>,
+}
+
+/// An event that arrived older than its source's high-water mark and was not a proven duplicate. It was NOT applied.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LateRecord {
+    pub source: String,
+    pub id: u128,
+    pub recv_ms: i64,
+    pub high_water_ms: i64,
+    pub mint: [u8; 32],
+}
+
+/// Result of offering one event.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Offer {
+    Applied,
+    /// Proven duplicate: the same id is in the overlap window.
+    Duplicate,
+    /// Not applied; a durable late record was written (dependency-scoped refusal follows).
+    LateUnseen,
 }
 
 /// Where the history came from (provenance), carried verbatim.
@@ -78,15 +106,40 @@ impl Coverage {
 pub struct IngestStats {
     pub applied: u64,
     pub duplicate: u64,
-    pub late_or_replayed: u64,
+    pub late_unseen: u64,
 }
 
-/// The live flow-history state plus its provenance and cursors.
-pub struct FlowHistory {
-    pub reducer: FlowReducer,
+/// Everything about the history EXCEPT the reducer: provenance, per-source cursors, coverage, late records, waivers.
+/// Small (late records are capped); cloned together with the reducer to make one consistent snapshot.
+#[derive(Clone, Debug)]
+pub struct FlowMeta {
     pub provenance: Provenance,
     pub cursors: BTreeMap<String, Cursor>,
     pub coverage: Coverage,
+    /// Durable late-event records (not applied).
+    pub late: Vec<LateRecord>,
+    /// Late events beyond [`LATE_CAP`] (counted, mint unknown): entry is refused everywhere while nonzero.
+    pub late_overflow: u64,
+    /// Operator waivers `(from, to, reason)` of interval gaps: REPORTED, never described as complete coverage.
+    pub waived: Vec<(i64, i64, String)>,
+}
+
+/// The live flow-history state: the reducer plus its metadata.
+pub struct FlowHistory {
+    pub reducer: FlowReducer,
+    pub meta: FlowMeta,
+}
+
+impl std::ops::Deref for FlowHistory {
+    type Target = FlowMeta;
+    fn deref(&self) -> &FlowMeta {
+        &self.meta
+    }
+}
+impl std::ops::DerefMut for FlowHistory {
+    fn deref_mut(&mut self) -> &mut FlowMeta {
+        &mut self.meta
+    }
 }
 
 impl FlowHistory {
@@ -94,13 +147,28 @@ impl FlowHistory {
     pub fn new(params: FlowParams, provenance: Provenance) -> Self {
         Self {
             reducer: FlowReducer::with_params(params),
-            provenance,
-            cursors: BTreeMap::new(),
-            coverage: Coverage::default(),
+            meta: FlowMeta::new(provenance),
         }
     }
 
-    /// Apply one event from `source` under the per-source resume rule. `event_id` is the stable identity.
+    /// Offer one event; applies it to the reducer only when admitted.
+    pub fn offer(
+        &mut self,
+        source: &str,
+        event_id: u128,
+        e: &FlowEvent,
+        st: &mut IngestStats,
+    ) -> Offer {
+        let o = self
+            .meta
+            .admit(source, event_id, e.recv_unix_ms, e.mint, st);
+        if o == Offer::Applied {
+            self.reducer.on_event(e);
+        }
+        o
+    }
+
+    /// Back-compat boolean form: `true` only when applied.
     pub fn ingest(
         &mut self,
         source: &str,
@@ -108,31 +176,171 @@ impl FlowHistory {
         e: &FlowEvent,
         st: &mut IngestStats,
     ) -> bool {
-        let c = self.cursors.entry(source.to_string()).or_default();
-        let t = e.recv_unix_ms;
-        if t < c.high_water_ms {
-            st.late_or_replayed += 1;
-            return false;
-        }
-        if t == c.high_water_ms {
-            if !c.boundary_ids.insert(event_id) {
-                st.duplicate += 1;
-                return false;
-            }
-        } else {
-            c.high_water_ms = t;
-            c.boundary_ids.clear();
-            c.boundary_ids.insert(event_id);
-        }
-        self.reducer.on_event(e);
-        self.coverage.observe(t);
-        st.applied += 1;
-        true
+        self.offer(source, event_id, e, st) == Offer::Applied
     }
 
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {
-        let payload = self.reducer.encode_state();
+        self.meta.encode_with(&self.reducer)
+    }
+
+    /// Persist atomically. A crash before the rename leaves the previous checkpoint intact.
+    pub fn persist(&self, path: &Path) -> std::io::Result<usize> {
+        write_atomic(path, &self.encode())
+    }
+
+    /// (wallets, co-entry links) held: resource accounting for the unpruned state.
+    #[must_use]
+    pub fn resources(&self) -> (usize, usize) {
+        self.reducer.sizes()
+    }
+}
+
+/// Atomic durable write: temp file, fsync, rename, fsync directory.
+pub fn write_atomic(path: &Path, body: &[u8]) -> std::io::Result<usize> {
+    let tmp = path.with_extension("tmp");
+    {
+        let mut f = fs::File::create(&tmp)?;
+        f.write_all(body)?;
+        f.sync_all()?;
+    }
+    fs::rename(&tmp, path)?;
+    if let Some(dir) = path.parent() {
+        if let Ok(d) = fs::File::open(dir) {
+            let _ = d.sync_all();
+        }
+    }
+    Ok(body.len())
+}
+
+impl FlowMeta {
+    #[must_use]
+    pub fn new(provenance: Provenance) -> Self {
+        Self {
+            provenance,
+            cursors: BTreeMap::new(),
+            coverage: Coverage::default(),
+            late: Vec::new(),
+            late_overflow: 0,
+            waived: Vec::new(),
+        }
+    }
+
+    /// Admission decision for one event of `source` (no reducer access). Proven duplicates add nothing. An unseen
+    /// event older than the source's high-water mark is NEVER discarded as if it were a duplicate: it is recorded
+    /// durably as a late event and NOT applied (the reducer is order-dependent, so an in-place repair is not exact),
+    /// and the affected prompts refuse by dependency scope.
+    pub fn admit(
+        &mut self,
+        source: &str,
+        event_id: u128,
+        t: i64,
+        mint: [u8; 32],
+        st: &mut IngestStats,
+    ) -> Offer {
+        let c = self.cursors.entry(source.to_string()).or_default();
+        if c.recent.contains_key(&event_id) {
+            st.duplicate += 1;
+            return Offer::Duplicate;
+        }
+        if t < c.high_water_ms {
+            c.recent.insert(event_id, t);
+            st.late_unseen += 1;
+            if self.late.len() < LATE_CAP {
+                self.late.push(LateRecord {
+                    source: source.to_string(),
+                    id: event_id,
+                    recv_ms: t,
+                    high_water_ms: c.high_water_ms,
+                    mint,
+                });
+            } else {
+                self.late_overflow += 1;
+            }
+            return Offer::LateUnseen;
+        }
+        c.high_water_ms = t;
+        c.recent.insert(event_id, t);
+        if c.recent.len() > 1024 {
+            let floor = t.saturating_sub(OVERLAP_MS);
+            c.recent.retain(|_, r| *r >= floor);
+        }
+        self.coverage.observe(t);
+        st.applied += 1;
+        Offer::Applied
+    }
+
+    /// Record an event the caller could not apply (e.g. older than its mint's newest print) as a durable late record,
+    /// unless its id is already known. Never marks the event applied.
+    pub fn record_late(
+        &mut self,
+        source: &str,
+        event_id: u128,
+        t: i64,
+        mint: [u8; 32],
+        st: &mut IngestStats,
+    ) -> Offer {
+        let c = self.cursors.entry(source.to_string()).or_default();
+        if c.recent.contains_key(&event_id) {
+            st.duplicate += 1;
+            return Offer::Duplicate;
+        }
+        c.recent.insert(event_id, t);
+        st.late_unseen += 1;
+        if self.late.len() < LATE_CAP {
+            self.late.push(LateRecord {
+                source: source.to_string(),
+                id: event_id,
+                recv_ms: t,
+                high_water_ms: c.high_water_ms.max(t),
+                mint,
+            });
+        } else {
+            self.late_overflow += 1;
+        }
+        Offer::LateUnseen
+    }
+
+    /// Dependency-scoped readiness: why (if at all) a decision at `t_dec_ms` for `mint` cannot rely on this history.
+    /// * a late event of THIS mint inside the decision's 300 s window (both audiences);
+    /// * late-record overflow (entry);
+    /// * an unwaived feed gap: entry refuses once any such gap lies before the decision (cumulative wallet state is
+    ///   short by an unknown amount); management refuses only if the gap overlaps its 300 s window.
+    #[must_use]
+    pub fn scope_refusal(
+        &self,
+        mint: &[u8; 32],
+        t_dec_ms: i64,
+        entry: bool,
+    ) -> Option<(&'static str, i64, i64)> {
+        let lo = t_dec_ms.saturating_sub(pump_quant_market_state::flow_reducer::WINDOW_300_MS);
+        if let Some(l) = self
+            .late
+            .iter()
+            .find(|l| l.mint == *mint && l.recv_ms >= lo && l.recv_ms < t_dec_ms)
+        {
+            return Some(("late_event_in_window", l.recv_ms, l.high_water_ms));
+        }
+        if entry && self.late_overflow > 0 {
+            return Some(("late_overflow", 0, 0));
+        }
+        for &(a, b) in &self.coverage.gaps {
+            if self.waived.iter().any(|w| w.0 <= a && b <= w.1) {
+                continue;
+            }
+            if b > t_dec_ms {
+                continue;
+            }
+            if entry || b > lo {
+                return Some(("feed_gap", a, b));
+            }
+        }
+        None
+    }
+
+    #[must_use]
+    pub fn encode_with(&self, reducer: &FlowReducer) -> Vec<u8> {
+        let payload = reducer.encode_state();
         let digest = sha256(&payload);
         let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
         let cursors: Vec<Value> = self
@@ -140,40 +348,178 @@ impl FlowHistory {
             .iter()
             .map(|(k, c)| {
                 json!({"source": k, "high_water_ms": c.high_water_ms,
-                       "boundary_ids": c.boundary_ids.iter().map(|i| format!("{i:032x}")).collect::<Vec<_>>()})
+                       "recent": c.recent.iter().map(|(i, r)| format!("{i:032x}:{r}")).collect::<Vec<_>>()})
             })
             .collect();
         let hdr = json!({
             "magic": MAGIC, "file_schema": FILE_SCHEMA, "state_schema": STATE_SCHEMA,
-            "params": self.reducer.params_fingerprint().iter().map(ToString::to_string).collect::<Vec<_>>(),
+            "params": reducer.params_fingerprint().iter().map(ToString::to_string).collect::<Vec<_>>(),
             "payload_len": payload.len(), "payload_sha256": hex,
             "provenance": {"seed_source": self.provenance.seed_source, "seed_sha256": self.provenance.seed_sha256,
                            "seed_before_ms": self.provenance.seed_before_ms, "producer": self.provenance.producer},
             "cursors": cursors,
             "coverage": {"segments": self.coverage.segments, "gaps": self.coverage.gaps},
+            "late": self.late.iter().map(|l| json!({"source": l.source, "id": format!("{:032x}", l.id), "recv_ms": l.recv_ms,
+                       "high_water_ms": l.high_water_ms, "mint": l.mint.iter().map(|b| format!("{b:02x}")).collect::<String>()})).collect::<Vec<_>>(),
+            "late_overflow": self.late_overflow,
+            "waived": self.waived.iter().map(|w| json!([w.0, w.1, w.2])).collect::<Vec<_>>(),
         });
         let mut out = serde_json::to_vec(&hdr).unwrap_or_default();
         out.push(b'\n');
         out.extend_from_slice(&payload);
         out
     }
+}
 
-    /// Persist atomically. A crash before the rename leaves the previous checkpoint intact.
-    pub fn persist(&self, path: &Path) -> std::io::Result<usize> {
-        let body = self.encode();
-        let tmp = path.with_extension("tmp");
-        {
-            let mut f = fs::File::create(&tmp)?;
-            f.write_all(&body)?;
-            f.sync_all()?;
+/// Background checkpoint writer. The engine thread hands over ONE consistent clone (reducer + matching meta); encoding and
+/// disk IO happen on the writer thread, latest-wins. A failed write never advances `durable_seq` (the durable cursor).
+pub struct CkptWriter {
+    slot: std::sync::Arc<(std::sync::Mutex<CkptSlot>, std::sync::Condvar)>,
+    submitted: std::sync::atomic::AtomicU64,
+    pub durable_seq: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    pub consecutive_failures: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    pub total_failures: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    /// Last write: bytes and microseconds spent encoding / writing (observability).
+    pub last_bytes: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    pub last_encode_us: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    pub last_write_us: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+struct CkptSlot {
+    pending: Option<(u64, FlowReducer, FlowMeta)>,
+    shutdown: bool,
+}
+
+impl CkptWriter {
+    /// `fail_hook` (tests) forces writes to fail.
+    #[must_use]
+    pub fn start(
+        path: std::path::PathBuf,
+        fail_hook: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    ) -> Self {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        use std::sync::{Arc, Condvar, Mutex};
+        let slot = Arc::new((
+            Mutex::new(CkptSlot {
+                pending: None,
+                shutdown: false,
+            }),
+            Condvar::new(),
+        ));
+        let durable = Arc::new(AtomicU64::new(0));
+        let cf = Arc::new(AtomicU64::new(0));
+        let tf = Arc::new(AtomicU64::new(0));
+        let lb = Arc::new(AtomicU64::new(0));
+        let le = Arc::new(AtomicU64::new(0));
+        let lw = Arc::new(AtomicU64::new(0));
+        let (s2, d2, c2, t2, lb2, le2, lw2) = (
+            slot.clone(),
+            durable.clone(),
+            cf.clone(),
+            tf.clone(),
+            lb.clone(),
+            le.clone(),
+            lw.clone(),
+        );
+        let handle = std::thread::Builder::new()
+            .name("flow-ckpt-writer".into())
+            .spawn(move || loop {
+                let job = {
+                    let (m, cv) = &*s2;
+                    let Ok(mut g) = m.lock() else { return };
+                    while g.pending.is_none() && !g.shutdown {
+                        g = match cv.wait(g) {
+                            Ok(g) => g,
+                            Err(_) => return,
+                        };
+                    }
+                    match g.pending.take() {
+                        Some(j) => j,
+                        None => return,
+                    }
+                };
+                let t0 = std::time::Instant::now();
+                let body = job.2.encode_with(&job.1);
+                le2.store(t0.elapsed().as_micros() as u64, Ordering::SeqCst);
+                let t1 = std::time::Instant::now();
+                let forced = fail_hook.as_ref().is_some_and(|f| f.load(Ordering::SeqCst));
+                let r = if forced {
+                    Err(std::io::Error::other("forced failure"))
+                } else {
+                    write_atomic(&path, &body)
+                };
+                lw2.store(t1.elapsed().as_micros() as u64, Ordering::SeqCst);
+                match r {
+                    Ok(n) => {
+                        lb2.store(n as u64, Ordering::SeqCst);
+                        d2.store(job.0, Ordering::SeqCst); // the durable cursor advances ONLY here
+                        c2.store(0, Ordering::SeqCst);
+                    }
+                    Err(_) => {
+                        c2.fetch_add(1, Ordering::SeqCst);
+                        t2.fetch_add(1, Ordering::SeqCst);
+                    }
+                }
+            })
+            .ok();
+        Self {
+            slot,
+            submitted: AtomicU64::new(0),
+            durable_seq: durable,
+            consecutive_failures: cf,
+            total_failures: tf,
+            last_bytes: lb,
+            last_encode_us: le,
+            last_write_us: lw,
+            handle,
         }
-        fs::rename(&tmp, path)?;
-        if let Some(dir) = path.parent() {
-            if let Ok(d) = fs::File::open(dir) {
-                let _ = d.sync_all();
+    }
+
+    /// Hand over one consistent snapshot; never blocks on disk. Returns its sequence.
+    pub fn submit(&self, reducer: FlowReducer, meta: FlowMeta) -> u64 {
+        let seq = self
+            .submitted
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            + 1;
+        let (m, cv) = &*self.slot;
+        if let Ok(mut g) = m.lock() {
+            g.pending = Some((seq, reducer, meta));
+            cv.notify_one();
+        }
+        seq
+    }
+
+    #[must_use]
+    pub fn durable(&self) -> u64 {
+        self.durable_seq.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Wait until `seq` is durable (shutdown / tests only; never the tick path).
+    pub fn wait_durable(&self, seq: u64, timeout: std::time::Duration) -> bool {
+        let t0 = std::time::Instant::now();
+        while t0.elapsed() < timeout {
+            if self.durable() >= seq {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        self.durable() >= seq
+    }
+}
+
+impl Drop for CkptWriter {
+    fn drop(&mut self) {
+        {
+            let (m, cv) = &*self.slot;
+            if let Ok(mut g) = m.lock() {
+                g.shutdown = true;
+                cv.notify_one();
             }
         }
-        Ok(body.len())
+        if let Some(h) = self.handle.take() {
+            let _ = h.join();
+        }
     }
 }
 
@@ -244,18 +590,24 @@ pub fn decode(params: FlowParams, body: &[u8]) -> Load {
         let (Some(src), Some(hw)) = (c["source"].as_str(), parse_i64(&c["high_water_ms"])) else {
             return Load::Untrusted("checkpoint_bad_cursor");
         };
-        let mut ids = BTreeSet::new();
-        for i in c["boundary_ids"].as_array().cloned().unwrap_or_default() {
-            let Some(id) = i.as_str().and_then(|s| u128::from_str_radix(s, 16).ok()) else {
+        let mut ids = BTreeMap::new();
+        for i in c["recent"].as_array().cloned().unwrap_or_default() {
+            let Some((id, r)) = i
+                .as_str()
+                .and_then(|x| x.split_once(':'))
+                .and_then(|(a, b)| {
+                    Some((u128::from_str_radix(a, 16).ok()?, b.parse::<i64>().ok()?))
+                })
+            else {
                 return Load::Untrusted("checkpoint_bad_cursor");
             };
-            ids.insert(id);
+            ids.insert(id, r);
         }
         cursors.insert(
             src.to_string(),
             Cursor {
                 high_water_ms: hw,
-                boundary_ids: ids,
+                recent: ids,
             },
         );
     }
@@ -271,11 +623,59 @@ pub fn decode(params: FlowParams, body: &[u8]) -> Load {
     ) else {
         return Load::Untrusted("checkpoint_bad_coverage");
     };
+    let mut late = Vec::new();
+    for l in h["late"].as_array().cloned().unwrap_or_default() {
+        let hex32 = |v: &Value| -> Option<[u8; 32]> {
+            let s = v.as_str()?;
+            if s.len() != 64 || !s.is_ascii() {
+                return None;
+            }
+            let mut o = [0u8; 32];
+            for (i, b) in o.iter_mut().enumerate() {
+                *b = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).ok()?;
+            }
+            Some(o)
+        };
+        let (Some(src), Some(id), Some(rm), Some(hw), Some(mint)) = (
+            l["source"].as_str(),
+            l["id"]
+                .as_str()
+                .and_then(|x| u128::from_str_radix(x, 16).ok()),
+            l["recv_ms"].as_i64(),
+            l["high_water_ms"].as_i64(),
+            hex32(&l["mint"]),
+        ) else {
+            return Load::Untrusted("checkpoint_bad_late");
+        };
+        late.push(LateRecord {
+            source: src.to_string(),
+            id,
+            recv_ms: rm,
+            high_water_ms: hw,
+            mint,
+        });
+    }
+    let mut waived = Vec::new();
+    for w in h["waived"].as_array().cloned().unwrap_or_default() {
+        let (Some(a), Some(b), Some(r)) = (
+            w.get(0).and_then(Value::as_i64),
+            w.get(1).and_then(Value::as_i64),
+            w.get(2).and_then(Value::as_str),
+        ) else {
+            return Load::Untrusted("checkpoint_bad_waiver");
+        };
+        waived.push((a, b, r.to_string()));
+    }
     Load::Loaded(Box::new(FlowHistory {
         reducer,
-        provenance,
-        cursors,
-        coverage: Coverage { segments, gaps },
+        meta: FlowMeta {
+            provenance,
+            cursors,
+            coverage: Coverage { segments, gaps },
+            late,
+            late_overflow: h["late_overflow"].as_u64().unwrap_or(0),
+            waived,
+        },
     }))
 }
 
@@ -296,7 +696,7 @@ pub struct RestoreReport {
     pub complete: bool,
 }
 
-impl FlowHistory {
+impl FlowMeta {
     /// Declare the live feed resumes at `resume_ms`. Any hole between the newest cursor and `resume_ms` is recorded
     /// as a named gap in coverage and reported; the state stays usable but is not described as complete.
     pub fn restore(&mut self, resume_ms: i64) -> RestoreReport {
@@ -333,12 +733,6 @@ impl FlowHistory {
     pub fn age_and_coverage(&self, now_ms: i64) -> (i64, i64) {
         let first = self.coverage.segments.first().map_or(now_ms, |s| s.0);
         (now_ms.saturating_sub(first), self.coverage.observed_ms())
-    }
-
-    /// (wallets, co-entry links) held: resource accounting for the unpruned state.
-    #[must_use]
-    pub fn resources(&self) -> (usize, usize) {
-        self.reducer.sizes()
     }
 }
 
@@ -473,7 +867,7 @@ mod tests {
             );
         }
         assert_eq!(st.applied, 0);
-        assert_eq!(st.late_or_replayed + st.duplicate, 40);
+        assert_eq!(st.late_unseen + st.duplicate, 40);
         assert_eq!(
             h.reducer.encode_state(),
             FlowReducer::decode_state(
@@ -506,7 +900,7 @@ mod tests {
         assert!(h.ingest("a", 1, &ev(5_000, 1, 9, Side::Buy, -1), &mut st));
         // a second source at an earlier time is NOT late relative to the first source
         assert!(h.ingest("b", 2, &ev(1_000, 2, 9, Side::Buy, -1), &mut st));
-        assert_eq!(st.late_or_replayed, 0);
+        assert_eq!(st.late_unseen, 0);
     }
 
     #[test]
@@ -632,6 +1026,140 @@ mod tests {
             links,
             6 * 5,
             "every early-buyer pair is linked both ways; nothing pruned"
+        );
+    }
+
+    #[test]
+    fn an_unseen_earlier_event_is_late_not_duplicate_and_survives_restart() {
+        let d = tmpdir("late");
+        let p = d.join("flow.ckpt");
+        let mut h = hist();
+        fill(&mut h); // ids 1..=40 up to t=40_000 on mint 9
+        let mint = [9u8; 32];
+        let t_dec = 41_000i64;
+        let before = h.reducer.serve(&mint, 20_000);
+        let mut st = IngestStats::default();
+        // a NEW id with a receipt time older than the high-water mark
+        assert_eq!(
+            h.offer(
+                "live",
+                5000,
+                &ev(15_500, 3, 9, Side::Buy, -9_000_000_000),
+                &mut st
+            ),
+            Offer::LateUnseen
+        );
+        assert_eq!((st.late_unseen, st.duplicate, st.applied), (1, 0, 0));
+        // an EARLIER decision is byte-identical: the late event is never folded in
+        assert_eq!(h.reducer.serve(&mint, 20_000), before);
+        // dependency-scoped: this mint's window containing it refuses; another mint and a later window do not
+        assert_eq!(
+            h.scope_refusal(&mint, 16_000, true).map(|x| x.0),
+            Some("late_event_in_window")
+        );
+        assert_eq!(h.scope_refusal(&[1u8; 32], 16_000, true), None);
+        assert_eq!(
+            h.scope_refusal(&mint, 16_000 + 400_000, true),
+            None,
+            "leaves the 300 s window"
+        );
+        let _ = t_dec;
+        // restart: the durable late record and cursor come back; the same late id redelivered is a DUPLICATE
+        h.persist(&p).unwrap();
+        let Load::Loaded(mut r) = load(FlowParams::default(), &p) else {
+            panic!()
+        };
+        assert_eq!(r.late.len(), 1);
+        assert_eq!(
+            r.scope_refusal(&mint, 16_000, true).map(|x| x.0),
+            Some("late_event_in_window")
+        );
+        let mut st2 = IngestStats::default();
+        assert_eq!(
+            r.offer(
+                "live",
+                5000,
+                &ev(15_500, 3, 9, Side::Buy, -9_000_000_000),
+                &mut st2
+            ),
+            Offer::Duplicate
+        );
+        assert_eq!(r.late.len(), 1, "redelivery adds no second late record");
+        // and a different unseen older id after the restart is late again, not applied
+        assert_eq!(
+            r.offer("live", 5001, &ev(15_600, 4, 9, Side::Buy, -1), &mut st2),
+            Offer::LateUnseen
+        );
+        assert_eq!(r.late.len(), 2);
+    }
+
+    #[test]
+    fn an_id_older_than_the_overlap_window_is_late_not_a_proven_duplicate() {
+        let mut h = hist();
+        let mut st = IngestStats::default();
+        for i in 0..1300i64 {
+            h.ingest(
+                "live",
+                i as u128 + 1,
+                &ev(1_000 + i * 1_000, 1, 9, Side::Buy, -1),
+                &mut st,
+            );
+        }
+        // id 1 was applied long ago and has aged out of the id window: no longer PROVABLE as a duplicate
+        assert_eq!(
+            h.offer("live", 1, &ev(1_000, 1, 9, Side::Buy, -1), &mut st),
+            Offer::LateUnseen
+        );
+        assert_eq!(st.late_unseen, 1);
+        assert_eq!(h.late.len(), 1);
+    }
+
+    #[test]
+    fn late_record_overflow_refuses_entry_everywhere_and_is_never_silent() {
+        let mut h = hist();
+        let mut st = IngestStats::default();
+        h.ingest("live", 1, &ev(1_000_000, 1, 9, Side::Buy, -1), &mut st);
+        for i in 0..(LATE_CAP as u128 + 5) {
+            h.offer(
+                "live",
+                10 + i,
+                &ev(10 + i as i64, 1, 9, Side::Buy, -1),
+                &mut st,
+            );
+        }
+        assert_eq!(h.late.len(), LATE_CAP);
+        assert_eq!(h.late_overflow, 5);
+        assert_eq!(
+            h.scope_refusal(&[77u8; 32], 2_000_000, true).map(|x| x.0),
+            Some("late_overflow")
+        );
+    }
+
+    #[test]
+    fn a_feed_gap_blocks_entry_until_waived_and_a_waiver_is_reported_not_complete() {
+        let mut h = hist();
+        let mut st = IngestStats::default();
+        h.ingest("live", 1, &ev(1_000, 1, 9, Side::Buy, -1), &mut st);
+        h.coverage.gaps.push((2_000, 900_000));
+        let m = [9u8; 32];
+        assert_eq!(
+            h.scope_refusal(&m, 2_000_000, true).map(|x| x.0),
+            Some("feed_gap")
+        );
+        assert_eq!(
+            h.scope_refusal(&m, 2_000_000, false),
+            None,
+            "management window no longer overlaps the gap"
+        );
+        assert_eq!(
+            h.scope_refusal(&m, 1_000_000, false).map(|x| x.0),
+            Some("feed_gap")
+        );
+        h.waived.push((2_000, 900_000, "operator".into()));
+        assert_eq!(h.scope_refusal(&m, 2_000_000, true), None);
+        assert!(
+            !h.coverage.gaps.is_empty(),
+            "the gap itself is still on record"
         );
     }
 }

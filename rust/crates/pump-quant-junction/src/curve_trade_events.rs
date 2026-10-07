@@ -274,6 +274,12 @@ impl EventDedup {
     }
 }
 
+/// USDC mint (EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v), raw bytes. Used only to LABEL the population of a reject.
+const USDC_MINT: [u8; 32] = [
+    198, 250, 122, 243, 190, 219, 173, 58, 61, 101, 243, 106, 171, 201, 116, 49, 177, 187, 228,
+    194, 210, 246, 224, 228, 124, 166, 2, 3, 69, 47, 93, 97,
+];
+
 const PRICE_SCALE: i128 = 1_000_000_000;
 
 /// Stable 128-bit identity of one on-chain trade event: the first 16 bytes of
@@ -444,7 +450,7 @@ pub fn ingest_curve_tx(
         TxDecode::Events(evs) => {
             let (mut n, mut d) = (0usize, 0usize);
             let not_launch = crate::corpus_rows::not_a_launch_set();
-                        for e in &evs {
+            for e in &evs {
                 // Quote identity comes from the event's own `quote_mint`. A verified non-SOL quote is counted and
                 // skipped (it is NOT a gap on a SOL market); an unestablished quote is a named refusal.
                 match e.quote {
@@ -516,6 +522,15 @@ pub struct AmmRowStats {
     pub resolver_rejects: u64,
     /// Redeliveries of a row already seen (adds nothing).
     pub duplicates: u64,
+    /// Resolver rejects by named frozen-builder rule.
+    pub reject_reasons: std::collections::BTreeMap<&'static str, u64>,
+    /// Rejected instructions whose transaction touches a CANONICAL migration pool or whose accounts include a
+    /// pump.fun-created pool, vs not (population attribution filled by the caller's classifier, see `population`).
+    pub reject_population: std::collections::BTreeMap<String, u64>,
+    /// Transactions with a corpus-known PumpSwap swap instruction but NO balances on the wire (older sidecar).
+    pub no_balances_txs: u64,
+    /// Transactions whose status was not verified successful (nothing produced; not rows).
+    pub not_verified_success_txs: u64,
 }
 
 /// Production step for PumpSwap: one corpus-definition feature row per corpus-known PumpSwap buy/sell instruction of
@@ -532,10 +547,20 @@ pub fn ingest_amm_rows(
     stats: &mut AmmRowStats,
     out: &mut Vec<ProvenancedEvent>,
 ) {
+    let has_swap = tx.instructions.iter().any(|ix| {
+        ix.program_id == crate::laserstream::PUMP_SWAP_PROGRAM
+            && crate::corpus_rows::corpus_swap_side(&ix.data).is_some()
+    });
     if tx.tx_ok != Some(true) {
+        if has_swap {
+            stats.not_verified_success_txs += 1;
+        }
         return;
     }
     let Some(bal) = tx.balances.as_ref() else {
+        if has_swap {
+            stats.no_balances_txs += 1;
+        }
         return;
     };
     let not_launch = crate::corpus_rows::not_a_launch_set();
@@ -547,7 +572,7 @@ pub fn ingest_amm_rows(
             continue;
         };
         let ordinal = u32::try_from(i).unwrap_or(u32::MAX);
-        let Some(row) = crate::corpus_rows::resolve_row(
+        let row = match crate::corpus_rows::resolve_row_why(
             None,
             is_buy,
             &ix.accounts,
@@ -555,12 +580,37 @@ pub fn ingest_amm_rows(
             &tx.invalid_key_idx,
             bal,
             &not_launch,
-        ) else {
-            stats.resolver_rejects += 1;
-            continue;
+        ) {
+            Ok(r) => r,
+            Err(why) => {
+                stats.resolver_rejects += 1;
+                *stats.reject_reasons.entry(why.as_str()).or_insert(0) += 1;
+                // Population: which quote asset moved in the transaction (the frozen builder keys nothing on it, but
+                // it explains WHY no sign pattern exists), and whether the tx also carried a USDC leg.
+                let usdc = bal
+                    .pre_tok
+                    .iter()
+                    .chain(bal.post_tok.iter())
+                    .any(|e| e.mint == USDC_MINT);
+                let key = format!(
+                    "{}|{}",
+                    why.as_str(),
+                    if usdc {
+                        "usdc_leg_in_tx"
+                    } else {
+                        "no_usdc_leg"
+                    }
+                );
+                *stats.reject_population.entry(key).or_insert(0) += 1;
+                continue;
+            }
         };
         let Ok(tokens_raw) = i64::try_from(row.tokens_raw) else {
             stats.resolver_rejects += 1;
+            *stats
+                .reject_reasons
+                .entry("tokens_raw_overflow")
+                .or_insert(0) += 1;
             continue;
         };
         // Row identity lives in its own domain, keyed by the row's instruction index.
@@ -1290,10 +1340,9 @@ mod tests {
         let mut out = Vec::new();
         let _ = ingest_curve_tx(&t, &mut dd, &mut out);
         assert_eq!(out.len(), 2, "both events still admitted for discovery");
-        assert!(out.iter().all(|p| matches!(
-            p.event,
-            AppEvent::MarketTrade { feature: None, .. }
-        )));
+        assert!(out
+            .iter()
+            .all(|p| matches!(p.event, AppEvent::MarketTrade { feature: None, .. })));
         assert_eq!(dd.outside_corpus.get("attribution_ambiguous"), Some(&2));
         assert_eq!(dd.corpus_basis_resolved, 0);
     }

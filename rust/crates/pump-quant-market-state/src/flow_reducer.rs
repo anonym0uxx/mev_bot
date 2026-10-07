@@ -220,7 +220,7 @@ struct WalletState {
 
 /// The live reducer. Feed it every confirmed trade in receive order; ask it for a mint's
 /// flow state at any clock.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FlowReducer {
     p: FlowParams,
     tape_t0: Option<i64>,
@@ -824,6 +824,21 @@ impl FlowReducer {
             return Err("state_trailing_bytes");
         }
         Ok(f)
+    }
+
+    /// Distinct buyers of `mint` in the 300 s window before `t_dec_ms` (same filter `serve` uses). Read-only.
+    #[must_use]
+    pub fn window_buyers(&self, mint: &MintId, t_dec_ms: i64) -> BTreeSet<Wallet> {
+        let lo = t_dec_ms - self.p.window_300_ms;
+        self.windows
+            .get(mint)
+            .map(|dq| {
+                dq.iter()
+                    .filter(|e| e.recv < t_dec_ms && e.recv >= lo && e.side == Side::Buy)
+                    .map(|e| e.trader)
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// Wallets / co-entry links held (resource accounting; the graph is unpruned by design).

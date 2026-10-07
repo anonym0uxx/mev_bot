@@ -986,7 +986,11 @@ pub fn parse_ndjson_line(line: &str) -> Option<LaserStreamUpdate> {
                                         .collect::<Option<Vec<u8>>>()?,
                                     None => Vec::new(),
                                 };
-                            let g = |k: &str| ix.get(k).and_then(|n| n.as_u64()).and_then(|v| u32::try_from(v).ok());
+                            let g = |k: &str| {
+                                ix.get(k)
+                                    .and_then(|n| n.as_u64())
+                                    .and_then(|v| u32::try_from(v).ok())
+                            };
                             Some(LaserStreamInstruction {
                                 program_id,
                                 data,
@@ -1229,7 +1233,10 @@ mod tests {
                 d.extend_from_slice(&100u64.to_le_bytes());
                 d
             },
-            accounts: vec![0, 1, 2, 3, 4, 5, 6], outer: None, depth: None });
+            accounts: vec![0, 1, 2, 3, 4, 5, 6],
+            outer: None,
+            depth: None,
+        });
 
         let classified = classify_pump_instructions(&tx);
         assert_eq!(classified.len(), 1);
@@ -1263,7 +1270,10 @@ mod tests {
                 d.extend_from_slice(&10u64.to_le_bytes());
                 d
             },
-            accounts: vec![0, 1, 2, 3, 4, 5, 6], outer: None, depth: None });
+            accounts: vec![0, 1, 2, 3, 4, 5, 6],
+            outer: None,
+            depth: None,
+        });
 
         let classified = classify_pump_instructions(&tx);
         assert_eq!(classified.len(), 1);
@@ -1281,7 +1291,10 @@ mod tests {
         tx.instructions.push(LaserStreamInstruction {
             program_id: [0x0; 32],
             data: vec![0x2, 0x0, 0x0, 0x0],
-            accounts: vec![0, 1], outer: None, depth: None });
+            accounts: vec![0, 1],
+            outer: None,
+            depth: None,
+        });
 
         let classified = classify_pump_instructions(&tx);
         assert_eq!(classified.len(), 0);
@@ -1367,7 +1380,10 @@ mod tests {
         tx.instructions = vec![LaserStreamInstruction {
             program_id: PUMP_FUN_PROGRAM,
             data,
-            accounts: vec![1, 2, 0], outer: None, depth: None }];
+            accounts: vec![1, 2, 0],
+            outer: None,
+            depth: None,
+        }];
         let c = classify_pump_instructions(&tx);
         assert_eq!(
             c,
@@ -1420,7 +1436,10 @@ mod tests {
         let ix = LaserStreamInstruction {
             program_id: [0; 32],
             data: vec![],
-            accounts: vec![0, 1, 2], outer: None, depth: None };
+            accounts: vec![0, 1, 2],
+            outer: None,
+            depth: None,
+        };
         assert!(account_key_at(&ix, &tx, 0).is_none());
     }
 
@@ -1464,7 +1483,10 @@ mod tests {
                 d.extend_from_slice(&10u64.to_le_bytes());
                 d
             },
-            accounts: vec![0, 1, 2, 3, 4, 5, 6], outer: None, depth: None });
+            accounts: vec![0, 1, 2, 3, 4, 5, 6],
+            outer: None,
+            depth: None,
+        });
 
         // Sell instruction: accounts [0,3,4,5,7,8,9,10] = PUMP_GLOBAL, fee, mint2, bonding_curve, assoc_curve, assoc_user, creator, seller
         tx.instructions.push(LaserStreamInstruction {
@@ -1476,7 +1498,10 @@ mod tests {
                 d.extend_from_slice(&20u64.to_le_bytes());
                 d
             },
-            accounts: vec![0, 3, 4, 5, 7, 8, 9, 10], outer: None, depth: None });
+            accounts: vec![0, 3, 4, 5, 7, 8, 9, 10],
+            outer: None,
+            depth: None,
+        });
 
         let classified = classify_pump_instructions(&tx);
         assert_eq!(classified.len(), 2);
@@ -1856,7 +1881,10 @@ mod tests {
         let ix = LaserStreamInstruction {
             program_id: [0; 32],
             data: vec![],
-            accounts: vec![1, 2, 0], outer: None, depth: None };
+            accounts: vec![1, 2, 0],
+            outer: None,
+            depth: None,
+        };
         t.instructions.clear();
         assert!(
             account_key_at(&ix, &t, 0).is_none(),

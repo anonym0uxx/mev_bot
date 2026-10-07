@@ -1860,6 +1860,44 @@ fn main() -> ExitCode {
                 );
             }
         }
+        // Durable flow-history (trained smart/co-entry/lookback state) is restored and validated BEFORE inference. The resume
+        // time is the wall clock now: any interval between the checkpoint's cursors and it is a NAMED gap, never assumed covered.
+        {
+            let fh_file = std::env::var("PQ_FLOW_HISTORY_FILE")
+                .unwrap_or_else(|_| "data/flow_history.ckpt".to_string());
+            let resume_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0);
+            let prov = pump_quant_app::flow_checkpoint::Provenance {
+                seed_source: std::env::var("PQ_FLOW_SEED_SOURCE").unwrap_or_else(|_| "none".into()),
+                seed_sha256: std::env::var("PQ_FLOW_SEED_SHA256").unwrap_or_else(|_| "none".into()),
+                seed_before_ms: std::env::var("PQ_FLOW_SEED_BEFORE_MS")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(0),
+                producer: "pq-daemon/corpus-flow-rows".into(),
+            };
+            let a = engine.model_flow_attach(
+                std::path::Path::new(&fh_file),
+                pump_quant_market_state::flow_reducer::FlowParams::default(),
+                prov,
+                resume_ms,
+            );
+            eprintln!("[pq-daemon] flow-history {fh_file}: {a:?}");
+            match &a {
+                pump_quant_app::engine::model_admit::FlowAttach::Untrusted(why) => eprintln!(
+                    "[pq-daemon] ALERT: flow-history UNTRUSTED ({why}) - Qwen entry and management refuse by name; monitoring, reconciliation and hard safeguards continue; the file is left untouched"
+                ),
+                pump_quant_app::engine::model_admit::FlowAttach::Restored { unavailable_ms, complete: false, late } => eprintln!(
+                    "[pq-daemon] ALERT: flow-history restored across an UNAVAILABLE interval of {unavailable_ms} ms (late records: {late}) - ENTRY refuses by scope until the interval is reconstructed or waived; coverage is NOT complete"
+                ),
+                pump_quant_app::engine::model_admit::FlowAttach::Restored { late, .. } if *late > 0 => eprintln!(
+                    "[pq-daemon] ALERT: flow-history restored with {late} durable late-event records - affected windows refuse by scope"
+                ),
+                _ => {}
+            }
+        }
         match restore {
             pump_quant_junction::model_lifecycle::StartupRestore::Clean => {
                 eprintln!("[pq-daemon] held-state: no ledger at {held_file} - clean start");
@@ -2647,6 +2685,17 @@ fn main() -> ExitCode {
             // honestly QUIET market from one whose data is INCOMPLETE. Never on the hot path.
             let flow_drop = engine.model_flow_drop_summary();
             let (mh_unflushed, _mh_fail_now, mh_fail_total) = engine.model_missing_persist_health();
+            let (
+                fh_durable,
+                fh_sub,
+                fh_fail_now,
+                fh_fail_total,
+                fh_clone_us,
+                fh_clone_max_us,
+                fh_bytes,
+                fh_enc_us,
+                fh_write_us,
+            ) = engine.model_flow_health();
             let health_json = format!(
                 concat!(
                     "{{",
@@ -2668,6 +2717,15 @@ fn main() -> ExitCode {
                     "\"missing_history_unflushed\":{},",
                     "\"missing_history_persist_failures\":{},",
                     "\"missing_history_continuity_unknown\":{},",
+                    "\"flow_ckpt_durable_seq\":{},",
+                    "\"flow_ckpt_submitted_seq\":{},",
+                    "\"flow_ckpt_failures_now\":{},",
+                    "\"flow_ckpt_failures_total\":{},",
+                    "\"flow_ckpt_clone_us\":{},",
+                    "\"flow_ckpt_clone_max_us\":{},",
+                    "\"flow_ckpt_bytes\":{},",
+                    "\"flow_ckpt_encode_us\":{},",
+                    "\"flow_ckpt_write_us\":{},",
                     "\"curve_trade_source\":\"{}\",",
                     "\"curve_events_produced\":{},",
                     "\"curve_events_duplicates\":{},",
@@ -2704,6 +2762,15 @@ fn main() -> ExitCode {
                 mh_unflushed,
                 mh_fail_total,
                 engine.model_history_continuity_unknown(),
+                fh_durable,
+                fh_sub,
+                fh_fail_now,
+                fh_fail_total,
+                fh_clone_us,
+                fh_clone_max_us,
+                fh_bytes,
+                fh_enc_us,
+                fh_write_us,
                 if events_mode_health {
                     "events"
                 } else {
@@ -4746,6 +4813,19 @@ fn main() -> ExitCode {
         stats.dwell_p99_ms = dwell_samples[p99_idx as usize];
     }
 
+    // Durable flow history: force one consistent snapshot and wait (bounded) until it is on disk. A failure is reported and
+    // the previous checkpoint stays authoritative (the durable cursor does not advance).
+    if engine.paper_model_enabled() {
+        let ok = engine.model_flow_flush(std::time::Duration::from_secs(20));
+        eprintln!(
+            "[pq-daemon] flow-history final flush: {}",
+            if ok {
+                "durable"
+            } else {
+                "NOT durable (previous checkpoint remains authoritative)"
+            }
+        );
+    }
     // Final status write
     let st = engine.live_status();
     let _ = st.write_to_path(status_path);

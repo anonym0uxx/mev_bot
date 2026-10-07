@@ -8,7 +8,9 @@ use std::str::FromStr;
 use pump_quant_app::decision_join::{DecisionCache, TradeObs};
 use pump_quant_app::event::AppEvent;
 use pump_quant_app::state_ledger::VenueLabel;
-use pump_quant_junction::curve_trade_events::{ingest_amm_rows, ingest_curve_tx, AmmRowStats, EventDedup};
+use pump_quant_junction::curve_trade_events::{
+    ingest_amm_rows, ingest_curve_tx, AmmRowStats, EventDedup,
+};
 use pump_quant_junction::laserstream::{parse_ndjson_line, LaserStreamUpdate, PUMP_FUN_PROGRAM};
 use pump_quant_protocol::decode::decode_pump_curve;
 use pump_quant_protocol::pda::find_program_address;
@@ -310,5 +312,12 @@ fn main() {
         emit(&cache, clocks[ci], n_trades, &dedup);
         ci += 1;
     }
+    eprintln!(
+        "AMM_REJECTS {:?} | POP {:?} | no_balances_txs {} | not_verified_success_txs {}",
+        amm_stats.reject_reasons,
+        amm_stats.reject_population,
+        amm_stats.no_balances_txs,
+        amm_stats.not_verified_success_txs
+    );
     eprintln!("other-mint events skipped: {n_other_mint}; amm corpus rows {n_amm_rows} (emitted {} rejects {} dup {})", amm_stats.emitted, amm_stats.resolver_rejects, amm_stats.duplicates);
 }
