@@ -121,6 +121,22 @@ impl VpinState {
             q -= take;
             if take == room {
                 self.complete_bucket(tick, p);
+                // A single print can span an unbounded number of buckets (a `u64::MAX` "no slippage limit"
+                // argument is ~7e10 of them at the floor cap, ~7 s on the engine thread). Every further bucket
+                // the print completes is IDENTICAL (same side, same cap: the tick-volume window cannot change
+                // inside this call), and the ring keeps only the newest VPIN_N_BUCKETS. Once the ring is full,
+                // skipping whole buckets is therefore exact: the ring ends with the same contents and the head
+                // advances by the number of evictions skipped. Fewer than N+1 real buckets are always kept
+                // so the final ring is written by real pushes, never inferred.
+                let cap = self.cur.cap.max(1);
+                if self.len == VPIN_N_BUCKETS {
+                    let whole = q / cap;
+                    if whole > VPIN_N_BUCKETS as u64 + 1 {
+                        let skip = whole - (VPIN_N_BUCKETS as u64 + 1);
+                        q -= skip * cap;
+                        self.head = (self.head + (skip % VPIN_N_BUCKETS as u64) as usize) % VPIN_N_BUCKETS;
+                    }
+                }
             }
             if take == 0 {
                 // Defensive: a zero-room bucket (cap consumed exactly) completes above;
@@ -331,5 +347,67 @@ mod tests {
             v.reading(4, &P)
         };
         assert_eq!(run(), run());
+    }
+}
+
+
+#[cfg(test)]
+mod bulk_fill_tests {
+    use super::*;
+
+    fn params() -> VpinParams {
+        VpinParams { v_min_lamports: 7, v_max_lamports: 1_000, min_buckets: 3, stale_ticks: 1_000 }
+    }
+
+    /// The pre-fix algorithm, kept verbatim as the reference.
+    fn naive_on_trade(s: &mut VpinState, buy: bool, quote: u64, tick: u64, p: &VpinParams) {
+        s.advance_tickvol(tick);
+        let cell = (s.tickvol_cell_tick % TICKVOL_CELLS as u64) as usize;
+        s.tickvol[cell] = s.tickvol[cell].saturating_add(quote);
+        let mut q = quote;
+        while q > 0 {
+            let filled = s.cur.v_buy.saturating_add(s.cur.v_sell);
+            let room = s.cur.cap.saturating_sub(filled);
+            let take = q.min(room);
+            if buy { s.cur.v_buy = s.cur.v_buy.saturating_add(take); } else { s.cur.v_sell = s.cur.v_sell.saturating_add(take); }
+            q -= take;
+            if take == room { s.complete_bucket(tick, p); }
+            if take == 0 { break; }
+        }
+    }
+
+    fn same(a: &VpinState, b: &VpinState) -> bool {
+        format!("{a:?}") == format!("{b:?}")
+    }
+
+    #[test]
+    fn bulk_skip_is_exactly_the_naive_fold_for_every_size_up_to_many_buckets() {
+        let p = params();
+        let mut x: u64 = 0x9E37_79B9_7F4A_7C15;
+        for _ in 0..400 {
+            let (mut fast, mut slow) = (VpinState::new(&p), VpinState::new(&p));
+            let mut tick = 1;
+            for _ in 0..40 {
+                x ^= x << 13; x ^= x >> 7; x ^= x << 17;
+                let q = match x % 4 { 0 => x % 50, 1 => x % 5_000, 2 => x % 400_000, _ => x % 6_000_000 };
+                let buy = (x >> 20) & 1 == 0;
+                tick += (x >> 30) % 5;
+                fast.on_trade(buy, q, tick, &p);
+                naive_on_trade(&mut slow, buy, q, tick, &p);
+                assert!(same(&fast, &slow), "diverged at q={q}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_max_slippage_sentinel_print_costs_microseconds_and_still_folds_everything() {
+        let p = VpinParams { v_min_lamports: 250_000_000, v_max_lamports: 20_000_000_000, min_buckets: 3, stale_ticks: 1_000 };
+        let mut s = VpinState::new(&p);
+        let t = std::time::Instant::now();
+        s.on_trade(true, u64::MAX, 5, &p);
+        assert!(t.elapsed() < std::time::Duration::from_millis(50), "took {:?}", t.elapsed());
+        assert_eq!(s.len, VPIN_N_BUCKETS);
+        // the ring is entirely whole buy buckets at the capped size, and the reading is defined
+        assert!(s.reading(5, &p).is_some());
     }
 }
