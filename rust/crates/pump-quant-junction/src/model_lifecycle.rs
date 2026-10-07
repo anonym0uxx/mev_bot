@@ -246,6 +246,15 @@ pub fn held_data_report(engine: &Engine) -> (String, bool) {
     for s in &status {
         let age = |v: Option<i64>| v.map_or("none".to_string(), |a| format!("{a}ms"));
         match &s.management_ready {
+            Ok(()) if pump_quant_app::engine::model_manage::amm_protection_gap(s, engine.model_clock_ms_now()).is_some() => {
+                degraded = true;
+                lines.push(format!(
+                    "held {} venue=amm DEGRADED: {} (last verified mark age={}); price-based protection (hard stop / rug precursor) is NOT observing this position",
+                    hex(&s.mint),
+                    pump_quant_app::engine::model_manage::amm_protection_gap(s, engine.model_clock_ms_now()).unwrap_or_default(),
+                    s.protect_mark_ms.map_or("none".to_string(), |m| format!("{}ms", engine.model_clock_ms_now().saturating_sub(m)))
+                ));
+            }
             Ok(()) => lines.push(format!(
                 "held {} venue={} reserve_age={} print_age={} READY",
                 hex(&s.mint),
@@ -394,6 +403,8 @@ pub fn mints_needing_feeds(engine: &Engine) -> Vec<[u8; 32]> {
 #[derive(Debug, Default)]
 pub struct StaleCallout {
     state: std::collections::BTreeMap<[u8; 32], (i64, i64, bool)>, // (since_ms, last_alert_ms, unprotected_said)
+    /// Held AMM positions whose price-based protection has no valid mark: (since_ms, last_alert_ms).
+    protect: std::collections::BTreeMap<[u8; 32], (i64, i64)>,
 }
 
 /// One line to print, with whether it is an alert.
@@ -482,14 +493,50 @@ impl StaleCallout {
                 }
             }
         }
+        // PROTECTION GAP (held AMM): an independent state from management readiness. The age is the last VERIFIED
+        // mark; a hint, a rejected swap or an advancing clock never refreshes it, and it fires with no further swap.
+        for s in &status {
+            match pump_quant_app::engine::model_manage::amm_protection_gap(s, now_ms) {
+                Some(why) => {
+                    let e = self.protect.entry(s.mint).or_insert((now_ms, i64::MIN / 2));
+                    let first = e.1 == i64::MIN / 2;
+                    if first || now_ms.saturating_sub(e.1) >= remind_ms {
+                        e.1 = now_ms;
+                        out.push(CalloutLine {
+                            text: format!(
+                                "{} held {} venue=amm UNPROTECTED (price-based): {why} (last_verified_mark_age={}) degraded_for={}s - hard stop / rug precursor are not observing this position; no liquidation rule is applied",
+                                if first { "ONSET" } else { "REMINDER" },
+                                hex(&s.mint),
+                                s.protect_mark_ms.map_or("none".into(), |m| format!("{}ms", now_ms.saturating_sub(m))),
+                                now_ms.saturating_sub(e.0).max(0) / 1000
+                            ),
+                            alert: true,
+                        });
+                    }
+                }
+                None => {
+                    if let Some((since, _)) = self.protect.remove(&s.mint) {
+                        out.push(CalloutLine {
+                            text: format!(
+                                "RECOVERED held {}: a verified protection mark arrived after {}s without one",
+                                hex(&s.mint),
+                                now_ms.saturating_sub(since).max(0) / 1000
+                            ),
+                            alert: false,
+                        });
+                    }
+                }
+            }
+        }
         // A position that closed while degraded is forgotten (no stale RECOVERED later).
         self.state.retain(|m, _| live.contains(m));
+        self.protect.retain(|m, _| live.contains(m));
         out
     }
 
     /// Positions currently degraded.
     #[must_use]
     pub fn degraded_count(&self) -> usize {
-        self.state.len()
+        self.state.len() + self.protect.len()
     }
 }

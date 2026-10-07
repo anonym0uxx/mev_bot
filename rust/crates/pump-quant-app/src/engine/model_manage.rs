@@ -743,6 +743,8 @@ impl Engine {
                     last_print_age_ms,
                     reserve_fresh,
                     management_ready,
+                    protect_mark_ms: if amm { self.model_protect_mark_ms.get(&h.mint).copied() } else { None },
+                    protect_ignored: if amm { self.model_protect_ignored.get(&h.mint).copied() } else { None },
                 }
             })
             .collect()
@@ -807,6 +809,10 @@ pub struct HeldDataStatus {
     pub reserve_fresh: bool,
     /// A management prompt could be cut now (every join gate passes). `Err` carries the named refusal.
     pub management_ready: Result<(), String>,
+    /// AMM positions: wire time of the last VERIFIED protection mark (None = none yet / curve position).
+    pub protect_mark_ms: Option<i64>,
+    /// AMM positions: the newest swap that could NOT mark the position, as (named reason, wire time).
+    pub protect_ignored: Option<(&'static str, i64)>,
 }
 
 /// Money-side snapshot for reconciliation (lamports).
@@ -1372,5 +1378,37 @@ mod add_planner_tests {
             "mgmt:refuse:add_insufficient_funds",
             "second order sees the reservation"
         );
+    }
+}
+
+/// Why a held AMM position's price-based protection is unavailable at wire clock `now_ms`, or `None` when it is
+/// protected. The age is taken from the last VERIFIED mark - not from the newest hint, a rejected swap, or the
+/// connection being up - and the bound is the existing pricing budget (no new threshold).
+///
+/// What a mark means: an AMM swap event carries the pool's PRE-trade reserves, so each mark is the state before
+/// that swap and does not include its own price impact. Protection can therefore detect only what a LATER swap's
+/// pre-trade state reveals; a price-moving swap followed by silence is invisible until the budget elapses and this
+/// gap is raised.
+#[must_use]
+pub fn amm_protection_gap(
+    status: &HeldDataStatus,
+    now_ms: i64,
+) -> Option<String> {
+    if !status.amm {
+        return None;
+    }
+    let budget = crate::curve_annotation::PRICING_BUDGET_MS;
+    let newest_ignored_after_mark = status
+        .protect_ignored
+        .filter(|(_, t)| status.protect_mark_ms.is_none_or(|m| *t >= m));
+    match (status.protect_mark_ms, newest_ignored_after_mark) {
+        (_, Some((why, _))) if why == "no_spot_basis" => {
+            Some("protection_mark_unavailable:missing_spot_basis".to_string())
+        }
+        (None, _) => Some("protection_mark_unavailable:no_verified_mark".to_string()),
+        (Some(m), _) if now_ms.saturating_sub(m) > budget => {
+            Some("protection_mark_stale:no_valid_update".to_string())
+        }
+        _ => None,
     }
 }

@@ -875,6 +875,11 @@ pub struct Engine {
     /// Mints whose open position is a paper-model routing fill that is NOT assessable. Their exits
     /// settle cash but feed no assessment consumer (see `book_exit`).
     model_quarantine: std::collections::BTreeSet<[u8; 32]>,
+    /// Held AMM positions: wire time of the last VERIFIED protection mark (an executed swap on the bound pool that
+    /// passed every protect check and was applied). Never advanced by a hint, a rejected swap or the clock.
+    model_protect_mark_ms: std::collections::BTreeMap<[u8; 32], i64>,
+    /// Held AMM positions: the named reason and time of the most recent swap that could NOT mark the position.
+    model_protect_ignored: std::collections::BTreeMap<[u8; 32], (&'static str, i64)>,
     /// Exits excluded from every economic assessment, with the reason. Visible, never zero-filled.
     model_excluded_exits: Vec<model_admit::ExcludedExit>,
     model_recon_faults: BTreeMap<u64, model_admit::ReconFault>,
@@ -1506,6 +1511,8 @@ impl Engine {
             model_position_order: BTreeMap::new(),
             model_fills: Vec::new(),
             model_quarantine: std::collections::BTreeSet::new(),
+            model_protect_mark_ms: std::collections::BTreeMap::new(),
+            model_protect_ignored: std::collections::BTreeMap::new(),
             model_excluded_exits: Vec::new(),
             model_recon_faults: BTreeMap::new(),
             model_amm_econ: BTreeMap::new(),

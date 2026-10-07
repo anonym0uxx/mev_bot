@@ -2285,4 +2285,144 @@ mod tests {
             "a refused scale-in leaves the position untouched"
         );
     }
+
+    // ---- hard stop pinned independently of every other trigger -------------------------------------------
+    //
+    // Source of the 3,500 bp contract (restored, not introduced): `LifecycleParams::standard().hard_sl_bps` and
+    // `Config::lc_hard_sl_bps` both default to 3_500 ("-35% catastrophic backstop"), `engine.rs` wires the config value
+    // into the lifecycle, and `protection_level_fp` documents the stop as `entry * (10_000 - hard_sl_bps) / 10_000`.
+    // The model-managed branch (dd8fe683) said it keeps that stop but passed `trail_bps = 0`, which made the trail
+    // leg equal ENTRY (a break-even stop). The fix passes 10_000 so the trail level is 0.
+
+    /// Hard-stop level in fixed point, derived by hand: floor(entry x 6_500 / 10_000).
+    fn hand_level(entry: u64) -> u64 {
+        (u128::from(entry) * 6_500 / 10_000) as u64
+    }
+
+    /// One model-managed position; the price walks entry -> 80% (a 20% step, below the 30% rug-precursor step) -> `px`.
+    /// The rug precursor therefore cannot fire on the final step: only the hard stop can.
+    fn managed_walk_to(px: u64) -> (Option<Exit>, Option<Exit>) {
+        let m = [1u8; 32];
+        let mut lc = held_with_fill(1_000_000);
+        assert!(lc.set_model_managed(&m));
+        let first = lc.on_trade(&m, PX / 10 * 8, -1, 1, TEST_LIQ_LAMPORTS);
+        let last = lc.on_trade(&m, px, -1, 2, TEST_LIQ_LAMPORTS);
+        (first, last)
+    }
+
+    #[test]
+    fn the_hard_stop_level_is_the_documented_entry_times_6500_bp_with_floor_rounding() {
+        assert_eq!(P.hard_sl_bps, 3_500, "intended backstop");
+        let lvl = hand_level(PX);
+        assert_eq!(lvl, 650_000_000);
+        assert_eq!(
+            protection_level_fp(PX, PX, 10_000, 3_500),
+            lvl,
+            "trail leg disabled: level is exactly the stop"
+        );
+        assert_eq!(
+            protection_level_fp(PX, PX, 0, 3_500),
+            PX,
+            "the old call: trail leg = entry (break-even)"
+        );
+        // floor rounding on an entry that does not divide evenly: 12_345 x 0.65 = 8_024.25 -> 8_024
+        assert_eq!(protection_level_fp(12_345, 12_345, 10_000, 3_500), 8_024);
+    }
+
+    #[test]
+    fn hard_stop_isolated_unchanged_small_decline_and_just_above_do_not_exit() {
+        let lvl = hand_level(PX);
+        for (name, px) in [
+            ("unchanged", PX),
+            ("-0.1%", PX / 1_000 * 999),
+            ("-5%", PX / 100 * 95),
+            ("-20%", PX / 10 * 8),
+            ("just above the stop", lvl + 1),
+        ] {
+            let (first, last) = managed_walk_to(px);
+            assert!(first.is_none(), "{name}: the 80% waypoint must not exit");
+            assert!(last.is_none(), "{name}: {px} > {lvl} must not exit");
+        }
+    }
+
+    #[test]
+    fn hard_stop_isolated_exactly_at_and_below_the_level_exit_as_hard_stop_not_rug_or_trail() {
+        let lvl = hand_level(PX);
+        for (name, px) in [
+            ("exactly at the stop", lvl),
+            ("one fixed-point unit below", lvl - 1),
+            ("far below", lvl / 2),
+        ] {
+            let m = [1u8; 32];
+            let mut lc = held_with_fill(1_000_000);
+            assert!(lc.set_model_managed(&m));
+            // Walk down in <30% steps so the rug precursor is structurally unable to be the trigger.
+            let mut cur = PX;
+            let mut last = None;
+            while cur > px {
+                let next = (cur / 10 * 8).max(px); // never a 30% step
+                last = lc.on_trade(&m, next, -1, 1, TEST_LIQ_LAMPORTS);
+                if last.is_some() {
+                    assert_eq!(next, px.max(next), "{name}");
+                    break;
+                }
+                cur = next;
+            }
+            let ex = last.unwrap_or_else(|| panic!("{name}: {px} <= {lvl} must exit"));
+            assert_eq!(ex.reason, ExitReason::HardStop, "{name}");
+        }
+        // Boundary is exact: the print one unit above does not exit, the print at the level does.
+        let (_, above) = managed_walk_to(lvl + 1);
+        assert!(above.is_none());
+        let (_, at) = managed_walk_to(lvl);
+        assert_eq!(at.expect("at level").reason, ExitReason::HardStop);
+    }
+
+    #[test]
+    fn the_trail_leg_is_actually_disabled_a_big_run_up_then_a_giveback_does_not_exit_a_managed_position() {
+        let m = [1u8; 32];
+        let mut lc = held_with_fill(1_000_000);
+        assert!(lc.set_model_managed(&m));
+        // 1x -> 3x in +25% steps, then give back to 1.5x in -20% steps: a 50% giveback from the peak. A trail leg
+        // would fire (22%+ from peak); the hard stop (0.65x of ENTRY) must not, and no step is a 30% drop.
+        let mut px = PX;
+        let mut t = 1;
+        while px < 3 * PX {
+            px = px / 100 * 125;
+            assert!(lc.on_trade(&m, px, 1, t, TEST_LIQ_LAMPORTS).is_none(), "run-up at {px}");
+            t += 1;
+        }
+        while px > PX / 2 * 3 {
+            px = px / 10 * 8;
+            assert!(
+                lc.on_trade(&m, px, -1, t, TEST_LIQ_LAMPORTS).is_none(),
+                "giveback at {px} must not exit a managed position above 0.65x entry"
+            );
+            t += 1;
+        }
+        assert!(lc.has(&m));
+    }
+
+    #[test]
+    fn legacy_unmanaged_positions_keep_their_trail_and_hard_stop_behaviour() {
+        // The legacy branch was not edited. Control: the SAME 20% walk that a managed position survives takes the
+        // trailing stop on a legacy position (22% trail from the entry-level peak, level 0.78x), and the
+        // protection leaf is unchanged for the legacy arguments.
+        let m = [1u8; 32];
+        let mut lc = held_with_fill(1_000_000);
+        assert!(lc.on_trade(&m, PX / 100 * 80, -1, 1, TEST_LIQ_LAMPORTS).is_none(), "0.80x is above the 0.78x trail");
+        let ex = lc
+            .on_trade(&m, PX / 100 * 77, -1, 2, TEST_LIQ_LAMPORTS)
+            .expect("0.77x is below the 0.78x trail");
+        // The legacy classifier passes `trail_bps = 0` when LABELLING, so any legacy exit at/below entry is labelled
+        // HardStop even when the trail level (0.78x) is what fired. That is a pre-existing LABEL quirk on the legacy
+        // path; the exit itself (and its timing) is what this pins, and the legacy path is deliberately unedited.
+        assert_eq!(ex.reason, ExitReason::HardStop, "legacy label behaviour, unchanged");
+        let trail = P.trail_base_bps;
+        assert_eq!(
+            protection_level_fp(PX, PX, trail, 3_500),
+            PX / 10_000 * u64::from(10_000 - trail),
+            "legacy leaf call unchanged"
+        );
+    }
 }
