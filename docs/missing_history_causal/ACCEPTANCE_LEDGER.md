@@ -272,3 +272,15 @@ M1 integration is verified except the operator-blocked finalize. Acceptance stay
 - The final daemon report preserves handed-off exposure.
 - model_open_exposure() with unavailable marks.
 - Unknown/stale marks cannot settle.
+
+### Delivery checks on 07594e57 (lint-only commit on top of e0ebc194)
+- Workspace --all-targets: 3655 passed, 0 failed, 1 ignored (normal concurrency). fmt clean, clippy -D warnings clean, portable gate passed.
+- Hosted CI rust-ci run 37794580284 on head 07594e57: completed, success.
+- pq-daemon sha256 2e9c245c… (BINARY_IDENTITY_07594e57.json). Daemon runs eT1/qT1/qT2 used e0ebc194 binary 31effff9….
+- Clippy fixes: checked/saturating arithmetic, doc-list indentation, dead-code allows in tests. No behaviour change; tests re-run on the same head.
+
+### M2 first measurement (bootstrap provenance, read-only)
+- bF1: 859 registered markets.
+- Canonical launch records from before the replay start (1788965347168): 0 (renorm_v7 and discovery_raw).
+- Records after the start only: 59 (renorm_v7), 114 (discovery_raw).
+- None of the existing durable launch files can bootstrap this tape's launch-unknown markets. A genuine launch source dated before the decision is needed (next slice).
