@@ -200,3 +200,75 @@ Runs (binary sha256 prefix / head):
   No durable destructive mutation OBSERVED; finalize defect NOT cleared (in-memory force-close remains). Handoff acceptance OPEN.
 Open in M1: endpoint-hang SAFETY_OFF trip in daemon (unmet prerequisite); finalize fix (operator-blocked); definitive
 "not executed" release has no inbox route (engine-only).
+
+## M1 bounded remainder (2026-10-08 PT). Tested heads e5eb15ea -> e0ebc194 (1145 app+junction, normal concurrency)
+
+### Matrix classification (corrected). Each claim is tied to the binary that ran it.
+Full passes on binary 97181c45… (e5eb15ea):
+- qA3: restored partial REDUCE + collapse.
+- qB4: restart, re-read from zero, late report, protective completion.
+- qD1: SAFETY_OFF via the controlled-shutdown path.
+- qE1: startup refusal flow_ahead_of_books.
+
+Partial pass:
+- qC1: fully reserved deferral + PROTECTION DEFERRED alerts pass; protection does not need an inference response. Its endpoint trip was prerequisite-not-met, now covered by eT1.
+
+Observational, not acceptance:
+- qF1: no durable financial mutation after the handoff ack and the final report(). That run does not clear the in-memory report() defect.
+
+### Fixture binding (fx_bind2.py -> collapse_binding_v2.json; read-only, earlier artifacts)
+- Mint 51nHMcvh4z3e7YYPiSieYc6KrFE6qsv8zatf6mdqpump (3ba1f2be…).
+- Curve Hz3yWXQwZzFvYCsWyfzniWmXmi3NUrersWb2eBgRbzR2 = PDA(["bonding-curve", mint], 6EF8rrec…) bump 254, derived independently.
+- Owner of every Hz3y update is 6EF8rrec….
+- 260/260 curve updates equal the mint's TradeEvent reserves in the same slot.
+- Last captured update before injection: line 143514, slot 445638166, recv 1788965517565.
+- Synthetic events: all target this mint (slots 445638167..169). Synthetic curve observations: all target this curve.
+- Held at both phase-1 checkpoints (pR1, pE1, venue curve, checkpoint observation = a Hz3y update). Restored as held in qA3/qD1 (and qT1).
+- Verdict: binding VERIFIED. The protection-run claims need no qualification for binding.
+
+### Endpoint-failure daemon case: eT1 on binary 31effff9… (e0ebc194). PASS
+- Fresh start, real replay. Before the failure, requests reached the stub: 29 entry + 1 management (a mint-specific EXIT for 3ba1f2be).
+- Prerequisite met at a durable hold: generation 48, EXIT id 3 unresolved, reserved = inventory 2462568951930.
+- Endpoint down (HTTP 503):
+  - 3 requests refused at the boundary; endpoint:transport_error = 3.
+  - Trip safety:tripped:model_endpoint_hung under CONSECUTIVE_ABANDONED_TRIP = 3.
+  - safety.json blocked, reason model_endpoint_hung, epoch 1.
+- New exposure stopped: refuse:entries_blocked 110; no new positions.
+- Under SAFETY_OFF, a partial EXIT report reconciled exactly: inventory 2462568951930 -> 1641712634620, reservation equal to the remainder.
+- Endpoint recovered for 45 s: still blocked, rearmed 0, epoch unchanged, no new requests. No automatic re-arm.
+
+### Terminal execution evidence (e0ebc194). Inbox field terminal:"final", harness-only.
+Three outcomes:
+- Definitively no execution: release.
+- Partial with the remainder definitively cancelled: earlier settlement kept, only the remainder released.
+- Absent field / non-terminal: execution unknown, nothing released.
+
+Terminal evidence also:
+- Settles any new increment first.
+- Treats a terminal zero over a booked fill as a fault.
+- Treats a duplicate as a no-op.
+- Treats contradictory evidence after the end as report_contradicts_settled.
+
+Validation: engine tests (3) + parser test; 5/5 mutations caught.
+
+Daemon run qT1 (from pE1), binary 31effff9…. PASS:
+- A non-terminal zero released nothing.
+- The terminal zero ended EXIT 3 as EndedUnfilled (state 3), released the reservation, and protective order 4 for the full inventory 2462568951930 was created in that same tick.
+- Duplicate terminal: no change.
+- A contradictory later report (cum 1231284475965) raised the durable fault report_contradicts_settled; books unchanged.
+
+Daemon run qT2 (restart from qT1, same binary). PASS:
+- Record (state 3), fault and protective order 4 all restored. EXIT not resubmitted.
+- Inbox re-read from 0 (4 lines): no change.
+- The flow history is refused as flow_lineage_unbound because it predates lineage, which is correct.
+
+### Generation evidence (qE1_GENERATION_LINEAGE.md)
+- Predicate: 54 > 49 within the same lineage (pR1 -> qA3).
+- Gap: an unrelated lineage was accepted at e5eb15ea. Fixed at e0ebc194 with lineage binding.
+
+### Status
+M1 integration is verified except the operator-blocked finalize. Acceptance stays OPEN until the finalize fix is applied and its focused tests pass (OPERATOR_RESOLUTION_PACKAGE.md). The cases that depend on it:
+- report() twice changes nothing.
+- The final daemon report preserves handed-off exposure.
+- model_open_exposure() with unavailable marks.
+- Unknown/stale marks cannot settle.
