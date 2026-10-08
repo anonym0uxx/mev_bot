@@ -1014,3 +1014,108 @@ fn the_stale_callout_is_edge_triggered_names_the_loss_of_protection_and_recovers
     );
     assert_eq!(c.degraded_count(), 0);
 }
+
+/// RESERVATION CALLOUT (onset / reminder / recovery) and the difference between "reservation released" and
+/// "protection restored": releasing the reservation with a still-stale reserve must NOT print a recovery of the
+/// price-based protection, and the stale-data callout keeps its own state.
+#[test]
+fn the_reservation_callout_has_onset_reminder_recovery_and_release_is_not_protection_restored() {
+    let ep = Endpoint::start(|step| if step == 0 { EXIT } else { HOLD });
+    let mut r = rig(&ep, "rescallout");
+    let mut c = StaleCallout::default();
+    r.advance_to_order(120_000);
+    let (id, _, intended, _) = r.e.model_mgmt_pending(&MINT).expect("EXIT pending");
+    assert!(r.e.model_mgmt_mark_ack_uncertain(&MINT, id));
+    ticks(&mut r.e, 2);
+    assert_eq!(
+        Some(intended),
+        r.e.model_inventory_tokens(&MINT),
+        "EXIT reserves everything"
+    );
+    let now = r.e.model_clock_ms_now();
+    // ONSET: named, an alert, and it says nothing is sold or resubmitted.
+    let on = c.evaluate(&r.e, now, 60_000);
+    let line = on
+        .iter()
+        .find(|l| l.text.contains("PROTECTION DEFERRED"))
+        .expect("onset line");
+    assert!(line.alert && line.text.starts_with("ONSET"), "{on:?}");
+    assert!(
+        line.text.contains("nothing is sold or resubmitted"),
+        "{}",
+        line.text
+    );
+    // Edge-triggered: same instant says nothing about the reservation again.
+    assert!(!c
+        .evaluate(&r.e, now, 60_000)
+        .iter()
+        .any(|l| l.text.contains("PROTECTION DEFERRED")));
+    // REMINDER after the interval, with the elapsed time.
+    let rem = c.evaluate(&r.e, now + 61_000, 60_000);
+    let rl = rem
+        .iter()
+        .find(|l| l.text.contains("PROTECTION DEFERRED"))
+        .expect("reminder");
+    assert!(
+        rl.alert && rl.text.starts_with("REMINDER") && rl.text.contains("degraded_for=61s"),
+        "{}",
+        rl.text
+    );
+    // Release with definitive not-executed evidence while the feed goes quiet (stale reserve and prints).
+    assert!(r.e.model_mgmt_resolve_uncertain_not_executed(&MINT, id));
+    let other = [0x77u8; 32];
+    for k in 1..=3 {
+        let t = now + k * 40_000;
+        r.e.tick(AppEvent::MarketTrade {
+            mint: DomainMint::from_bytes(other),
+            price_fp: 1_000,
+            quote_lamports: 1_000_000,
+            liquidity_lamports: 30_000_000_000,
+            signed_base: 5,
+            buyer_entity: 9,
+            age_slots: 30,
+            recv_unix_ms: Some(t),
+            trader_pubkey: Some(wallet(900 + k as u32)),
+            slot: Some(9_000 + k as u64),
+            fee_lamports: Some(5_000),
+            cu_consumed: Some(1),
+            venue: Some(TradeVenue::PumpFun),
+            event_id: None,
+            feature: None,
+        });
+    }
+    let t1 = r.e.model_clock_ms_now();
+    let after = c.evaluate(&r.e, t1, 60_000);
+    // The reservation is released ...
+    assert!(
+        after.iter().any(|l| !l.alert
+            && l.text.starts_with("RECOVERED")
+            && l.text.contains("unresolved sell was reconciled")),
+        "{after:?}"
+    );
+    // ... but price-based protection is NOT restored: the stale-data state is raised on its own.
+    assert!(
+        after
+            .iter()
+            .any(|l| l.alert && l.text.contains("UNPROTECTED")),
+        "released reservation with stale prices must still be named degraded: {after:?}"
+    );
+    assert_eq!(c.degraded_count(), 1, "only the staleness remains degraded");
+    // Fresh reserve + print restores readiness; that is a separate recovery.
+    r.clock = t1 + 1_000;
+    r.slot += 10;
+    curve(&mut r.e, r.clock, r.slot, 200_000_000);
+    print(&mut r.e, r.n + 1, r.clock, r.slot);
+    r.clock += 1_000;
+    r.slot += 1;
+    curve_quiet(&mut r.e, r.clock, r.slot);
+    print(&mut r.e, r.n + 2, r.clock, r.slot);
+    ticks(&mut r.e, 3);
+    let rec = c.evaluate(&r.e, r.clock, 60_000);
+    assert!(
+        rec.iter()
+            .any(|l| !l.alert && l.text.starts_with("RECOVERED")),
+        "{rec:?}"
+    );
+    assert_eq!(c.degraded_count(), 0);
+}
