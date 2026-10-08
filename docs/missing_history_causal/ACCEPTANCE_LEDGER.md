@@ -122,3 +122,19 @@ Still open: PumpSwap repeated-same-mint attribution test (producer `ingest_amm_r
 equal-time replay boundary for `through_ms`, deleted-ledger / mixed-generation / interruption-between-publications
 tests, held emergency settlement and protection-gap alert through the daemon, dedup-retention replay, harness cleanup,
 restart comparison re-run on the final head.
+
+## Update: restart comparison on head 3e872d5c (daemon sha256 c05ff461...c022c)
+
+- Run `bF1` (uninterrupted, 187 barriers, 79 dispatches; equals `bZ1`/`bT1`) against `rs9_2` (crash after barrier 100,
+  full overlap replay): 86 common barriers, 62 dispatches, 0 barriers with a differing prompt hash or dispatch.
+- State categories that differ: ONE, at 86/86 barriers: "fill order" lines, i.e. the in-memory `model_fills` list
+  (archival presentation of fills made before the crash; 2 records there, 0 after restart). Settled-order records
+  (8 of 8, ids, states, clip, terminal evidence), positions, extrema, pending orders, cash, committed capital,
+  realized, order sequence all match. The previous second category ("order id") is closed by schema 2.
+- Why the fill list is archival: `model_fills` feeds assessment/reporting only; duplicate prevention and
+  reconciliation read `model_order_log` (restored). Assessable fills stay empty until quote AND landing are validated,
+  so no assessed number depends on it. NOT excluded from the comparison; it is a named, known difference.
+- PumpSwap `ingest_amm_rows`: repeated same-mint/same-side buys in one tx follow instruction-account ownership
+  (reversed instruction order swaps rows, not owners); ordinals are row identities. LIMIT pinned: two instructions
+  naming ONE trader each carry the trader's whole-tx net delta (corpus parity, not a per-instruction split), so
+  per-instruction amounts are NOT established for that case. Curve and AMM attribution claims stay path-specific.
