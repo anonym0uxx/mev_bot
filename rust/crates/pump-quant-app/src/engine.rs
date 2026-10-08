@@ -878,6 +878,9 @@ pub struct Engine {
     model_sell_floor: u64,
     /// Fired protective triggers waiting for a protective order (deferred, or the last order ended with exposure left).
     model_protect_pending: BTreeMap<[u8; 32], model_protect::PendingTrigger>,
+    /// Offline replay harness: an external executor (the report inbox) owns execution, so a new REDUCE/EXIT/protective
+    /// order is SUBMITTED there (unresolved until its report) instead of being simulated by the paper executor.
+    model_external_exec: bool,
     /// Process-session id stamped on every inference job (see `model_worker::Job::session`).
     model_session: u64,
     model_settled_order_cap: Option<usize>,
@@ -1534,6 +1537,7 @@ impl Engine {
             model_sell_prefix: BTreeMap::new(),
             model_sell_faults: BTreeMap::new(),
             model_protect_pending: BTreeMap::new(),
+            model_external_exec: false,
             model_sell_floor: 0,
             model_order_floor: 0,
             model_session: new_session_id(),

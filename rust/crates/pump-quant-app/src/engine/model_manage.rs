@@ -579,6 +579,13 @@ impl Engine {
                 simulated: false,
             },
         );
+        if self.model_external_exec && kind != MgmtKind::Add {
+            // Submitted to the external executor: unresolved until it reports. Never paper-filled.
+            if let Some(o) = self.model_mgmt.orders.get_mut(&mint) {
+                o.uncertain = true;
+            }
+            self.mrep("mgmt:submitted_external");
+        }
         self.mrep(match kind {
             MgmtKind::Reduce => "mgmt:order:reduce",
             MgmtKind::Exit => "mgmt:order:exit",
@@ -886,6 +893,25 @@ impl Engine {
             .orders
             .get(mint)
             .map(|o| (o.id, o.kind, o.intended, o.filled))
+    }
+
+    /// OFFLINE REPLAY HARNESS ONLY: route new REDUCE/EXIT/protective orders to the external executor (the report inbox)
+    /// instead of the paper executor. Each such order is submitted UNRESOLVED and changes nothing until a validated report.
+    pub fn model_set_external_execution(&mut self, on: bool) {
+        self.model_external_exec = on;
+    }
+
+    /// The pending management order on `mint` with its execution status: (id, kind, intended, filled, uncertain).
+    /// `uncertain` = submitted and not definitively resolved (acknowledgement unknown or externally working).
+    #[must_use]
+    pub fn model_mgmt_order_status(
+        &self,
+        mint: &[u8; 32],
+    ) -> Option<(u64, MgmtKind, u64, u64, bool)> {
+        self.model_mgmt
+            .orders
+            .get(mint)
+            .map(|o| (o.id, o.kind, o.intended, o.filled, o.uncertain))
     }
 
     /// Every reconciled management fill, in order.

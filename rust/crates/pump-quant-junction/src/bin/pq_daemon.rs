@@ -2039,6 +2039,12 @@ fn main() -> ExitCode {
         args.live_mode,
         std::env::var("PQ_OFFLINE_PAPER_REPLAY").ok().as_deref(),
     );
+    // OFFLINE REPLAY HARNESS ONLY: the inbox is the executor for management/protective sells (PQ_EXTERNAL_EXECUTION=1).
+    if replay_harness && model_armed && std::env::var("PQ_EXTERNAL_EXECUTION").as_deref() == Ok("1")
+    {
+        engine.model_set_external_execution(true);
+        eprintln!("[pq-daemon] harness: REDUCE/EXIT/protective orders are submitted to the external (inbox) executor");
+    }
     eprintln!(
         "[pq-daemon] management-report inbox: {} (harness-only; {})",
         if replay_harness {
@@ -4744,6 +4750,33 @@ fn main() -> ExitCode {
                 let _ = std::fs::remove_file("data/FLOW_FLUSH");
                 let _ = std::fs::write("data/FLOW_FLUSHED", if ok { "ok" } else { "timeout" });
                 eprintln!("[pq-daemon] replay-harness flow flush: durable={ok}");
+            }
+            // OFFLINE PAPER REPLAY HARNESS ONLY: explicit, bounded synchronisation. Each harness tick the daemon publishes a
+            // read-only checkpoint of the management state (data/HARNESS_CKPT.json). A harness that has seen the state it
+            // needs writes data/HARNESS_HOLD; the daemon then persists the held ledger + flow history durably, writes
+            // data/HARNESS_HELD with the generation it published, and blocks until the file is removed (or it is killed).
+            // Inert unless PQ_OFFLINE_PAPER_REPLAY=1 and not --live; nothing here changes trading state.
+            if model_armed
+                && replay_harness
+                && std::env::var("PQ_HARNESS_CKPT").as_deref() == Ok("1")
+            {
+                let ck = engine.model_harness_checkpoint();
+                let _ = std::fs::write("data/HARNESS_CKPT.json.tmp", ck.to_string());
+                let _ = std::fs::rename("data/HARNESS_CKPT.json.tmp", "data/HARNESS_CKPT.json");
+                if std::path::Path::new("data/HARNESS_HOLD").exists() {
+                    let f = engine.model_flow_flush(Duration::from_secs(20));
+                    let h = engine.model_held_persist_now();
+                    let ck = engine.model_harness_checkpoint();
+                    let _ = std::fs::write(
+                        "data/HARNESS_HELD",
+                        serde_json::json!({"flow_durable": f, "held_persisted": h, "state": ck})
+                            .to_string(),
+                    );
+                    eprintln!("[pq-daemon] harness hold: flow durable={f} held persisted={h}");
+                    while std::path::Path::new("data/HARNESS_HOLD").exists() {
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                }
             }
             if model_armed && replay_harness && (tick_counter % 5 == 0 || barrier_fire) {
                 let evs = report_inbox.poll(std::path::Path::new(&report_inbox_path));

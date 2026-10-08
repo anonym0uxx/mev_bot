@@ -2101,3 +2101,45 @@ fn a_partially_reported_reduce_keeps_its_remainder_reserved_and_protection_never
         "the working REDUCE is never ended as unsubmitted"
     );
 }
+
+/// Harness external-execution mode: a new REDUCE/EXIT is SUBMITTED unresolved (reserved, never paper-filled), and a
+/// protective order created while the model's order is unresolved sells only the free part, also unresolved.
+#[test]
+fn external_execution_submits_unresolved_orders_that_only_reports_can_settle() {
+    let hp = held_path("x_ext");
+    let mut r = rig(|s| if s == 0 { EXIT } else { HOLD }, &hp);
+    r.e.model_set_external_execution(true);
+    r.advance_to_order(120_000);
+    let (id, k, intended, filled, unc) =
+        r.e.model_mgmt_order_status(&MINT).expect("EXIT submitted");
+    assert_eq!(
+        (k, filled, unc),
+        (MgmtKind::Exit, 0, true),
+        "submitted, unresolved"
+    );
+    let b0 = books(&r.e);
+    // Landing observations that WOULD fill a paper order: nothing fills, the whole order stays reserved.
+    for _ in 0..8 {
+        r.clock += 1_000;
+        r.slot += 1;
+        curve_obs(&mut r.e, r.clock, r.slot, 200_000_000);
+        ticks(&mut r.e, 2);
+    }
+    assert_eq!(books(&r.e), b0, "never paper-filled");
+    assert_eq!(r.e.model_mgmt_order_status(&MINT).map(|s| s.3), Some(0));
+    let st =
+        r.e.model_held_data_status()
+            .into_iter()
+            .find(|s| s.mint == MINT)
+            .unwrap();
+    assert_eq!(
+        st.sell_reserved_tokens, intended,
+        "the full EXIT reserves the whole remainder"
+    );
+    // The external report settles it, once.
+    assert!(matches!(
+        r.e.ev_px(MINT, id, MgmtKind::Exit, intended, intended, 22_000),
+        SellReportResult::Applied { .. }
+    ));
+    assert!(!r.e.model_position_open(&MINT));
+}

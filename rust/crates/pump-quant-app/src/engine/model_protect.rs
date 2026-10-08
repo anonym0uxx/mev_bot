@@ -185,6 +185,12 @@ impl Engine {
                 simulated: false,
             },
         );
+        if self.model_external_exec {
+            if let Some(o) = self.model_mgmt.protect.get_mut(&mint) {
+                o.uncertain = true;
+            }
+            self.mrep("protect:submitted_external");
+        }
         self.model_protect_pending.remove(&mint);
         self.mrep(format!("protect:order:{reason:?}"));
     }
@@ -214,5 +220,35 @@ impl Engine {
             }
             _ => false,
         }
+    }
+
+    /// HARNESS CHECKPOINT (read-only): the durable-relevant management state the replay harness synchronises on.
+    /// Per held mint: inventory, the management order (id/kind/intended/filled/remaining/uncertain), the protective
+    /// order, the sell reservation the store holds, a pending trigger, deferrals, the latest curve observation
+    /// (ts/slot/vsol) and the in-process held-ledger generation. It changes nothing.
+    #[must_use]
+    pub fn model_harness_checkpoint(&self) -> serde_json::Value {
+        let hx = |m: &[u8; 32]| m.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        let mut held = Vec::new();
+        for h in self.positions.held_records() {
+            let m = h.mint;
+            let mo = self.model_mgmt.orders.get(&m).map(|o| serde_json::json!({
+                "id": o.id, "kind": format!("{:?}", o.kind), "intended": o.intended, "filled": o.filled,
+                "remaining": o.intended.saturating_sub(o.filled), "uncertain": o.uncertain,
+                "gross": o.gross, "fees": o.fees, "simulated": o.simulated}));
+            let po = self.model_mgmt.protect.get(&m).map(|o| serde_json::json!({
+                "id": o.id, "intended": o.intended, "filled": o.filled, "uncertain": o.uncertain, "trigger": o.protect}));
+            let co = self.model_cache.curve_obs(&m).map(|c| serde_json::json!({
+                "ts_ms": c.ts_ms, "slot": c.slot, "v_sol": c.v_sol_lamports, "v_tokens": c.v_tokens}));
+            held.push(serde_json::json!({
+                "mint": hx(&m), "inventory": self.positions.inventory_tokens(&m),
+                "sell_reserved": self.positions.sell_reserved(&m), "mgmt_order": mo, "protect_order": po,
+                "trigger_pending": self.model_protect_pending.contains_key(&m),
+                "curve_obs": co, "amm": self.model_cache.snapshot_venue_is_amm(&m)}));
+        }
+        serde_json::json!({
+            "clock_ms": self.model_clock_ms, "held_generation": self.model_held.generation,
+            "safety_off": self.model_safety.blocked, "protect_deferred_total": self.positions.protect_deferred,
+            "held": held})
     }
 }
