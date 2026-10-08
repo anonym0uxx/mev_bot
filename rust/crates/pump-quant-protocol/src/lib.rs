@@ -58,6 +58,7 @@ pub mod message;
 pub mod pda;
 pub mod pumpswap;
 pub mod pumpswap_event;
+pub mod pumpswap_fees;
 pub mod pumpswap_ix;
 pub mod registry;
 pub mod runtime_errors;
