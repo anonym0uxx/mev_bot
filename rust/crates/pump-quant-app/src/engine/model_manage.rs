@@ -1580,14 +1580,19 @@ impl Engine {
     /// every protective close (`ScalpLifecycle::close_guarded`). Derived from the order book each tick, so it
     /// cannot drift: a resolved, filled, ended or absent order reserves nothing.
     pub(super) fn model_sync_sell_reservations(&mut self) {
-        let want: std::collections::BTreeMap<[u8; 32], u64> = self
+        // SUM per mint: an unresolved management sell and an unresolved protective sell on the same mint are two
+        // outstanding commitments against the same inventory (a map collect would let one overwrite the other).
+        let mut want: std::collections::BTreeMap<[u8; 32], u64> = std::collections::BTreeMap::new();
+        for (m, o) in self
             .model_mgmt
             .orders
             .iter()
             .chain(self.model_mgmt.protect.iter())
             .filter(|(_, o)| o.uncertain && o.kind != MgmtKind::Add)
-            .map(|(m, o)| (*m, o.intended.saturating_sub(o.filled)))
-            .collect();
+        {
+            let e = want.entry(*m).or_insert(0);
+            *e = e.saturating_add(o.intended.saturating_sub(o.filled));
+        }
         for m in self.positions.held_records().iter().map(|h| h.mint) {
             let w = want.get(&m).copied().unwrap_or(0);
             if self.positions.sell_reserved(&m) != w {

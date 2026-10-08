@@ -2143,3 +2143,46 @@ fn external_execution_submits_unresolved_orders_that_only_reports_can_settle() {
     ));
     assert!(!r.e.model_position_open(&MINT));
 }
+
+/// Two unresolved sells on one mint (a management REDUCE and a protective order) are SUMMED into the reservation:
+/// neither may overwrite the other, and outstanding sell commitments never exceed reconciled inventory.
+#[test]
+fn an_unresolved_reduce_and_an_unresolved_protective_order_reserve_their_sum() {
+    let hp = held_path("x_sum");
+    let mut r = rig(|s| if s == 0 { REDUCE } else { HOLD }, &hp);
+    r.e.model_set_external_execution(true);
+    r.advance_to_order(120_000);
+    let (rid, _, rint, _, unc) =
+        r.e.model_mgmt_order_status(&MINT)
+            .expect("REDUCE submitted");
+    assert!(unc);
+    // A partial external fill of the REDUCE makes the two remainders DIFFERENT sizes (the defect hid when equal).
+    let part = rint / 4;
+    assert!(matches!(
+        r.e.ev_px(MINT, rid, MgmtKind::Reduce, rint, part, 22_000),
+        SellReportResult::Applied { .. }
+    ));
+    let inv = r.e.model_inventory_tokens(&MINT).unwrap();
+    hard_collapse(&mut r.e, r.clock + 1_000, r.slot + 5);
+    let (pid, pint, pfill, _) =
+        r.e.model_protect_pending_order(&MINT)
+            .expect("protective order");
+    assert_ne!(pid, rid);
+    let rrem = rint - part;
+    assert_eq!(pint, inv - rrem, "protection sells only the free part");
+    ticks(&mut r.e, 2);
+    let st =
+        r.e.model_held_data_status()
+            .into_iter()
+            .find(|s| s.mint == MINT)
+            .unwrap();
+    assert_eq!(
+        st.sell_reserved_tokens,
+        rrem + (pint - pfill),
+        "reservation = REDUCE remainder + protective remainder"
+    );
+    assert!(
+        st.sell_reserved_tokens <= inv,
+        "outstanding commitments never exceed reconciled inventory"
+    );
+}
