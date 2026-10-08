@@ -79,6 +79,8 @@ fn feed_flow(eng: &mut Engine, mt: Mint, trades: u64) {
             fee_lamports: None,
             cu_consumed: None,
             venue: None,
+            event_id: None,
+            feature: None,
         });
     }
 }
@@ -238,6 +240,8 @@ fn expectancy_is_prior_until_lane_sample_gate() {
             fee_lamports: None,
             cu_consumed: None,
             venue: None,
+            event_id: None,
+            feature: None,
         });
     }
     for _ in 0..3 {

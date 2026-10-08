@@ -127,6 +127,8 @@ fn trade(eng: &mut Engine, m: Mint, price_mult: i128, signed_base: i64, entity: 
         fee_lamports: None,
         cu_consumed: None,
         venue: None,
+        event_id: None,
+        feature: None,
     });
 }
 

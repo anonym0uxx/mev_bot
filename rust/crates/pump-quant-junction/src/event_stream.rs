@@ -97,6 +97,8 @@ fn parse_event_line(line: &str) -> Result<AppEvent, String> {
                 fee_lamports: None,
                 cu_consumed: None,
                 venue: None,
+                event_id: None,
+                feature: None,
             })
         }
         "OnchainConfirm" => {
@@ -466,6 +468,7 @@ fn event_kind(event: &AppEvent) -> &'static str {
         AppEvent::OnchainConfirm { .. } => "OnchainConfirm",
         AppEvent::CurveObserved { .. } => "CurveObserved",
         AppEvent::AmmSwap { .. } => "AmmSwap",
+        AppEvent::CorpusFlowRow { .. } => "CorpusFlowRow",
         AppEvent::LaunchObserved { .. } => "LaunchObserved",
         AppEvent::TokenMetadata { .. } => "TokenMetadata",
         AppEvent::CreatorAction { .. } => "CreatorAction",
@@ -476,6 +479,7 @@ fn event_kind(event: &AppEvent) -> &'static str {
         AppEvent::NarrativeResolved { .. } => "NarrativeResolved",
         // Rev-19 on-chain feedback: new event variants.
         AppEvent::ModelOrderEvidence { .. } => "ModelOrderEvidence",
+        AppEvent::ModelMgmtReport { .. } => "ModelMgmtReport",
         AppEvent::OurBuyConfirmed { .. } => "OurBuyConfirmed",
         AppEvent::OurBuyFailed { .. } => "OurBuyFailed",
         AppEvent::OurSellConfirmed { .. } => "OurSellConfirmed",
@@ -598,6 +602,23 @@ fn event_fields_json(event: &AppEvent) -> String {
             }
             parts.push(format!(r#""slot":{}"#, slot));
         }
+        AppEvent::CorpusFlowRow {
+            feature,
+            recv_unix_ms,
+            slot,
+            event_id,
+            ..
+        } => {
+            parts.push(format!(r#""sol_lamports":{}"#, feature.sol_lamports));
+            parts.push(format!(r#""tokens_raw":{}"#, feature.tokens_raw));
+            parts.push(format!(r#""event_id":"{:032x}""#, event_id));
+            if let Some(t) = recv_unix_ms {
+                parts.push(format!(r#""recv_unix_ms":{}"#, t));
+            }
+            if let Some(sl) = slot {
+                parts.push(format!(r#""slot":{}"#, sl));
+            }
+        }
         AppEvent::LaunchObserved { launch_unix_ms, .. } => {
             parts.push(format!(r#""launch_unix_ms":{}"#, launch_unix_ms));
         }
@@ -664,6 +685,24 @@ fn event_fields_json(event: &AppEvent) -> String {
                 }
                 None => parts.push(r#""filled":false"#.to_string()),
             }
+        }
+        AppEvent::ModelMgmtReport {
+            order_id,
+            action,
+            intended,
+            cumulative_tokens,
+            cumulative_gross,
+            cumulative_fees,
+            terminal,
+            ..
+        } => {
+            parts.push(format!(r#""action":{action}"#));
+            parts.push(format!(r#""intended":{intended}"#));
+            parts.push(format!(r#""order_id":{order_id}"#));
+            parts.push(format!(r#""cumulative_tokens":{cumulative_tokens}"#));
+            parts.push(format!(r#""cumulative_gross":{cumulative_gross}"#));
+            parts.push(format!(r#""cumulative_fees":{cumulative_fees}"#));
+            parts.push(format!(r#""terminal":{terminal}"#));
         }
         // Rev-19 on-chain feedback: serialize signature + slot for confirmation events.
         AppEvent::OurBuyConfirmed {
@@ -821,6 +860,8 @@ mod tests {
             fee_lamports: None,
             cu_consumed: None,
             venue: None,
+            event_id: None,
+            feature: None,
         };
         writer.write_event(&event, 12345).expect("write");
         writer.flush().expect("flush");
@@ -954,6 +995,8 @@ mod tests {
             fee_lamports: None,
             cu_consumed: None,
             venue: None,
+            event_id: None,
+            feature: None,
         };
         writer.write_event(&event, 12345).expect("write");
         writer.flush().expect("flush");
@@ -1010,6 +1053,8 @@ mod tests {
                     fee_lamports: None,
                     cu_consumed: None,
                     venue: None,
+                    event_id: None,
+                    feature: None,
                 },
                 2,
             )
@@ -1087,6 +1132,8 @@ garbage line 2
             fee_lamports: None,
             cu_consumed: None,
             venue: None,
+            event_id: None,
+            feature: None,
         };
         let line = event_to_json(&stamped, 9);
         assert!(
@@ -1115,6 +1162,8 @@ garbage line 2
             fee_lamports: None,
             cu_consumed: None,
             venue: None,
+            event_id: None,
+            feature: None,
         };
         let line = event_to_json(&unstamped, 9);
         assert!(!line.contains("recv_unix_ms"), "nothing fabricated: {line}");
@@ -1145,6 +1194,8 @@ garbage line 2
             fee_lamports: None,
             cu_consumed: None,
             venue: None,
+            event_id: None,
+            feature: None,
         };
         let line = event_to_json(&stamped, 9);
         assert!(line.contains("trader_pubkey"), "{line}");
@@ -1169,6 +1220,8 @@ garbage line 2
             fee_lamports: None,
             cu_consumed: None,
             venue: None,
+            event_id: None,
+            feature: None,
         };
         let line = event_to_json(&anonymous, 9);
         assert!(!line.contains("trader_pubkey"), "{line}");

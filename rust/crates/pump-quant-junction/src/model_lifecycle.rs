@@ -246,6 +246,21 @@ pub fn held_data_report(engine: &Engine) -> (String, bool) {
     for s in &status {
         let age = |v: Option<i64>| v.map_or("none".to_string(), |a| format!("{a}ms"));
         match &s.management_ready {
+            Ok(())
+                if pump_quant_app::engine::model_manage::amm_protection_gap(
+                    s,
+                    engine.model_clock_ms_now(),
+                )
+                .is_some() =>
+            {
+                degraded = true;
+                lines.push(format!(
+                    "held {} venue=amm DEGRADED: {} (last verified mark age={}); price-based protection (hard stop / rug precursor) is NOT observing this position",
+                    hex(&s.mint),
+                    pump_quant_app::engine::model_manage::amm_protection_gap(s, engine.model_clock_ms_now()).unwrap_or_default(),
+                    s.protect_mark_ms.map_or("none".to_string(), |m| format!("{}ms", engine.model_clock_ms_now().saturating_sub(m)))
+                ));
+            }
             Ok(()) => lines.push(format!(
                 "held {} venue={} reserve_age={} print_age={} READY",
                 hex(&s.mint),
@@ -343,6 +358,46 @@ pub fn restore_held_state(engine: &mut Engine, path: &Path) -> StartupRestore {
     }
 }
 
+/// Default location of the durable missing-history ledger.
+pub const DEFAULT_MISSING_HISTORY_FILE: &str = "data/model_missing_history.json";
+
+/// What startup did with the missing-history ledger.
+#[derive(Debug, PartialEq, Eq)]
+pub enum MissingHistoryStartup {
+    /// No ledger and no restored exposure: a genuinely clean first start.
+    Clean,
+    /// Trusted records restored (count). Their gaps keep refusing.
+    Restored(usize),
+    /// The ledger is unreadable/incompatible, OR it is ABSENT while held exposure was restored
+    /// (a deleted record must not read as "no gap"). Every prompt refuses
+    /// `join_history_continuity_unknown`; the evidence on disk is left untouched.
+    ContinuityUnknown(String),
+}
+
+/// Attach + restore the missing-history ledger BEFORE the first tick (call after
+/// [`restore_held_state`] so `held_restored` is known).
+pub fn attach_missing_history(
+    engine: &mut Engine,
+    path: &Path,
+    held_restored: bool,
+) -> MissingHistoryStartup {
+    use pump_quant_app::missing_history_store::StoreLoad;
+    match engine.model_missing_attach(path) {
+        StoreLoad::NeverWritten if held_restored => {
+            let _ = engine.model_restore_missing_history(&[], false);
+            MissingHistoryStartup::ContinuityUnknown("absent_with_restored_exposure".into())
+        }
+        StoreLoad::NeverWritten => {
+            // Clean start: make "trusted, no unresolved gaps" durable so a later restart with exposure is not
+            // forced to read an absent file as unknown.
+            engine.model_missing_publish_baseline();
+            MissingHistoryStartup::Clean
+        }
+        StoreLoad::Records(r) => MissingHistoryStartup::Restored(r.len()),
+        StoreLoad::Untrusted(why) => MissingHistoryStartup::ContinuityUnknown(why.to_string()),
+    }
+}
+
 /// Mints whose reserve/print feeds the daemon must (re)subscribe after a restore, independently of
 /// new-opportunity discovery.
 #[must_use]
@@ -359,6 +414,10 @@ pub fn mints_needing_feeds(engine: &Engine) -> Vec<[u8; 32]> {
 #[derive(Debug, Default)]
 pub struct StaleCallout {
     state: std::collections::BTreeMap<[u8; 32], (i64, i64, bool)>, // (since_ms, last_alert_ms, unprotected_said)
+    /// Held AMM positions whose price-based protection has no valid mark: (since_ms, last_alert_ms).
+    protect: std::collections::BTreeMap<[u8; 32], (i64, i64)>,
+    /// Held positions with no executable protection because every token is reserved by an unresolved sell.
+    reserved: std::collections::BTreeMap<[u8; 32], (i64, i64)>,
 }
 
 /// One line to print, with whether it is an alert.
@@ -447,14 +506,230 @@ impl StaleCallout {
                 }
             }
         }
+        // PROTECTION GAP (held AMM): an independent state from management readiness. The age is the last VERIFIED
+        // mark; a hint, a rejected swap or an advancing clock never refreshes it, and it fires with no further swap.
+        for s in &status {
+            match pump_quant_app::engine::model_manage::amm_protection_gap(s, now_ms) {
+                Some(why) => {
+                    let e = self.protect.entry(s.mint).or_insert((now_ms, i64::MIN / 2));
+                    let first = e.1 == i64::MIN / 2;
+                    if first || now_ms.saturating_sub(e.1) >= remind_ms {
+                        e.1 = now_ms;
+                        out.push(CalloutLine {
+                            text: format!(
+                                "{} held {} venue=amm UNPROTECTED (price-based): {why} (last_verified_mark_age={}) degraded_for={}s - hard stop / rug precursor are not observing this position; no liquidation rule is applied",
+                                if first { "ONSET" } else { "REMINDER" },
+                                hex(&s.mint),
+                                s.protect_mark_ms.map_or("none".into(), |m| format!("{}ms", now_ms.saturating_sub(m))),
+                                now_ms.saturating_sub(e.0).max(0) / 1000
+                            ),
+                            alert: true,
+                        });
+                    }
+                }
+                None => {
+                    if let Some((since, _)) = self.protect.remove(&s.mint) {
+                        out.push(CalloutLine {
+                            text: format!(
+                                "RECOVERED held {}: a verified protection mark arrived after {}s without one",
+                                hex(&s.mint),
+                                now_ms.saturating_sub(since).max(0) / 1000
+                            ),
+                            alert: false,
+                        });
+                    }
+                }
+            }
+        }
+        // RESERVATION GAP: an unresolved sell holds every remaining token, so a protective trigger cannot sell
+        // anything (it defers). The position stays monitored and every trigger stays armed; this only tells the operator.
+        for s in &status {
+            match pump_quant_app::engine::model_manage::sell_reservation_gap(s) {
+                Some(why) => {
+                    let e = self
+                        .reserved
+                        .entry(s.mint)
+                        .or_insert((now_ms, i64::MIN / 2));
+                    let first = e.1 == i64::MIN / 2;
+                    if first || now_ms.saturating_sub(e.1) >= remind_ms {
+                        e.1 = now_ms;
+                        out.push(CalloutLine {
+                            text: format!(
+                                "{} held {} PROTECTION DEFERRED (sell unresolved): {why}; protective_deferrals={} degraded_for={}s - monitoring and triggers stay armed, nothing is sold or resubmitted until the sell is reconciled",
+                                if first { "ONSET" } else { "REMINDER" },
+                                hex(&s.mint),
+                                s.protect_deferred,
+                                now_ms.saturating_sub(e.0).max(0) / 1000
+                            ),
+                            alert: true,
+                        });
+                    }
+                }
+                None => {
+                    if let Some((since, _)) = self.reserved.remove(&s.mint) {
+                        out.push(CalloutLine {
+                            text: format!(
+                                "RECOVERED held {}: the unresolved sell was reconciled after {}s; protection is evaluated against free inventory again",
+                                hex(&s.mint),
+                                now_ms.saturating_sub(since).max(0) / 1000
+                            ),
+                            alert: false,
+                        });
+                    }
+                }
+            }
+        }
         // A position that closed while degraded is forgotten (no stale RECOVERED later).
+        self.reserved.retain(|m, _| live.contains(m));
         self.state.retain(|m, _| live.contains(m));
+        self.protect.retain(|m, _| live.contains(m));
         out
     }
 
     /// Positions currently degraded.
     #[must_use]
     pub fn degraded_count(&self) -> usize {
-        self.state.len()
+        self.state
+            .len()
+            .saturating_add(self.protect.len())
+            .saturating_add(self.reserved.len())
+    }
+}
+
+/// Why a replay resume clock was refused. Every variant is fatal at startup: a daemon never runs on a clock it cannot trust.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ResumeClockRefusal {
+    /// `PQ_FLOW_RESUME_MS` set without the offline-paper-replay declaration.
+    NotInOfflineReplayMode,
+    /// The offline-paper-replay declaration combined with `--live`.
+    LiveMode,
+    /// The offline-paper-replay declaration without the paper model lane armed (no inference endpoint).
+    ModelLaneNotArmed,
+    /// The value is not a plain positive integer of milliseconds (sign, whitespace, hex, empty, overflow, zero).
+    InvalidValue,
+    /// The value lies in the future of the wall clock: a replay clock describes a PAST instant.
+    InTheFuture,
+}
+
+/// The ONLY consumer of `PQ_FLOW_RESUME_MS`: the instant at which the durable flow history declares the feed resumes
+/// (so a hole between the checkpoint's newest cursor and that instant becomes a NAMED gap). It is honoured only when the
+/// process is explicitly declared an offline paper replay (`PQ_OFFLINE_PAPER_REPLAY=1`), is not `--live`, and has the paper
+/// model lane armed. It does NOT touch the wire clock, any freshness/staleness bound, the inference deadlines (those run on
+/// `Instant`), the missing-history ledger or the held-state ledger. Returns `(resume_ms, declared)`.
+pub fn resolve_flow_resume_clock(
+    live_mode: bool,
+    model_armed: bool,
+    offline_replay_flag: Option<&str>,
+    resume_env: Option<&str>,
+    wall_ms: i64,
+) -> Result<(i64, bool), ResumeClockRefusal> {
+    let replay_declared = offline_replay_flag == Some("1");
+    let Some(v) = resume_env else {
+        // Not asking for a replay clock: the wall clock, exactly as before. A bare replay declaration changes nothing.
+        return Ok((wall_ms, false));
+    };
+    if live_mode {
+        return Err(ResumeClockRefusal::LiveMode);
+    }
+    if !replay_declared {
+        return Err(ResumeClockRefusal::NotInOfflineReplayMode);
+    }
+    if !model_armed {
+        return Err(ResumeClockRefusal::ModelLaneNotArmed);
+    }
+    if v.is_empty() || !v.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(ResumeClockRefusal::InvalidValue);
+    }
+    let ms: i64 = v.parse().map_err(|_| ResumeClockRefusal::InvalidValue)?;
+    if ms <= 0 {
+        return Err(ResumeClockRefusal::InvalidValue);
+    }
+    if ms > wall_ms {
+        return Err(ResumeClockRefusal::InTheFuture);
+    }
+    Ok((ms, true))
+}
+
+#[cfg(test)]
+mod resume_clock_tests {
+    use super::*;
+    const WALL: i64 = 1_790_000_000_000;
+    const T: i64 = 1_788_965_347_168;
+    fn r(
+        live: bool,
+        armed: bool,
+        flag: Option<&str>,
+        v: Option<&str>,
+    ) -> Result<(i64, bool), ResumeClockRefusal> {
+        resolve_flow_resume_clock(live, armed, flag, v, WALL)
+    }
+    #[test]
+    fn no_resume_env_is_the_wall_clock_whatever_the_flag() {
+        assert_eq!(r(false, true, None, None), Ok((WALL, false)));
+        assert_eq!(r(false, true, Some("1"), None), Ok((WALL, false)));
+        assert_eq!(r(true, false, None, None), Ok((WALL, false)));
+    }
+    #[test]
+    fn honoured_only_in_declared_offline_paper_replay_with_the_model_lane_armed() {
+        assert_eq!(
+            r(false, true, Some("1"), Some("1788965347168")),
+            Ok((T, true))
+        );
+        assert_eq!(
+            r(false, true, None, Some("1788965347168")),
+            Err(ResumeClockRefusal::NotInOfflineReplayMode)
+        );
+        assert_eq!(
+            r(false, true, Some("0"), Some("1788965347168")),
+            Err(ResumeClockRefusal::NotInOfflineReplayMode)
+        );
+        assert_eq!(
+            r(false, true, Some("true"), Some("1788965347168")),
+            Err(ResumeClockRefusal::NotInOfflineReplayMode)
+        );
+        assert_eq!(
+            r(true, true, Some("1"), Some("1788965347168")),
+            Err(ResumeClockRefusal::LiveMode)
+        );
+        assert_eq!(
+            r(true, false, None, Some("1788965347168")),
+            Err(ResumeClockRefusal::LiveMode)
+        );
+        assert_eq!(
+            r(false, false, Some("1"), Some("1788965347168")),
+            Err(ResumeClockRefusal::ModelLaneNotArmed)
+        );
+    }
+    #[test]
+    fn invalid_values_are_refused_never_defaulted() {
+        for bad in [
+            "",
+            " ",
+            "0",
+            "-5",
+            "+5",
+            "12 ",
+            " 12",
+            "0x10",
+            "1e9",
+            "1.5",
+            "abc",
+            "99999999999999999999999",
+            "1788965347168\n",
+        ] {
+            assert_eq!(
+                r(false, true, Some("1"), Some(bad)),
+                Err(ResumeClockRefusal::InvalidValue),
+                "{bad:?}"
+            );
+        }
+        assert_eq!(
+            r(false, true, Some("1"), Some("1790000000001")),
+            Err(ResumeClockRefusal::InTheFuture)
+        );
+        assert_eq!(
+            r(false, true, Some("1"), Some("1790000000000")),
+            Ok((WALL, true))
+        );
     }
 }

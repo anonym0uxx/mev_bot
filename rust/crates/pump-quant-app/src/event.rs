@@ -94,6 +94,22 @@ pub enum TradeVenue {
     PumpSwap,
 }
 
+/// The TRAINED-feature basis of one trade, kept apart from the execution quantities on the same event
+/// (`price_fp`/`quote_lamports`/`signed_base` stay the reserve price and swap amounts). It is the corpus's own
+/// definition (`renormalize_raw.py` -> `build_states_v2.py`): the resolved trader's whole-transaction native+WSOL
+/// balance delta, that trader's token delta, and that trader. It feeds the trained windows (state ledger, flow
+/// reducer, enrichment) ONLY. It is NEVER an execution price: no sizing, min-out/limit, fill, inventory or
+/// emergency path may read it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FeatureBasis {
+    /// Trader balance delta, lamports; buy negative, sell positive (the tape's `sol_lamports`).
+    pub sol_lamports: i64,
+    /// Trader token delta, raw units; buy positive, sell negative (the tape's `tokens_raw`).
+    pub tokens_raw: i64,
+    /// The corpus-resolved trader (may differ from the event's `user` on router routes).
+    pub trader: [u8; 32],
+}
+
 /// One unit of input to the engine.
 ///
 /// `Copy` and small so a journal of millions of events replays without allocation
@@ -152,6 +168,40 @@ pub enum AppEvent {
         /// The venue the print executed on, when the producer knew it. `None` is unknown, never a
         /// default: the state ledger then labels the print `unknown` and the join refuses it.
         venue: Option<TradeVenue>,
+        /// Stable identity of the underlying on-chain event: a 128-bit digest of (signature,
+        /// instruction ordinal) set ONLY by the transaction-event producer. `None` = the producer
+        /// has no exact identity (legacy/derived prints); the join then falls back to its
+        /// heuristic key. Identity -- never price -- is what separates two distinct trades from
+        /// one repeated delivery.
+        event_id: Option<u128>,
+        /// Corpus-definition basis for the trained windows. `None` = this trade is OUTSIDE the corpus population
+        /// (no corpus-known instruction / corpus-rejected / no balances): it is counted, never put into the
+        /// trained windows under their historical definition.
+        feature: Option<FeatureBasis>,
+    },
+
+    /// One corpus-definition TRADE ROW for FEATURE HISTORY only (the frozen builder's `renormalize_raw.py` row of a
+    /// corpus-known buy/sell instruction): resolved trader, trader native+WSOL delta, trader token delta, venue. It
+    /// carries NO reserve price, swap amount or quote: it can never reach order sizing, min-out/PRICE LIMIT, fills,
+    /// inventory valuation or emergency protection. Wallet-history participation is independent of whether the
+    /// market is executable; `venue_supported` records only what the producer knows about the market.
+    CorpusFlowRow {
+        /// The row's mint (the corpus's resolved candidate mint; may be a quote-side mint on routed USDC txs).
+        mint: Mint,
+        /// Venue of the instruction that produced the row.
+        venue: TradeVenue,
+        /// The trained basis (trader, native+WSOL delta, token delta).
+        feature: FeatureBasis,
+        /// Wire receive time, unix ms. `None` is refused downstream by name.
+        recv_unix_ms: Option<i64>,
+        /// Slot.
+        slot: Option<u64>,
+        /// Whole-transaction fee / CU, repeated on every row of the signature as the corpus does.
+        fee_lamports: Option<u64>,
+        /// Compute units consumed.
+        cu_consumed: Option<u64>,
+        /// Stable identity: digest of (signature, instruction index) in the `pq-corpus-row-v1` domain.
+        event_id: u128,
     },
 
     /// A narrative attention sample for a market: how many fresh mentions arrived
@@ -410,6 +460,25 @@ pub enum AppEvent {
         clip_lamports: u64,
         filled: Option<(u64, u64)>,
     },
+    /// Cumulative management-sell report (REDUCE / EXIT, or ADD with `value` = cumulative notional spent): the
+    /// TOTAL the order has filled, so applying it is idempotent. Bound to order id and mint.
+    ModelMgmtReport {
+        mint: Mint,
+        order_id: u64,
+        /// 0 = reduce, 1 = exit, 2 = add. Must match the issued order.
+        action: u8,
+        /// The order's issued intended quantity, restated by the executor. Must match.
+        intended: u64,
+        cumulative_tokens: u64,
+        /// Cumulative gross proceeds (lamports); for an ADD, cumulative notional spent.
+        cumulative_gross: u64,
+        /// Cumulative all-in fees (lamports); must be 0 for an ADD.
+        cumulative_fees: u64,
+        /// AUTHORITATIVE TERMINAL evidence from the executor: the order is FINAL at these totals and nothing more
+        /// can execute (definitively no execution when the totals are 0; a definitively cancelled remainder
+        /// otherwise). `false` = execution of any remainder is still unknown. A timeout or a model verdict never sets it.
+        terminal: bool,
+    },
     OurBuyConfirmed {
         /// The mint that was bought.
         mint: Mint,
@@ -477,6 +546,7 @@ impl AppEvent {
             | AppEvent::OnchainConfirm { mint, .. }
             | AppEvent::CurveObserved { mint, .. }
             | AppEvent::AmmSwap { mint, .. }
+            | AppEvent::CorpusFlowRow { mint, .. }
             | AppEvent::LaunchObserved { mint, .. }
             | AppEvent::TokenMetadata { mint, .. }
             | AppEvent::CreatorAction { mint, .. }
@@ -484,6 +554,7 @@ impl AppEvent {
             | AppEvent::MarketAuxiliary { mint, .. }
             | AppEvent::NarrativeResolved { mint, .. }
             | AppEvent::ModelOrderEvidence { mint, .. }
+            | AppEvent::ModelMgmtReport { mint, .. }
             | AppEvent::OurBuyConfirmed { mint, .. }
             | AppEvent::OurBuyFailed { mint, .. }
             | AppEvent::OurSellConfirmed { mint, .. }

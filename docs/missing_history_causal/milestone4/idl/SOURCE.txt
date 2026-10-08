@@ -1,0 +1,4 @@
+pump-sdk 2.0.0 tarball sha256 d535b8dd91003a6be036e4f61a71a71ee678e36134ef25f409dcf2d7b9a016d6 (npm registry); IDL program metadata version 0.1.0 -- NOT proven to be the on-chain version live on 2026-09-09
+2091433899b07d003d98118ae6cd3c628960fd393b40710b6e15bce6d0e7f2d1  package/src/idl/pump_amm.json
+d87b52305fd6b2ec487d4ba1e08a49990c23fa9b8b76092b2097df0164fa3859  package/src/idl/pump_fees.json
+ffe966c42f1af41652ee753fe2f1e3f7cd4077d7e6f49faf3138959c8b56064b  package/src/idl/pump.json

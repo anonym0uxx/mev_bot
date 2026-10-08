@@ -1,0 +1,20 @@
+{
+ "S1": {
+  "mints_ge5": 4109,
+  "trades": 2791409,
+  "dropped_by_whole_run_band": 63655,
+  "drop_share": 0.022804,
+  "mints_with_any_drop": 1411,
+  "median_drop_share_among_hit": 0.0476,
+  "max_drop_share": 0.5909
+ },
+ "S2": {
+  "mints_ge5": 4512,
+  "trades": 2906229,
+  "dropped_by_whole_run_band": 64303,
+  "drop_share": 0.022126,
+  "mints_with_any_drop": 1697,
+  "median_drop_share_among_hit": 0.0518,
+  "max_drop_share": 0.9
+ }
+}

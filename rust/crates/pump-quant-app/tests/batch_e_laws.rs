@@ -91,6 +91,8 @@ fn drive_zombies(cfg: Config) -> (Report, Engine) {
                         fee_lamports: None,
                         cu_consumed: None,
                         venue: None,
+                        event_id: None,
+                        feature: None,
                     });
                 }
             }
@@ -170,6 +172,8 @@ fn drive_trap(cfg: Config) -> (Report, Engine) {
                 fee_lamports: None,
                 cu_consumed: None,
                 venue: None,
+                event_id: None,
+                feature: None,
             });
         }
     }
@@ -188,6 +192,8 @@ fn drive_trap(cfg: Config) -> (Report, Engine) {
         fee_lamports: None,
         cu_consumed: None,
         venue: None,
+        event_id: None,
+        feature: None,
     });
     eng.tick(AppEvent::OnchainConfirm {
         mint: mt,
@@ -213,6 +219,8 @@ fn drive_trap(cfg: Config) -> (Report, Engine) {
             fee_lamports: None,
             cu_consumed: None,
             venue: None,
+            event_id: None,
+            feature: None,
         });
     }
     for _ in 0..3 {
@@ -269,6 +277,8 @@ fn drive_squatter(cfg: Config) -> (Report, Engine) {
             fee_lamports: None,
             cu_consumed: None,
             venue: None,
+            event_id: None,
+            feature: None,
         });
     }
     eng.tick(AppEvent::OnchainConfirm {
@@ -300,6 +310,8 @@ fn drive_squatter(cfg: Config) -> (Report, Engine) {
                 fee_lamports: None,
                 cu_consumed: None,
                 venue: None,
+                event_id: None,
+                feature: None,
             });
         }
     }

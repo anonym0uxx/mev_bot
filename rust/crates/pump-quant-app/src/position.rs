@@ -206,6 +206,24 @@ impl ExitReason {
         )
     }
 
+    /// Inverse of [`ExitReason::code`] (a persisted protective order restores its trigger from it).
+    #[must_use]
+    pub const fn from_code(c: u8) -> Option<Self> {
+        Some(match c {
+            1 => ExitReason::RugPrecursor,
+            2 => ExitReason::HardStop,
+            3 => ExitReason::ThesisInvalidation,
+            4 => ExitReason::TakeProfitLadder,
+            5 => ExitReason::TrailingStop,
+            6 => ExitReason::TimeStop,
+            7 => ExitReason::ForceClose,
+            8 => ExitReason::CreatorDump,
+            9 => ExitReason::IntoStrength,
+            10 => ExitReason::ModelManaged,
+            _ => return None,
+        })
+    }
+
     /// A stable small code for the decision journal.
     #[must_use]
     pub const fn code(self) -> u8 {
@@ -595,6 +613,23 @@ impl HeldPosition {
         if frac_bps == 0 {
             return 0;
         }
+        let (gross, fee_all_in) = self.sim_settlement(frac_bps, mult_bps, p);
+        let cost = u128::from(self.cost_lamports) * u128::from(frac_bps) / 10_000;
+        self.remaining_bps -= frac_bps;
+        (gross as i128)
+            .saturating_sub(fee_all_in as i128)
+            .saturating_sub(cost as i128)
+    }
+
+    /// The SIMULATED settlement of selling `frac_bps` of this position at `mult_bps`: (gross proceeds after the
+    /// configured impairment and own curve impact, ALL-IN fee = venue fee + one landed leg). Pure; the single
+    /// source of the paper executor's proceeds. Its fee is MODELLED (venue schedule + measured p50 leg), not
+    /// executed evidence: fills priced by it stay outside assessable PnL.
+    fn sim_settlement(&self, frac_bps: u32, mult_bps: u32, p: &LifecycleParams) -> (u128, u128) {
+        let frac_bps = frac_bps.min(self.remaining_bps);
+        if frac_bps == 0 {
+            return (0, 0);
+        }
         let notional = u128::from(self.size_lamports) * u128::from(frac_bps) / 10_000;
         let mut gross = notional * u128::from(mult_bps) / 10_000;
         // §38 adversarial impairment: every sell pays the configured extra slippage
@@ -621,15 +656,33 @@ impl HeldPosition {
             p.fee_bps
         };
         let fee = gross * u128::from(venue_fee_bps) / 10_000;
+        // net = gross − venue fee − this tranche's landed-transaction cost − pro-rata entry cost (the caller).
+        (gross, fee + u128::from(p.fixed_lamports_per_leg))
+    }
+
+    /// Book a sell from AUTHORITATIVE settlement totals (gross proceeds and all-in fees, lamports, for exactly this
+    /// tranche) instead of the simulated price/impairment/fee model. Net = gross - fees - the tranche's pro-rata
+    /// entry cost. The reported fee is all-in (venue fee plus landing cost), so no extra fixed leg cost is charged.
+    fn realize_settled(&mut self, frac_bps: u32, gross: u64, fee: u64) -> i128 {
+        let frac_bps = frac_bps.min(self.remaining_bps);
         let cost = u128::from(self.cost_lamports) * u128::from(frac_bps) / 10_000;
         self.remaining_bps -= frac_bps;
-        // proceeds − venue fee − this tranche's landed-transaction cost − pro-rata
-        // entry cost (which already carries the ENTRY leg's fee and fixed cost).
-        let proceeds = gross.saturating_sub(fee);
-        (proceeds as i128)
+        i128::from(gross)
+            .saturating_sub(i128::from(fee))
             .saturating_sub(cost as i128)
-            .saturating_sub(i128::from(p.fixed_lamports_per_leg))
     }
+}
+
+/// A protective trigger that fired on a model-managed position when protection is routed through execution: the
+/// position is NOT changed. The engine turns it into an identifiable protective order (or defers it by name).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProtectIntent {
+    /// Market.
+    pub mint: [u8; 32],
+    /// The agreed safeguard that fired.
+    pub reason: ExitReason,
+    /// The spot trigger mark (fixed point); NOT an executable sell quote.
+    pub price_fp: u64,
 }
 
 /// The bounded per-mint held-position manager. Fed by the engine's admit + swap +
@@ -644,6 +697,16 @@ pub struct ScalpLifecycle {
     /// `mem::take`, so the per-tick exit scan allocates nothing in steady state.
     /// Bounded by `cap` (≤ max_concurrent_positions). No state crosses ticks.
     fired_buf: Vec<[u8; 32]>,
+    /// Tokens that an UNRESOLVED sell (acknowledgement unknown) may already have executed. A protective close
+    /// never sells them: it sells only `inventory - reserved`, and when nothing is free it defers (counted).
+    sell_reserved: BTreeMap<[u8; 32], u64>,
+    /// Protective closes deferred because every remaining token was reserved by an unresolved sell.
+    pub protect_deferred: u64,
+    /// Per-mint count of protective closes deferred because every remaining token was reserved.
+    protect_deferred_by: BTreeMap<[u8; 32], u64>,
+    /// When set, a trigger on a MODEL-MANAGED position queues a [`ProtectIntent`] instead of booking a close.
+    route_protection: bool,
+    intents: Vec<ProtectIntent>,
 }
 
 impl ScalpLifecycle {
@@ -655,7 +718,60 @@ impl ScalpLifecycle {
             params,
             cap: cap.max(1),
             fired_buf: Vec::with_capacity(cap.max(1)),
+            sell_reserved: BTreeMap::new(),
+            protect_deferred: 0,
+            protect_deferred_by: BTreeMap::new(),
+            route_protection: false,
+            intents: Vec::new(),
         }
+    }
+
+    /// Set (or clear, with 0) the tokens reserved by an unresolved sell on `mint`.
+    pub fn set_sell_reserved(&mut self, mint: &[u8; 32], tokens: u64) {
+        if tokens == 0 {
+            self.sell_reserved.remove(mint);
+        } else {
+            self.sell_reserved.insert(*mint, tokens);
+        }
+    }
+
+    /// Protective closes deferred on `mint` so far (fully reserved at the moment a trigger fired).
+    #[must_use]
+    pub fn protect_deferred_for(&self, mint: &[u8; 32]) -> u64 {
+        self.protect_deferred_by.get(mint).copied().unwrap_or(0)
+    }
+
+    /// Route protective triggers on model-managed positions through the engine's execution machinery.
+    pub fn set_route_protection(&mut self, on: bool) {
+        self.route_protection = on;
+    }
+
+    /// Count one protective intent that could not become an order (everything reserved / inventory unknown).
+    pub fn note_protect_deferred(&mut self, mint: &[u8; 32]) {
+        self.protect_deferred += 1;
+        *self.protect_deferred_by.entry(*mint).or_insert(0) += 1;
+    }
+
+    /// Whether the agreed hard stop still holds at `price_fp` (used to re-evaluate a deferred hard-stop intent).
+    /// Same level as the on-trade trigger: entry x (1 - hard_sl), trail disabled for model-managed positions.
+    #[must_use]
+    pub fn hard_stop_breached(&self, mint: &[u8; 32], price_fp: u64) -> bool {
+        let p = self.params;
+        self.open.get(mint).is_some_and(|pos| {
+            let (_, hard_sl) = pos.protection_widths(&p);
+            price_fp <= protection_level_fp(pos.entry_price_fp, pos.entry_price_fp, 10_000, hard_sl)
+        })
+    }
+
+    /// Triggers queued since the last call (the position is untouched by them).
+    pub fn take_intents(&mut self) -> Vec<ProtectIntent> {
+        std::mem::take(&mut self.intents)
+    }
+
+    /// Tokens currently reserved by an unresolved sell on `mint`.
+    #[must_use]
+    pub fn sell_reserved(&self, mint: &[u8; 32]) -> u64 {
+        self.sell_reserved.get(mint).copied().unwrap_or(0)
     }
 
     /// A snapshot of every open position for report-plane consumption (item 2c).
@@ -832,6 +948,77 @@ impl ScalpLifecycle {
         price_fp: u64,
         reason: ExitReason,
     ) -> Result<Exit, SellRefusal> {
+        self.sell_tokens_inner(mint, tokens, price_fp, reason, None)
+    }
+
+    /// The paper executor's SIMULATED settlement for selling `tokens` at `price_fp`: `(gross, all-in fee)` in
+    /// lamports, computed by exactly the math a price-based sell books (no state change). The caller books it
+    /// through the cumulative-settlement path, so the recorded totals ARE what moved cash.
+    pub fn simulate_sell_settlement(
+        &self,
+        mint: &[u8; 32],
+        tokens: u64,
+        price_fp: u64,
+    ) -> Result<(u64, u64), SellRefusal> {
+        let Some(pos) = self.open.get(mint) else {
+            return Err(SellRefusal::NotHeld);
+        };
+        if !pos.inventory_from_fill {
+            return Err(SellRefusal::InventoryUnknown);
+        }
+        if tokens == 0 {
+            return Err(SellRefusal::ZeroQuantity);
+        }
+        if tokens > pos.inventory_tokens {
+            return Err(SellRefusal::ExceedsInventory {
+                held: pos.inventory_tokens,
+            });
+        }
+        if pos.entry_price_fp == 0 || price_fp == 0 {
+            return Err(SellRefusal::NoPrice);
+        }
+        let frac_bps = Self::sell_frac_bps(pos, tokens);
+        let (g, f) = pos.sim_settlement(frac_bps, pos.mult_bps(price_fp), &self.params);
+        Ok((
+            u64::try_from(g).unwrap_or(u64::MAX),
+            u64::try_from(f).unwrap_or(u64::MAX),
+        ))
+    }
+
+    /// Share of the remaining position `tokens` represents (floor: the unsold remainder carries the rounding).
+    fn sell_frac_bps(pos: &HeldPosition, tokens: u64) -> u32 {
+        if tokens == pos.inventory_tokens {
+            pos.remaining_bps
+        } else {
+            u32::try_from(
+                u128::from(tokens) * u128::from(pos.remaining_bps)
+                    / u128::from(pos.inventory_tokens),
+            )
+            .unwrap_or(pos.remaining_bps)
+            .min(pos.remaining_bps)
+        }
+    }
+
+    /// As [`Self::sell_tokens`], but the proceeds are the executor's authoritative `(gross, fee)` for this tranche.
+    pub fn sell_tokens_settled(
+        &mut self,
+        mint: &[u8; 32],
+        tokens: u64,
+        price_fp: u64,
+        reason: ExitReason,
+        gross_fee: (u64, u64),
+    ) -> Result<Exit, SellRefusal> {
+        self.sell_tokens_inner(mint, tokens, price_fp, reason, Some(gross_fee))
+    }
+
+    fn sell_tokens_inner(
+        &mut self,
+        mint: &[u8; 32],
+        tokens: u64,
+        price_fp: u64,
+        reason: ExitReason,
+        settled: Option<(u64, u64)>,
+    ) -> Result<Exit, SellRefusal> {
         let params = self.params;
         let Some(pos) = self.open.get_mut(mint) else {
             return Err(SellRefusal::NotHeld);
@@ -853,18 +1040,11 @@ impl ScalpLifecycle {
         let (mfe_bps, mae_bps) = pos.excursions_bps();
         let mult = pos.mult_bps(price_fp);
         let full = tokens == pos.inventory_tokens;
-        let frac_bps = if full {
-            pos.remaining_bps
-        } else {
-            // Floor: the unsold remainder carries the rounding, never a phantom sale.
-            u32::try_from(
-                u128::from(tokens) * u128::from(pos.remaining_bps)
-                    / u128::from(pos.inventory_tokens),
-            )
-            .unwrap_or(pos.remaining_bps)
-            .min(pos.remaining_bps)
+        let frac_bps = Self::sell_frac_bps(pos, tokens);
+        let net = match settled {
+            Some((g, f)) => pos.realize_settled(frac_bps, g, f),
+            None => pos.realize(frac_bps, mult, &params),
         };
-        let net = pos.realize(frac_bps, mult, &params);
         pos.inventory_tokens -= tokens;
         let exit_px = u64::try_from(u128::from(pos.entry_price_fp) * u128::from(mult) / 10_000)
             .unwrap_or(pos.entry_price_fp);
@@ -1209,7 +1389,7 @@ impl ScalpLifecycle {
             let drop = ((u128::from(prev_price_fp - price_fp) * 10_000) / u128::from(prev_price_fp))
                 as u32;
             if drop >= p.precursor_drop_bps {
-                return Some(self.close(mint, mult, ExitReason::RugPrecursor));
+                return self.close_guarded(mint, mult, ExitReason::RugPrecursor);
             }
         }
 
@@ -1220,10 +1400,13 @@ impl ScalpLifecycle {
         if pos.model_managed {
             // MODEL MODE: the hard stop is a safeguard the model cannot be asked to keep; the
             // trailing stop and every other discretionary trigger below stand down.
+            // `trail_bps = 10_000` disables the trail leg (trail level 0) so ONLY the documented stop,
+            // entry x (1 - hard_sl), applies. Passing 0 here made the trail level equal ENTRY, which turned
+            // this catastrophic backstop into a break-even stop that fired on any print at/below entry.
             let hard_level =
-                protection_level_fp(pos.entry_price_fp, pos.entry_price_fp, 0, hard_sl);
+                protection_level_fp(pos.entry_price_fp, pos.entry_price_fp, 10_000, hard_sl);
             if price_fp <= hard_level {
-                return Some(self.close(mint, mult, ExitReason::HardStop));
+                return self.close_guarded(mint, mult, ExitReason::HardStop);
             }
             return None;
         }
@@ -1237,14 +1420,14 @@ impl ScalpLifecycle {
             } else {
                 ExitReason::TrailingStop
             };
-            return Some(self.close(mint, mult, reason));
+            return self.close_guarded(mint, mult, reason);
         }
 
         // §24(d) LAW 5 exit-into-strength: an authentic buy-side climax while in
         // profit — sell the remainder INTO the buyers (harvest strength rather than
         // wait for exhaustion). Terminal; ranks below the protective stops above.
         if climax {
-            return Some(self.close(mint, mult, ExitReason::IntoStrength));
+            return self.close_guarded(mint, mult, ExitReason::IntoStrength);
         }
 
         // P2 thesis-invalidation: CVD rolled over, or a stall while in profit.
@@ -1295,7 +1478,7 @@ impl ScalpLifecycle {
                     });
                 }
             }
-            return Some(self.close(mint, mult, ExitReason::ThesisInvalidation));
+            return self.close_guarded(mint, mult, ExitReason::ThesisInvalidation);
         }
 
         // P3 principal-recovery ladder (partial tranches; position stays open).
@@ -1443,7 +1626,7 @@ impl ScalpLifecycle {
             let mult = latest_price_fp(&mint)
                 .map(|pr| self.open[&mint].mult_bps(pr))
                 .unwrap_or(10_000_u32.saturating_sub(p.hard_sl_bps));
-            out.push(self.close(&mint, mult, ExitReason::TimeStop));
+            out.extend(self.close_guarded(&mint, mult, ExitReason::TimeStop));
         }
         self.fired_buf = fired;
         out
@@ -1488,7 +1671,7 @@ impl ScalpLifecycle {
             let mult = latest_price_fp(&mint)
                 .map(|pr| self.open[&mint].mult_bps(pr))
                 .unwrap_or(10_000_u32.saturating_sub(p.hard_sl_bps));
-            out.push(self.close(&mint, mult, ExitReason::TimeStop));
+            out.extend(self.close_guarded(&mint, mult, ExitReason::TimeStop));
         }
         self.fired_buf = fired;
         out
@@ -1498,7 +1681,7 @@ impl ScalpLifecycle {
             return None;
         }
         let mult = self.open[mint].mult_bps(price_fp);
-        Some(self.close(mint, mult, reason))
+        self.close_guarded(mint, mult, reason)
     }
 
     /// Force-close every remaining open position at its last-known multiple (end of
@@ -1516,7 +1699,7 @@ impl ScalpLifecycle {
             let mult = latest_price_fp(&mint)
                 .map(|pr| self.open[&mint].mult_bps(pr))
                 .unwrap_or(10_000_u32.saturating_sub(sl));
-            out.push(self.close(&mint, mult, ExitReason::ForceClose));
+            out.extend(self.close_guarded(&mint, mult, ExitReason::ForceClose));
         }
         out
     }
@@ -1537,7 +1720,7 @@ impl ScalpLifecycle {
             let mult = latest_price_fp(&mint)
                 .map(|pr| self.open[&mint].mult_bps(pr))
                 .unwrap_or(10_000_u32.saturating_sub(sl));
-            out.push(self.close(&mint, mult, ExitReason::ForceClose));
+            out.extend(self.close_guarded(&mint, mult, ExitReason::ForceClose));
         }
         out
     }
@@ -1611,6 +1794,62 @@ impl ScalpLifecycle {
             true
         } else {
             false
+        }
+    }
+
+    /// A protective/administrative close that never sells tokens an unresolved sell may already have executed.
+    /// No reservation: identical to `close`. Reservation and free inventory: sells ONLY the free part (a partial,
+    /// the remainder keeps its protection). Everything reserved, or inventory unknown: nothing is sold and the
+    /// deferral is counted; the position stays open and every trigger stays armed.
+    fn close_guarded(
+        &mut self,
+        mint: &[u8; 32],
+        mult_bps: u32,
+        reason: ExitReason,
+    ) -> Option<Exit> {
+        // End-of-run accounting (`ForceClose`) is not protection: it keeps booking directly.
+        if self.route_protection
+            && reason != ExitReason::ForceClose
+            && self.open.get(mint).is_some_and(|p| p.model_managed)
+        {
+            let price_fp = self.open.get(mint).map_or(0, |p| {
+                u64::try_from(u128::from(p.entry_price_fp) * u128::from(mult_bps) / 10_000)
+                    .unwrap_or(0)
+            });
+            self.intents.push(ProtectIntent {
+                mint: *mint,
+                reason,
+                price_fp,
+            });
+            return None;
+        }
+        let reserved = self.sell_reserved(mint);
+        if reserved == 0 {
+            return Some(self.close(mint, mult_bps, reason));
+        }
+        let (inv, known) = self
+            .open
+            .get(mint)
+            .map_or((0, false), |p| (p.inventory_tokens, p.inventory_from_fill));
+        let free = if known {
+            inv.saturating_sub(reserved)
+        } else {
+            0
+        };
+        if free == 0 {
+            self.protect_deferred += 1;
+            *self.protect_deferred_by.entry(*mint).or_insert(0) += 1;
+            return None;
+        }
+        let price_fp = self.open.get(mint).map_or(0, |p| {
+            u64::try_from(u128::from(p.entry_price_fp) * u128::from(mult_bps) / 10_000).unwrap_or(0)
+        });
+        match self.sell_tokens(mint, free, price_fp, reason) {
+            Ok(e) => Some(e),
+            Err(_) => {
+                self.protect_deferred += 1;
+                None
+            }
         }
     }
 
@@ -2280,6 +2519,158 @@ mod tests {
             lc.export_held(),
             before,
             "a refused scale-in leaves the position untouched"
+        );
+    }
+
+    // ---- hard stop pinned independently of every other trigger -------------------------------------------
+    //
+    // Source of the 3,500 bp contract (restored, not introduced): `LifecycleParams::standard().hard_sl_bps` and
+    // `Config::lc_hard_sl_bps` both default to 3_500 ("-35% catastrophic backstop"), `engine.rs` wires the config value
+    // into the lifecycle, and `protection_level_fp` documents the stop as `entry * (10_000 - hard_sl_bps) / 10_000`.
+    // The model-managed branch (dd8fe683) said it keeps that stop but passed `trail_bps = 0`, which made the trail
+    // leg equal ENTRY (a break-even stop). The fix passes 10_000 so the trail level is 0.
+
+    /// Hard-stop level in fixed point, derived by hand: floor(entry x 6_500 / 10_000).
+    fn hand_level(entry: u64) -> u64 {
+        (u128::from(entry) * 6_500 / 10_000) as u64
+    }
+
+    /// One model-managed position; the price walks entry -> 80% (a 20% step, below the 30% rug-precursor step) -> `px`.
+    /// The rug precursor therefore cannot fire on the final step: only the hard stop can.
+    fn managed_walk_to(px: u64) -> (Option<Exit>, Option<Exit>) {
+        let m = [1u8; 32];
+        let mut lc = held_with_fill(1_000_000);
+        assert!(lc.set_model_managed(&m));
+        let first = lc.on_trade(&m, PX / 10 * 8, -1, 1, TEST_LIQ_LAMPORTS);
+        let last = lc.on_trade(&m, px, -1, 2, TEST_LIQ_LAMPORTS);
+        (first, last)
+    }
+
+    #[test]
+    fn the_hard_stop_level_is_the_documented_entry_times_6500_bp_with_floor_rounding() {
+        assert_eq!(P.hard_sl_bps, 3_500, "intended backstop");
+        let lvl = hand_level(PX);
+        assert_eq!(lvl, 650_000_000);
+        assert_eq!(
+            protection_level_fp(PX, PX, 10_000, 3_500),
+            lvl,
+            "trail leg disabled: level is exactly the stop"
+        );
+        assert_eq!(
+            protection_level_fp(PX, PX, 0, 3_500),
+            PX,
+            "the old call: trail leg = entry (break-even)"
+        );
+        // floor rounding on an entry that does not divide evenly: 12_345 x 0.65 = 8_024.25 -> 8_024
+        assert_eq!(protection_level_fp(12_345, 12_345, 10_000, 3_500), 8_024);
+    }
+
+    #[test]
+    fn hard_stop_isolated_unchanged_small_decline_and_just_above_do_not_exit() {
+        let lvl = hand_level(PX);
+        for (name, px) in [
+            ("unchanged", PX),
+            ("-0.1%", PX / 1_000 * 999),
+            ("-5%", PX / 100 * 95),
+            ("-20%", PX / 10 * 8),
+            ("just above the stop", lvl + 1),
+        ] {
+            let (first, last) = managed_walk_to(px);
+            assert!(first.is_none(), "{name}: the 80% waypoint must not exit");
+            assert!(last.is_none(), "{name}: {px} > {lvl} must not exit");
+        }
+    }
+
+    #[test]
+    fn hard_stop_isolated_exactly_at_and_below_the_level_exit_as_hard_stop_not_rug_or_trail() {
+        let lvl = hand_level(PX);
+        for (name, px) in [
+            ("exactly at the stop", lvl),
+            ("one fixed-point unit below", lvl - 1),
+            ("far below", lvl / 2),
+        ] {
+            let m = [1u8; 32];
+            let mut lc = held_with_fill(1_000_000);
+            assert!(lc.set_model_managed(&m));
+            // Walk down in <30% steps so the rug precursor is structurally unable to be the trigger.
+            let mut cur = PX;
+            let mut last = None;
+            while cur > px {
+                let next = (cur / 10 * 8).max(px); // never a 30% step
+                last = lc.on_trade(&m, next, -1, 1, TEST_LIQ_LAMPORTS);
+                if last.is_some() {
+                    assert_eq!(next, px.max(next), "{name}");
+                    break;
+                }
+                cur = next;
+            }
+            let ex = last.unwrap_or_else(|| panic!("{name}: {px} <= {lvl} must exit"));
+            assert_eq!(ex.reason, ExitReason::HardStop, "{name}");
+        }
+        // Boundary is exact: the print one unit above does not exit, the print at the level does.
+        let (_, above) = managed_walk_to(lvl + 1);
+        assert!(above.is_none());
+        let (_, at) = managed_walk_to(lvl);
+        assert_eq!(at.expect("at level").reason, ExitReason::HardStop);
+    }
+
+    #[test]
+    fn the_trail_leg_is_actually_disabled_a_big_run_up_then_a_giveback_does_not_exit_a_managed_position(
+    ) {
+        let m = [1u8; 32];
+        let mut lc = held_with_fill(1_000_000);
+        assert!(lc.set_model_managed(&m));
+        // 1x -> 3x in +25% steps, then give back to 1.5x in -20% steps: a 50% giveback from the peak. A trail leg
+        // would fire (22%+ from peak); the hard stop (0.65x of ENTRY) must not, and no step is a 30% drop.
+        let mut px = PX;
+        let mut t = 1;
+        while px < 3 * PX {
+            px = px / 100 * 125;
+            assert!(
+                lc.on_trade(&m, px, 1, t, TEST_LIQ_LAMPORTS).is_none(),
+                "run-up at {px}"
+            );
+            t += 1;
+        }
+        while px > PX / 2 * 3 {
+            px = px / 10 * 8;
+            assert!(
+                lc.on_trade(&m, px, -1, t, TEST_LIQ_LAMPORTS).is_none(),
+                "giveback at {px} must not exit a managed position above 0.65x entry"
+            );
+            t += 1;
+        }
+        assert!(lc.has(&m));
+    }
+
+    #[test]
+    fn legacy_unmanaged_positions_keep_their_trail_and_hard_stop_behaviour() {
+        // The legacy branch was not edited. Control: the SAME 20% walk that a managed position survives takes the
+        // trailing stop on a legacy position (22% trail from the entry-level peak, level 0.78x), and the
+        // protection leaf is unchanged for the legacy arguments.
+        let m = [1u8; 32];
+        let mut lc = held_with_fill(1_000_000);
+        assert!(
+            lc.on_trade(&m, PX / 100 * 80, -1, 1, TEST_LIQ_LAMPORTS)
+                .is_none(),
+            "0.80x is above the 0.78x trail"
+        );
+        let ex = lc
+            .on_trade(&m, PX / 100 * 77, -1, 2, TEST_LIQ_LAMPORTS)
+            .expect("0.77x is below the 0.78x trail");
+        // The legacy classifier passes `trail_bps = 0` when LABELLING, so any legacy exit at/below entry is labelled
+        // HardStop even when the trail level (0.78x) is what fired. That is a pre-existing LABEL quirk on the legacy
+        // path; the exit itself (and its timing) is what this pins, and the legacy path is deliberately unedited.
+        assert_eq!(
+            ex.reason,
+            ExitReason::HardStop,
+            "legacy label behaviour, unchanged"
+        );
+        let trail = P.trail_base_bps;
+        assert_eq!(
+            protection_level_fp(PX, PX, trail, 3_500),
+            PX / 10_000 * u64::from(10_000 - trail),
+            "legacy leaf call unchanged"
         );
     }
 }

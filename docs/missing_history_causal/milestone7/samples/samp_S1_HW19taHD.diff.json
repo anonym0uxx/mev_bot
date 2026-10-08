@@ -1,0 +1,412 @@
+[
+ {
+  "t": 1788965678182,
+  "split": "train",
+  "n_fields": 61,
+  "n_diff": 20,
+  "identical_lines": 10,
+  "total_lines": 21,
+  "diffs": [
+   {
+    "field": "buy_count",
+    "rust": "254",
+    "corpus": "252",
+    "rel": 0.007936507936507936
+   },
+   {
+    "field": "buy_volume_lamports",
+    "rust": "96246468576",
+    "corpus": "96239725360",
+    "rel": 7.006686661641986e-05
+   },
+   {
+    "field": "buyer_seller_ratio",
+    "rust": "0.92701",
+    "corpus": "0.91971",
+    "rel": 0.007937284578834603
+   },
+   {
+    "field": "creator_past_launches",
+    "rust": "0",
+    "corpus": "136",
+    "rel": -1.0
+   },
+   {
+    "field": "curve_k",
+    "rust": "32190000179808826138435355",
+    "corpus": "32190000181624795985412760",
+    "rel": -5.641417496255765e-11
+   },
+   {
+    "field": "curve_price_sol_per_raw_token",
+    "rust": "0.000000000000049096",
+    "corpus": "0.000000000000053222",
+    "rel": -0.07752433204314002
+   },
+   {
+    "field": "curve_progress",
+    "rust": "0.114756",
+    "corpus": "0.134012",
+    "rel": -0.14368862489926273
+   },
+   {
+    "field": "mcap_sol_at_t",
+    "rust": "49.095928",
+    "corpus": "53.221955",
+    "rel": -0.07752490490061856
+   },
+   {
+    "field": "n_prior_trades",
+    "rust": "528",
+    "corpus": "526",
+    "rel": 0.0038022813688212928
+   },
+   {
+    "field": "net_flow_lamports",
+    "rust": "-6914551286",
+    "corpus": "-6921294502",
+    "rel": 0.0009742709254824308
+   },
+   {
+    "field": "real_sol_reserves_sol",
+    "rust": "9.754219087",
+    "corpus": "11.390998282",
+    "rel": -0.14369058395754755
+   },
+   {
+    "field": "real_tokens_reserves",
+    "rust": "529825380578165",
+    "corpus": "497805334921180",
+    "rel": 0.0643224236679884
+   },
+   {
+    "field": "smart_entrants_300s",
+    "rust": "7",
+    "corpus": "8",
+    "rel": -0.125
+   },
+   {
+    "field": "smart_net_flow_sol_300s",
+    "rust": "-2.577092",
+    "corpus": "-1.987958",
+    "rel": -0.29635133136615566
+   },
+   {
+    "field": "staleness_ms",
+    "rust": "320",
+    "corpus": "23",
+    "rel": 12.91304347826087
+   },
+   {
+    "field": "top5_trader_share",
+    "rust": "0.24149",
+    "corpus": "0.2415",
+    "rel": -4.14078674947505e-05
+   },
+   {
+    "field": "unique_traders",
+    "rust": "215",
+    "corpus": "214",
+    "rel": 0.004672897196261682
+   },
+   {
+    "field": "v_sol_reserves_sol",
+    "rust": "39.754219087",
+    "corpus": "41.390998282",
+    "rel": -0.03954432758177261
+   },
+   {
+    "field": "v_tokens_reserves",
+    "rust": "809725380578165",
+    "corpus": "777705334921180",
+    "rel": 0.04117246496737767
+   },
+   {
+    "field": "vol_30s_bp",
+    "rust": "5356",
+    "corpus": "3137",
+    "rel": 0.7073637233025183
+   }
+  ]
+ },
+ {
+  "t": 1788965708182,
+  "split": "train",
+  "n_fields": 61,
+  "n_diff": 11,
+  "identical_lines": 15,
+  "total_lines": 21,
+  "diffs": [
+   {
+    "field": "buy_count",
+    "rust": "286",
+    "corpus": "284",
+    "rel": 0.007042253521126761
+   },
+   {
+    "field": "buy_volume_lamports",
+    "rust": "103177372989",
+    "corpus": "103170629773",
+    "rel": 6.535984140870986e-05
+   },
+   {
+    "field": "buyer_seller_ratio",
+    "rust": "0.78356",
+    "corpus": "0.77808",
+    "rel": 0.007042977585852406
+   },
+   {
+    "field": "creator_past_launches",
+    "rust": "0",
+    "corpus": "136",
+    "rel": -1.0
+   },
+   {
+    "field": "n_prior_trades",
+    "rust": "651",
+    "corpus": "649",
+    "rel": 0.0030816640986132513
+   },
+   {
+    "field": "net_flow_lamports",
+    "rust": "-16815808342",
+    "corpus": "-16822551558",
+    "rel": 0.0004008438301853948
+   },
+   {
+    "field": "smart_entrants_300s",
+    "rust": "7",
+    "corpus": "8",
+    "rel": -0.125
+   },
+   {
+    "field": "smart_net_flow_sol_300s",
+    "rust": "-3.18815",
+    "corpus": "-2.599016",
+    "rel": -0.22667578806748384
+   },
+   {
+    "field": "staleness_ms",
+    "rust": "70",
+    "corpus": "69",
+    "rel": 0.014492753623188406
+   },
+   {
+    "field": "top5_trader_share",
+    "rust": "0.21578",
+    "corpus": "0.21579",
+    "rel": -4.634135038699662e-05
+   },
+   {
+    "field": "unique_traders",
+    "rust": "246",
+    "corpus": "245",
+    "rel": 0.004081632653061225
+   }
+  ]
+ },
+ {
+  "t": 1788965738182,
+  "split": "train",
+  "n_fields": 61,
+  "n_diff": 9,
+  "identical_lines": 16,
+  "total_lines": 21,
+  "diffs": [
+   {
+    "field": "buy_count",
+    "rust": "286",
+    "corpus": "284",
+    "rel": 0.007042253521126761
+   },
+   {
+    "field": "buy_volume_lamports",
+    "rust": "103177372989",
+    "corpus": "103170629773",
+    "rel": 6.535984140870986e-05
+   },
+   {
+    "field": "buyer_seller_ratio",
+    "rust": "0.74869",
+    "corpus": "0.74346",
+    "rel": 0.007034675705485106
+   },
+   {
+    "field": "creator_past_launches",
+    "rust": "0",
+    "corpus": "136",
+    "rel": -1.0
+   },
+   {
+    "field": "n_prior_trades",
+    "rust": "668",
+    "corpus": "666",
+    "rel": 0.003003003003003003
+   },
+   {
+    "field": "net_flow_lamports",
+    "rust": "-18707253161",
+    "corpus": "-18713996377",
+    "rel": 0.0003603300900649736
+   },
+   {
+    "field": "smart_entrants_300s",
+    "rust": "7",
+    "corpus": "8",
+    "rel": -0.125
+   },
+   {
+    "field": "smart_net_flow_sol_300s",
+    "rust": "-3.18815",
+    "corpus": "-2.599016",
+    "rel": -0.22667578806748384
+   },
+   {
+    "field": "unique_traders",
+    "rust": "251",
+    "corpus": "250",
+    "rel": 0.004
+   }
+  ]
+ },
+ {
+  "t": 1788965768182,
+  "split": "train",
+  "n_fields": 61,
+  "n_diff": 11,
+  "identical_lines": 15,
+  "total_lines": 21,
+  "diffs": [
+   {
+    "field": "buy_count",
+    "rust": "292",
+    "corpus": "290",
+    "rel": 0.006896551724137931
+   },
+   {
+    "field": "buy_volume_lamports",
+    "rust": "104287559132",
+    "corpus": "104280815916",
+    "rel": 6.466401265436757e-05
+   },
+   {
+    "field": "buyer_seller_ratio",
+    "rust": "0.75258",
+    "corpus": "0.74742",
+    "rel": 0.00690374889620301
+   },
+   {
+    "field": "creator_past_launches",
+    "rust": "0",
+    "corpus": "136",
+    "rel": -1.0
+   },
+   {
+    "field": "n_prior_trades",
+    "rust": "680",
+    "corpus": "678",
+    "rel": 0.0029498525073746312
+   },
+   {
+    "field": "net_flow_lamports",
+    "rust": "-18893171874",
+    "corpus": "-18899915090",
+    "rel": 0.00035678551823589173
+   },
+   {
+    "field": "smart_entrants_300s",
+    "rust": "7",
+    "corpus": "8",
+    "rel": -0.125
+   },
+   {
+    "field": "smart_net_flow_sol_300s",
+    "rust": "-3.18815",
+    "corpus": "-2.599016",
+    "rel": -0.22667578806748384
+   },
+   {
+    "field": "staleness_ms",
+    "rust": "657",
+    "corpus": "656",
+    "rel": 0.001524390243902439
+   },
+   {
+    "field": "top5_trader_share",
+    "rust": "0.2117",
+    "corpus": "0.21171",
+    "rel": -4.723442444858533e-05
+   },
+   {
+    "field": "unique_traders",
+    "rust": "254",
+    "corpus": "253",
+    "rel": 0.003952569169960474
+   }
+  ]
+ },
+ {
+  "t": 1788965798182,
+  "split": "train",
+  "n_fields": 61,
+  "n_diff": 9,
+  "identical_lines": 16,
+  "total_lines": 21,
+  "diffs": [
+   {
+    "field": "buy_count",
+    "rust": "299",
+    "corpus": "297",
+    "rel": 0.006734006734006734
+   },
+   {
+    "field": "buy_volume_lamports",
+    "rust": "107446056846",
+    "corpus": "107439313630",
+    "rel": 6.276302195323323e-05
+   },
+   {
+    "field": "buyer_seller_ratio",
+    "rust": "0.76471",
+    "corpus": "0.75959",
+    "rel": 0.00674047841598759
+   },
+   {
+    "field": "creator_past_launches",
+    "rust": "0",
+    "corpus": "136",
+    "rel": -1.0
+   },
+   {
+    "field": "n_prior_trades",
+    "rust": "690",
+    "corpus": "688",
+    "rel": 0.0029069767441860465
+   },
+   {
+    "field": "net_flow_lamports",
+    "rust": "-17631998554",
+    "corpus": "-17638741770",
+    "rel": 0.00038229574920524504
+   },
+   {
+    "field": "smart_entrants_300s",
+    "rust": "7",
+    "corpus": "8",
+    "rel": -0.125
+   },
+   {
+    "field": "smart_net_flow_sol_300s",
+    "rust": "-3.18815",
+    "corpus": "-2.599016",
+    "rel": -0.22667578806748384
+   },
+   {
+    "field": "unique_traders",
+    "rust": "256",
+    "corpus": "255",
+    "rel": 0.00392156862745098
+   }
+  ]
+ }
+]

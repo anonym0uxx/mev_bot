@@ -236,6 +236,8 @@ const WS_READ_TIMEOUT_MS: u64 = 100;
 /// refreshed at most this often, decoupling health reporting from event
 /// throughput so the watchdog never kills a healthy-but-starved daemon.
 const STATUS_HEARTBEAT_SECS: u64 = 15;
+/// Upper bound on the curve-PDA -> mint identity map (memory bound; overflow is counted).
+const PDA_MAP_CAP: usize = 500_000;
 /// Bounded sleep on WS reconnect failures (was 5s which blocked the entire
 /// event loop). 500ms gives the server time to recover without starving
 /// the tick loop.
@@ -268,6 +270,8 @@ const EXIT_EMERGENCY: u8 = 99;
 const EXIT_MODEL_LIVE_CONFLICT: u8 = 98;
 /// A held-state ledger exists but cannot be applied: refusing to start rather than orphan exposure.
 const EXIT_HELD_STATE_REFUSED: u8 = 97;
+/// `PQ_FLOW_RESUME_MS` was set outside a declared offline paper replay, or its value is invalid.
+const EXIT_RESUME_CLOCK_REFUSED: u8 = 96;
 /// Path (relative to CWD) for the graceful-shutdown sentinel file.
 const DAEMON_STOP_FILE: &str = "data/DAEMON_STOP";
 /// Path (relative to CWD) for the emergency-stop sentinel file.
@@ -319,6 +323,43 @@ struct DaemonArgs {
     /// Wallet address (base58) for live mode. Required if live_mode=true.
     /// Used to bind the keypair and reconcile the on-chain balance.
     wallet_address: String,
+}
+
+/// OFFLINE PAPER REPLAY BARRIERS ONLY. Next LaserStream update, except that an update whose wire receive time is at or
+/// past the current barrier clock is HELD (and `ready` is raised) so the engine has applied exactly the prefix before
+/// that source-time clock. With no barrier left the held update is released and delivery is the plain `try_recv`.
+fn next_ls_update(
+    rx: &mpsc::Receiver<LaserStreamUpdate>,
+    hold: &mut Option<LaserStreamUpdate>,
+    limit: Option<i64>,
+    ready: &mut bool,
+) -> Result<LaserStreamUpdate, mpsc::TryRecvError> {
+    let Some(limit) = limit else {
+        if let Some(h) = hold.take() {
+            return Ok(h);
+        }
+        return rx.try_recv();
+    };
+    if *ready {
+        return Err(mpsc::TryRecvError::Empty);
+    }
+    let item = match hold.take() {
+        Some(h) => h,
+        None => rx.try_recv()?,
+    };
+    let ms = match &item {
+        LaserStreamUpdate::Transaction(tx) => tx.recv_unix_ms,
+        LaserStreamUpdate::Account { recv_unix_ms, .. } => *recv_unix_ms,
+        _ => None,
+    };
+    match ms {
+        Some(m) if m >= limit => {
+            *hold = Some(item);
+            *ready = true;
+            Err(mpsc::TryRecvError::Empty)
+        }
+        _ => Ok(item),
+    }
 }
 
 fn parse_args() -> Result<DaemonArgs, u8> {
@@ -785,6 +826,8 @@ struct SessionStats {
     ls_onchain_confirms_decoded: u64,
     /// Rev-30: LS account updates where PDA couldn't be resolved to a mint.
     ls_account_unresolved: u64,
+    pda_installed_from_tx: u64,
+    pda_map_full_refused: u64,
     fc_spawned: bool,
     fc_triggers_emitted: u64,
     fc_events_ingested: u64,
@@ -833,6 +876,8 @@ impl SessionStats {
             ls_account_received: 0,
             ls_onchain_confirms_decoded: 0,
             ls_account_unresolved: 0,
+            pda_installed_from_tx: 0,
+            pda_map_full_refused: 0,
             fc_spawned: false,
             fc_triggers_emitted: 0,
             fc_events_ingested: 0,
@@ -1815,6 +1860,11 @@ fn main() -> ExitCode {
                     std::path::Path::new(&safety),
                 );
                 model_armed = true;
+                // The event path supplies corpus-definition rows for PumpSwap: the AMM swap's own print must not
+                // also feed the trained windows (double count).
+                engine.set_corpus_flow_rows(
+                    std::env::var("PQ_CURVE_TRADE_SOURCE").as_deref() != Ok("snapshot_delta"),
+                );
                 eprintln!(
                     "[pq-daemon] paper model lane ARMED endpoint={endpoint} safety_file={safety} load={:?} blocked_at_start={}",
                     armed.load, armed.blocked_at_start
@@ -1826,10 +1876,127 @@ fn main() -> ExitCode {
         let held_file = std::env::var("PQ_MODEL_HELD_FILE").unwrap_or_else(|_| {
             pump_quant_junction::model_lifecycle::DEFAULT_HELD_FILE.to_string()
         });
-        match pump_quant_junction::model_lifecycle::restore_held_state(
+        let restore = pump_quant_junction::model_lifecycle::restore_held_state(
             &mut engine,
             std::path::Path::new(&held_file),
-        ) {
+        );
+        // Missing-history continuity is loaded BEFORE any inference, after the held restore so an
+        // absent ledger next to restored exposure is treated as untrusted, never as "no gap".
+        {
+            let mh_file = std::env::var("PQ_MODEL_MISSING_HISTORY_FILE").unwrap_or_else(|_| {
+                pump_quant_junction::model_lifecycle::DEFAULT_MISSING_HISTORY_FILE.to_string()
+            });
+            let held_restored = matches!(
+                restore,
+                pump_quant_junction::model_lifecycle::StartupRestore::Restored(_)
+            );
+            let st = pump_quant_junction::model_lifecycle::attach_missing_history(
+                &mut engine,
+                std::path::Path::new(&mh_file),
+                held_restored,
+            );
+            eprintln!("[pq-daemon] missing-history ledger {mh_file}: {st:?}");
+            if let pump_quant_junction::model_lifecycle::MissingHistoryStartup::ContinuityUnknown(
+                why,
+            ) = &st
+            {
+                eprintln!(
+                    "[pq-daemon] ALERT: missing-history continuity UNKNOWN ({why}) - Qwen entry and management refuse by name; monitoring, reconciliation and hard safeguards continue"
+                );
+            }
+        }
+        // Durable flow-history (trained smart/co-entry/lookback state) is restored and validated BEFORE inference. The resume
+        // time is the wall clock now: any interval between the checkpoint's cursors and it is a NAMED gap, never assumed covered.
+        {
+            let fh_file = std::env::var("PQ_FLOW_HISTORY_FILE")
+                .unwrap_or_else(|_| "data/flow_history.ckpt".to_string());
+            // The resume time is the wall clock. An operator-declared replay clock is accepted ONLY in an explicitly declared
+            // offline paper replay (see `resolve_flow_resume_clock`); anywhere else it is a startup refusal, never ignored.
+            let wall_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0);
+            let resume_ms = match pump_quant_junction::model_lifecycle::resolve_flow_resume_clock(
+                args.live_mode,
+                model_armed,
+                std::env::var("PQ_OFFLINE_PAPER_REPLAY").ok().as_deref(),
+                std::env::var("PQ_FLOW_RESUME_MS").ok().as_deref(),
+                wall_ms,
+            ) {
+                Ok((ms, declared)) => {
+                    if declared {
+                        eprintln!("[pq-daemon] OFFLINE PAPER REPLAY: flow-history resume clock DECLARED = {ms} (wall clock is {wall_ms}); no other clock is affected");
+                    }
+                    ms
+                }
+                Err(why) => {
+                    eprintln!("[pq-daemon] FATAL: PQ_FLOW_RESUME_MS refused ({why:?}). It is honoured only with PQ_OFFLINE_PAPER_REPLAY=1, no --live, and the paper model lane armed; refusing to start.");
+                    return ExitCode::from(EXIT_RESUME_CLOCK_REFUSED);
+                }
+            };
+            let prov = pump_quant_app::flow_checkpoint::Provenance {
+                seed_source: std::env::var("PQ_FLOW_SEED_SOURCE").unwrap_or_else(|_| "none".into()),
+                seed_sha256: std::env::var("PQ_FLOW_SEED_SHA256").unwrap_or_else(|_| "none".into()),
+                seed_before_ms: std::env::var("PQ_FLOW_SEED_BEFORE_MS")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(0),
+                producer: "pq-daemon/corpus-flow-rows".into(),
+            };
+            let a = engine.model_flow_attach(
+                std::path::Path::new(&fh_file),
+                pump_quant_market_state::flow_reducer::FlowParams::default(),
+                prov,
+                resume_ms,
+            );
+            eprintln!("[pq-daemon] flow-history {fh_file}: {a:?}");
+            // READINESS CLASS (reporting only; no refusal or trading behaviour changes here). An intentional cold start is
+            // DECLARED (`PQ_FLOW_SEED_SOURCE=cold_start:<label>`) and its zeros mean "none observed in the declared history".
+            // A fresh history with no declaration is a MISSING expected bootstrap; an untrusted file is a FAILED one.
+            {
+                let declared = std::env::var("PQ_FLOW_SEED_SOURCE").unwrap_or_default();
+                let class = match &a {
+                    pump_quant_app::engine::model_admit::FlowAttach::Fresh
+                        if declared.starts_with("cold_start:") =>
+                    {
+                        "cold_start_declared_history_limited"
+                    }
+                    pump_quant_app::engine::model_admit::FlowAttach::Fresh => {
+                        "bootstrap_missing_undeclared"
+                    }
+                    pump_quant_app::engine::model_admit::FlowAttach::Untrusted(_) => {
+                        "bootstrap_failed_untrusted"
+                    }
+                    pump_quant_app::engine::model_admit::FlowAttach::Restored {
+                        complete: true,
+                        ..
+                    } => "restored_complete",
+                    pump_quant_app::engine::model_admit::FlowAttach::Restored { .. } => {
+                        "restored_with_unavailable_interval"
+                    }
+                };
+                if class == "bootstrap_missing_undeclared" {
+                    eprintln!("[pq-daemon] ALERT: flow-history has NO checkpoint and NO declared cold start: the expected bootstrap is MISSING. Smart-wallet/co-entry/lookback fields are 'none observed', not 'none exist'.");
+                }
+                let _ = std::fs::write(
+                    "data/flow_readiness.json",
+                    format!("{{\"class\":\"{class}\",\"seed_source\":\"{}\",\"resume_clock_declared\":{},\"note\":\"history-limited classes: zeros mean none observed in this declared history, not none globally\"}}", declared.replace('"', "'"), std::env::var("PQ_FLOW_RESUME_MS").is_ok()),
+                );
+            }
+            match &a {
+                pump_quant_app::engine::model_admit::FlowAttach::Untrusted(why) => eprintln!(
+                    "[pq-daemon] ALERT: flow-history UNTRUSTED ({why}) - Qwen entry and management refuse by name; monitoring, reconciliation and hard safeguards continue; the file is left untouched"
+                ),
+                pump_quant_app::engine::model_admit::FlowAttach::Restored { unavailable_ms, complete: false, late } => eprintln!(
+                    "[pq-daemon] ALERT: flow-history restored across an UNAVAILABLE interval of {unavailable_ms} ms (late records: {late}) - every Qwen prompt after the gap refuses by scope until the interval is reconstructed into the state; an acknowledgement does not clear it; coverage is NOT complete"
+                ),
+                pump_quant_app::engine::model_admit::FlowAttach::Restored { late, .. } if *late > 0 => eprintln!(
+                    "[pq-daemon] ALERT: flow-history restored with {late} durable late-event records - affected windows refuse by scope"
+                ),
+                _ => {}
+            }
+        }
+        match restore {
             pump_quant_junction::model_lifecycle::StartupRestore::Clean => {
                 eprintln!("[pq-daemon] held-state: no ledger at {held_file} - clean start");
             }
@@ -1863,6 +2030,30 @@ fn main() -> ExitCode {
     let mut model_stop_last_alert = Instant::now() - Duration::from_secs(3600);
     let mut model_stop_session = pump_quant_junction::model_lifecycle::StopSession::new();
     let mut stale_callout = pump_quant_junction::model_lifecycle::StaleCallout::default();
+    // Management-sell report inbox (REDUCE/EXIT/ADD fills reported by the executor/operator). Cumulative reports are
+    // idempotent, so a restart that re-reads the whole file applies nothing twice.
+    let report_inbox_path = std::env::var("PQ_MGMT_REPORT_INBOX")
+        .unwrap_or_else(|_| "data/mgmt_reports.ndjson".to_string());
+    let mut report_inbox = pump_quant_junction::report_inbox::InboxReader::default();
+    let replay_harness = pump_quant_junction::report_inbox::inbox_enabled(
+        args.live_mode,
+        std::env::var("PQ_OFFLINE_PAPER_REPLAY").ok().as_deref(),
+    );
+    // OFFLINE REPLAY HARNESS ONLY: the inbox is the executor for management/protective sells (PQ_EXTERNAL_EXECUTION=1).
+    if replay_harness && model_armed && std::env::var("PQ_EXTERNAL_EXECUTION").as_deref() == Ok("1")
+    {
+        engine.model_set_external_execution(true);
+        eprintln!("[pq-daemon] harness: REDUCE/EXIT/protective orders are submitted to the external (inbox) executor");
+    }
+    eprintln!(
+        "[pq-daemon] management-report inbox: {} (harness-only; {})",
+        if replay_harness {
+            "ENABLED"
+        } else {
+            "disabled"
+        },
+        report_inbox_path
+    );
 
     // Run-mode tag for tape/journal exports — derived from the ENGINE's actual
     // RunMode, NOT the --live CLI flag. This prevents paper-mode fallback from
@@ -1975,6 +2166,27 @@ fn main() -> ExitCode {
         std::collections::HashMap::new();
 
     let mut reserve_tracker: HashMap<[u8; 32], ReserveSnapshot> = HashMap::new();
+    // Who owns pump.fun CURVE trade history. `events` (default): verified-successful TradeEvents
+    // only; snapshot deltas then supply reserve state and reconciliation, never trades, and the
+    // instruction-arg prints (no price, net quantities) are not queued as curve trades. A feed that
+    // cannot supply `meta.tx_ok` therefore yields named gaps, not silent snapshot-fed history.
+    let curve_trade_source = match std::env::var("PQ_CURVE_TRADE_SOURCE").as_deref() {
+        Ok("snapshot_delta") => {
+            pump_quant_junction::curve_trade_events::CurveTradeSource::SnapshotDelta
+        }
+        _ => pump_quant_junction::curve_trade_events::CurveTradeSource::Events,
+    };
+    let mut curve_dedup = pump_quant_junction::curve_trade_events::EventDedup::new(65_536);
+    let mut amm_row_stats = pump_quant_junction::curve_trade_events::AmmRowStats::default();
+    let mut amm_row_status_unknown: u64 = 0;
+    let mut curve_ev_produced: u64 = 0;
+    let mut curve_ev_duplicates: u64 = 0;
+    let mut curve_ev_incomplete: u64 = 0;
+    let mut curve_ev_incomplete_unnamed: u64 = 0;
+    let mut curve_compat = pump_quant_junction::curve_trade_events::ProducerCompat::default();
+    let mut curve_compat_announced = false;
+    let events_mode_health =
+        curve_trade_source == pump_quant_junction::curve_trade_events::CurveTradeSource::Events;
     // The instruction prints' wallets, waiting for their reserve prints (see `trade_join`).
     let mut trade_join = TradeJoin::new(TRADE_JOIN_CAP, TRADE_JOIN_HORIZON_SLOTS);
     // Wangr Rev-14: tracks which mints we've already emitted MarketAuxiliary
@@ -2257,6 +2469,33 @@ fn main() -> ExitCode {
 
     let tick_period = Duration::from_millis(tick_period_ms);
     let mut next_tick = Instant::now() + tick_period;
+    // OFFLINE PAPER REPLAY decision barriers (inert unless PQ_OFFLINE_PAPER_REPLAY=1 with the model lane armed AND an
+    // explicit barrier list). Production cadence, timestamp checks and monotonic deadlines are untouched.
+    let barrier_clocks: Vec<i64> = if replay_harness && model_armed {
+        std::env::var("PQ_REPLAY_BARRIERS")
+            .ok()
+            .map(|v| v.split(',').filter_map(|x| x.trim().parse().ok()).collect())
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let barrier_mode = !barrier_clocks.is_empty();
+    let mut barrier_idx: usize = 0;
+    let mut barrier_ready = false;
+    let mut barrier_hold: Option<LaserStreamUpdate> = None;
+    let mut harness_post_poll = Instant::now();
+    let mut barrier_seen_count: u64 = 0;
+    let mut barrier_last_input = Instant::now();
+    if barrier_mode {
+        engine.barrier_enable();
+        eprintln!(
+            "[pq-daemon] OFFLINE PAPER REPLAY: {} decision barriers at fixed source-time clocks; the timed tick is replaced by barrier ticks",
+            barrier_clocks.len()
+        );
+        if let Ok(w) = std::env::var("PQ_REPLAY_WATCH_MINT") {
+            engine.barrier_watch(&w);
+        }
+    }
     let status_path = std::path::Path::new(STATUS_PATH);
     let mut tick_counter: u64 = 0;
     let mut last_status_write_tick: u64 = 0;
@@ -2594,6 +2833,18 @@ fn main() -> ExitCode {
             // Low-frequency (status-heartbeat) dropped-print health: lets an operator tell an
             // honestly QUIET market from one whose data is INCOMPLETE. Never on the hot path.
             let flow_drop = engine.model_flow_drop_summary();
+            let (mh_unflushed, _mh_fail_now, mh_fail_total) = engine.model_missing_persist_health();
+            let (
+                fh_durable,
+                fh_sub,
+                fh_fail_now,
+                fh_fail_total,
+                fh_clone_us,
+                fh_clone_max_us,
+                fh_bytes,
+                fh_enc_us,
+                fh_write_us,
+            ) = engine.model_flow_health();
             let health_json = format!(
                 concat!(
                     "{{",
@@ -2605,13 +2856,35 @@ fn main() -> ExitCode {
                     "\"ls_active\":{},",
                     "\"ls_account_received\":{},",
                     "\"ls_onchain_confirms_decoded\":{},",
-                    "\"ls_account_unresolved\":{},",
+                    "\"ls_account_unresolved\":{},\"pda_installed_from_tx\":{},\"pda_map_full_refused\":{},",
                     "\"delta_trades_derived\":{},",
                     "\"delta_no_trade\":{},",
                     "\"delta_out_of_range\":{},",
                     "\"flow_upstream_drops\":{},",
                     "\"flow_windows_incomplete\":{},",
                     "\"flow_missing_observations\":{},",
+                    "\"missing_history_unflushed\":{},",
+                    "\"missing_history_persist_failures\":{},",
+                    "\"missing_history_continuity_unknown\":{},",
+                    "\"flow_ckpt_durable_seq\":{},",
+                    "\"flow_ckpt_submitted_seq\":{},",
+                    "\"flow_ckpt_failures_now\":{},",
+                    "\"flow_ckpt_failures_total\":{},",
+                    "\"flow_ckpt_clone_us\":{},",
+                    "\"flow_ckpt_clone_max_us\":{},",
+                    "\"flow_ckpt_bytes\":{},",
+                    "\"flow_ckpt_encode_us\":{},",
+                    "\"flow_ckpt_write_us\":{},",
+                    "\"curve_trade_source\":\"{}\",",
+                    "\"curve_events_produced\":{},",
+                    "\"curve_events_duplicates\":{},",
+                    "\"curve_events_incomplete\":{},",
+                    "\"curve_events_incomplete_unnamed\":{},",
+                    "\"amm_rows_emitted\":{},",
+                    "\"amm_rows_resolver_rejects\":{},",
+                    "\"amm_rows_duplicates\":{},",
+                    "\"amm_rows_status_unknown\":{},",
+                    "\"curve_producer_ready\":{},",
                     "\"uptime_secs\":{},",
                     "\"tick\":{},",
                     "\"account_subs_active\":{},",
@@ -2629,12 +2902,41 @@ fn main() -> ExitCode {
                 stats.ls_account_received,
                 stats.ls_onchain_confirms_decoded,
                 stats.ls_account_unresolved,
+                stats.pda_installed_from_tx,
+                stats.pda_map_full_refused,
                 stats.delta_trades_derived,
                 stats.delta_no_trade,
                 stats.delta_out_of_range,
                 flow_drop.drops_total,
                 flow_drop.mints_incomplete_now,
                 flow_drop.mints_history_unreconstructed,
+                mh_unflushed,
+                mh_fail_total,
+                engine.model_history_continuity_unknown(),
+                fh_durable,
+                fh_sub,
+                fh_fail_now,
+                fh_fail_total,
+                fh_clone_us,
+                fh_clone_max_us,
+                fh_bytes,
+                fh_enc_us,
+                fh_write_us,
+                if events_mode_health {
+                    "events"
+                } else {
+                    "snapshot_delta"
+                },
+                curve_ev_produced,
+                curve_ev_duplicates,
+                curve_ev_incomplete,
+                curve_ev_incomplete_unnamed,
+                amm_row_stats.emitted,
+                amm_row_stats.resolver_rejects,
+                amm_row_stats.duplicates,
+                amm_row_status_unknown,
+                // Snapshot-delta mode has no producer-status requirement.
+                !events_mode_health || curve_compat.ready(),
                 uptime_secs,
                 tick_counter,
                 sub_tracker.len(),
@@ -2643,6 +2945,15 @@ fn main() -> ExitCode {
                 stats.sub_cap_errors,
             );
             let _ = std::fs::write("data/daemon_health.json", health_json);
+            // The model lane's own funnel counters (discovery / refusal reasons / dispatch), written next to the health
+            // file so an operator or test can see WHERE a market stopped, with exact counts.
+            if model_armed {
+                let rep: std::collections::BTreeMap<&String, &u64> =
+                    engine.model_lane_report().iter().collect();
+                if let Ok(j) = serde_json::to_string(&rep) {
+                    let _ = std::fs::write("data/model_lane_report.json", j);
+                }
+            }
 
             last_status_write_tick = tick_counter;
             last_status_write_wallclock = Instant::now();
@@ -2650,12 +2961,50 @@ fn main() -> ExitCode {
 
         // ── Poll LaserStream gRPC (PRIMARY ingest lane) ──────────────────
         loop {
-            match ls_rx.try_recv() {
+            match next_ls_update(
+                &ls_rx,
+                &mut barrier_hold,
+                barrier_clocks.get(barrier_idx).copied(),
+                &mut barrier_ready,
+            ) {
                 Ok(LaserStreamUpdate::Transaction(tx)) => {
                     did_work = true;
                     stats.ls_transactions_received += 1;
                     let classified = classify_pump_instructions(&tx);
                     stats.ls_instructions_classified += classified.len() as u64;
+                    // CURVE IDENTITY from verified pump.fun instructions. The curve PDA is a pure function of
+                    // (pump program, mint), so deriving it from the mint named by a decoded pump.fun buy / sell /
+                    // create instruction is itself the ownership check: an account update whose pubkey equals this
+                    // derivation IS this mint's bonding curve. Required for markets first seen mid-life: no launch
+                    // or PumpPortal create event is needed, and none is pretended (launch history stays a separate,
+                    // named input). Bounded; a full map is counted, never silently grown.
+                    for c in &classified {
+                        let m = match c {
+                            pump_quant_junction::laserstream::PumpInstruction::Buy {
+                                mint, ..
+                            }
+                            | pump_quant_junction::laserstream::PumpInstruction::Sell {
+                                mint,
+                                ..
+                            }
+                            | pump_quant_junction::laserstream::PumpInstruction::Launch {
+                                mint,
+                                ..
+                            } => Some(*mint),
+                            _ => None,
+                        };
+                        if let Some(m) = m {
+                            let pda = bonding_curve_pda(&m).to_bytes();
+                            if !pda_to_mint.contains_key(&pda) {
+                                if pda_to_mint.len() >= PDA_MAP_CAP {
+                                    stats.pda_map_full_refused += 1;
+                                } else {
+                                    pda_to_mint.insert(pda, m);
+                                    stats.pda_installed_from_tx += 1;
+                                }
+                            }
+                        }
+                    }
                     let events = instructions_to_events_with_meta(
                         &classified,
                         tx.slot,
@@ -2664,6 +3013,91 @@ fn main() -> ExitCode {
                         tx.fee_lamports,
                         tx.cu_consumed,
                     );
+                    use pump_quant_junction::curve_trade_events::{ingest_curve_tx, EventIngest};
+                    let events_mode = curve_trade_source
+                        == pump_quant_junction::curve_trade_events::CurveTradeSource::Events;
+                    let events: Vec<_> = if events_mode {
+                        // Curve instruction-arg prints are NOT curve trades in event mode.
+                        events
+                            .into_iter()
+                            .filter(|e| {
+                                !(e.source == ProvenanceSource::LaserStream
+                                    && matches!(
+                                        e.event,
+                                        AppEvent::MarketTrade {
+                                            venue: Some(pump_quant_app::event::TradeVenue::PumpFun),
+                                            ..
+                                        }
+                                    ))
+                            })
+                            .collect()
+                    } else {
+                        events
+                    };
+                    if events_mode {
+                        curve_compat.note(&tx);
+                        if !curve_compat_announced {
+                            if let Some(r) = curve_compat.reason() {
+                                curve_compat_announced = true;
+                                eprintln!("FATAL-READINESS: curve trade source = events, but {r}");
+                            }
+                        }
+                        let mut ev_out = Vec::new();
+                        // PumpSwap corpus-definition FEATURE rows (wallet history; independent of execution scope).
+                        // Unknown tx status on a PumpSwap swap line is counted, never treated as success.
+                        if tx.instructions.iter().any(|i| {
+                            i.program_id == pump_quant_junction::laserstream::PUMP_SWAP_PROGRAM
+                        }) {
+                            if tx.tx_ok.is_none() {
+                                amm_row_status_unknown += 1;
+                            }
+                            pump_quant_junction::curve_trade_events::ingest_amm_rows(
+                                &tx,
+                                &mut curve_dedup,
+                                &mut amm_row_stats,
+                                &mut ev_out,
+                            );
+                        }
+                        match ingest_curve_tx(&tx, &mut curve_dedup, &mut ev_out) {
+                            EventIngest::Nothing => {}
+                            EventIngest::Produced {
+                                events: n,
+                                duplicates: d,
+                            } => {
+                                curve_ev_produced += n as u64;
+                                curve_ev_duplicates += d as u64;
+                            }
+                            EventIngest::Incomplete(reason) => {
+                                curve_ev_incomplete += 1;
+                                // Named gap per affected mint; no snapshot fallback.
+                                let mut named = false;
+                                for c in &classified {
+                                    let m = match c {
+                                        pump_quant_junction::laserstream::PumpInstruction::Buy { mint, .. }
+                                        | pump_quant_junction::laserstream::PumpInstruction::Sell { mint, .. } => Some(*mint),
+                                        _ => None,
+                                    };
+                                    if let (Some(m), Some(ms)) = (m, tx.recv_unix_ms) {
+                                        engine.note_missing_observation(
+                                            m,
+                                            ms,
+                                            pump_quant_app::decision_join::MissingKind::PossibleTrade,
+                                            format!("tx_event:{reason}:{}", tx.slot),
+                                        );
+                                        named = true;
+                                    }
+                                }
+                                if !named {
+                                    curve_ev_incomplete_unnamed += 1;
+                                }
+                            }
+                        }
+                        for pe in ev_out {
+                            if !queue.push(pe, tx.slot) {
+                                stats.junction_overflow_dropped += 1;
+                            }
+                        }
+                    }
                     // The instruction print is the ONLY one that knows the wallet. Note it
                     // against (mint, slot) so the reserve-delta print — which knows the price —
                     // can claim it when it is derived.
@@ -2776,14 +3210,23 @@ fn main() -> ExitCode {
                             // The account notification's wire receive time is the print's
                             // clock: this is the only producer with a real `price_fp`, so it
                             // is the feed the live state ledger's windows key on.
-                            if let Some(mut trade_pe) = derive_market_trade_from_delta(
-                                &mb,
-                                prev,
-                                &curve,
-                                slot,
-                                true,
-                                recv_unix_ms,
-                            ) {
+                            // In event mode the snapshot is state/reconciliation ONLY: it neither
+                            // derives a trade nor records a drop (a net delta over several trades is
+                            // not a gap — the events own the history).
+                            let snapshot_trades = curve_trade_source.snapshot_may_feed_trades();
+                            let derived = if snapshot_trades {
+                                derive_market_trade_from_delta(
+                                    &mb,
+                                    prev,
+                                    &curve,
+                                    slot,
+                                    true,
+                                    recv_unix_ms,
+                                )
+                            } else {
+                                None
+                            };
+                            if let Some(mut trade_pe) = derived {
                                 // Join the two halves: this producer knows the price and both
                                 // legs, the instruction print knows the trader. An ambiguous or
                                 // missing match leaves `buyer_entity: 0` — the ledger reports
@@ -2824,7 +3267,7 @@ fn main() -> ExitCode {
                                 }
                                 queue.push(trade_pe, slot);
                                 stats.delta_trades_derived += 1;
-                            } else {
+                            } else if snapshot_trades {
                                 stats.delta_no_trade += 1;
 
                                 if !pump_quant_junction::reserve_delta::delta_representable(
@@ -2846,6 +3289,7 @@ fn main() -> ExitCode {
                                         mb,
                                         prev.as_ref(),
                                         &curve,
+                                        slot,
                                         recv_unix_ms,
                                     );
                             }
@@ -3996,12 +4440,36 @@ fn main() -> ExitCode {
         } // close if let Some(ref mut child) = fc_child
 
         // ── Periodic Tick (engine evaluate) ──────────────────────────────
-        if Instant::now() >= next_tick {
+        // The FINAL barrier has no later update to trigger it: it fires when the (finite, captured) input has been idle
+        // for 3 s of wall time and nothing is held back. Offline replay only.
+        if barrier_mode {
+            let seen = stats.ls_transactions_received + stats.ls_account_received;
+            if seen != barrier_seen_count {
+                barrier_seen_count = seen;
+                barrier_last_input = Instant::now();
+            }
+            if !barrier_ready
+                && barrier_idx + 1 == barrier_clocks.len()
+                && barrier_hold.is_none()
+                && barrier_last_input.elapsed() > Duration::from_secs(3)
+            {
+                barrier_ready = true;
+            }
+        }
+        let barrier_fire = barrier_mode && barrier_ready;
+        if barrier_fire || (!barrier_mode && Instant::now() >= next_tick) {
             // ── Wangr Rev-14: inject TimeSignal before each Tick ──
             // The engine stores (dow, hour_utc) and enriches Features at
             // gate-evaluate time, enabling the wangr day-of-week and hour-of-day
             // entry filters. Computed from wall-clock UTC (no chrono dep).
-            let (dow, hour_utc) = utc_dow_hour(SystemTime::now());
+            // Barrier mode derives the time signal from the SOURCE clock, not the wall clock.
+            let (dow, hour_utc) = if barrier_fire {
+                utc_dow_hour(
+                    UNIX_EPOCH + Duration::from_millis(engine.model_clock_ms_now().max(0) as u64),
+                )
+            } else {
+                utc_dow_hour(SystemTime::now())
+            };
             let ts_event = AppEvent::TimeSignal { dow, hour_utc };
             engine.tick(ts_event);
             if let Some(ref mut writer) = event_stream_writer {
@@ -4024,6 +4492,88 @@ fn main() -> ExitCode {
             }
             next_tick = Instant::now() + tick_period;
             tick_counter += 1;
+            // ── OFFLINE PAPER REPLAY barrier: settle the verdicts for the state cut at this source-time clock, apply
+            // them (in logical id order) through further PRODUCTION ticks at the SAME clock, then record the logical
+            // state. Nothing else about the tick path changes.
+            if barrier_fire {
+                let mut missing = engine.barrier_settle(Duration::from_secs(20));
+                for _ in 0..3 {
+                    engine.tick(pump_quant_app::event::AppEvent::Tick);
+                    let again = engine.barrier_settle(Duration::from_secs(20));
+                    missing = again;
+                    if again == 0 && engine.barrier_staged() == 0 {
+                        break;
+                    }
+                }
+                if std::env::var("PQ_REPLAY_PERSIST_AT_BARRIERS").as_deref() == Ok("1") {
+                    let f = engine.model_flow_flush(Duration::from_secs(20));
+                    let h = engine.model_held_persist_now();
+                    eprintln!("[pq-daemon] replay barrier {barrier_idx}: flow flush durable={f} held persisted={h}");
+                }
+                // Barrier mode only: the lane's funnel counters as of THIS barrier (the timed health writer is not run
+                // on a barrier schedule, so its copy would be stale).
+                if let Ok(j) = serde_json::to_string(&engine.model_lane_report()) {
+                    let _ = std::fs::write("data/model_lane_report.json", j);
+                }
+                if let Ok(j) = serde_json::to_string(&engine.model_funnel()) {
+                    let _ = std::fs::write("data/model_funnel.json", j);
+                }
+                let watch_lines = engine.barrier_watch_drain();
+                if !watch_lines.is_empty() {
+                    if let Ok(mut f) = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open("data/barrier_watch.log")
+                    {
+                        use std::io::Write as _;
+                        for w in &watch_lines {
+                            let _ = writeln!(f, "barrier={barrier_idx} {w}");
+                        }
+                    }
+                }
+                let waiting = engine.barrier_waiting_report();
+                let _ = std::fs::write("data/barrier_waiting.json", serde_json::json!({
+                    "barrier": barrier_idx, "clock": barrier_clocks[barrier_idx], "waiting": waiting,
+                }).to_string());
+                let lines = engine.barrier_state_lines();
+                let digest = engine.barrier_state_digest();
+                let log = engine.barrier_take_log();
+                let rec = serde_json::json!({
+                    "barrier": barrier_idx,
+                    "clock": barrier_clocks[barrier_idx],
+                    "engine_clock_ms": engine.model_clock_ms_now(),
+                    "state_digest": digest,
+                    "state": lines,
+                    "dispatches": log.iter().map(|d| serde_json::json!({
+                        "id": d.id, "kind": d.kind,
+                        "mint": d.mint.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+                        "prompt_sha256": d.prompt_sha256,
+                    })).collect::<Vec<_>>(),
+                    "foreign_verdicts": engine.barrier_foreign(),
+                    "unsettled": missing,
+                });
+                if let Ok(mut f) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open("data/barrier_log.jsonl")
+                {
+                    use std::io::Write as _;
+                    let _ = writeln!(f, "{rec}");
+                }
+                if let Some(pause) = std::env::var("PQ_REPLAY_PAUSE_AFTER_BARRIER")
+                    .ok()
+                    .and_then(|v| v.parse::<usize>().ok())
+                {
+                    if barrier_idx == pause {
+                        let _ = std::fs::write("data/BARRIER_PAUSED", barrier_idx.to_string());
+                        while std::path::Path::new("data/BARRIER_PAUSED").exists() {
+                            std::thread::sleep(Duration::from_millis(50));
+                        }
+                    }
+                }
+                barrier_idx += 1;
+                barrier_ready = false;
+            }
 
             // ── E3: drain finished async submissions ────────────────────
             // The decision thread handed these off without waiting. Reporting the
@@ -4193,8 +4743,59 @@ fn main() -> ExitCode {
                     pump_quant_junction::model_lifecycle::Headroom::Ok { .. } => {}
                 }
             }
+            // OFFLINE PAPER REPLAY HARNESS ONLY: a sentinel file asks for a blocking durable flow-history flush, so a test can
+            // compare checkpoints at a fixed cursor (graceful stop with held positions deliberately does not terminate, so the
+            // shutdown flush is unreachable there). Inert unless PQ_OFFLINE_PAPER_REPLAY=1; never reachable in a normal daemon.
+            if model_armed && replay_harness && std::path::Path::new("data/FLOW_FLUSH").exists() {
+                let ok = engine.model_flow_flush(std::time::Duration::from_secs(20));
+                let _ = std::fs::remove_file("data/FLOW_FLUSH");
+                let _ = std::fs::write("data/FLOW_FLUSHED", if ok { "ok" } else { "timeout" });
+                eprintln!("[pq-daemon] replay-harness flow flush: durable={ok}");
+            }
+            // OFFLINE PAPER REPLAY HARNESS ONLY: explicit, bounded synchronisation. Each harness tick the daemon publishes a
+            // read-only checkpoint of the management state (data/HARNESS_CKPT.json). A harness that has seen the state it
+            // needs writes data/HARNESS_HOLD; the daemon then persists the held ledger + flow history durably, writes
+            // data/HARNESS_HELD with the generation it published, and blocks until the file is removed (or it is killed).
+            // Inert unless PQ_OFFLINE_PAPER_REPLAY=1 and not --live; nothing here changes trading state.
+            if model_armed
+                && replay_harness
+                && std::env::var("PQ_HARNESS_CKPT").as_deref() == Ok("1")
+            {
+                let ck = engine.model_harness_checkpoint();
+                let _ = std::fs::write("data/HARNESS_CKPT.json.tmp", ck.to_string());
+                let _ = std::fs::rename("data/HARNESS_CKPT.json.tmp", "data/HARNESS_CKPT.json");
+                if std::path::Path::new("data/HARNESS_HOLD").exists() {
+                    let f = engine.model_flow_flush(Duration::from_secs(20));
+                    let h = engine.model_held_persist_now();
+                    let ck = engine.model_harness_checkpoint();
+                    let _ = std::fs::write(
+                        "data/HARNESS_HELD",
+                        serde_json::json!({"flow_durable": f, "held_persisted": h, "state": ck})
+                            .to_string(),
+                    );
+                    eprintln!("[pq-daemon] harness hold: flow durable={f} held persisted={h}");
+                    while std::path::Path::new("data/HARNESS_HOLD").exists() {
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                }
+            }
+            if model_armed && replay_harness && (tick_counter.is_multiple_of(5) || barrier_fire) {
+                let evs = report_inbox.poll(std::path::Path::new(&report_inbox_path));
+                if !evs.is_empty() || report_inbox.refused_total() > 0 {
+                    eprintln!(
+                        "[pq-daemon] INBOX offered={} accepted_total={} refused_total={} {:?}",
+                        evs.len(),
+                        report_inbox.accepted,
+                        report_inbox.refused_total(),
+                        report_inbox.refused
+                    );
+                }
+                for ev in evs {
+                    engine.tick(ev);
+                }
+            }
             #[allow(clippy::manual_is_multiple_of)] // MSRV 1.85: is_multiple_of stabilised in 1.87
-            if model_armed && tick_counter % 20 == 0 {
+            if model_armed && (tick_counter % 20 == 0 || barrier_fire) {
                 let now_ms = engine.model_clock_ms_now();
                 for l in stale_callout.evaluate(&engine, now_ms, 60_000) {
                     eprintln!(
@@ -4524,6 +5125,50 @@ fn main() -> ExitCode {
             }
         }
 
+        // OFFLINE PAPER REPLAY HARNESS ONLY: after the LAST barrier has fired the source clock never advances again, so
+        // the tick block (and with it the inbox poll and harness checkpoint) would never run. Keep serving the external
+        // executor's reports and the harness checkpoint/hold on a 200 ms wall timer, at the frozen source clock. No
+        // engine Tick is injected and no clock moves; only validated reports reach the engine. Inert outside replay.
+        if model_armed
+            && replay_harness
+            && barrier_mode
+            && barrier_idx >= barrier_clocks.len()
+            && harness_post_poll.elapsed() >= Duration::from_millis(200)
+        {
+            harness_post_poll = Instant::now();
+            let evs = report_inbox.poll(std::path::Path::new(&report_inbox_path));
+            if !evs.is_empty() {
+                eprintln!(
+                    "[pq-daemon] INBOX(post-barrier) offered={} accepted_total={} refused_total={} {:?}",
+                    evs.len(),
+                    report_inbox.accepted,
+                    report_inbox.refused_total(),
+                    report_inbox.refused
+                );
+            }
+            for ev in evs {
+                engine.tick(ev);
+            }
+            if std::env::var("PQ_HARNESS_CKPT").as_deref() == Ok("1") {
+                let ck = engine.model_harness_checkpoint();
+                let _ = std::fs::write("data/HARNESS_CKPT.json.tmp", ck.to_string());
+                let _ = std::fs::rename("data/HARNESS_CKPT.json.tmp", "data/HARNESS_CKPT.json");
+                if std::path::Path::new("data/HARNESS_HOLD").exists() {
+                    let f = engine.model_flow_flush(Duration::from_secs(20));
+                    let h = engine.model_held_persist_now();
+                    let ck = engine.model_harness_checkpoint();
+                    let _ = std::fs::write(
+                        "data/HARNESS_HELD",
+                        serde_json::json!({"flow_durable": f, "held_persisted": h, "state": ck})
+                            .to_string(),
+                    );
+                    eprintln!("[pq-daemon] harness hold (post-barrier): flow durable={f} held persisted={h}");
+                    while std::path::Path::new("data/HARNESS_HOLD").exists() {
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                }
+            }
+        }
         if !did_work {
             std::thread::sleep(Duration::from_millis(10));
         }
@@ -4567,6 +5212,19 @@ fn main() -> ExitCode {
         stats.dwell_p99_ms = dwell_samples[p99_idx as usize];
     }
 
+    // Durable flow history: force one consistent snapshot and wait (bounded) until it is on disk. A failure is reported and
+    // the previous checkpoint stays authoritative (the durable cursor does not advance).
+    if engine.paper_model_enabled() {
+        let ok = engine.model_flow_flush(std::time::Duration::from_secs(20));
+        eprintln!(
+            "[pq-daemon] flow-history final flush: {}",
+            if ok {
+                "durable"
+            } else {
+                "NOT durable (previous checkpoint remains authoritative)"
+            }
+        );
+    }
     // Final status write
     let st = engine.live_status();
     let _ = st.write_to_path(status_path);

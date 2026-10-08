@@ -104,6 +104,8 @@ fn events(n: u32) -> Vec<AppEvent> {
             fee_lamports: Some(60_000 + u64::from(i) * 100),
             cu_consumed: Some(90_000 + u64::from(i)),
             venue: Some(TradeVenue::PumpFun),
+            event_id: None,
+            feature: None,
         });
     }
     let t_last = T0 + 1_000 + i64::from(n) * 2_000;
@@ -162,6 +164,8 @@ fn print(e: &mut Engine, i: u32, ts: i64, slot: u64) {
         fee_lamports: Some(60_000 + u64::from(i) * 100),
         cu_consumed: Some(90_000 + u64::from(i)),
         venue: Some(TradeVenue::PumpFun),
+        event_id: None,
+        feature: None,
     });
 }
 

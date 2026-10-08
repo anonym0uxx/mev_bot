@@ -1,0 +1,5 @@
+20260909_173928_000596
+  39482 ('events_per_emitter', 1)
+  28323 ('event_after_emitter_kind', 'i', 'event_kind', 'i')
+  11159 ('event_after_emitter_kind', 'o', 'event_kind', 'i')
+  events per tx (5=5+): {1: 38365, 2: 43, 3: 25, 4: 239}

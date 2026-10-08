@@ -99,6 +99,7 @@ impl Engine {
                 model_manage::MgmtKind::Reduce => "reduce",
                 model_manage::MgmtKind::Exit => "exit",
                 model_manage::MgmtKind::Add => "add",
+                model_manage::MgmtKind::Protect => "protect",
             },
             id: o.id,
             mint: *m,
@@ -154,7 +155,7 @@ impl Engine {
         if operator.trim().is_empty() {
             return Err(RearmRefusal::NoOperator);
         }
-        if !self.model_recon_faults.is_empty() {
+        if !self.model_recon_faults.is_empty() || !self.model_sell_faults.is_empty() {
             return Err(RearmRefusal::UnresolvedReconFault);
         }
         if self
@@ -162,6 +163,7 @@ impl Engine {
             .values()
             .any(|o| o.uncertain && o.confirmed.is_none())
             || self.model_mgmt.orders.values().any(|o| o.uncertain)
+            || self.model_mgmt.protect.values().any(|o| o.uncertain)
         {
             return Err(RearmRefusal::UncertainOrderPending);
         }

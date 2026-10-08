@@ -54,8 +54,24 @@ const FIRST_CAND_CAP: usize = 100_000;
 const REGISTRY_CAP: usize = 100_000;
 /// Maximum asks started per tick: a coalescing bound, not a strategy filter.
 const SCHEDULE_PER_TICK: usize = 8;
+/// Work bound: markets EXAMINED per tick (dispatched or refused). Unexamined markets stay queued, oldest first.
+const EVAL_PER_TICK: usize = 64;
 /// Bound on the in-memory order log (oldest terminal records are the only candidates to evict).
 const ORDER_LOG_CAP: usize = 100_000;
+
+/// Outcome of one admit attempt. The scheduler uses it to keep an INELIGIBLE market from consuming the
+/// per-tick budget that an eligible one could use; it never changes what a market is eligible for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Admit {
+    /// A request was handed to the pool.
+    Dispatched,
+    /// Not eligible now (identity/data/readiness/held/pending/re-ask): the market stays queued, no budget used.
+    Ineligible,
+    /// Eligible but the lane is full (request table or pool queue): stop starting entries this tick.
+    Backpressure,
+    /// The lane cannot admit anything (live forbidden, no source, no pool, no feed clock).
+    Blocked,
+}
 
 /// A canonical-pool swap handed to the engine (see `AppEvent::AmmSwap`).
 #[derive(Debug, Clone, Copy)]
@@ -248,7 +264,224 @@ fn warm_bucket(n: u64) -> &'static str {
     }
 }
 
+/// Retry spacing (wire-clock ms) for a failed missing-history write.
+const MISSING_RETRY_MS: i64 = 5_000;
+
+/// Missing-history persistence bookkeeping (one field on the engine).
+#[derive(Debug, Default)]
+pub(super) struct MissingStore {
+    pub path: Option<std::path::PathBuf>,
+    pub writer: Option<crate::missing_history_store::Writer>,
+    pub persisted_rev: u64,
+    pub submitted_seq: u64,
+    pub last_submit_ms: i64,
+    pub failure_reported: bool,
+}
+
+/// Flow-history durability bookkeeping (one field on the engine).
+#[derive(Default)]
+pub(super) struct FlowStore {
+    pub writer: Option<crate::flow_checkpoint::CkptWriter>,
+    pub persisted_rev: u64,
+    pub submitted_seq: u64,
+    pub last_submit_ms: i64,
+    pub failure_reported: bool,
+    /// Wall time the engine thread spent cloning the last snapshot (the only engine-thread cost), microseconds.
+    pub last_clone_us: u64,
+    pub max_clone_us: u64,
+}
+
+impl std::fmt::Debug for FlowStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("FlowStore")
+    }
+}
+
+const FLOW_CKPT_MIN_INTERVAL_MS: i64 = 30_000;
+
+/// Startup result of attaching durable flow history.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FlowAttach {
+    /// No checkpoint on disk: a fresh history (prompts need a seed or refuse as before).
+    Fresh,
+    /// Restored; `unavailable_ms` is the interval between the newest cursor and the resume time that no source covers.
+    Restored {
+        unavailable_ms: i64,
+        complete: bool,
+        late: usize,
+    },
+    /// A checkpoint existed but cannot be trusted: every prompt refuses by name; the file is left untouched.
+    Untrusted(&'static str),
+}
+
 impl Engine {
+    /// Attach durable flow history BEFORE any inference. Restores and validates the checkpoint, then declares the
+    /// resume time so any interval between the persisted cursors and the live feed becomes a NAMED gap. A valid but
+    /// old checkpoint is therefore never taken as proof of uninterrupted history.
+    pub fn model_flow_attach(
+        &mut self,
+        path: &std::path::Path,
+        params: pump_quant_market_state::flow_reducer::FlowParams,
+        provenance: crate::flow_checkpoint::Provenance,
+        resume_ms: i64,
+    ) -> FlowAttach {
+        use crate::flow_checkpoint::{load, CkptWriter, FlowHistory, Load};
+        let out = match load(params, path) {
+            Load::NeverWritten => {
+                self.model_cache
+                    .attach_flow_history(FlowHistory::new(params, provenance));
+                FlowAttach::Fresh
+            }
+            Load::Loaded(h)
+                if h.meta.held_gen_seen.is_none() && self.model_held.restored_from_file =>
+            {
+                // No generation field: this history cannot be tied to the ledger that was just restored.
+                // Absence of metadata is not compatibility. Readiness is refused by name; the file is untouched.
+                self.model_cache
+                    .flow_state_untrusted("flow_generation_unbound");
+                self.mrep("flow_history:untrusted:flow_generation_unbound");
+                FlowAttach::Untrusted("flow_generation_unbound")
+            }
+            Load::Loaded(h)
+                if self.model_held.restored_from_file
+                    && h.meta.held_gen_seen.unwrap_or(0) > 0
+                    && h.meta.held_lineage_seen.is_empty() =>
+            {
+                // It saw books but names no lineage: nothing ties its generation counter to THESE books.
+                self.model_cache
+                    .flow_state_untrusted("flow_lineage_unbound");
+                self.mrep("flow_history:untrusted:flow_lineage_unbound");
+                FlowAttach::Untrusted("flow_lineage_unbound")
+            }
+            Load::Loaded(h)
+                if self.model_held.restored_from_file
+                    && h.meta.held_gen_seen.unwrap_or(0) > 0
+                    && h.meta.held_lineage_seen != self.model_held.lineage =>
+            {
+                // Generations are counters: they are only comparable within ONE ledger lineage. A history that saw
+                // books of a different lineage (or carries no lineage while it saw books) is not bound to these.
+                self.model_cache
+                    .flow_state_untrusted("flow_lineage_mismatch");
+                self.mrep("flow_history:untrusted:flow_lineage_mismatch");
+                FlowAttach::Untrusted("flow_lineage_mismatch")
+            }
+            Load::Loaded(h) if h.meta.held_gen_seen.unwrap_or(0) > self.model_held.generation => {
+                // The history has seen books NEWER than the durable ledger now attached: the ledger was deleted,
+                // replaced by an older copy or rolled back. Financial effects between the two are unaccounted for.
+                // Nothing is applied and the file is never overwritten.
+                self.model_cache.flow_state_untrusted("flow_ahead_of_books");
+                self.mrep("flow_history:untrusted:flow_ahead_of_books");
+                FlowAttach::Untrusted("flow_ahead_of_books")
+            }
+            Load::Loaded(h) => {
+                self.model_cache.attach_flow_history(*h);
+                let late = self.model_cache.flow_meta().map_or(0, |m| m.late.len());
+                match self.model_cache.flow_restore_resume(resume_ms) {
+                    Some(r) => FlowAttach::Restored {
+                        unavailable_ms: r.unavailable_ms,
+                        complete: r.complete,
+                        late,
+                    },
+                    None => FlowAttach::Untrusted("flow_attach_failed"),
+                }
+            }
+            Load::Untrusted(why) => {
+                self.model_cache.flow_state_untrusted(why);
+                self.mrep(format!("flow_history:untrusted:{why}"));
+                FlowAttach::Untrusted(why)
+            }
+        };
+        if !matches!(out, FlowAttach::Untrusted(_)) {
+            // An untrusted file is never overwritten (the evidence stays on disk): no writer is started for it.
+            self.flow_store.writer = Some(CkptWriter::start(path.to_path_buf(), None));
+            self.flow_store.persisted_rev = 0;
+        }
+        out
+    }
+
+    /// Test seam: attach a writer with a forced-failure hook.
+    #[doc(hidden)]
+    pub fn model_flow_attach_writer(&mut self, w: crate::flow_checkpoint::CkptWriter) {
+        self.flow_store.writer = Some(w);
+        self.flow_store.persisted_rev = 0;
+    }
+
+    /// Tick path: one integer compare when nothing changed (or too soon). A change hands ONE consistent clone to the
+    /// background writer; the tick never waits on disk. The durable cursor advances only when the file is on disk.
+    pub(super) fn model_flow_persist_if_changed(&mut self) {
+        let Some((durable, fails)) = self.flow_store.writer.as_ref().map(|w| {
+            (
+                w.durable(),
+                w.consecutive_failures
+                    .load(std::sync::atomic::Ordering::SeqCst),
+            )
+        }) else {
+            return;
+        };
+        if fails > 0 && !self.flow_store.failure_reported {
+            self.flow_store.failure_reported = true;
+            self.mrep("flow_history:persist_failed");
+        }
+        if fails == 0 {
+            self.flow_store.failure_reported = false;
+        }
+        let _ = durable;
+        let rev = self.model_cache.flow_rev();
+        let due = self.model_clock_ms - self.flow_store.last_submit_ms >= FLOW_CKPT_MIN_INTERVAL_MS;
+        let retry = fails > 0 && due;
+        if (rev == self.flow_store.persisted_rev || !due) && !retry {
+            return;
+        }
+        let t0 = std::time::Instant::now();
+        let Some((r, mut m)) = self.model_cache.flow_snapshot() else {
+            return;
+        };
+        // Bind this snapshot to the durable financial generation current right now.
+        m.held_gen_seen = Some(self.model_held.generation);
+        m.held_lineage_seen = self.model_held.lineage.clone();
+        let us = t0.elapsed().as_micros() as u64;
+        self.flow_store.last_clone_us = us;
+        self.flow_store.max_clone_us = self.flow_store.max_clone_us.max(us);
+        let Some(w) = self.flow_store.writer.as_ref() else {
+            return;
+        };
+        self.flow_store.submitted_seq = w.submit(r, m);
+        self.flow_store.persisted_rev = rev;
+        self.flow_store.last_submit_ms = self.model_clock_ms;
+    }
+
+    /// Shutdown / tests only: force a snapshot now and block (bounded) until durable.
+    pub fn model_flow_flush(&mut self, timeout: std::time::Duration) -> bool {
+        self.flow_store.last_submit_ms = i64::MIN / 2;
+        self.flow_store.persisted_rev = u64::MAX;
+        self.model_flow_persist_if_changed();
+        match self.flow_store.writer.as_ref() {
+            Some(w) => w.wait_durable(self.flow_store.submitted_seq, timeout),
+            None => false,
+        }
+    }
+
+    /// (durable seq, submitted seq, consecutive failures, total failures, last clone us, max clone us, last bytes,
+    /// last encode us, last write us).
+    #[must_use]
+    pub fn model_flow_health(&self) -> (u64, u64, u64, u64, u64, u64, u64, u64, u64) {
+        use std::sync::atomic::Ordering::SeqCst;
+        match self.flow_store.writer.as_ref() {
+            Some(w) => (
+                w.durable(),
+                self.flow_store.submitted_seq,
+                w.consecutive_failures.load(SeqCst),
+                w.total_failures.load(SeqCst),
+                self.flow_store.last_clone_us,
+                self.flow_store.max_clone_us,
+                w.last_bytes.load(SeqCst),
+                w.last_encode_us.load(SeqCst),
+                w.last_write_us.load(SeqCst),
+            ),
+            None => (0, 0, 0, 0, 0, 0, 0, 0, 0),
+        }
+    }
+
     pub(super) fn mrep(&mut self, key: impl Into<String>) {
         *self.model_report.entry(key.into()).or_insert(0) += 1;
     }
@@ -283,6 +516,160 @@ impl Engine {
         }
     }
 
+    /// Attach the durable missing-history ledger and RESTORE it before any inference.
+    ///
+    /// * trusted records are restored (the gaps keep refusing);
+    /// * a missing file is a clean start;
+    /// * an unreadable / incompatible file raises the named conservative refusal for every prompt
+    ///   and is NEVER overwritten while untrusted (the evidence stays on disk).
+    pub fn model_missing_attach(
+        &mut self,
+        path: &std::path::Path,
+    ) -> crate::missing_history_store::StoreLoad {
+        use crate::missing_history_store::{load, StoreLoad, Writer};
+        let l = load(path);
+        match &l {
+            StoreLoad::NeverWritten => {}
+            StoreLoad::Records(r) => {
+                let _ = self.model_cache.restore_missing_history(r, true);
+            }
+            StoreLoad::Untrusted(why) => {
+                let _ = self.model_cache.restore_missing_history(&[], false);
+                self.mrep(format!("missing_history:untrusted:{why}"));
+            }
+        }
+        self.missing_store.path = Some(path.to_path_buf());
+        self.missing_store.writer = Some(Writer::start(path.to_path_buf()));
+        // What is on disk (or absent) is the baseline: the first change writes.
+        self.missing_store.persisted_rev = self.model_cache.missing_rev();
+        l
+    }
+
+    /// Publish the trusted EMPTY ledger for a clean start (nothing was ever written, no exposure was restored).
+    ///
+    /// Without this a run that never sees a gap never writes the file, so a later restart that restores exposure
+    /// cannot tell "no gap" from "ledger deleted" and must refuse (`absent_with_restored_exposure`). This makes
+    /// "trusted, zero unresolved gaps as of this run" a durable fact. It never runs when continuity is untrusted
+    /// and never overwrites an existing file.
+    pub fn model_missing_publish_baseline(&mut self) -> bool {
+        if self.model_cache.history_continuity_unknown() {
+            return false;
+        }
+        let Some(w) = self.missing_store.writer.as_ref() else {
+            return false;
+        };
+        let body =
+            crate::missing_history_store::encode(&self.model_cache.missing_history_records());
+        self.missing_store.submitted_seq = w.submit(body);
+        self.missing_store.persisted_rev = self.model_cache.missing_rev();
+        self.missing_store.last_submit_ms = self.model_clock_ms;
+        true
+    }
+
+    /// Test seam: attach with a caller-supplied writer (forced-failure injection).
+    #[doc(hidden)]
+    pub fn model_missing_attach_with_writer(&mut self, w: crate::missing_history_store::Writer) {
+        self.missing_store.writer = Some(w);
+        self.missing_store.persisted_rev = self.model_cache.missing_rev();
+    }
+
+    /// Called every tick: one integer compare when nothing changed. A change (or an unconfirmed /
+    /// failed previous write) hands the newest snapshot to the background writer; the tick never
+    /// waits on disk. Never writes while continuity is untrusted.
+    pub(super) fn model_missing_persist_if_changed(&mut self) {
+        let Some((w_written, fails)) = self
+            .missing_store
+            .writer
+            .as_ref()
+            .map(|w| (w.written_seq(), w.consecutive_failures()))
+        else {
+            return;
+        };
+        if self.model_cache.history_continuity_unknown() {
+            return;
+        }
+        let rev = self.model_cache.missing_rev();
+        if fails > 0 && !self.missing_store.failure_reported {
+            self.missing_store.failure_reported = true;
+            self.mrep("missing_history:persist_failed");
+        }
+        if fails == 0 {
+            self.missing_store.failure_reported = false;
+        }
+        let _ = w_written;
+        let retry = fails > 0
+            && self.model_clock_ms - self.missing_store.last_submit_ms >= MISSING_RETRY_MS;
+        if rev == self.missing_store.persisted_rev && !retry {
+            return;
+        }
+        let body =
+            crate::missing_history_store::encode(&self.model_cache.missing_history_records());
+        let Some(w) = self.missing_store.writer.as_ref() else {
+            return;
+        };
+        self.missing_store.submitted_seq = w.submit(body);
+        self.missing_store.persisted_rev = rev;
+        self.missing_store.last_submit_ms = self.model_clock_ms;
+    }
+
+    /// Persistence health for the status writer: (unflushed, consecutive_failures, total_failures).
+    #[must_use]
+    pub fn model_missing_persist_health(&self) -> (bool, u64, u64) {
+        self.missing_store
+            .writer
+            .as_ref()
+            .map_or((false, 0, 0), |w| {
+                (
+                    self.missing_store.submitted_seq > w.written_seq(),
+                    w.consecutive_failures(),
+                    w.total_failures(),
+                )
+            })
+    }
+
+    /// Block (bounded) until the newest snapshot is durable. Shutdown and tests ONLY.
+    pub fn model_missing_flush(&mut self, timeout: std::time::Duration) -> bool {
+        self.model_missing_persist_if_changed();
+        match self.missing_store.writer.as_ref() {
+            Some(w) => w.wait_durable(self.missing_store.submitted_seq, timeout),
+            None => false,
+        }
+    }
+
+    /// Record a refused reserve observation with the producer's classification and source id.
+    pub fn note_missing_observation(
+        &mut self,
+        mint: [u8; 32],
+        drop_unix_ms: i64,
+        kind: crate::decision_join::MissingKind,
+        source_id: String,
+    ) {
+        if self.paper_model_mode {
+            self.model_cache
+                .note_missing_observation(mint, drop_unix_ms, kind, source_id);
+        }
+    }
+
+    /// Read-only (tests, status): flow aggregates for `mint` at `t_ms`, and the history's scope refusal.
+    #[must_use]
+    pub fn model_flow_aggregates(
+        &self,
+        mint: &[u8; 32],
+        t_ms: i64,
+    ) -> pump_quant_market_state::flow_reducer::FlowOutcome {
+        self.model_cache.flow_aggregates(mint, t_ms)
+    }
+
+    /// See [`Self::model_flow_aggregates`].
+    #[must_use]
+    pub fn model_flow_scope_refusal(
+        &self,
+        mint: &[u8; 32],
+        t_ms: i64,
+    ) -> Option<(&'static str, i64, i64)> {
+        self.model_cache.flow_scope_refusal(mint, t_ms)
+    }
+
     /// Low-frequency health view of upstream-dropped prints for the status writers: the
     /// cumulative drop count and how many mints' 300 s flow windows are currently
     /// incomplete (readiness refused by [`crate::decision_join::JoinRefusal::FlowUpstreamDrop`]).
@@ -302,12 +689,59 @@ impl Engine {
     /// identity/order/dedup) or explicitly reconciled by an operator. NEVER by a timer — a fresh
     /// reserve snapshot does not restore missing trade history. Returns true when an
     /// unreconciled observation was cleared. No-op unless the paper-model lane is armed.
-    pub fn model_reconcile_flow_history(&mut self, mint: &[u8; 32]) -> bool {
+    pub fn model_reconcile_flow_history(
+        &mut self,
+        mint: &[u8; 32],
+        receipt: &crate::decision_join::ReconstructionReceipt,
+    ) -> Result<(), crate::decision_join::ReconcileRefusal> {
         if self.paper_model_mode {
-            self.model_cache.reconcile_flow_history(mint)
+            self.model_cache.reconcile_flow_history(mint, receipt)
         } else {
-            false
+            Err(crate::decision_join::ReconcileRefusal::NoGap)
         }
+    }
+
+    /// Per-mint missing-history readiness for the status writer (never on the hot path).
+    #[must_use]
+    pub fn model_missing_history_status(
+        &self,
+        mint: &[u8; 32],
+    ) -> Option<crate::decision_join::MissingHistoryStatus> {
+        if self.paper_model_mode {
+            self.model_cache.missing_history_status(mint)
+        } else {
+            None
+        }
+    }
+
+    /// Every UNRESOLVED missing-history record, for durable persistence.
+    #[must_use]
+    pub fn model_missing_history_records(
+        &self,
+    ) -> Vec<([u8; 32], crate::decision_join::MissingObservation)> {
+        if self.paper_model_mode {
+            self.model_cache.missing_history_records()
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Restore persisted missing-history state BEFORE entry/management inference resumes.
+    /// `integrity_ok = false` (unreadable/incompatible record) raises the conservative
+    /// [`crate::decision_join::JoinRefusal::HistoryContinuityUnknown`] refusal.
+    pub fn model_restore_missing_history(
+        &mut self,
+        records: &[([u8; 32], crate::decision_join::MissingObservation)],
+        integrity_ok: bool,
+    ) -> Result<(), crate::decision_join::RestoreRefusal> {
+        self.model_cache
+            .restore_missing_history(records, integrity_ok)
+    }
+
+    /// Whether startup continuity could not be established.
+    #[must_use]
+    pub fn model_history_continuity_unknown(&self) -> bool {
+        self.model_cache.history_continuity_unknown()
     }
 
     pub fn model_lane_report(&self) -> &std::collections::BTreeMap<String, u64> {
@@ -353,22 +787,23 @@ impl Engine {
         s
     }
 
-    /// The legacy-promoted admit-site branch (kept as a SECOND source; the stream registry below
-    /// is the one that does not depend on legacy admission).
+    /// A legacy watchlist promotion in paper-model mode. It is COUNTED and nothing else: legacy rank, score and
+    /// tick state neither dispatch, prioritise nor exclude a Qwen entry request. Every supported, data-ready
+    /// market reaches the model through the one stream scheduler (`model_stream_schedule`).
     pub(super) fn model_admit_candidate(&mut self, cand: Candidate) {
-        // Admission-SOURCE evidence for the old-vs-new comparison: this market reached the model
-        // through the legacy priced-print promotion path.
-        let clock = self.model_clock_ms;
-        self.mrep("admit_attempt|src=legacy_promoted");
+        self.mrep("legacy_promotion_observed_not_dispatched");
         let cm = cand.mint.bytes();
-        let (venue, _, _) = self.model_cache.describe(&cm, clock);
+        let (venue, _, _) = self.model_cache.describe(&cm, self.model_clock_ms);
         self.model_uniq("legacy_promoted", &cm, venue);
-        self.model_admit_mint(cand.mint.bytes(), cand.lane, cand.discovery_lane);
     }
 
     /// Register a stream-discovered market. Bounded; idempotent; never consults legacy state.
     pub(super) fn model_register(&mut self, mint: [u8; 32]) {
-        if self.model_dirty.insert(mint) {
+        // "Dirty" means an observation NEWER than the last answered ask. An overlap replay after a restart
+        // re-delivers observations that predate the restored ask; they rebuild the cache but are not new.
+        if self.model_clock_ms <= self.model_replay_through_ms {
+            self.mrep("queue:replayed_observation_not_dirty");
+        } else if self.model_dirty.insert(mint) {
             self.model_dirty_since.insert(mint, self.model_clock_ms);
         } else {
             // A further observation folded into an already-queued market: coalesced, not lost.
@@ -397,48 +832,95 @@ impl Engine {
         }
     }
 
-    /// Coalesced, bounded scheduling of stream-discovered markets: at most `SCHEDULE_PER_TICK`
-    /// asks per tick, each only for a market with a NEW observation since its last ask and outside
-    /// its re-ask window. A market the model SKIPped stays registered and is re-offered when new
-    /// observations arrive; nothing is dropped for having been skipped.
+    /// THE entry scheduler. Every market with an observation newer than its last answered ask is queued
+    /// (`model_dirty`, with the time it FIRST became dirty, preserved across coalesced updates). Each tick:
+    /// * markets are visited OLDEST-DIRTY-FIRST with the mint as the stable tie-break;
+    /// * at most `SCHEDULE_PER_TICK` requests are dispatched (the existing budget);
+    /// * a market that is ineligible now (readiness, identity, held/pending, re-ask) does NOT consume that
+    ///   budget, so it cannot block an eligible one; at most `EVAL_PER_TICK` markets are examined per tick as a
+    ///   work bound, and the unexamined stay queued in the same order (no starvation: oldest first);
+    /// * lane backpressure (request table / pool queue full) or a lane-wide block stops entry starts for the
+    ///   tick and leaves the rest queued.
+    ///
+    /// Held-position management has its OWN request table and runs BEFORE this in the tick, so an entry
+    /// backlog cannot take its slots. Legacy watchlist state is never read here.
     pub(super) fn model_stream_schedule(&mut self) {
         let clock = self.model_clock_ms;
-        let dirty: Vec<[u8; 32]> = self.model_dirty.iter().copied().collect();
-        let mut budget = SCHEDULE_PER_TICK;
-        for mint in dirty {
-            if budget == 0 {
+        let mut order: Vec<(i64, [u8; 32])> = self
+            .model_dirty
+            .iter()
+            .map(|m| (self.model_dirty_since.get(m).copied().unwrap_or(0), *m))
+            .collect();
+        order.sort_unstable();
+        let queued = order.len();
+        let mut dispatched = 0usize;
+        let mut examined = 0usize;
+        for (pos, (since, mint)) in order.into_iter().enumerate() {
+            if dispatched >= SCHEDULE_PER_TICK {
                 self.mrep("sched_deferred_budget");
-                let (v, _, _) = self.model_cache.describe(&mint, clock);
-                self.mrep(format!("sched_deferred|venue={v}"));
-                continue;
+                break;
+            }
+            if examined >= EVAL_PER_TICK {
+                self.mrep("sched_deferred_eval_bound");
+                break;
             }
             if self
                 .model_last_ask
                 .get(&mint)
                 .is_some_and(|t| clock - *t < MODEL_REASK_MS)
             {
-                continue; // stays dirty; re-offered after the window
+                // Not eligible yet and costs nothing: stays queued at its original position, uses no budget.
+                self.mrep("sched:reask_window_wait");
+                continue;
             }
+            examined += 1;
             self.model_dirty.remove(&mint);
+            self.model_dirty_since.remove(&mint);
             self.mrep("admit_attempt|src=stream");
-            if let Some(since) = self.model_dirty_since.remove(&mint) {
-                // Queue age at dispatch (ms), bucketed, split by venue so starvation is visible.
-                let age = (clock - since).max(0);
-                let (v, _, _) = self.model_cache.describe(&mint, clock);
-                let b = match age {
-                    0..=999 => "lt1s",
-                    1_000..=4_999 => "1to5s",
-                    5_000..=29_999 => "5to30s",
-                    30_000..=299_999 => "30sto5m",
-                    _ => "ge5m",
-                };
-                self.mrep(format!("queue_age|{b}|venue={v}"));
-                self.mrep("queue_age_n");
-                self.mrep_add("queue_age_ms_sum", age as u64);
+            let age = (clock - since).max(0);
+            let (v, _, _) = self.model_cache.describe(&mint, clock);
+            let b = match age {
+                0..=999 => "lt1s",
+                1_000..=4_999 => "1to5s",
+                5_000..=29_999 => "5to30s",
+                30_000..=299_999 => "30sto5m",
+                _ => "ge5m",
+            };
+            self.mrep(format!("queue_age|{b}|venue={v}"));
+            self.mrep("queue_age_n");
+            self.mrep_add("queue_age_ms_sum", age as u64);
+            let watched = self.model_watch.as_ref().is_some_and(|w| {
+                mint.iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<String>()
+                    .starts_with(w.as_str())
+            });
+            if watched {
+                self.model_watch_log.push(format!(
+                    "sched clock={clock} queue_pos={pos}/{queued} since={since} dispatched_so_far={dispatched}"
+                ));
             }
-            budget -= 1;
-            self.model_admit_mint(mint, WlLane::ActiveMarketScalp, DiscoveryLane::ActiveMarket);
+            let out =
+                self.model_admit_mint(mint, WlLane::ActiveMarketScalp, DiscoveryLane::ActiveMarket);
+            match out {
+                Admit::Dispatched => dispatched += 1,
+                Admit::Ineligible => {}
+                Admit::Backpressure | Admit::Blocked => {
+                    // The lane cannot start more entries now: keep this market (and the rest) queued with its
+                    // ORIGINAL dirty time and stop for this tick.
+                    self.model_dirty.insert(mint);
+                    self.model_dirty_since.insert(mint, since);
+                    self.mrep(if out == Admit::Backpressure {
+                        "sched_stopped_backpressure"
+                    } else {
+                        "sched_stopped_lane_blocked"
+                    });
+                    break;
+                }
+            }
         }
+        self.mrep_add("sched_queue_depth_sum", queued as u64);
+        self.mrep("sched_ticks");
     }
 
     /// A canonical-pool PumpSwap swap, token-oriented and pool-bound by the decoder. Non-canonical
@@ -499,24 +981,30 @@ impl Engine {
         if a.token_amount > 0 && a.quote_lamports > 0 {
             let price_fp =
                 (i128::from(a.quote_lamports) * 1_000_000_000) / i128::from(a.token_amount);
-            self.model_mgmt_note_price(&mint, price_fp);
+            self.model_mgmt_note_price(&mint, price_fp, Some(ts_ms));
             let signed = i64::try_from(a.token_amount).unwrap_or(i64::MAX);
             let entity =
                 pump_quant_wallet_graph::tracked_wallet_matcher::wallet_entity_id(&a.trader);
-            self.model_cache
-                .observe_trade(&crate::decision_join::TradeObs {
-                    mint,
-                    price_fp,
-                    quote_lamports: a.quote_lamports,
-                    signed_base: if a.is_buy { signed } else { -signed },
-                    buyer_entity: entity,
-                    trader: Some(a.trader),
-                    recv_unix_ms: Some(ts_ms),
-                    slot: Some(a.slot),
-                    fee_lamports: a.fee_lamports,
-                    cu_consumed: a.cu_consumed,
-                    venue: crate::state_ledger::VenueLabel::Pumpswap,
-                });
+            // With the corpus-row producer on, the TRAINED windows are fed by `CorpusFlowRow` (corpus trader-delta
+            // basis, once per instruction); feeding this swap's own legacy-basis print too would double-count it.
+            if !self.corpus_flow_rows {
+                self.model_cache
+                    .observe_trade(&crate::decision_join::TradeObs {
+                        mint,
+                        price_fp,
+                        quote_lamports: a.quote_lamports,
+                        signed_base: if a.is_buy { signed } else { -signed },
+                        buyer_entity: entity,
+                        trader: Some(a.trader),
+                        recv_unix_ms: Some(ts_ms),
+                        slot: Some(a.slot),
+                        fee_lamports: a.fee_lamports,
+                        cu_consumed: a.cu_consumed,
+                        venue: crate::state_ledger::VenueLabel::Pumpswap,
+                        event_id: None,
+                        feature: None,
+                    });
+            }
             // A HELD market is marked from the pool so the existing lifecycle can monitor it. This is
             // deliberately limited to held mints: the legacy numeric lane must not DISCOVER from it.
             if self.open_lane.contains_key(&mint) {
@@ -532,6 +1020,15 @@ impl Engine {
                 );
             }
         }
+        // PRINT-DRIVEN SAFEGUARD ON A HELD AMM POSITION (hard stop / rug precursor). Fed ONLY by a verified EXECUTED
+        // pool swap: successful transaction, canonical WSOL pool, the pool this mint is bound to, a real executed
+        // price, a fresh and in-order observation, and an identity not already folded. Never from an instruction
+        // hint, a requested quantity, a zero/missing price, or another pool. The mark is the swap's own execution
+        // price (SOL per raw token, the same basis as the AMM entry price): a SPOT-TRIGGER mark. It is not an
+        // executable sell quote, and a fill it triggers is routing evidence only (the quarantine flag stays set).
+        if self.positions.has(&mint) {
+            self.model_amm_protect(&mint, &pool_s_for_protect(&a), &a, applied, ts_ms);
+        }
         self.model_register(mint);
         // Event-driven: the FIRST eligible landing state fills the order, not whatever is newest at
         // the next tick.
@@ -542,34 +1039,112 @@ impl Engine {
         self.model_swap_ctx = None;
     }
 
-    fn model_admit_mint(&mut self, mint: [u8; 32], cand_lane: WlLane, cand_dlane: DiscoveryLane) {
+    fn model_amm_protect(
+        &mut self,
+        mint: &[u8; 32],
+        pool_s: &str,
+        a: &AmmSwapIn,
+        applied: bool,
+        ts_ms: i64,
+    ) {
+        if !applied {
+            self.mrep("protect:amm_mark_ignored_out_of_order");
+            self.model_protect_ignored
+                .insert(*mint, ("out_of_order", ts_ms));
+            return;
+        }
+        if self.model_cache.pool_conflicting(mint) || !self.model_cache.pool_is(mint, pool_s) {
+            self.mrep("protect:amm_mark_ignored_wrong_pool");
+            self.model_protect_ignored
+                .insert(*mint, ("wrong_pool", ts_ms));
+            return;
+        }
+        if self.model_clock_ms.saturating_sub(ts_ms) > crate::curve_annotation::PRICING_BUDGET_MS {
+            self.mrep("protect:amm_mark_ignored_stale");
+            self.model_protect_ignored.insert(*mint, ("stale", ts_ms));
+            return;
+        }
+        // SPOT-TRIGGER MARK: the pool's own pre-trade effective price, (vault quote + virtual quote) / base reserve,
+        // in PRICE_SCALE lamports per raw token - the SAME basis the AMM entry price is computed on. A single swap's
+        // execution price (it embeds fees and size impact) swings far more than the pool moved and would trip the
+        // single-swap rug-precursor step on noise, so it is not the trigger basis. Not an executable sell quote.
+        let (Some(vq), true) = (
+            a.virtual_quote,
+            a.token_reserve_pre > 0 && a.quote_reserve_pre > 0,
+        ) else {
+            self.mrep("protect:amm_mark_ignored_no_spot_basis");
+            self.model_protect_ignored
+                .insert(*mint, ("no_spot_basis", ts_ms));
+            return;
+        };
+        let id = amm_swap_identity(a, ts_ms);
+        if !self.agg_remember(id) {
+            self.mrep("protect:amm_mark_replay_not_applied");
+            return;
+        }
+        let px = (u128::from(a.quote_reserve_pre) + u128::from(vq)) * 1_000_000_000
+            / u128::from(a.token_reserve_pre);
+        let Ok(price_u) = u64::try_from(px) else {
+            self.mrep("protect:amm_mark_ignored_no_spot_basis");
+            self.model_protect_ignored
+                .insert(*mint, ("no_spot_basis", ts_ms));
+            return;
+        };
+        if price_u == 0 {
+            self.mrep("protect:amm_mark_ignored_no_spot_basis");
+            self.model_protect_ignored
+                .insert(*mint, ("no_spot_basis", ts_ms));
+            return;
+        }
+        let signed_quote = if a.is_buy {
+            i128::from(a.quote_lamports)
+        } else {
+            -i128::from(a.quote_lamports)
+        };
+        self.mrep("protect:amm_mark_applied");
+        self.model_protect_mark_ms.insert(*mint, ts_ms);
+        if let Some(exit) =
+            self.positions
+                .on_trade(mint, price_u, signed_quote, self.now, a.quote_reserve_pre)
+        {
+            self.mrep(format!("protect:amm_exit:{:?}", exit.reason));
+            self.book_exit(exit);
+        }
+    }
+
+    fn model_admit_mint(
+        &mut self,
+        mint: [u8; 32],
+        cand_lane: WlLane,
+        cand_dlane: DiscoveryLane,
+    ) -> Admit {
         if self.mode == RunMode::Live || self.outbound_sink.is_some() {
             self.mrep("refuse:live_forbidden");
-            return;
+            return Admit::Blocked;
         }
         if let Err(fault) = self.model_source() {
             self.mrep(format!("fault:{fault:?}"));
-            return;
+            return Admit::Blocked;
         }
         if self.model_pool.is_none() {
             self.mrep("fault:missing_pool");
-            return;
+            return Admit::Blocked;
         }
         let clock = self.model_clock_ms;
         if clock == 0 {
             self.mrep("refuse:no_feed_clock");
-            return;
+            return Admit::Blocked;
         }
         if self.model_mint_blocked(&mint) {
             self.mrep("refuse:recon_fault_blocks_exposure");
-            return;
+            return Admit::Ineligible;
         }
         if self.open_lane.contains_key(&mint)
             || self.model_orders.contains_key(&mint)
             || self.model_table.has_live_for(&mint)
         {
             self.mrep("skip:held_or_pending");
-            return;
+            return Admit::Ineligible;
         }
         if self
             .model_last_ask
@@ -577,7 +1152,7 @@ impl Engine {
             .is_some_and(|t| clock - *t < MODEL_REASK_MS)
         {
             self.mrep("skip:reask_window");
-            return;
+            return Admit::Ineligible;
         }
         if self.model_first_cand.len() < FIRST_CAND_CAP {
             self.model_first_cand.entry(mint).or_insert(clock);
@@ -595,7 +1170,7 @@ impl Engine {
                     self.model_last_refusal.insert(mint, r.as_str().to_string());
                 }
                 self.mrep(format!("refuse:{}|{dims}", r.as_str()));
-                return;
+                return Admit::Ineligible;
             }
         };
         self.mrep(format!("snapshot_ok|{dims}"));
@@ -626,7 +1201,11 @@ impl Engine {
                     SubmitRefusal::AtCapacity => "refuse:request_capacity",
                     SubmitRefusal::EntriesBlocked => "refuse:entries_blocked",
                 });
-                return;
+                return match e {
+                    SubmitRefusal::AtCapacity => Admit::Backpressure,
+                    SubmitRefusal::DuplicateForMint => Admit::Ineligible,
+                    SubmitRefusal::EntriesBlocked => Admit::Blocked,
+                };
             }
         };
         let job = Job {
@@ -634,7 +1213,9 @@ impl Engine {
             mint,
             system: snap.system_prompt.clone(),
             user: snap.user_prompt.clone(),
+            session: self.model_session,
         };
+        self.barrier_log_dispatch("entry", &mint, &job.user);
         let dispatched = self
             .model_pool
             .as_ref()
@@ -646,7 +1227,10 @@ impl Engine {
                 DispatchRefusal::QueueFull => "refuse:dispatch_queue_full",
                 DispatchRefusal::PoolClosed => "refuse:dispatch_pool_closed",
             });
-            return;
+            return match e {
+                DispatchRefusal::QueueFull => Admit::Backpressure,
+                DispatchRefusal::PoolClosed => Admit::Blocked,
+            };
         }
         self.model_last_ask.insert(mint, clock);
         self.model_meta.insert(
@@ -672,6 +1256,7 @@ impl Engine {
         self.model_uniq("dispatched", &mint, venue);
         self.mrep(format!("dispatched|venue={venue}"));
         self.mrep("dispatched");
+        Admit::Dispatched
     }
 
     /// Non-blocking: collect finished verdicts, expire deadlines, then try pending fills. Runs at the
@@ -679,7 +1264,9 @@ impl Engine {
     pub(super) fn model_poll(&mut self) {
         let clock = self.model_clock_ms;
         let mut done = Vec::new();
-        if let Some(p) = &self.model_pool {
+        if self.barrier.on {
+            done = self.barrier_take_settled();
+        } else if let Some(p) = &self.model_pool {
             while let Some(v) = p.try_recv() {
                 done.push(v);
             }
@@ -711,11 +1298,7 @@ impl Engine {
             }
         }
         for v in done {
-            if v.id.0 >= super::model_manage::MGMT_ID_BASE {
-                self.model_mgmt_accept(v, clock);
-            } else {
-                self.model_accept(v, clock);
-            }
+            self.model_route_verdict(v, clock);
         }
         for _id in self.model_table.expire(clock) {
             self.mrep("request_abandoned_deadline");
@@ -728,6 +1311,51 @@ impl Engine {
         self.model_safety_note_endpoint(ok_n, bad_n);
         self.model_try_fills(clock);
         self.model_mgmt_try_fills(clock);
+    }
+
+    /// Offer a verdict that did NOT come out of this process's own pool (a late or replayed response). It goes through
+    /// exactly the production accept path: an id this process's request table never issued, or one issued for another
+    /// market, is discarded by name and creates no order. Test control for the abandoned-process case.
+    pub fn model_offer_external_verdict(
+        &mut self,
+        session: u64,
+        id: u64,
+        mint: [u8; 32],
+        text: &str,
+    ) {
+        let clock = self.model_clock_ms;
+        let v = crate::model_worker::Verdict {
+            id: crate::model_lane::RequestId(id),
+            mint,
+            session,
+            result: Ok(pump_quant_inference::Completion {
+                text: text.to_string(),
+                finish_reason: Some("stop".to_string()),
+            }),
+        };
+        self.model_route_verdict(v, clock);
+    }
+
+    /// The ONE place a finished verdict enters the engine (the tick poll and the external-offer test control both
+    /// call it). PROCESS-SESSION BINDING: a verdict answering a request issued by another process (ids restart at 1
+    /// per process) is discarded by name BEFORE it can touch either request table, so it can neither create an
+    /// order nor consume or answer this process's own request that has the same number.
+    fn model_route_verdict(&mut self, v: crate::model_worker::Verdict, clock: i64) {
+        if v.session != self.model_session {
+            self.mrep("discard:foreign_session");
+            return;
+        }
+        if v.id.0 >= super::model_manage::MGMT_ID_BASE {
+            self.model_mgmt_accept(v, clock);
+        } else {
+            self.model_accept(v, clock);
+        }
+    }
+
+    /// This process's session id (never persisted: a restarted process always has a different one).
+    #[must_use]
+    pub fn model_session_id(&self) -> u64 {
+        self.model_session
     }
 
     fn model_accept(&mut self, v: crate::model_worker::Verdict, clock: i64) {
@@ -1055,6 +1683,14 @@ impl Engine {
                 rec.filled_clip_lamports = order.clip_lamports;
             }
             self.model_position_order.insert(mint, order.id);
+            if order.amm {
+                // The AMM fill is priced from the verified landing-state swap observed now: that is the first verified mark.
+                self.model_protect_mark_ms.insert(
+                    mint,
+                    self.model_swap_ctx.map_or(self.model_clock_ms, |(t, _)| t),
+                );
+                self.model_protect_ignored.remove(&mint);
+            }
             // The fill is the ONLY source of inventory: tokens delivered at the fill price.
             let tokens =
                 u64::try_from(u128::from(size) * 1_000_000_000 / u128::from(entry_price.max(1)))
@@ -1173,6 +1809,14 @@ impl Engine {
     /// inventory. Conflicting terminal evidence is a durable fault; settled history is never rewritten.
     pub fn model_ingest_evidence(&mut self, ev: Evidence) -> EvidenceResult {
         let Some(rec) = self.model_order_log.get(&ev.order_id).copied() else {
+            // Never applied, never guessed. An id at or below the compaction floor is NAMED as compacted (an order
+            // we once settled and later dropped from the log): it must not read as a harmless stranger, and it can
+            // never be matched to a position. An id this process never issued stays plainly unknown.
+            if ev.order_id <= self.model_order_floor {
+                self.mrep("evidence:unresolved:compacted_order");
+                return EvidenceResult::Rejected("compacted_order");
+            }
+            self.mrep("evidence:unresolved:unknown_order");
             self.mrep("evidence:rejected:unknown_order");
             return EvidenceResult::Rejected("unknown_order");
         };
@@ -1428,8 +2072,14 @@ impl Engine {
     }
 
     /// New exposure on `mint` is blocked while ANY of its orders has an unresolved fault.
+    /// Whether an unresolved reconciliation fault blocks new exposure on `mint` (the entry gate reads this).
+    #[must_use]
+    pub fn model_mint_is_blocked(&self, mint: &[u8; 32]) -> bool {
+        self.model_mint_blocked(mint)
+    }
+
     pub(super) fn model_mint_blocked(&self, mint: &[u8; 32]) -> bool {
-        self.model_recon_faults.values().any(|f| f.mint == *mint)
+        self.model_recon_faults.values().any(|f| f.mint == *mint) || self.model_sell_blocked(mint)
     }
 
     /// OLD-vs-NEW admission, measured on whatever stream the engine has seen: unique markets reaching
@@ -1494,5 +2144,47 @@ impl Engine {
             }
         }
         out
+    }
+}
+
+fn pool_s_for_protect(a: &AmmSwapIn) -> String {
+    a.pool.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Identity of one executed pool swap for aggregate/protection dedup (no signature is carried on the event, so it is
+/// the tuple that fixes one swap: market, pool, slot, trader, side, both legs, receive time).
+fn amm_swap_identity(a: &AmmSwapIn, ts_ms: i64) -> u128 {
+    use std::hash::{Hash, Hasher};
+    let mut h1 = std::collections::hash_map::DefaultHasher::new();
+    let mut h2 = std::collections::hash_map::DefaultHasher::new();
+    (
+        a.mint.as_bytes(),
+        a.pool,
+        a.slot,
+        a.trader,
+        a.is_buy,
+        a.token_amount,
+        a.quote_lamports,
+        ts_ms,
+    )
+        .hash(&mut h1);
+    (
+        0xA55u16,
+        ts_ms,
+        a.slot,
+        a.token_amount,
+        a.quote_lamports,
+        a.pool,
+        a.trader,
+    )
+        .hash(&mut h2);
+    (u128::from(h1.finish()) << 64) | u128::from(h2.finish())
+}
+
+impl Engine {
+    /// The id of the entry request most recently issued by THIS process (0 before any). Test/barrier bookkeeping.
+    #[must_use]
+    pub fn model_table_last_issued_for_test(&self) -> u64 {
+        self.model_table.last_issued_id()
     }
 }

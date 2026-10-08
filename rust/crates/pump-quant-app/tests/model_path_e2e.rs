@@ -114,6 +114,8 @@ fn events(f: Feed) -> Vec<AppEvent> {
                 None
             },
             venue: Some(TradeVenue::PumpFun),
+            event_id: None,
+            feature: None,
         });
     }
     let t_last = T0 + 1_000 + i64::from(f.n) * 2_000;

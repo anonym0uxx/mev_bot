@@ -1,0 +1,100 @@
+[
+ {
+  "t": 1788965467622,
+  "split": "train",
+  "n_fields": 61,
+  "n_diff": 1,
+  "identical_lines": 20,
+  "total_lines": 21,
+  "diffs": [
+   {
+    "field": "creator_past_launches",
+    "rust": "0",
+    "corpus": "3",
+    "rel": -1.0
+   }
+  ]
+ },
+ {
+  "t": 1788965497622,
+  "split": "train",
+  "n_fields": 61,
+  "n_diff": 2,
+  "identical_lines": 19,
+  "total_lines": 21,
+  "diffs": [
+   {
+    "field": "coentry_wallets_300s",
+    "rust": "20",
+    "corpus": "22",
+    "rel": -0.09090909090909091
+   },
+   {
+    "field": "creator_past_launches",
+    "rust": "0",
+    "corpus": "3",
+    "rel": -1.0
+   }
+  ]
+ },
+ {
+  "t": 1788965527622,
+  "split": "train",
+  "n_fields": 61,
+  "n_diff": 2,
+  "identical_lines": 19,
+  "total_lines": 21,
+  "diffs": [
+   {
+    "field": "coentry_wallets_300s",
+    "rust": "20",
+    "corpus": "22",
+    "rel": -0.09090909090909091
+   },
+   {
+    "field": "creator_past_launches",
+    "rust": "0",
+    "corpus": "3",
+    "rel": -1.0
+   }
+  ]
+ },
+ {
+  "t": 1788965557622,
+  "split": "train",
+  "n_fields": 61,
+  "n_diff": 1,
+  "identical_lines": 20,
+  "total_lines": 21,
+  "diffs": [
+   {
+    "field": "creator_past_launches",
+    "rust": "0",
+    "corpus": "3",
+    "rel": -1.0
+   }
+  ]
+ },
+ {
+  "t": 1788965587622,
+  "split": "train",
+  "n_fields": 61,
+  "n_diff": 2,
+  "identical_lines": 19,
+  "total_lines": 21,
+  "diffs": [
+   {
+    "field": "creator_past_launches",
+    "rust": "0",
+    "corpus": "3",
+    "rel": -1.0
+   },
+   {
+    "field": "staleness_ms",
+    "rust": "4421",
+    "corpus": "4420",
+    "rel": 0.00022624434389140272
+   }
+  ]
+ }
+]

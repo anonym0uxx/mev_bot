@@ -92,6 +92,8 @@ fn events(n: u32) -> Vec<AppEvent> {
             fee_lamports: Some(60_000 + u64::from(i) * 100),
             cu_consumed: Some(90_000 + u64::from(i)),
             venue: Some(TradeVenue::PumpFun),
+            event_id: None,
+            feature: None,
         });
     }
     let t_last = T0 + 1_000 + i64::from(n) * 2_000;
@@ -164,6 +166,8 @@ fn print(e: &mut Engine, i: u32, ts: i64, slot: u64) {
         fee_lamports: Some(60_000 + u64::from(i) * 100),
         cu_consumed: Some(90_000 + u64::from(i)),
         venue: Some(TradeVenue::PumpFun),
+        event_id: None,
+        feature: None,
     });
 }
 
@@ -593,6 +597,22 @@ fn a_verdict_bound_to_an_older_position_version_is_discarded() {
     );
 }
 
+/// Let the paper executor land a pending PROTECTIVE order: a later observation (>= the 400 ms landing delay, a newer
+/// slot) is the landing state its reconciled fill is priced from.
+fn land_protective(r: &mut Rig) {
+    for _ in 0..3 {
+        if r.e.model_protect_pending_order(&MINT).is_none() {
+            break;
+        }
+        r.clock += 1_000;
+        r.slot += 1;
+        r.n += 1;
+        curve_quiet(&mut r.e, r.clock, r.slot);
+        print(&mut r.e, r.n, r.clock, r.slot);
+        ticks(&mut r.e, 2);
+    }
+}
+
 #[test]
 fn legacy_exits_do_not_close_a_model_managed_position_but_the_rug_precursor_still_does() {
     let mut r = rig(|_| HOLD);
@@ -619,11 +639,20 @@ fn legacy_exits_do_not_close_a_model_managed_position_but_the_rug_precursor_stil
         fee_lamports: Some(70_000),
         cu_consumed: Some(95_000),
         venue: Some(TradeVenue::PumpFun),
+        event_id: None,
+        feature: None,
     });
-    assert!(
-        !r.e.model_position_open(&MINT),
+    // The trigger created a protective ORDER (an intent alone moves no inventory or cash) ...
+    assert!(r.e.model_protect_pending_order(&MINT).is_some());
+    assert!(r.e.model_position_open(&MINT), "an intent does not close");
+    // ... and the position closes only when the executor's reconciled fill lands.
+    land_protective(&mut r);
+    assert_eq!(
+        r.e.model_lane_report().get("protect:fill:closed").copied(),
+        Some(1),
         "the rug precursor must still protect a model-managed position"
     );
+    assert!(r.e.model_protect_pending_order(&MINT).is_none());
     assert!(r.calls.load(Ordering::SeqCst) >= 1);
 }
 
@@ -897,9 +926,14 @@ fn held_data_readiness_is_measured_and_a_stale_reserve_degrades_while_protection
         fee_lamports: Some(70_000),
         cu_consumed: Some(95_000),
         venue: Some(TradeVenue::PumpFun),
+        event_id: None,
+        feature: None,
     });
-    assert!(
-        !r.e.model_position_open(&MINT),
+    assert!(r.e.model_protect_pending_order(&MINT).is_some());
+    land_protective(&mut r);
+    assert_eq!(
+        r.e.model_lane_report().get("protect:fill:closed").copied(),
+        Some(1),
         "independent protection still works while degraded"
     );
     // Recovery: a fresh reserve observation restores readiness without any threshold change.
@@ -1289,4 +1323,667 @@ fn no_legacy_config_value_can_close_or_resize_a_model_managed_position() {
         "the model's own EXIT still closes it"
     );
     assert!(m.e.model_mgmt_fills().iter().any(|f| f.closed));
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// MFE/MAE ("max favourable / adverse so far") tracker: causal, once-only, and restart-safe.
+//
+// Time basis: `fill_ms` is the FEED clock at the moment the paper fill was applied (the newest receive time seen),
+// and a print's own time is its wire `recv_unix_ms`. Both are on the same wire clock. A print with
+// recv < fill_ms was received before the position existed; a print with recv >= fill_ms was not. Equal time is
+// NOT distinguishable from timestamps alone, so it is treated as "after the fill" (the conservative side for a
+// held position: an equal-time adverse print is counted, never silently dropped).
+// ---------------------------------------------------------------------------------------------------------------
+
+fn held_extrema(e: &Engine) -> (u64, u64, u64, i64) {
+    let l = e.model_held_ledger();
+    let h = &l.held[0];
+    (h.entry_price_fp, h.peak_fp, h.trough_fp, h.fill_ms)
+}
+
+fn print_at(e: &mut Engine, i: u32, ts: i64, slot: u64, price: i128) {
+    e.tick(AppEvent::MarketTrade {
+        mint: mint(),
+        price_fp: price,
+        quote_lamports: 500_000_000 + u64::from(i),
+        liquidity_lamports: VSOL,
+        signed_base: 30_000_000_000,
+        buyer_entity: 1 + u64::from(i),
+        age_slots: 30,
+        recv_unix_ms: Some(ts),
+        trader_pubkey: Some(wallet(i)),
+        slot: Some(slot),
+        fee_lamports: Some(60_000 + u64::from(i) * 100),
+        cu_consumed: Some(90_000 + u64::from(i)),
+        venue: Some(TradeVenue::PumpFun),
+        event_id: None,
+        feature: None,
+    });
+}
+
+#[test]
+fn excursions_ignore_pre_fill_prints_count_post_fill_ones_once_and_the_equal_time_print() {
+    let mut r = rig(|_| HOLD);
+    let (entry, peak0, trough0, fill_ms) = held_extrema(&r.e);
+    assert_eq!(
+        peak0, entry,
+        "a fresh position's extrema start at its entry price"
+    );
+    assert_eq!(trough0, entry);
+    // Independently calculated expectations (fixed-point price units, no engine arithmetic reused).
+    let high = entry + entry / 5; // +20 %
+    let low = entry - entry / 10; // -10 %  (well above the 35 % hard stop, so the position stays open)
+    let mut i = 5_000u32;
+    let mut slot = 9_000u64;
+    let mut next = |dt: i64| {
+        i += 1;
+        slot += 1;
+        (i, fill_ms + dt, slot)
+    };
+    // 1. PRE-FILL prints (an overlap replay re-delivers history): a wildly high and a wildly low price,
+    //    received BEFORE the fill. Neither may touch the extrema.
+    // The cache refuses out-of-order prints, so deliver them through a fresh restart below as well; here a
+    // directly-late print is the in-process analogue.
+    let (a, t, s) = next(-1);
+    print_at(&mut r.e, a, t, s, i128::from(entry) * 10);
+    let (a, t, s) = next(-2);
+    print_at(&mut r.e, a, t, s, 1);
+    let (_, p, tr, _) = held_extrema(&r.e);
+    assert_eq!(
+        (p, tr),
+        (entry, entry),
+        "pre-fill prints must not move the extrema"
+    );
+    // 2. A genuine POST-fill high and low move them to exactly those values.
+    let (a, t, s) = next(1_000);
+    print_at(&mut r.e, a, t, s, i128::from(high));
+    let (a, t, s) = next(2_000);
+    print_at(&mut r.e, a, t, s, i128::from(low));
+    let (_, p, tr, _) = held_extrema(&r.e);
+    assert_eq!(p, high, "post-fill high");
+    assert_eq!(tr, low, "post-fill low");
+    // 3. A DUPLICATE delivery (same identity) applies once: re-delivering the high-then-low pair changes nothing,
+    //    and a lower-than-peak, higher-than-trough print does not regress either extremum.
+    let (a, t, s) = (5_003u32, fill_ms + 3_000, 9_050u64);
+    print_at(&mut r.e, a, t, s, i128::from(entry));
+    let (_, p, tr, _) = held_extrema(&r.e);
+    assert_eq!(
+        (p, tr),
+        (high, low),
+        "an in-range print must not regress either extremum"
+    );
+}
+
+#[test]
+fn an_equal_time_print_is_counted_as_after_the_fill_and_a_one_ms_earlier_print_is_not() {
+    let r = rig(|_| HOLD);
+    let mut e = r.e;
+    let (entry, _, _, fill_ms) = held_extrema(&e);
+    let low = entry - entry / 20; // -5 %, independently computed
+                                  // One millisecond BEFORE the fill: ignored.
+    print_at(&mut e, 7_001, fill_ms - 1, 9_101, i128::from(low));
+    assert_eq!(
+        held_extrema(&e).2,
+        entry,
+        "recv = fill_ms - 1 is before the fill"
+    );
+    // Exactly AT the fill millisecond: counted. This is a CONVENTION, not proof of order: `fill_ms` is the only
+    // recorded boundary (no ingest sequence is persisted), so a same-ms print cannot be placed before or after the
+    // fill. It can move EITHER extremum (see the favourable case below), so it is not "conservative" in general.
+    print_at(&mut e, 7_002, fill_ms, 9_102, i128::from(low));
+    assert_eq!(
+        held_extrema(&e).2,
+        low,
+        "recv = fill_ms is treated as after the fill"
+    );
+}
+
+#[test]
+fn restored_extrema_survive_an_overlap_replay_which_applies_each_new_observation_once() {
+    let hp = held_path("exc");
+    let mut r = rig(|_| HOLD);
+    r.e.model_held_attach(&hp);
+    let (entry, _, _, fill_ms) = held_extrema(&r.e);
+    let high = entry + entry / 5;
+    let low = entry - entry / 10;
+    print_at(&mut r.e, 6_001, fill_ms + 1_000, 9_201, i128::from(high));
+    print_at(&mut r.e, 6_002, fill_ms + 2_000, 9_202, i128::from(low));
+    ticks(&mut r.e, 2);
+    assert!(r.e.model_held_persist_now());
+    let led = r.e.model_held_ledger();
+    assert_eq!((led.held[0].peak_fp, led.held[0].trough_fp), (high, low));
+    drop(r);
+
+    let mut e2 = fresh_engine(2_000_000_000, &hp);
+    e2.model_held_restore().expect("restore").expect("ledger");
+    assert_eq!(
+        held_extrema(&e2),
+        (entry, high, low, fill_ms),
+        "restored extrema and fill time are the ones written, not reset"
+    );
+    // OVERLAP REPLAY: the whole pre-fill history is delivered again (extreme prices, all before the fill), then the
+    // two post-fill prints again, then one genuinely NEW post-fill observation.
+    for k in 0..20u32 {
+        let px = if k % 2 == 0 {
+            i128::from(entry) * 10
+        } else {
+            1
+        };
+        print_at(
+            &mut e2,
+            100 + k,
+            fill_ms - 20_000 + i64::from(k) * 500,
+            9_300 + u64::from(k),
+            px,
+        );
+    }
+    print_at(&mut e2, 6_001, fill_ms + 1_000, 9_201, i128::from(high));
+    print_at(&mut e2, 6_002, fill_ms + 2_000, 9_202, i128::from(low));
+    let (_, p, t, _) = held_extrema(&e2);
+    assert_eq!((p, t), (high, low), "replay changed nothing it should not");
+    let new_low = low - entry / 20; // a genuinely new, lower post-fill price (-15 %, above the hard stop)
+    print_at(&mut e2, 6_003, fill_ms + 4_000, 9_203, i128::from(new_low));
+    let (_, p, t, _) = held_extrema(&e2);
+    assert_eq!(p, high, "peak preserved");
+    assert_eq!(t, new_low, "the genuinely new low applies exactly once");
+    assert!(
+        e2.model_position_open(&MINT),
+        "no spurious exit from replayed history"
+    );
+}
+
+fn mark_of(prompt: &str) -> f64 {
+    let line = prompt
+        .lines()
+        .find(|l| {
+            l.trim_start()
+                .starts_with("mark price (lamports per raw token):")
+        })
+        .expect("a management prompt shows its mark");
+    line.rsplit(':')
+        .next()
+        .unwrap()
+        .trim()
+        .parse()
+        .expect("mark parses")
+}
+
+#[test]
+fn a_post_fill_replay_cannot_regress_the_mark_even_when_it_leaves_the_extrema_alone() {
+    let mut r = rig(|_| HOLD);
+    let (entry, _, _, _) = held_extrema(&r.e);
+    // Newest print: +2 % of entry, inside the extrema range, so replay can matter ONLY through the mark.
+    let last_px = entry + entry / 50;
+    r.advance(62_000);
+    let t_last = r.clock + 1_000;
+    print_at(&mut r.e, 8_001, t_last, 9_401, i128::from(last_px));
+    let extrema = held_extrema(&r.e);
+    // Replay AFTER it: an older in-range post-fill print, and a duplicate identity of the newest carrying another price.
+    print_at(&mut r.e, 8_002, t_last - 500, 9_402, i128::from(entry) + 3);
+    print_at(&mut r.e, 8_001, t_last, 9_401, i128::from(entry) + 5);
+    assert_eq!(held_extrema(&r.e), extrema, "replay left the extrema alone");
+    // Let the management cadence come due with NO newer print: curve observations advance the feed clock only.
+    let before = r.prompts.lock().unwrap().len();
+    let mut t = t_last;
+    for k in 0..8u64 {
+        t += 5_000;
+        curve_quiet(&mut r.e, t, 9_500 + k);
+        ticks(&mut r.e, 3);
+    }
+    let ps = r.prompts.lock().unwrap().clone();
+    assert!(
+        ps.len() > before,
+        "a management prompt must be asked after the replay"
+    );
+    let got = mark_of(ps.last().unwrap());
+    let want = last_px as f64 / 1e9; // independent: fixed-point / PRICE_SCALE
+    assert!(
+        ((got - want) / want).abs() < 1e-9,
+        "mark {got} must be the newest accepted print {want}, not a replayed older/duplicate price"
+    );
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Settled-order identity and terminal evidence across a restart (no financial effect is replayed).
+// ---------------------------------------------------------------------------------------------------------------
+use pump_quant_app::engine::model_admit::{
+    Evidence, EvidenceResult, FillReport, OrderState, ReconcileOutcome,
+};
+
+fn filled_report() -> ReconcileOutcome {
+    ReconcileOutcome::Filled(FillReport {
+        entry_price_fp: 22_000,
+        reserve_sol_lamports: VSOL,
+    })
+}
+
+/// Entry filled, then closed through an EXIT fill; first terminal evidence (Filled) applied; ledger written.
+fn closed_order_world(tag: &str) -> (std::path::PathBuf, u64, u64, i128, u64) {
+    let hp = held_path(tag);
+    let mut r = rig(|step| if step == 0 { EXIT } else { HOLD });
+    r.e.model_held_attach(&hp);
+    let id = r.e.model_position_order_id(&MINT).expect("entry order id");
+    let q = r.e.model_order_rec(id).unwrap().clip_lamports;
+    r.advance_to_order(120_000);
+    r.landing(250_000_000);
+    assert!(!r.e.model_position_open(&MINT));
+    assert_eq!(r.e.model_order_rec(id).unwrap().state, OrderState::Closed);
+    let first = r.e.model_ingest_evidence(Evidence {
+        order_id: id,
+        attempt: 1,
+        clip_lamports: q,
+        outcome: filled_report(),
+    });
+    assert_eq!(first, EvidenceResult::Applied);
+    assert!(r.e.model_held_persist_now());
+    let realized = r.e.model_accounting_view(&MINT).realized;
+    let seq = r.e.model_held_ledger().model_order_seq;
+    (hp, id, q, realized, seq)
+}
+
+#[test]
+fn a_closed_order_keeps_its_identity_and_terminal_evidence_across_a_restart_without_replaying_money(
+) {
+    let (hp, id, q, realized, seq) = closed_order_world("ord_a");
+    let mut e2 = fresh_engine(2_000_000_000, &hp);
+    e2.model_held_restore().unwrap().unwrap();
+    let rec = e2
+        .model_order_rec(id)
+        .expect("settled order restored as a record");
+    assert_eq!(rec.state, OrderState::Closed);
+    assert_eq!(rec.clip_lamports, q);
+    assert_eq!(rec.terminal, Some(filled_report()));
+    // Money came from the ledger totals, never from replaying the order.
+    let v = e2.model_accounting_view(&MINT);
+    assert_eq!(v.realized, realized);
+    assert_eq!(v.committed, 0);
+    assert!(
+        e2.model_all_fills().is_empty(),
+        "no fill record was re-created"
+    );
+    assert!(e2.model_mgmt_fills().is_empty());
+    assert_eq!(
+        e2.model_held_ledger().model_order_seq,
+        seq,
+        "ids never repeat"
+    );
+
+    // (1) IDENTICAL late report -> duplicate, nothing changes.
+    let before = e2.model_held_ledger();
+    assert_eq!(
+        e2.model_ingest_evidence(Evidence {
+            order_id: id,
+            attempt: 1,
+            clip_lamports: q,
+            outcome: filled_report()
+        }),
+        EvidenceResult::Duplicate
+    );
+    let mut after = e2.model_held_ledger();
+    let (mut b, a) = (before, &mut after);
+    b.written_wall_ms = 0;
+    a.written_wall_ms = 0;
+    assert_eq!(&b, a, "a duplicate changes nothing");
+    assert_eq!(e2.model_accounting_view(&MINT).realized, realized);
+    assert!(e2.model_recon_faults().is_empty());
+
+    // (2) CONFLICTING report -> evidence preserved, the established fault raised, books untouched.
+    assert_eq!(
+        e2.model_ingest_evidence(Evidence {
+            order_id: id,
+            attempt: 1,
+            clip_lamports: q,
+            outcome: ReconcileOutcome::NotFilled
+        }),
+        EvidenceResult::Fault
+    );
+    let f = e2.model_recon_faults().get(&id).expect("fault");
+    assert_eq!(
+        f.first,
+        Some(filled_report()),
+        "first terminal evidence kept verbatim"
+    );
+    assert_eq!(f.contradicting, vec![ReconcileOutcome::NotFilled]);
+    assert_eq!(
+        e2.model_accounting_view(&MINT).realized,
+        realized,
+        "no second credit or debit"
+    );
+    assert!(
+        e2.model_mint_is_blocked(&MINT),
+        "new exposure on the faulted mint is blocked"
+    );
+
+    // (3) A genuinely unknown id (never issued) stays unresolved and is not applied.
+    let unknown = seq + 50;
+    assert_eq!(
+        e2.model_ingest_evidence(Evidence {
+            order_id: unknown,
+            attempt: 1,
+            clip_lamports: q,
+            outcome: filled_report()
+        }),
+        EvidenceResult::Rejected("unknown_order")
+    );
+    assert!(e2.model_order_rec(unknown).is_none());
+    assert_eq!(e2.model_accounting_view(&MINT).realized, realized);
+}
+
+#[test]
+fn an_unresolved_fault_survives_a_second_restart_and_still_blocks_the_mint() {
+    let (hp, id, q, _realized, _seq) = closed_order_world("ord_b");
+    let mut e2 = fresh_engine(2_000_000_000, &hp);
+    e2.model_held_restore().unwrap().unwrap();
+    assert_eq!(
+        e2.model_ingest_evidence(Evidence {
+            order_id: id,
+            attempt: 1,
+            clip_lamports: q,
+            outcome: ReconcileOutcome::NotFilled
+        }),
+        EvidenceResult::Fault
+    );
+    assert!(e2.model_held_persist_now());
+    let mut e3 = fresh_engine(2_000_000_000, &hp);
+    e3.model_held_restore().unwrap().unwrap();
+    let f = e3.model_recon_faults().get(&id).expect("fault restored");
+    assert_eq!(f.first, Some(filled_report()));
+    assert_eq!(f.contradicting, vec![ReconcileOutcome::NotFilled]);
+    assert!(
+        e3.model_mint_is_blocked(&MINT),
+        "the block survives the restart"
+    );
+}
+
+#[test]
+fn compaction_names_a_dropped_order_and_never_drops_a_faulted_one() {
+    let (hp, id, q, realized, _seq) = closed_order_world("ord_c");
+    let ev = |outcome| Evidence {
+        order_id: id,
+        attempt: 1,
+        clip_lamports: q,
+        outcome,
+    };
+    // (a) Unfaulted settled record + cap 0: compacted on the next tick, floor raised, and a late report is
+    // NAMED compacted (unresolved, never applied) -- not a plain stranger and not silently harmless.
+    let mut e2 = fresh_engine(2_000_000_000, &hp);
+    e2.model_held_restore().unwrap().unwrap();
+    e2.model_set_settled_order_cap(0);
+    e2.tick(AppEvent::Tick);
+    assert!(e2.model_order_rec(id).is_none(), "record compacted");
+    assert_eq!(
+        e2.model_held_ledger().order_floor,
+        id,
+        "floor = highest dropped id"
+    );
+    assert_eq!(
+        e2.model_ingest_evidence(ev(ReconcileOutcome::NotFilled)),
+        EvidenceResult::Rejected("compacted_order")
+    );
+    assert_eq!(e2.model_accounting_view(&MINT).realized, realized);
+    assert!(e2.model_held_persist_now());
+    // The floor survives another restart, so the name does too.
+    let mut e3 = fresh_engine(2_000_000_000, &hp);
+    e3.model_held_restore().unwrap().unwrap();
+    assert_eq!(
+        e3.model_ingest_evidence(ev(ReconcileOutcome::Filled(FillReport {
+            entry_price_fp: 1,
+            reserve_sol_lamports: 1
+        }))),
+        EvidenceResult::Rejected("compacted_order")
+    );
+
+    // (b) The same order with an UNRESOLVED FAULT is never compacted, whatever the cap.
+    let (hp2, id2, q2, _r2, _s2) = closed_order_world("ord_d");
+    let mut f = fresh_engine(2_000_000_000, &hp2);
+    f.model_held_restore().unwrap().unwrap();
+    let ev2 = |outcome| Evidence {
+        order_id: id2,
+        attempt: 1,
+        clip_lamports: q2,
+        outcome,
+    };
+    assert_eq!(
+        f.model_ingest_evidence(ev2(ReconcileOutcome::NotFilled)),
+        EvidenceResult::Fault
+    );
+    f.model_set_settled_order_cap(0);
+    f.tick(AppEvent::Tick);
+    assert!(
+        f.model_order_rec(id2).is_some(),
+        "a faulted order is retained"
+    );
+    assert_eq!(f.model_held_ledger().order_floor, 0);
+    assert_eq!(
+        f.model_ingest_evidence(ev2(ReconcileOutcome::NotFilled)),
+        EvidenceResult::Fault
+    );
+    assert!(f.model_mint_is_blocked(&MINT));
+}
+
+/// A world stopped with the ENTRY order accepted but not yet filled (no landing state has arrived).
+fn pending_entry_world(tag: &str) -> (std::path::PathBuf, u64, u64) {
+    let hp = held_path(tag);
+    let prompts = Arc::new(Mutex::new(Vec::new()));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut c = cfg();
+    c.bankroll_initial_lamports = 2_000_000_000;
+    c.floor_fraction_bps = 2_500;
+    let mut e = Engine::new(c, RunMode::Paper);
+    e.enable_paper_model(Script {
+        prompts,
+        calls,
+        answer: |_| HOLD,
+    });
+    e.model_held_attach(&hp);
+    for ev in &events(40) {
+        e.tick(*ev);
+    }
+    ticks(&mut e, 8);
+    assert!(
+        !e.model_position_open(&MINT),
+        "setup: no fill yet: {:?}",
+        e.model_lane_report()
+    );
+    let (id, _attempt, q) = e
+        .model_pending_order(&MINT)
+        .expect("setup: the BUY verdict made a pending entry order");
+    assert!(e.model_held_persist_now());
+    (hp, id, q)
+}
+
+fn landing_after(e: &mut Engine, dsol: u64) {
+    let t = T0 + 1_000 + 40 * 2_000 + 1_500;
+    curve(e, t, 2_100, dsol);
+}
+
+#[test]
+fn an_uncertain_entry_order_is_restored_unbooked_then_filled_exactly_once() {
+    let (hp, id, q) = pending_entry_world("unc_a");
+    let mut e2 = fresh_engine(2_000_000_000, &hp);
+    let rep = e2.model_held_restore().unwrap().unwrap();
+    assert_eq!(rep.pending_uncertain, 1);
+    // Restored, not resubmitted, not booked.
+    assert_eq!(
+        e2.model_pending_order(&MINT).map(|p| (p.0, p.2)),
+        Some((id, q))
+    );
+    assert!(!e2.model_position_open(&MINT));
+    let v = e2.model_accounting_view(&MINT);
+    assert_eq!((v.realized, v.committed), (0, 0));
+    assert_eq!(
+        e2.model_order_rec(id).unwrap().state,
+        OrderState::PendingUncertain
+    );
+    // The simulator must not settle an order whose acknowledgement died with the old process.
+    landing_after(&mut e2, 200_000_000);
+    assert!(
+        !e2.model_position_open(&MINT),
+        "uncertain: never auto-filled"
+    );
+    assert_eq!(e2.model_pending_orders(), 1);
+    // Reconcile FILLED through the normal path.
+    let ev = Evidence {
+        order_id: id,
+        attempt: 1,
+        clip_lamports: q,
+        outcome: filled_report(),
+    };
+    assert_eq!(e2.model_ingest_evidence(ev), EvidenceResult::Applied);
+    landing_after(&mut e2, 210_000_000);
+    assert!(
+        e2.model_position_open(&MINT),
+        "{:?}",
+        e2.model_lane_report()
+    );
+    assert_eq!(e2.model_pending_orders(), 0);
+    let once = e2.model_accounting_view(&MINT);
+    assert_eq!(once.committed, once.attribution_entry_spend.unwrap());
+    let fills = e2.model_all_fills().len();
+    assert_eq!(fills, 1);
+    // Repeats: exactly-once.
+    for _ in 0..3 {
+        assert_eq!(e2.model_ingest_evidence(ev), EvidenceResult::Duplicate);
+        landing_after(&mut e2, 220_000_000);
+    }
+    assert_eq!(e2.model_all_fills().len(), 1, "no second fill");
+    let again = e2.model_accounting_view(&MINT);
+    assert_eq!(
+        (again.committed, again.balance, again.realized),
+        (once.committed, once.balance, once.realized)
+    );
+}
+
+#[test]
+fn an_uncertain_entry_order_reconciled_not_filled_is_cleared_once_and_never_filled_later() {
+    let (hp, id, q) = pending_entry_world("unc_b");
+    let mut e2 = fresh_engine(2_000_000_000, &hp);
+    e2.model_held_restore().unwrap().unwrap();
+    let ev = Evidence {
+        order_id: id,
+        attempt: 1,
+        clip_lamports: q,
+        outcome: ReconcileOutcome::NotFilled,
+    };
+    assert_eq!(e2.model_ingest_evidence(ev), EvidenceResult::Applied);
+    assert_eq!(e2.model_pending_orders(), 0);
+    assert!(!e2.model_position_open(&MINT));
+    let v = e2.model_accounting_view(&MINT);
+    assert_eq!((v.committed, v.realized), (0, 0));
+    // Repeated report: duplicate. A later contradicting FILLED report: fault, not applied.
+    assert_eq!(e2.model_ingest_evidence(ev), EvidenceResult::Duplicate);
+    landing_after(&mut e2, 200_000_000);
+    assert!(
+        !e2.model_position_open(&MINT),
+        "a cleared order never fills"
+    );
+    let fill = Evidence {
+        outcome: filled_report(),
+        ..ev
+    };
+    assert_eq!(e2.model_ingest_evidence(fill), EvidenceResult::Fault);
+    assert!(!e2.model_position_open(&MINT));
+    assert!(e2.model_mint_is_blocked(&MINT));
+    assert_eq!(e2.model_accounting_view(&MINT).committed, 0);
+}
+
+/// A source that answers only once released: the request stays in flight, so an old answer can race it.
+struct Gated {
+    open: Arc<std::sync::atomic::AtomicBool>,
+    calls: Arc<AtomicUsize>,
+}
+impl ModelSource for Gated {
+    fn complete(&self, _s: &str, _u: &str) -> Result<String, InferenceError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        while !self.open.load(Ordering::SeqCst) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        Ok(HOLD.to_string())
+    }
+}
+
+fn gated_engine(
+    open: &Arc<std::sync::atomic::AtomicBool>,
+    calls: &Arc<AtomicUsize>,
+    held: Option<&std::path::Path>,
+) -> Engine {
+    let mut c = cfg();
+    c.bankroll_initial_lamports = 2_000_000_000;
+    c.floor_fraction_bps = 2_500;
+    let mut e = Engine::new(c, RunMode::Paper);
+    e.enable_paper_model(Gated {
+        open: Arc::clone(open),
+        calls: Arc::clone(calls),
+    });
+    if let Some(h) = held {
+        e.model_held_attach(h);
+    }
+    e
+}
+
+#[test]
+fn a_verdict_from_an_abandoned_process_creates_no_order_and_cannot_answer_a_new_request() {
+    let (hp, id, _q) = pending_entry_world("fv_a");
+    let before_orders;
+    {
+        let mut e2 = fresh_engine(2_000_000_000, &hp);
+        e2.model_held_restore().unwrap().unwrap();
+        before_orders = e2.model_held_ledger().model_order_seq;
+        // (1) No request of THIS process exists: any old id is unknown and creates nothing.
+        for old_id in [1u64, 2, 7, (1u64 << 40) + 1] {
+            e2.model_offer_external_verdict(e2.model_session_id() ^ 1, old_id, MINT, BUY);
+        }
+        assert_eq!(
+            e2.model_held_ledger().model_order_seq,
+            before_orders,
+            "no order created"
+        );
+        assert_eq!(
+            e2.model_pending_orders(),
+            1,
+            "only the restored uncertain order"
+        );
+        assert_eq!(e2.model_pending_order(&MINT).map(|p| p.0), Some(id));
+        assert!(!e2.model_position_open(&MINT));
+    }
+    // (2) The id-collision case: the new process has its OWN request in flight (ids restart at 1, so the abandoned
+    // process's id 1 is the same number). The old answer must not be accepted as the answer to the new request.
+    let open = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut e = gated_engine(&open, &calls, None);
+    for ev in &events(40) {
+        e.tick(*ev);
+    }
+    ticks(&mut e, 8);
+    assert!(calls.load(Ordering::SeqCst) >= 1, "the new process asked");
+    assert_eq!(e.model_pending_orders(), 0);
+    let new_req = e.model_table_last_issued_for_test();
+    // The abandoned process answers with the same numeric id, for the same market, with BUY.
+    e.model_offer_external_verdict(e.model_session_id() ^ 1, new_req, MINT, BUY);
+    ticks(&mut e, 4);
+    assert_eq!(
+        e.model_pending_orders(),
+        0,
+        "a verdict that did not come from this process's own worker must create no order: {:?}",
+        e.model_lane_report()
+    );
+    open.store(true, Ordering::SeqCst);
+}
+
+#[test]
+fn the_equal_millisecond_convention_can_inflate_the_favourable_excursion_as_well() {
+    let r = rig(|_| HOLD);
+    let mut e = r.e;
+    let (entry, _, _, fill_ms) = held_extrema(&e);
+    let high = entry + entry / 10; // +10 %, independently computed
+    print_at(&mut e, 7_101, fill_ms - 1, 9_301, i128::from(high));
+    assert_eq!(held_extrema(&e).1, entry, "one ms earlier: not counted");
+    print_at(&mut e, 7_102, fill_ms, 9_302, i128::from(high));
+    assert_eq!(
+        held_extrema(&e).1,
+        high,
+        "a same-ms FAVOURABLE print is counted too: the convention can raise MFE, not only MAE"
+    );
+    // Entry price and fill record are untouched by the excursion feature; protection is a separate path.
+    assert_eq!(held_extrema(&e).0, entry);
 }

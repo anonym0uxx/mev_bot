@@ -78,6 +78,8 @@ fn events(confirm_virtual: u64, confirm_real: u64) -> Vec<AppEvent> {
             fee_lamports: Some(60_000 + u64::from(i) * 100),
             cu_consumed: Some(90_000 + u64::from(i)),
             venue: Some(TradeVenue::PumpFun),
+            event_id: None,
+            feature: None,
         });
     }
     let t_last = T0 + 1_000 + 40 * 2_000;

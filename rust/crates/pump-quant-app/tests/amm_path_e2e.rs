@@ -115,6 +115,8 @@ fn feed_line(e: &mut Engine, v: &serde_json::Value, m: DomainMint, t: i64) {
                 fee_lamports: v["fee"].as_u64(),
                 cu_consumed: v["cu"].as_u64(),
                 venue: Some(TradeVenue::PumpFun),
+                event_id: None,
+                feature: None,
             });
         }
         "A" => {
@@ -261,12 +263,32 @@ fn an_amm_market_is_discovered_from_stream_events_and_bought_through_the_real_en
 #[test]
 fn amm_fill_is_applied_once_and_duplicates_do_not_add_inventory() {
     let r = amm_run_with_fill();
+    // Once-per-order, not once-per-run: held-position protection (a -35% hard stop on verified pool marks)
+    // can legitimately close the position, after which the stub may BUY again as a NEW order. What must hold
+    // is that no order filled twice, every fill is an AMM fill, every re-entry follows an exit, and no order
+    // is left pending.
+    let fills = r.e.model_all_fills();
+    let amm_fills: Vec<_> = fills.iter().filter(|f| f.amm).collect();
+    let opened = rep(&r.e, "fill:position_opened_amm") as usize;
     assert_eq!(
-        rep(&r.e, "fill:position_opened_amm"),
-        1,
-        "exactly one fill for one order"
+        amm_fills.len(),
+        opened,
+        "one fill record per opened position"
     );
-    assert_eq!(r.e.model_all_fills().iter().filter(|f| f.amm).count(), 1);
+    let mut ids: Vec<u64> = amm_fills.iter().map(|f| f.order_id).collect();
+    ids.sort_unstable();
+    let n = ids.len();
+    ids.dedup();
+    assert_eq!(ids.len(), n, "no order id filled twice");
+    // Protection now executes through a protective ORDER (it no longer books a close inside the position store), so
+    // a protective close is counted at its reconciled fill.
+    let exits = rep(&r.e, "protect:fill:closed")
+        + rep(&r.e, "protect:fill:complete")
+        + rep(&r.e, "mgmt:fill:complete");
+    assert!(
+        exits + 1 >= opened as u64,
+        "every re-entry must follow a close ({opened} fills, {exits} closes)"
+    );
     assert_eq!(
         r.e.model_pending_orders(),
         0,
@@ -526,4 +548,143 @@ fn amm_management_reduce_then_exit_runs_through_the_real_engine_with_unassessed_
     assert_eq!(rep(&e, "mgmt:fill:closed"), 1, "{r:?}");
     // The unverified AMM sell economics are FLAGGED on every AMM sell fill, so no PnL from them is citable.
     assert_eq!(rep(&e, "mgmt:fill_amm_sell_fee_unverified"), 2, "{r:?}");
+}
+
+/// INDEPENDENT LEDGER over the whole captured replay. After EVERY fed event the test samples the engine's public
+/// state and keeps its own books; the invariants below are checked against that ledger, not against engine counters:
+///   * a position opens only from flat, with exactly one new fill record and inventory established by that fill;
+///   * a position closes only while holding inventory > 0, exactly once per open, and inventory is gone afterwards;
+///   * a re-entry (a second open) only happens after a completed close;
+///   * cash applies once: `balance == seed + realized` at every sample, `realized` changes ONLY at a close/partial
+///     transition, and an open changes `committed` (not realized);
+///   * every order id appears once in the fill ledger.
+#[test]
+fn amm_lifecycle_independent_ledger_every_close_has_inventory_every_reentry_follows_a_close_cash_applies_once(
+) {
+    let mut cfg = Config::dev_portable();
+    cfg.bankroll_initial_lamports = 2_000_000_000;
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut e = Engine::new(cfg, RunMode::Paper);
+    e.enable_paper_model(Stub(Arc::clone(&calls)));
+    let mut last_tick = 0i64;
+    #[derive(Clone, Copy, PartialEq, Debug)]
+    struct Snap {
+        open: bool,
+        inv: Option<u64>,
+        realized: i128,
+        committed: u64,
+        fills: usize,
+    }
+    let mut mint_seen: Option<[u8; 32]> = None;
+    let mut prev: Option<Snap> = None;
+    let (mut opens, mut closes) = (0u32, 0u32);
+    let mut open_inventory: Option<u64> = None;
+    let mut closes_without_inventory = 0u32;
+    let mut reentry_without_close = 0u32;
+    let mut cash_changed_off_transition = 0u32;
+    let mut identity_broken = 0u32;
+    let mut seed = None;
+    let mut sample = |e: &Engine, m: &DomainMint, prev: &mut Option<Snap>| {
+        let v = e.model_accounting_view(m.as_bytes());
+        seed.get_or_insert(v.seed);
+        if i128::from(v.balance) != (i128::from(v.seed) + v.realized).max(0) {
+            identity_broken += 1;
+        }
+        let cur = Snap {
+            open: e.model_position_open(m.as_bytes()),
+            inv: e.model_inventory_tokens(m.as_bytes()),
+            realized: v.realized,
+            committed: v.committed,
+            fills: e.model_all_fills().iter().filter(|f| f.amm).count(),
+        };
+        if let Some(p) = *prev {
+            if !p.open && cur.open {
+                opens += 1;
+                if cur.fills != p.fills + 1 {
+                    identity_broken += 1; // an open must add exactly one fill record
+                }
+                if cur.inv.unwrap_or(0) == 0 {
+                    identity_broken += 1;
+                }
+                if opens > 1 && closes + 1 != opens {
+                    reentry_without_close += 1;
+                }
+                open_inventory = cur.inv;
+            } else if p.open && !cur.open {
+                closes += 1;
+                if p.inv.unwrap_or(0) == 0 {
+                    closes_without_inventory += 1;
+                }
+                if cur.inv.is_some_and(|i| i > 0) {
+                    identity_broken += 1; // inventory must be gone after a full close
+                }
+                if cur.fills != p.fills {
+                    identity_broken += 1; // a close is not a BUY fill
+                }
+            } else if p.realized != cur.realized && !(p.open != cur.open || p.inv != cur.inv) {
+                cash_changed_off_transition += 1;
+            }
+        }
+        *prev = Some(cur);
+    };
+    for line in FIXTURE.lines() {
+        let v: serde_json::Value = serde_json::from_str(line).unwrap();
+        let m = DomainMint::from_bytes(hex32(v["m"].as_str().unwrap()));
+        let t = v["t"].as_i64().unwrap();
+        feed_line(&mut e, &v, m, t);
+        let mm = *mint_seen.get_or_insert(*m.as_bytes());
+        if &mm == m.as_bytes() {
+            sample(&e, &m, &mut prev);
+        }
+        if t - last_tick >= 1_000 {
+            last_tick = t;
+            e.tick(AppEvent::Tick);
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            if let Some(mm) = mint_seen {
+                sample(&e, &DomainMint::from_bytes(mm), &mut prev);
+            }
+        }
+    }
+    for _ in 0..30 {
+        e.tick(AppEvent::Tick);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        if let Some(mm) = mint_seen {
+            sample(&e, &DomainMint::from_bytes(mm), &mut prev);
+        }
+    }
+    let _ = open_inventory;
+    assert!(
+        opens >= 1,
+        "the replay must open at least one AMM position ({opens})"
+    );
+    assert_eq!(closes_without_inventory, 0, "every close had inventory");
+    assert_eq!(
+        reentry_without_close, 0,
+        "every re-entry followed a completed close"
+    );
+    assert_eq!(
+        identity_broken, 0,
+        "balance = seed + realized, one fill record per open, inventory gone after close"
+    );
+    assert_eq!(
+        cash_changed_off_transition, 0,
+        "cash changed with no open/close/inventory transition"
+    );
+    // Fill ledger: every order id once, and the sampled opens equal the engine's own fill records.
+    let fills = e.model_all_fills();
+    let amm: Vec<_> = fills.iter().filter(|f| f.amm).collect();
+    let mut ids: Vec<u64> = amm.iter().map(|f| f.order_id).collect();
+    ids.sort_unstable();
+    let n = ids.len();
+    ids.dedup();
+    assert_eq!(ids.len(), n, "each order id once");
+    assert_eq!(amm.len() as u32, opens, "sampled opens == fill records");
+    assert!(
+        closes <= opens && opens - closes <= 1,
+        "at most one position remains open ({opens} opens, {closes} closes)"
+    );
+    assert!(
+        e.model_assessable_fills().is_empty(),
+        "routing fills are never assessable"
+    );
 }
