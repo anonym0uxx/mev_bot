@@ -661,6 +661,8 @@ pub struct ScalpLifecycle {
     sell_reserved: BTreeMap<[u8; 32], u64>,
     /// Protective closes deferred because every remaining token was reserved by an unresolved sell.
     pub protect_deferred: u64,
+    /// Per-mint count of protective closes deferred because every remaining token was reserved.
+    protect_deferred_by: BTreeMap<[u8; 32], u64>,
 }
 
 impl ScalpLifecycle {
@@ -674,6 +676,7 @@ impl ScalpLifecycle {
             fired_buf: Vec::with_capacity(cap.max(1)),
             sell_reserved: BTreeMap::new(),
             protect_deferred: 0,
+            protect_deferred_by: BTreeMap::new(),
         }
     }
 
@@ -684,6 +687,12 @@ impl ScalpLifecycle {
         } else {
             self.sell_reserved.insert(*mint, tokens);
         }
+    }
+
+    /// Protective closes deferred on `mint` so far (fully reserved at the moment a trigger fired).
+    #[must_use]
+    pub fn protect_deferred_for(&self, mint: &[u8; 32]) -> u64 {
+        self.protect_deferred_by.get(mint).copied().unwrap_or(0)
     }
 
     /// Tokens currently reserved by an unresolved sell on `mint`.
@@ -1702,6 +1711,7 @@ impl ScalpLifecycle {
         };
         if free == 0 {
             self.protect_deferred += 1;
+            *self.protect_deferred_by.entry(*mint).or_insert(0) += 1;
             return None;
         }
         let price_fp = self.open.get(mint).map_or(0, |p| {

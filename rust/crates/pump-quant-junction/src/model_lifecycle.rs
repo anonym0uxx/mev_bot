@@ -416,6 +416,8 @@ pub struct StaleCallout {
     state: std::collections::BTreeMap<[u8; 32], (i64, i64, bool)>, // (since_ms, last_alert_ms, unprotected_said)
     /// Held AMM positions whose price-based protection has no valid mark: (since_ms, last_alert_ms).
     protect: std::collections::BTreeMap<[u8; 32], (i64, i64)>,
+    /// Held positions with no executable protection because every token is reserved by an unresolved sell.
+    reserved: std::collections::BTreeMap<[u8; 32], (i64, i64)>,
 }
 
 /// One line to print, with whether it is an alert.
@@ -539,7 +541,46 @@ impl StaleCallout {
                 }
             }
         }
+        // RESERVATION GAP: an unresolved sell holds every remaining token, so a protective trigger cannot sell
+        // anything (it defers). The position stays monitored and every trigger stays armed; this only tells the operator.
+        for s in &status {
+            match pump_quant_app::engine::model_manage::sell_reservation_gap(s) {
+                Some(why) => {
+                    let e = self
+                        .reserved
+                        .entry(s.mint)
+                        .or_insert((now_ms, i64::MIN / 2));
+                    let first = e.1 == i64::MIN / 2;
+                    if first || now_ms.saturating_sub(e.1) >= remind_ms {
+                        e.1 = now_ms;
+                        out.push(CalloutLine {
+                            text: format!(
+                                "{} held {} PROTECTION DEFERRED (sell unresolved): {why}; protective_deferrals={} degraded_for={}s - monitoring and triggers stay armed, nothing is sold or resubmitted until the sell is reconciled",
+                                if first { "ONSET" } else { "REMINDER" },
+                                hex(&s.mint),
+                                s.protect_deferred,
+                                now_ms.saturating_sub(e.0).max(0) / 1000
+                            ),
+                            alert: true,
+                        });
+                    }
+                }
+                None => {
+                    if let Some((since, _)) = self.reserved.remove(&s.mint) {
+                        out.push(CalloutLine {
+                            text: format!(
+                                "RECOVERED held {}: the unresolved sell was reconciled after {}s; protection is evaluated against free inventory again",
+                                hex(&s.mint),
+                                now_ms.saturating_sub(since).max(0) / 1000
+                            ),
+                            alert: false,
+                        });
+                    }
+                }
+            }
+        }
         // A position that closed while degraded is forgotten (no stale RECOVERED later).
+        self.reserved.retain(|m, _| live.contains(m));
         self.state.retain(|m, _| live.contains(m));
         self.protect.retain(|m, _| live.contains(m));
         out
@@ -548,7 +589,7 @@ impl StaleCallout {
     /// Positions currently degraded.
     #[must_use]
     pub fn degraded_count(&self) -> usize {
-        self.state.len() + self.protect.len()
+        self.state.len() + self.protect.len() + self.reserved.len()
     }
 }
 

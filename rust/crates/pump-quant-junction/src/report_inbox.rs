@@ -13,6 +13,13 @@
 use pump_quant_app::event::AppEvent;
 use pump_quant_domain::ids::Mint;
 
+/// The harness-only gate: the inbox is polled ONLY with `PQ_OFFLINE_PAPER_REPLAY=1` and without `--live`. Every
+/// other combination never opens the file. (`--live` with a model endpoint is refused earlier still, at startup.)
+#[must_use]
+pub fn inbox_enabled(live_mode: bool, offline_replay_env: Option<&str>) -> bool {
+    !live_mode && offline_replay_env == Some("1")
+}
+
 /// Why one inbox line was not turned into an event (counted by the caller, never guessed at).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LineRefusal {
@@ -75,6 +82,12 @@ pub struct InboxReader {
 }
 
 impl InboxReader {
+    /// Lines refused so far, all reasons.
+    #[must_use]
+    pub fn refused_total(&self) -> u64 {
+        self.refused.values().sum()
+    }
+
     /// New lines since the last poll, parsed. A trailing partial line (no newline yet) is left for the next poll.
     pub fn poll(&mut self, path: &std::path::Path) -> Vec<AppEvent> {
         use std::io::{Read, Seek, SeekFrom};
@@ -119,6 +132,21 @@ impl InboxReader {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_inbox_gate_opens_only_for_offline_replay_without_live() {
+        assert!(inbox_enabled(false, Some("1")));
+        for (live, env) in [
+            (true, Some("1")),
+            (false, None),
+            (false, Some("0")),
+            (false, Some("true")),
+            (false, Some("")),
+            (true, None),
+        ] {
+            assert!(!inbox_enabled(live, env), "{live} {env:?}");
+        }
+    }
 
     fn line(order: u64, cum: u64) -> String {
         format!(

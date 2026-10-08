@@ -893,6 +893,9 @@ impl Engine {
                     } else {
                         None
                     },
+                    sell_reserved_tokens: self.positions.sell_reserved(&h.mint),
+                    inventory_tokens: self.positions.inventory_tokens(&h.mint),
+                    protect_deferred: self.positions.protect_deferred_for(&h.mint),
                 }
             })
             .collect()
@@ -961,6 +964,28 @@ pub struct HeldDataStatus {
     pub protect_mark_ms: Option<i64>,
     /// AMM positions: the newest swap that could NOT mark the position, as (named reason, wire time).
     pub protect_ignored: Option<(&'static str, i64)>,
+    /// Tokens reserved by an UNRESOLVED management sell (acknowledgement unknown).
+    pub sell_reserved_tokens: u64,
+    /// Reconciled inventory (None = unknown, which also leaves nothing executable).
+    pub inventory_tokens: Option<u64>,
+    /// Protective closes deferred on this mint because everything remaining was reserved.
+    pub protect_deferred: u64,
+}
+
+/// Why a held position has NO additional executable protection right now: every remaining token is reserved by an
+/// unresolved sell (or the inventory is unknown). Measured from the books, never inferred from a counter.
+#[must_use]
+pub fn sell_reservation_gap(s: &HeldDataStatus) -> Option<String> {
+    if s.sell_reserved_tokens == 0 {
+        return None;
+    }
+    match s.inventory_tokens {
+        None => Some("inventory unknown while a sell is unresolved".to_string()),
+        Some(inv) if s.sell_reserved_tokens >= inv => Some(format!(
+            "all {inv} remaining tokens are reserved by an unresolved sell"
+        )),
+        Some(_) => None,
+    }
 }
 
 /// Money-side snapshot for reconciliation (lamports).

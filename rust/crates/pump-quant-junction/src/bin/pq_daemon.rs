@@ -2035,8 +2035,19 @@ fn main() -> ExitCode {
     let report_inbox_path = std::env::var("PQ_MGMT_REPORT_INBOX")
         .unwrap_or_else(|_| "data/mgmt_reports.ndjson".to_string());
     let mut report_inbox = pump_quant_junction::report_inbox::InboxReader::default();
-    let replay_harness =
-        !args.live_mode && std::env::var("PQ_OFFLINE_PAPER_REPLAY").as_deref() == Ok("1");
+    let replay_harness = pump_quant_junction::report_inbox::inbox_enabled(
+        args.live_mode,
+        std::env::var("PQ_OFFLINE_PAPER_REPLAY").ok().as_deref(),
+    );
+    eprintln!(
+        "[pq-daemon] management-report inbox: {} (harness-only; {})",
+        if replay_harness {
+            "ENABLED"
+        } else {
+            "disabled"
+        },
+        report_inbox_path
+    );
 
     // Run-mode tag for tape/journal exports — derived from the ENGINE's actual
     // RunMode, NOT the --live CLI flag. This prevents paper-mode fallback from
@@ -4735,7 +4746,17 @@ fn main() -> ExitCode {
                 eprintln!("[pq-daemon] replay-harness flow flush: durable={ok}");
             }
             if model_armed && replay_harness && (tick_counter % 5 == 0 || barrier_fire) {
-                for ev in report_inbox.poll(std::path::Path::new(&report_inbox_path)) {
+                let evs = report_inbox.poll(std::path::Path::new(&report_inbox_path));
+                if !evs.is_empty() || report_inbox.refused_total() > 0 {
+                    eprintln!(
+                        "[pq-daemon] INBOX offered={} accepted_total={} refused_total={} {:?}",
+                        evs.len(),
+                        report_inbox.accepted,
+                        report_inbox.refused_total(),
+                        report_inbox.refused
+                    );
+                }
+                for ev in evs {
                     engine.tick(ev);
                 }
             }
