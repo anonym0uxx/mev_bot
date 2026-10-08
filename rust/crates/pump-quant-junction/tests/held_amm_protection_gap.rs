@@ -519,8 +519,29 @@ fn a_price_moving_swap_then_silence_is_visible_only_to_the_next_pre_trade_state_
         200_000_000_000_000,
         3_000_000_000,
     ));
+    // The safeguard fires: it creates a protective ORDER (an intent moves nothing) ...
+    assert!(
+        r.e.model_protect_pending_order(m.as_bytes()).is_some(),
+        "resulting account state, once observed, triggers the safeguard"
+    );
+    assert!(
+        r.e.model_position_open(m.as_bytes()),
+        "an intent closes nothing"
+    );
+    // ... and a later landing-state swap reconciles the fill.
+    r.e.tick(swap_at(
+        m,
+        POOL,
+        t0 + 7_000,
+        910_000_202,
+        true,
+        1_000_000_000,
+        100,
+        200_000_000_000_000,
+        3_000_000_000,
+    ));
     assert!(
         !r.e.model_position_open(m.as_bytes()),
-        "resulting account state, once observed, triggers the safeguard"
+        "the reconciled protective fill closes the position"
     );
 }

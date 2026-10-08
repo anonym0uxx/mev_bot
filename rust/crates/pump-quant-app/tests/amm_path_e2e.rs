@@ -280,7 +280,11 @@ fn amm_fill_is_applied_once_and_duplicates_do_not_add_inventory() {
     let n = ids.len();
     ids.dedup();
     assert_eq!(ids.len(), n, "no order id filled twice");
-    let exits = rep(&r.e, "protect:amm_exit:") + rep(&r.e, "mgmt:fill:complete");
+    // Protection now executes through a protective ORDER (it no longer books a close inside the position store), so
+    // a protective close is counted at its reconciled fill.
+    let exits = rep(&r.e, "protect:fill:closed")
+        + rep(&r.e, "protect:fill:complete")
+        + rep(&r.e, "mgmt:fill:complete");
     assert!(
         exits + 1 >= opened as u64,
         "every re-entry must follow a close ({opened} fills, {exits} closes)"

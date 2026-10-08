@@ -597,6 +597,22 @@ fn a_verdict_bound_to_an_older_position_version_is_discarded() {
     );
 }
 
+/// Let the paper executor land a pending PROTECTIVE order: a later observation (>= the 400 ms landing delay, a newer
+/// slot) is the landing state its reconciled fill is priced from.
+fn land_protective(r: &mut Rig) {
+    for _ in 0..3 {
+        if r.e.model_protect_pending_order(&MINT).is_none() {
+            break;
+        }
+        r.clock += 1_000;
+        r.slot += 1;
+        r.n += 1;
+        curve_quiet(&mut r.e, r.clock, r.slot);
+        print(&mut r.e, r.n, r.clock, r.slot);
+        ticks(&mut r.e, 2);
+    }
+}
+
 #[test]
 fn legacy_exits_do_not_close_a_model_managed_position_but_the_rug_precursor_still_does() {
     let mut r = rig(|_| HOLD);
@@ -626,10 +642,17 @@ fn legacy_exits_do_not_close_a_model_managed_position_but_the_rug_precursor_stil
         event_id: None,
         feature: None,
     });
-    assert!(
-        !r.e.model_position_open(&MINT),
+    // The trigger created a protective ORDER (an intent alone moves no inventory or cash) ...
+    assert!(r.e.model_protect_pending_order(&MINT).is_some());
+    assert!(r.e.model_position_open(&MINT), "an intent does not close");
+    // ... and the position closes only when the executor's reconciled fill lands.
+    land_protective(&mut r);
+    assert_eq!(
+        r.e.model_lane_report().get("protect:fill:closed").copied(),
+        Some(1),
         "the rug precursor must still protect a model-managed position"
     );
+    assert!(r.e.model_protect_pending_order(&MINT).is_none());
     assert!(r.calls.load(Ordering::SeqCst) >= 1);
 }
 
@@ -906,8 +929,11 @@ fn held_data_readiness_is_measured_and_a_stale_reserve_degrades_while_protection
         event_id: None,
         feature: None,
     });
-    assert!(
-        !r.e.model_position_open(&MINT),
+    assert!(r.e.model_protect_pending_order(&MINT).is_some());
+    land_protective(&mut r);
+    assert_eq!(
+        r.e.model_lane_report().get("protect:fill:closed").copied(),
+        Some(1),
         "independent protection still works while degraded"
     );
     // Recovery: a fresh reserve observation restores readiness without any threshold change.

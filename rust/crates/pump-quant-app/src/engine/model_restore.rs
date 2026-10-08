@@ -94,6 +94,7 @@ impl Engine {
                 spent: 0,
                 fee_bps: 0,
                 gross: 0,
+                protect: 0,
                 fees: 0,
                 amm: o.amm,
                 created_ms: o.created_ms,
@@ -107,12 +108,18 @@ impl Engine {
                 discovery_lane_index: disc_index(o.discovery_lane),
             });
         }
-        for (m, o) in &self.model_mgmt.orders {
+        for (m, o) in self
+            .model_mgmt
+            .orders
+            .iter()
+            .chain(self.model_mgmt.protect.iter())
+        {
             pending.push(HeldPending {
                 kind: match o.kind {
                     MgmtKind::Reduce => "reduce",
                     MgmtKind::Exit => "exit",
                     MgmtKind::Add => "add",
+                    MgmtKind::Protect => "protect",
                 }
                 .into(),
                 id: o.id,
@@ -124,6 +131,7 @@ impl Engine {
                 fee_bps: o.fee_bps,
                 gross: o.gross,
                 fees: o.fees,
+                protect: o.protect,
                 amm: o.amm,
                 created_ms: o.created_ms,
                 created_slot: o.created_slot,
@@ -168,6 +176,7 @@ impl Engine {
                     MgmtKind::Reduce => 0,
                     MgmtKind::Exit => 1,
                     MgmtKind::Add => 2,
+                    MgmtKind::Protect => 3,
                 },
                 intended: r.intended,
                 filled: r.filled,
@@ -408,6 +417,7 @@ impl Engine {
         if !self.positions.export_held().is_empty()
             || !self.model_orders.is_empty()
             || !self.model_mgmt.orders.is_empty()
+            || !self.model_mgmt.protect.is_empty()
             || self.bankroll_realized != 0
             || self.bankroll_committed != 0
         {
@@ -490,7 +500,7 @@ impl Engine {
                         return Err(RestoreRefusal::UnknownLane);
                     }
                 }
-                "reduce" | "exit" | "add" => {
+                "reduce" | "exit" | "add" | "protect" => {
                     if !seen.contains(&p.mint) {
                         return Err(RestoreRefusal::OrphanPendingOrder);
                     }
@@ -606,29 +616,34 @@ impl Engine {
                     );
                 }
                 kind => {
-                    self.model_mgmt.orders.insert(
-                        p.mint,
-                        MgmtOrder {
-                            id: p.id,
-                            kind: match kind {
-                                "reduce" => MgmtKind::Reduce,
-                                "exit" => MgmtKind::Exit,
-                                _ => MgmtKind::Add,
-                            },
-                            intended: p.intended,
-                            filled: p.filled,
-                            created_ms: p.created_ms,
-                            created_slot: p.created_slot,
-                            version: p.version,
-                            amm: p.amm,
-                            max_spend: p.max_spend,
-                            spent: p.spent,
-                            fee_bps: p.fee_bps,
-                            uncertain: true,
-                            gross: p.gross,
-                            fees: p.fees,
+                    let order = MgmtOrder {
+                        id: p.id,
+                        kind: match kind {
+                            "reduce" => MgmtKind::Reduce,
+                            "exit" => MgmtKind::Exit,
+                            "protect" => MgmtKind::Protect,
+                            _ => MgmtKind::Add,
                         },
-                    );
+                        intended: p.intended,
+                        filled: p.filled,
+                        created_ms: p.created_ms,
+                        created_slot: p.created_slot,
+                        version: p.version,
+                        amm: p.amm,
+                        max_spend: p.max_spend,
+                        spent: p.spent,
+                        fee_bps: p.fee_bps,
+                        // Acknowledgement unknown after a restart: never resubmitted, never simulated-filled.
+                        uncertain: true,
+                        gross: p.gross,
+                        fees: p.fees,
+                        protect: p.protect,
+                    };
+                    if kind == "protect" {
+                        self.model_mgmt.protect.insert(p.mint, order);
+                    } else {
+                        self.model_mgmt.orders.insert(p.mint, order);
+                    }
                 }
             }
             rep.pending_uncertain += 1;
@@ -718,6 +733,7 @@ impl Engine {
                     kind: match o.kind {
                         0 => MgmtKind::Reduce,
                         1 => MgmtKind::Exit,
+                        3 => MgmtKind::Protect,
                         _ => MgmtKind::Add,
                     },
                     intended: o.intended,

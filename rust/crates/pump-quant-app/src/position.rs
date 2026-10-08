@@ -206,6 +206,24 @@ impl ExitReason {
         )
     }
 
+    /// Inverse of [`ExitReason::code`] (a persisted protective order restores its trigger from it).
+    #[must_use]
+    pub const fn from_code(c: u8) -> Option<Self> {
+        Some(match c {
+            1 => ExitReason::RugPrecursor,
+            2 => ExitReason::HardStop,
+            3 => ExitReason::ThesisInvalidation,
+            4 => ExitReason::TakeProfitLadder,
+            5 => ExitReason::TrailingStop,
+            6 => ExitReason::TimeStop,
+            7 => ExitReason::ForceClose,
+            8 => ExitReason::CreatorDump,
+            9 => ExitReason::IntoStrength,
+            10 => ExitReason::ModelManaged,
+            _ => return None,
+        })
+    }
+
     /// A stable small code for the decision journal.
     #[must_use]
     pub const fn code(self) -> u8 {
@@ -644,6 +662,18 @@ impl HeldPosition {
     }
 }
 
+/// A protective trigger that fired on a model-managed position when protection is routed through execution: the
+/// position is NOT changed. The engine turns it into an identifiable protective order (or defers it by name).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProtectIntent {
+    /// Market.
+    pub mint: [u8; 32],
+    /// The agreed safeguard that fired.
+    pub reason: ExitReason,
+    /// The spot trigger mark (fixed point); NOT an executable sell quote.
+    pub price_fp: u64,
+}
+
 /// The bounded per-mint held-position manager. Fed by the engine's admit + swap +
 /// tick path; a run that admits nothing holds nothing and books nothing.
 #[derive(Clone, Debug)]
@@ -663,6 +693,9 @@ pub struct ScalpLifecycle {
     pub protect_deferred: u64,
     /// Per-mint count of protective closes deferred because every remaining token was reserved.
     protect_deferred_by: BTreeMap<[u8; 32], u64>,
+    /// When set, a trigger on a MODEL-MANAGED position queues a [`ProtectIntent`] instead of booking a close.
+    route_protection: bool,
+    intents: Vec<ProtectIntent>,
 }
 
 impl ScalpLifecycle {
@@ -677,6 +710,8 @@ impl ScalpLifecycle {
             sell_reserved: BTreeMap::new(),
             protect_deferred: 0,
             protect_deferred_by: BTreeMap::new(),
+            route_protection: false,
+            intents: Vec::new(),
         }
     }
 
@@ -693,6 +728,33 @@ impl ScalpLifecycle {
     #[must_use]
     pub fn protect_deferred_for(&self, mint: &[u8; 32]) -> u64 {
         self.protect_deferred_by.get(mint).copied().unwrap_or(0)
+    }
+
+    /// Route protective triggers on model-managed positions through the engine's execution machinery.
+    pub fn set_route_protection(&mut self, on: bool) {
+        self.route_protection = on;
+    }
+
+    /// Count one protective intent that could not become an order (everything reserved / inventory unknown).
+    pub fn note_protect_deferred(&mut self, mint: &[u8; 32]) {
+        self.protect_deferred += 1;
+        *self.protect_deferred_by.entry(*mint).or_insert(0) += 1;
+    }
+
+    /// Whether the agreed hard stop still holds at `price_fp` (used to re-evaluate a deferred hard-stop intent).
+    /// Same level as the on-trade trigger: entry x (1 - hard_sl), trail disabled for model-managed positions.
+    #[must_use]
+    pub fn hard_stop_breached(&self, mint: &[u8; 32], price_fp: u64) -> bool {
+        let p = self.params;
+        self.open.get(mint).is_some_and(|pos| {
+            let (_, hard_sl) = pos.protection_widths(&p);
+            price_fp <= protection_level_fp(pos.entry_price_fp, pos.entry_price_fp, 10_000, hard_sl)
+        })
+    }
+
+    /// Triggers queued since the last call (the position is untouched by them).
+    pub fn take_intents(&mut self) -> Vec<ProtectIntent> {
+        std::mem::take(&mut self.intents)
     }
 
     /// Tokens currently reserved by an unresolved sell on `mint`.
@@ -1696,6 +1758,22 @@ impl ScalpLifecycle {
         mult_bps: u32,
         reason: ExitReason,
     ) -> Option<Exit> {
+        // End-of-run accounting (`ForceClose`) is not protection: it keeps booking directly.
+        if self.route_protection
+            && reason != ExitReason::ForceClose
+            && self.open.get(mint).is_some_and(|p| p.model_managed)
+        {
+            let price_fp = self.open.get(mint).map_or(0, |p| {
+                u64::try_from(u128::from(p.entry_price_fp) * u128::from(mult_bps) / 10_000)
+                    .unwrap_or(0)
+            });
+            self.intents.push(ProtectIntent {
+                mint: *mint,
+                reason,
+                price_fp,
+            });
+            return None;
+        }
         let reserved = self.sell_reserved(mint);
         if reserved == 0 {
             return Some(self.close(mint, mult_bps, reason));

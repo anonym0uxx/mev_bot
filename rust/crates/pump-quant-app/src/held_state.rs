@@ -15,7 +15,7 @@ use std::path::Path;
 use serde_json::{json, Value};
 
 /// Schema of this file.
-pub const HELD_SCHEMA: u64 = 4;
+pub const HELD_SCHEMA: u64 = 5;
 
 /// One held position, everything needed to rebuild the store entry, its attribution and its management
 /// state. Fixed-point / integer, no floats.
@@ -81,6 +81,8 @@ pub struct HeldPending {
     /// REDUCE/EXIT: cumulative gross proceeds / all-in fees (lamports) applied so far.
     pub gross: u64,
     pub fees: u64,
+    /// Protective orders: `ExitReason::code()` of the safeguard that created the order (0 otherwise).
+    pub protect: u8,
     /// Whether the venue was the AMM.
     pub amm: bool,
     /// Wire-clock ms the order was created.
@@ -339,7 +341,7 @@ impl HeldLedger {
                 "filled": p.filled,
                 "max_spend": p.max_spend,
                 "spent": p.spent,
-                "fee_bps": p.fee_bps, "gross": p.gross, "fees": p.fees,
+                "fee_bps": p.fee_bps, "gross": p.gross, "fees": p.fees, "protect": p.protect,
                 "amm": p.amm,
                 "created_ms": p.created_ms,
                 "created_slot": p.created_slot,
@@ -441,6 +443,7 @@ impl HeldLedger {
                 spent: u(p, "spent")?,
                 fee_bps: u32::try_from(u(p, "fee_bps")?).map_err(|_| bad("fee_bps"))?,
                 gross: u(p, "gross")?,
+                protect: u8::try_from(u(p, "protect")?).map_err(|_| bad("protect"))?,
                 fees: u(p, "fees")?,
                 amm: p["amm"].as_bool().ok_or(bad("pending.amm"))?,
                 created_ms: i(p, "created_ms")?,
@@ -554,7 +557,7 @@ impl HeldLedger {
                 gross: u(o, "gross")?,
                 fees: u(o, "fees")?,
             };
-            if rec.kind > 2
+            if rec.kind > 3
                 || !(1..=4).contains(&rec.state)
                 || rec.filled > rec.intended
                 || rec.id == 0
@@ -812,6 +815,7 @@ mod tests {
                 spent: 0,
                 fee_bps: 0,
                 gross: 0,
+                protect: 0,
                 fees: 0,
                 amm: false,
                 created_ms: 1_700_000_001_000,

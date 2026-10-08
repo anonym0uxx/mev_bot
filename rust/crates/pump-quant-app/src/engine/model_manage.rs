@@ -59,6 +59,9 @@ pub enum MgmtKind {
     Exit,
     /// Buy `floor(inventory/2)` more tokens at current executable economics (risk-increasing).
     Add,
+    /// A PROTECTIVE order created by an agreed safeguard (hard stop / rug precursor / ...), never by the model.
+    /// It lives in its own per-mint slot, shares the management id sequence and settles through the same books.
+    Protect,
 }
 
 /// A pending management sell intent. Not inventory; becomes one only through a fill.
@@ -89,6 +92,8 @@ pub struct MgmtOrder {
     pub gross: u64,
     /// REDUCE/EXIT: cumulative all-in fees (lamports) likewise.
     pub fees: u64,
+    /// Protective orders only: `ExitReason::code()` of the safeguard that created it (0 = not protective).
+    pub protect: u8,
 }
 
 /// How a management order ended. A live order is not in the log (it is in `MgmtLane::orders`).
@@ -213,6 +218,8 @@ pub(super) struct MgmtLane {
     pub meta: BTreeMap<RequestId, MgmtMeta>,
     pub pos: BTreeMap<[u8; 32], MgmtPos>,
     pub orders: BTreeMap<[u8; 32], MgmtOrder>,
+    /// Protective orders, one per mint, beside (never replacing) an unresolved management sell.
+    pub protect: BTreeMap<[u8; 32], MgmtOrder>,
     pub seq: u64,
     pub fills: Vec<MgmtFill>,
 }
@@ -224,6 +231,7 @@ impl MgmtLane {
             meta: BTreeMap::new(),
             pos: BTreeMap::new(),
             orders: BTreeMap::new(),
+            protect: BTreeMap::new(),
             seq: 0,
             fills: Vec::new(),
         }
@@ -264,6 +272,7 @@ impl Engine {
     /// The position closed: drop every management trace of it (a late verdict is then discarded).
     pub(super) fn model_mgmt_forget(&mut self, mint: &[u8; 32]) {
         self.model_mgmt.pos.remove(mint);
+        self.model_protect_forget(mint);
         // The position is gone: an unfinished order on it is PREEMPTED (a protective or other close ended it).
         self.model_mgmt_end(mint, true);
     }
@@ -345,6 +354,7 @@ impl Engine {
                 continue;
             }
             if self.model_mgmt.orders.contains_key(&mint)
+                || self.model_mgmt.protect.contains_key(&mint)
                 || self.model_mgmt.table.has_live_for(&mint)
             {
                 continue;
@@ -467,7 +477,8 @@ impl Engine {
             self.mrep("mgmt:discard:state_version_changed");
             return;
         }
-        if self.model_mgmt.orders.contains_key(&mint) {
+        if self.model_mgmt.orders.contains_key(&mint) || self.model_mgmt.protect.contains_key(&mint)
+        {
             self.mrep("mgmt:discard:order_already_pending");
             return;
         }
@@ -560,17 +571,27 @@ impl Engine {
                 uncertain: false,
                 gross: 0,
                 fees: 0,
+                protect: 0,
             },
         );
         self.mrep(match kind {
             MgmtKind::Reduce => "mgmt:order:reduce",
             MgmtKind::Exit => "mgmt:order:exit",
             MgmtKind::Add => "mgmt:order:add",
+            MgmtKind::Protect => "mgmt:order:protect",
         });
     }
 
     /// Try to fill pending management sells against LANDING state (never the prompt's state).
     pub(super) fn model_mgmt_try_fills(&mut self, clock: i64) {
+        let pm: Vec<[u8; 32]> = self.model_mgmt.protect.keys().copied().collect();
+        for m in pm {
+            let _ = self.model_with_protect_mint(&m, |e| e.model_mgmt_try_fills_orders(clock));
+        }
+        self.model_mgmt_try_fills_orders(clock);
+    }
+
+    fn model_mgmt_try_fills_orders(&mut self, clock: i64) {
         let mints: Vec<[u8; 32]> = self.model_mgmt.orders.keys().copied().collect();
         for mint in mints {
             let Some(order) = self.model_mgmt.orders.get(&mint).copied() else {
@@ -633,7 +654,12 @@ impl Engine {
             };
             match priced {
                 Some((px, label)) => {
-                    self.mrep(label);
+                    // Protective fills are counted apart from the model's own management fills.
+                    if order.kind == MgmtKind::Protect {
+                        self.mrep(label.replacen("mgmt:", "protect:", 1));
+                    } else {
+                        self.mrep(label);
+                    }
                     self.model_mgmt_book(mint, order, tokens, px, None);
                 }
                 None => {
@@ -714,17 +740,15 @@ impl Engine {
         settled: Option<(u64, u64)>,
     ) {
         let inv_before = self.positions.inventory_tokens(&mint).unwrap_or(0);
+        // A protective order books under the safeguard that created it; every other sell is `ModelManaged`.
+        let reason = PosExit::from_code(order.protect)
+            .filter(|_| order.kind == MgmtKind::Protect)
+            .unwrap_or(PosExit::ModelManaged);
         let sold = match settled {
-            Some(gf) => self.positions.sell_tokens_settled(
-                &mint,
-                tokens,
-                price_fp,
-                PosExit::ModelManaged,
-                gf,
-            ),
-            None => self
+            Some(gf) => self
                 .positions
-                .sell_tokens(&mint, tokens, price_fp, PosExit::ModelManaged),
+                .sell_tokens_settled(&mint, tokens, price_fp, reason, gf),
+            None => self.positions.sell_tokens(&mint, tokens, price_fp, reason),
         };
         let exit = match sold {
             Ok(e) => e,
@@ -777,9 +801,14 @@ impl Engine {
             gross_lamports: settled.map_or(0, |x| x.0),
             fee_lamports: settled.map_or(0, |x| x.1),
         });
+        let ns = if order.kind == MgmtKind::Protect {
+            "protect"
+        } else {
+            "mgmt"
+        };
         if closed {
             self.model_mgmt_forget(&mint);
-            self.mrep("mgmt:fill:closed");
+            self.mrep(format!("{ns}:fill:closed"));
             return;
         }
         if let Some(mp) = self.model_mgmt.pos.get_mut(&mint) {
@@ -792,10 +821,10 @@ impl Engine {
             .is_some_and(|o| o.filled >= o.intended);
         if done {
             self.model_mgmt_end(&mint, false);
-            self.mrep("mgmt:fill:complete");
+            self.mrep(format!("{ns}:fill:complete"));
         } else {
             // Partial: the remainder stays pending and monitored (TTL applies to the remainder).
-            self.mrep("mgmt:fill:partial_remainder_pending");
+            self.mrep(format!("{ns}:fill:partial_remainder_pending"));
         }
     }
 
@@ -1411,6 +1440,7 @@ impl Engine {
             .model_mgmt
             .orders
             .iter()
+            .chain(self.model_mgmt.protect.iter())
             .filter(|(_, o)| o.uncertain && o.kind != MgmtKind::Add)
             .map(|(m, o)| (*m, o.intended.saturating_sub(o.filled)))
             .collect();
@@ -1574,6 +1604,30 @@ impl Engine {
     /// Model text never reaches this function: it takes executor-supplied numbers only.
     #[allow(clippy::too_many_arguments)]
     pub fn model_mgmt_ingest_evidence(
+        &mut self,
+        mint: [u8; 32],
+        order_id: u64,
+        action: MgmtKind,
+        intended: u64,
+        cum_tokens: u64,
+        cum_gross: u64,
+        cum_fees: u64,
+    ) -> SellReportResult {
+        // A report naming the working PROTECTIVE order settles through exactly the same checks and books.
+        if let Some(r) = self.model_with_protect_id(&mint, order_id, |e| {
+            e.model_mgmt_ingest_evidence_inner(
+                mint, order_id, action, intended, cum_tokens, cum_gross, cum_fees,
+            )
+        }) {
+            return r;
+        }
+        self.model_mgmt_ingest_evidence_inner(
+            mint, order_id, action, intended, cum_tokens, cum_gross, cum_fees,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn model_mgmt_ingest_evidence_inner(
         &mut self,
         mint: [u8; 32],
         order_id: u64,
@@ -1894,6 +1948,7 @@ mod add_planner_tests {
                 uncertain: false,
                 gross: 0,
                 fees: 0,
+                protect: 0,
             },
         );
         assert!(

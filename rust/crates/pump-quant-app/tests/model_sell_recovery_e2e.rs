@@ -527,12 +527,27 @@ fn an_uncertain_partial_reduce_reserves_only_its_own_tokens_and_a_trigger_sells_
     let inv0 = e2.model_inventory_tokens(&MINT).unwrap();
     let clock = T0 + 1_000 + 40 * 2_000 + 400_000;
     hard_collapse(&mut e2, clock, 9_000);
-    // Only the free part (inventory - reserved) was sold; the reserved tokens remain and stay protected.
-    assert_eq!(e2.model_inventory_tokens(&MINT), Some(intended));
+    // The trigger created a protective ORDER for only the free part (inventory - reserved). It moved nothing yet.
+    let (_pid, pq, pf, _code) = e2
+        .model_protect_pending_order(&MINT)
+        .expect("protective order");
+    assert_eq!((pq, pf), (inv0 - intended, 0));
     assert_eq!(
-        inv0 - intended,
-        inv0 - e2.model_inventory_tokens(&MINT).unwrap()
+        e2.model_inventory_tokens(&MINT),
+        Some(inv0),
+        "an intent removes no inventory"
     );
+    // The paper executor's landing state reconciles the fill: exactly the free part leaves.
+    let mut c = clock;
+    for k in 0..3u64 {
+        if e2.model_protect_pending_order(&MINT).is_none() {
+            break;
+        }
+        c += 1_000;
+        curve_obs(&mut e2, c, 9_001 + k, 200_000_000);
+        ticks(&mut e2, 2);
+    }
+    assert_eq!(e2.model_inventory_tokens(&MINT), Some(intended));
     assert!(
         e2.model_position_open(&MINT),
         "the reserved remainder is still held and protected"

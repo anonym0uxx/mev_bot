@@ -974,6 +974,28 @@ fn protection_on_affected_held_mint(trip_safety_off_first: bool) {
     );
     // The agreed emergency condition: a single-swap collapse. Protection must act on its own.
     collapse_print(&mut e, T0 + 150_000 + 40 * 2_000 + 2_000, 150);
+    // The safeguard creates an identifiable protective ORDER (no inventory or cash moves on the intent) ...
+    assert!(
+        e.model_protect_pending_order(&AFFECTED).is_some(),
+        "the collapse must create a protective order: {:?}",
+        e.model_lane_report()
+    );
+    assert!(e.model_position_open(&AFFECTED), "an intent closes nothing");
+    assert_eq!(
+        e.bankroll_balance(),
+        cash_before,
+        "an intent credits nothing"
+    );
+    // ... and the paper executor's LANDING state (a later observation, newer slot) reconciles the fill.
+    e.tick(AppEvent::CurveObserved {
+        mint: dm(AFFECTED),
+        v_sol_lamports: VSOL + 200_000_000,
+        v_tokens: VTOK - 4_000_000_000_000,
+        real_sol_lamports: 8_100_000_000,
+        real_tokens: 565_000_000_000_000,
+        recv_unix_ms: Some(T0 + 150_000 + 40 * 2_000 + 4_000),
+        slot: 3_000, // strictly newer than the slot the order was created at
+    });
     for _ in 0..4 {
         e.tick(AppEvent::Tick);
         std::thread::sleep(Duration::from_millis(15));

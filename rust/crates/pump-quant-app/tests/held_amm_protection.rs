@@ -406,13 +406,29 @@ fn a_verified_pool_swap_marks_the_held_position_and_a_crash_exits_once_with_rout
         200_000_000_000_000,
         3_000_000_000,
     ));
-    assert!(
-        !r.e.model_position_open(m.as_bytes()),
-        "emergency did not close the position"
+    // The trigger creates an identifiable PROTECTIVE ORDER; it does not book a close itself.
+    assert_eq!(rep(&r.e, "protect:trigger:RugPrecursor"), 1);
+    assert_eq!(rep(&r.e, "protect:order:RugPrecursor"), 1);
+    let (oid, intended, filled, code) =
+        r.e.model_protect_pending_order(m.as_bytes())
+            .expect("order");
+    assert_eq!(
+        (intended, filled, code),
+        (inv0, 0, 1),
+        "whole free inventory, rug-precursor code (1)"
     );
-    assert_eq!(rep(&r.e, "protect:amm_exit"), 1);
-    // exactly once: replaying the crash swap changes nothing
-    let after = r.e.model_accounting_view(m.as_bytes());
+    assert!(oid > 0);
+    assert!(
+        r.e.model_position_open(m.as_bytes()),
+        "an intent alone must not remove inventory"
+    );
+    assert_eq!(
+        r.e.model_accounting_view(m.as_bytes()).balance,
+        cash_before,
+        "an intent alone must not credit cash"
+    );
+    // Replaying the crash swap neither creates a second order nor changes anything.
+    let pre = r.e.model_accounting_view(m.as_bytes());
     r.e.tick(swap_at(
         m,
         POOL,
@@ -424,13 +440,43 @@ fn a_verified_pool_swap_marks_the_held_position_and_a_crash_exits_once_with_rout
         200_000_000_000_000,
         3_000_000_000,
     ));
-    assert_eq!(r.e.model_accounting_view(m.as_bytes()), after);
-    assert_eq!(rep(&r.e, "protect:amm_exit"), 1);
-    // settlement: the held inventory is gone; cash moved by the booked net, and this is routing evidence only
+    assert_eq!(r.e.model_accounting_view(m.as_bytes()), pre);
+    assert_eq!(rep(&r.e, "protect:order:RugPrecursor"), 1);
+    // A LATER landing-state swap (paper executor: >= 400 ms after creation, a newer slot) reconciles the fill.
+    r.e.tick(swap_at(
+        m,
+        POOL,
+        t0 + 3_000,
+        900_000_003,
+        false,
+        1_000_000_000_000,
+        1_000,
+        200_000_000_000_000,
+        3_000_000_000,
+    ));
     assert!(
-        r.e.model_inventory_tokens(m.as_bytes()).is_none()
-            || r.e.model_inventory_tokens(m.as_bytes()) != Some(inv0)
+        !r.e.model_position_open(m.as_bytes()),
+        "the reconciled protective fill closes the position"
     );
+    assert_eq!(rep(&r.e, "protect:fill:closed"), 1);
+    let after = r.e.model_accounting_view(m.as_bytes());
+    // exactly once: replaying the landing swap changes nothing
+    r.e.tick(swap_at(
+        m,
+        POOL,
+        t0 + 3_000,
+        900_000_003,
+        false,
+        1_000_000_000_000,
+        1_000,
+        200_000_000_000_000,
+        3_000_000_000,
+    ));
+    assert_eq!(r.e.model_accounting_view(m.as_bytes()), after);
+    assert_eq!(rep(&r.e, "protect:fill:closed"), 1);
+    assert!(r.e.model_protect_pending_order(m.as_bytes()).is_none());
+    // settlement: the held inventory is gone; cash moved by the booked net, and this is routing evidence only
+    assert!(r.e.model_inventory_tokens(m.as_bytes()).is_none());
     assert!(after.balance != cash_before || after.realized != 0);
     assert_eq!(
         r.e.model_all_fills().len(),

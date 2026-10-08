@@ -18,6 +18,7 @@ use std::time::Instant;
 pub mod model_admit;
 pub mod model_barrier;
 pub mod model_manage;
+pub mod model_protect;
 pub mod model_restore;
 pub mod model_safety;
 use crate::analytics::ReflectionAnalytics;
@@ -875,6 +876,8 @@ pub struct Engine {
     model_sell_prefix: BTreeMap<u64, Vec<(u64, u64, u64)>>,
     model_sell_faults: BTreeMap<u64, model_manage::SellFault>,
     model_sell_floor: u64,
+    /// Fired protective triggers waiting for a protective order (deferred, or the last order ended with exposure left).
+    model_protect_pending: BTreeMap<[u8; 32], model_protect::PendingTrigger>,
     /// Process-session id stamped on every inference job (see `model_worker::Job::session`).
     model_session: u64,
     model_settled_order_cap: Option<usize>,
@@ -1378,6 +1381,8 @@ impl Engine {
             model_admit::MODEL_QUEUE,
         ));
         self.paper_model_mode = true;
+        // Protective triggers on a model-managed position execute and settle through the shared order machinery.
+        self.positions.set_route_protection(true);
         self.model_source = Some(src);
     }
 
@@ -1528,6 +1533,7 @@ impl Engine {
             model_sell_log: BTreeMap::new(),
             model_sell_prefix: BTreeMap::new(),
             model_sell_faults: BTreeMap::new(),
+            model_protect_pending: BTreeMap::new(),
             model_sell_floor: 0,
             model_order_floor: 0,
             model_session: new_session_id(),
@@ -1987,6 +1993,13 @@ impl Engine {
 
     /// Feed one event.
     pub fn tick(&mut self, ev: AppEvent) {
+        self.tick_inner(ev);
+        if self.paper_model_mode {
+            self.model_protect_drain();
+        }
+    }
+
+    fn tick_inner(&mut self, ev: AppEvent) {
         self.model_sync_sell_reservations();
         match ev {
             AppEvent::MarketTrade {
