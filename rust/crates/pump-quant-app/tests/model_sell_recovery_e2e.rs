@@ -2186,3 +2186,41 @@ fn an_unresolved_reduce_and_an_unresolved_protective_order_reserve_their_sum() {
         "outstanding commitments never exceed reconciled inventory"
     );
 }
+
+/// The reservation describes the book AFTER each event: a report that settles the management REDUCE leaves only the
+/// protective remainder reserved, in that same tick (no later tick is needed to correct it).
+#[test]
+fn the_reservation_reflects_a_settling_report_in_the_same_tick() {
+    let hp = held_path("x_same");
+    let mut r = rig(|s| if s == 0 { REDUCE } else { HOLD }, &hp);
+    r.e.model_set_external_execution(true);
+    r.advance_to_order(120_000);
+    let (rid, _, rint, _, _) =
+        r.e.model_mgmt_order_status(&MINT)
+            .expect("REDUCE submitted");
+    let part = rint / 4;
+    assert!(matches!(
+        r.e.ev_px(MINT, rid, MgmtKind::Reduce, rint, part, 22_000),
+        SellReportResult::Applied { .. }
+    ));
+    hard_collapse(&mut r.e, r.clock + 1_000, r.slot + 5);
+    let (_, pint, pfill, _) =
+        r.e.model_protect_pending_order(&MINT)
+            .expect("protective order");
+    // The REDUCE completes through the event path (one tick), nothing else happens afterwards.
+    r.e.tick(report(rid, 0, rint, rint, 22_000));
+    let st =
+        r.e.model_held_data_status()
+            .into_iter()
+            .find(|s| s.mint == MINT)
+            .unwrap();
+    assert!(
+        r.e.model_mgmt_order_status(&MINT).is_none(),
+        "REDUCE settled"
+    );
+    assert_eq!(
+        st.sell_reserved_tokens,
+        pint - pfill,
+        "only the protective remainder is reserved, immediately"
+    );
+}

@@ -2000,6 +2000,9 @@ impl Engine {
         self.tick_inner(ev);
         if self.paper_model_mode {
             self.model_protect_drain();
+            // The reservation must describe the book AFTER this event (a report may have settled or released an
+            // order, a protective order may have been created): never leave it describing the pre-event book.
+            self.model_sync_sell_reservations();
         }
     }
 
