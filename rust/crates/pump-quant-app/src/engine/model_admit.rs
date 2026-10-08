@@ -332,6 +332,14 @@ impl Engine {
                     .attach_flow_history(FlowHistory::new(params, provenance));
                 FlowAttach::Fresh
             }
+            Load::Loaded(h) if h.meta.held_gen_seen > self.model_held.generation => {
+                // The history has seen books NEWER than the durable ledger now attached: the ledger was deleted,
+                // replaced by an older copy or rolled back. Financial effects between the two are unaccounted for.
+                // Nothing is applied and the file is never overwritten.
+                self.model_cache.flow_state_untrusted("flow_ahead_of_books");
+                self.mrep("flow_history:untrusted:flow_ahead_of_books");
+                FlowAttach::Untrusted("flow_ahead_of_books")
+            }
             Load::Loaded(h) => {
                 self.model_cache.attach_flow_history(*h);
                 let late = self.model_cache.flow_meta().map_or(0, |m| m.late.len());
@@ -392,9 +400,11 @@ impl Engine {
             return;
         }
         let t0 = std::time::Instant::now();
-        let Some((r, m)) = self.model_cache.flow_snapshot() else {
+        let Some((r, mut m)) = self.model_cache.flow_snapshot() else {
             return;
         };
+        // Bind this snapshot to the durable financial generation current right now.
+        m.held_gen_seen = self.model_held.generation;
         let us = t0.elapsed().as_micros() as u64;
         self.flow_store.last_clone_us = us;
         self.flow_store.max_clone_us = self.flow_store.max_clone_us.max(us);

@@ -1366,3 +1366,86 @@ fn an_add_fill_beyond_its_reservation_is_refused_and_the_remainder_completion_re
     );
     assert_eq!(e2.model_accounting_view(&MINT), b1);
 }
+
+/// INVARIANT (what makes an inbox byte offset unnecessary): at EVERY durable publication point the persisted
+/// settlement totals and the books describe the same state. Checked independently of the engine: tokens filled
+/// by the order equal the inventory that left the position, and the order's cumulative gross/fees equal the sum of
+/// the increments the books actually booked. Then a re-read from offset zero reaches the uninterrupted final books.
+#[test]
+fn persisted_settlement_totals_and_books_agree_at_every_publication_point_so_rereading_from_zero_is_exact(
+) {
+    let hp0 = held_path("s_inv_ref");
+    let mut r0 = rig(|step| if step == 0 { REDUCE } else { HOLD }, &hp0);
+    r0.advance_to_order(120_000);
+    let (id, _, intended, _) = r0.e.model_mgmt_pending(&MINT).expect("REDUCE pending");
+    let inv0 = r0.e.model_inventory_tokens(&MINT).unwrap();
+    let (a, b, c) = (intended / 4, intended / 2, intended);
+    let inbox = vec![
+        report(id, 0, intended, a, 22_000),
+        report(id, 0, intended, b, 23_500),
+        report(id, 0, intended, c, 21_000),
+    ];
+    replay_inbox(&mut r0.e, &inbox);
+    let reference = books(&r0.e);
+    let cum = [a, b, c];
+    for k in 0..=inbox.len() {
+        let hp = held_path(&format!("s_inv_{k}"));
+        let mut r = rig(|step| if step == 0 { REDUCE } else { HOLD }, &hp);
+        r.advance_to_order(120_000);
+        assert_eq!(r.e.model_mgmt_pending(&MINT).unwrap().0, id);
+        replay_inbox(&mut r.e, &inbox[..k]);
+        assert!(r.e.model_held_persist_now(), "publication point {k}");
+        drop(r);
+        let mut e = fresh(&hp);
+        e.model_held_restore().unwrap().unwrap();
+        // Agreement at the publication point, from the RESTORED state.
+        let done = if k == 0 { 0 } else { cum[k - 1] };
+        let (g_exp, f_exp) = if k == 0 {
+            (0, 0)
+        } else {
+            totals(done, [22_000, 23_500, 21_000][k - 1])
+        };
+        // totals() above is for ALL tokens at one price; the report carries those cumulative totals verbatim:
+        // The settlement totals as PERSISTED: an unresolved order is a pending record, an ended one a sell record.
+        let led = pump_quant_app::held_state::HeldLedger::read(&hp).expect("ledger reads");
+        let totals_of = |led: &pump_quant_app::held_state::HeldLedger| {
+            led.pending
+                .iter()
+                .find(|p| p.id == id)
+                .map(|p| (p.filled, p.gross, p.fees))
+                .or_else(|| {
+                    led.sells
+                        .iter()
+                        .find(|x| x.id == id)
+                        .map(|x| (x.filled, x.gross, x.fees))
+                })
+        };
+        if k == 0 {
+            assert!(
+                totals_of(&led).is_none_or(|t| t == (0, 0, 0)),
+                "k=0: nothing settled yet"
+            );
+        } else {
+            assert_eq!(
+                totals_of(&led),
+                Some((done, g_exp, f_exp)),
+                "k={k}: persisted totals are the last report's, verbatim"
+            );
+        }
+        let left = e.model_inventory_tokens(&MINT);
+        assert_eq!(
+            left,
+            if done == inv0 {
+                None
+            } else {
+                Some(inv0 - done)
+            },
+            "k={k}: inventory left matches tokens filled"
+        );
+        // Re-read from offset zero: lands on the uninterrupted books exactly.
+        replay_inbox(&mut e, &inbox);
+        assert_eq!(books(&e), reference, "k={k}: full re-read is exact");
+        replay_inbox(&mut e, &inbox);
+        assert_eq!(books(&e), reference, "k={k}: and idempotent");
+    }
+}

@@ -131,6 +131,9 @@ pub struct FlowMeta {
     pub acknowledged: Vec<(i64, i64, String)>,
     /// Delivery attempts vs unique evidence, kept separate (cumulative, persisted).
     pub counters: Counters,
+    /// Generation of the held (financial) ledger that was durable when this snapshot was taken. 0 = never saw books
+    /// (also: a checkpoint written before this field existed).
+    pub held_gen_seen: u64,
 }
 
 /// Delivery attempts and unique evidence are different quantities: redelivery inflates the first and never the second.
@@ -252,6 +255,7 @@ impl FlowMeta {
             late_overflow: 0,
             acknowledged: Vec::new(),
             counters: Counters::default(),
+            held_gen_seen: 0,
         }
     }
 
@@ -450,6 +454,7 @@ impl FlowMeta {
                        "trader": l.trader.iter().map(|b| format!("{b:02x}")).collect::<String>(), "buy": l.buy})).collect::<Vec<_>>(),
             "late_overflow": self.late_overflow,
             "acknowledged": self.acknowledged.iter().map(|w| json!([w.0, w.1, w.2])).collect::<Vec<_>>(),
+            "held_gen_seen": self.held_gen_seen,
             "counters": [self.counters.attempts, self.counters.applied, self.counters.duplicates, self.counters.late_unique],
         });
         let mut out = serde_json::to_vec(&hdr).unwrap_or_default();
@@ -778,6 +783,7 @@ pub fn decode(params: FlowParams, body: &[u8]) -> Load {
             coverage: Coverage { segments, gaps },
             late,
             late_overflow: h["late_overflow"].as_u64().unwrap_or(0),
+            held_gen_seen: h["held_gen_seen"].as_u64().unwrap_or(0),
             acknowledged,
             counters,
         },
@@ -1341,6 +1347,73 @@ mod tests {
             Offer::LateUnseen
         );
         assert_eq!(h2.scope_refusal(&h2.reducer, &[9u8; 32], 1_100_000), None);
+    }
+
+    /// EQUAL-TIME identity across a restart. Time equality alone proves nothing: two DISTINCT events can share a
+    /// receipt millisecond (both must apply), and a redelivered one must be a duplicate by ID. The boundary event of
+    /// the last persisted millisecond must classify the same way before and after a restart. Expected counts are
+    /// stated here, not read back from the code under test.
+    #[test]
+    fn equal_millisecond_events_are_told_apart_by_id_before_and_after_a_restart() {
+        let d = tmpdir("equal_ms");
+        let p = d.join("flow.ckpt");
+        let mut h = hist();
+        let mut st = IngestStats::default();
+        let t = 5_000i64;
+        // three distinct events at the SAME receipt ms: all apply (equal time is not late, not a duplicate)
+        for id in [10u128, 11, 12] {
+            assert_eq!(
+                h.offer(
+                    "live",
+                    id,
+                    &ev(t, id as u8, 9, Side::Buy, -1_000_000_000),
+                    &mut st
+                ),
+                Offer::Applied,
+                "id {id}"
+            );
+        }
+        assert_eq!((st.applied, st.duplicate, st.late_unseen), (3, 0, 0));
+        let enc = h.reducer.encode_state();
+        h.persist(&p).unwrap();
+        let Load::Loaded(mut r) = load(FlowParams::default(), &p) else {
+            panic!("loads")
+        };
+        let mut st2 = IngestStats::default();
+        // after the restart: redelivery of each boundary id is a DUPLICATE; changes nothing
+        for id in [10u128, 11, 12] {
+            assert_eq!(
+                r.offer(
+                    "live",
+                    id,
+                    &ev(t, id as u8, 9, Side::Buy, -1_000_000_000),
+                    &mut st2
+                ),
+                Offer::Duplicate,
+                "boundary id {id}"
+            );
+        }
+        // a NEW distinct event at the same ms after the restart is applied, not dropped as a duplicate
+        assert_eq!(
+            r.offer(
+                "live",
+                13,
+                &ev(t, 13, 9, Side::Buy, -1_000_000_000),
+                &mut st2
+            ),
+            Offer::Applied
+        );
+        assert_eq!((st2.applied, st2.duplicate, st2.late_unseen), (1, 3, 0));
+        assert_ne!(
+            r.reducer.encode_state(),
+            enc,
+            "the new equal-ms event changed state exactly once"
+        );
+        // an id never seen, one ms EARLIER than the high-water mark, is late (not applied)
+        assert_eq!(
+            r.offer("live", 14, &ev(t - 1, 14, 9, Side::Buy, -1), &mut st2),
+            Offer::LateUnseen
+        );
     }
 
     /// A GENUINE duplicate older than the retention horizon (its id was pruned) is never applied twice and never

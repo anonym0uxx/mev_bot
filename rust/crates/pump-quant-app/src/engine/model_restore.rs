@@ -36,6 +36,8 @@ pub(super) struct HeldPersist {
     pub last_write_ms: i64,
     pub failures: u64,
     pub writes: u64,
+    /// Generation of the last ledger that is durable (restored or written). 0 = none.
+    pub generation: u64,
 }
 
 fn wl_lane(i: u8) -> Option<WlLane> {
@@ -236,6 +238,7 @@ impl Engine {
             model_order_seq: self.model_order_seq,
             mgmt_seq: self.model_mgmt.seq,
             written_wall_ms: 0,
+            generation: 0,
             held,
             pending,
             decision: self.model_decision_state(),
@@ -265,6 +268,7 @@ impl Engine {
     fn model_held_digest(l: &HeldLedger) -> String {
         let mut c = l.clone();
         c.written_wall_ms = 0;
+        c.generation = 0;
         c.decision = crate::held_state::DecisionState::default();
         let s = c.to_json().to_string();
         pump_quant_protocol::sha256::to_hex(&pump_quant_protocol::sha256::sha256(s.as_bytes()))
@@ -291,8 +295,11 @@ impl Engine {
             self.model_held.last_write_ms = self.model_clock_ms;
             return;
         }
+        let mut ledger = ledger;
+        ledger.generation = self.model_held.generation + 1;
         match ledger.write(&path) {
             Ok(()) => {
+                self.model_held.generation = ledger.generation;
                 self.model_held.last_digest = digest;
                 self.model_held.last_write_ms = self.model_clock_ms;
                 self.model_held.writes += 1;
@@ -348,6 +355,12 @@ impl Engine {
         self.model_settled_order_cap = Some(cap);
     }
 
+    /// Generation of the last durable financial ledger (0 = none).
+    #[must_use]
+    pub fn model_held_generation(&self) -> u64 {
+        self.model_held.generation
+    }
+
     /// Persist failures so far.
     #[must_use]
     pub fn model_held_persist_failures(&self) -> u64 {
@@ -359,9 +372,11 @@ impl Engine {
         let Some(path) = self.model_held.path.clone() else {
             return false;
         };
-        let ledger = self.model_held_ledger();
+        let mut ledger = self.model_held_ledger();
         let digest = Self::model_held_digest(&ledger);
+        ledger.generation = self.model_held.generation + 1;
         if ledger.write(&path).is_ok() {
+            self.model_held.generation = ledger.generation;
             self.model_held.last_digest = digest;
             self.model_held.last_write_ms = self.model_clock_ms;
             self.model_held.writes += 1;
@@ -517,6 +532,7 @@ impl Engine {
         self.model_order_seq = self.model_order_seq.max(l.model_order_seq);
         self.model_mgmt.seq = self.model_mgmt.seq.max(l.mgmt_seq);
         self.model_replay_through_ms = l.decision.through_ms;
+        self.model_held.generation = l.generation;
         for (m, t) in &l.decision.last_ask {
             self.model_last_ask.insert(*m, *t);
         }

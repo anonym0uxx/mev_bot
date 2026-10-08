@@ -212,6 +212,9 @@ pub struct HeldLedger {
     pub mgmt_seq: u64,
     /// Wall ms the record was written.
     pub written_wall_ms: u64,
+    /// Monotonic write generation (0 = written before generations existed). Binds this durable record to the flow
+    /// history snapshots taken while it was current.
+    pub generation: u64,
     /// Held positions.
     pub held: Vec<HeldEntry>,
     /// Pending orders.
@@ -313,6 +316,7 @@ impl HeldLedger {
             "model_order_seq": self.model_order_seq,
             "mgmt_seq": self.mgmt_seq,
             "written_wall_ms": self.written_wall_ms,
+            "generation": self.generation,
             "held": self.held.iter().map(|h| json!({
                 "mint": hex(&h.mint),
                 "entry_price_fp": h.entry_price_fp,
@@ -634,6 +638,7 @@ impl HeldLedger {
             model_order_seq: u(v, "model_order_seq")?,
             mgmt_seq: u(v, "mgmt_seq")?,
             written_wall_ms: u(v, "written_wall_ms")?,
+            generation: v["generation"].as_u64().unwrap_or(0),
             held,
             pending,
         })
@@ -743,6 +748,7 @@ mod tests {
             model_order_seq: 4,
             mgmt_seq: 3,
             written_wall_ms: 0,
+            generation: 0,
             decision: DecisionState::default(),
             orders: vec![HeldOrder {
                 id: 3,
