@@ -691,14 +691,16 @@ fn event_fields_json(event: &AppEvent) -> String {
             action,
             intended,
             cumulative_tokens,
-            value,
+            cumulative_gross,
+            cumulative_fees,
             ..
         } => {
             parts.push(format!(r#""action":{action}"#));
             parts.push(format!(r#""intended":{intended}"#));
             parts.push(format!(r#""order_id":{order_id}"#));
             parts.push(format!(r#""cumulative_tokens":{cumulative_tokens}"#));
-            parts.push(format!(r#""value":{value}"#));
+            parts.push(format!(r#""cumulative_gross":{cumulative_gross}"#));
+            parts.push(format!(r#""cumulative_fees":{cumulative_fees}"#));
         }
         // Rev-19 on-chain feedback: serialize signature + slot for confirmation events.
         AppEvent::OurBuyConfirmed {

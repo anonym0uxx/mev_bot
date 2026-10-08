@@ -85,6 +85,10 @@ pub struct MgmtOrder {
     /// Acknowledgement unknown: stays pending and unresolved; never expired, filled by the simulator,
     /// or cancelled by a trip. Only a reconciled report or operator evidence resolves it.
     pub uncertain: bool,
+    /// REDUCE/EXIT: cumulative gross proceeds (lamports) the executor reported and the books applied.
+    pub gross: u64,
+    /// REDUCE/EXIT: cumulative all-in fees (lamports) likewise.
+    pub fees: u64,
 }
 
 /// How a management order ended. A live order is not in the log (it is in `MgmtLane::orders`).
@@ -114,6 +118,9 @@ pub struct SellRec {
     pub spent: u64,
     pub state: SellState,
     pub last_price_fp: u64,
+    /// Cumulative gross proceeds / all-in fees (lamports) applied (REDUCE/EXIT).
+    pub gross: u64,
+    pub fees: u64,
 }
 
 /// An unresolved management-order conflict. Blocks new exposure on its mint until released.
@@ -144,6 +151,8 @@ pub enum SellReportResult {
 
 /// Settled management-order records kept before the oldest are compacted (a floor then names them).
 pub const SELL_LOG_CAP: usize = 4_096;
+/// Cumulative settlement checkpoints kept per management order (proof that an older report is stale).
+pub const SELL_PREFIX_CAP: usize = 64;
 
 /// Management ADD target: half of the reconciled inventory.
 pub const MGMT_ADD_INVENTORY_BPS: u32 = 5_000;
@@ -169,6 +178,9 @@ pub struct MgmtFill {
     pub cost_lamports: u64,
     /// Whether this fill was an ADD.
     pub is_add: bool,
+    /// Sells: gross proceeds and all-in fees of THIS fill (0 on the simulated-price path, which derives them).
+    pub gross_lamports: u64,
+    pub fee_lamports: u64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -546,6 +558,8 @@ impl Engine {
                 spent: 0,
                 fee_bps: add_fee_bps,
                 uncertain: false,
+                gross: 0,
+                fees: 0,
             },
         );
         self.mrep(match kind {
@@ -620,7 +634,7 @@ impl Engine {
             match priced {
                 Some((px, label)) => {
                     self.mrep(label);
-                    self.model_mgmt_book(mint, order, tokens, px);
+                    self.model_mgmt_book(mint, order, tokens, px, None);
                 }
                 None => {
                     if clock - order.created_ms > MODEL_ORDER_TTL_MS {
@@ -659,16 +673,60 @@ impl Engine {
             return Err("quantity");
         }
         self.model_mgmt_clear_uncertain(&mint);
-        self.model_mgmt_book(mint, order, tokens, price_fp);
+        self.model_mgmt_book(mint, order, tokens, price_fp, None);
         Ok(())
     }
 
-    fn model_mgmt_book(&mut self, mint: [u8; 32], order: MgmtOrder, tokens: u64, price_fp: u64) {
+    /// Apply the INCREMENT of an authoritative cumulative settlement to a pending REDUCE/EXIT: `tokens` sold for
+    /// `gross` lamports with all-in `fee` lamports, both for exactly this increment. The fill price is derived from
+    /// the increment (`gross / tokens`), so two partial fills at different prices each book their own proceeds.
+    fn model_mgmt_apply_settled_increment(
+        &mut self,
+        mint: [u8; 32],
+        order_id: u64,
+        tokens: u64,
+        gross: u64,
+        fee: u64,
+    ) -> Result<(), &'static str> {
+        let Some(order) = self.model_mgmt.orders.get(&mint).copied() else {
+            return Err("no_pending_order");
+        };
+        if order.id != order_id || order.kind == MgmtKind::Add {
+            return Err("order_id_mismatch");
+        }
+        if tokens == 0 || tokens > order.intended - order.filled || gross == 0 || fee > gross {
+            self.mrep("mgmt:recon:rejected:quantity_or_amount");
+            return Err("quantity");
+        }
+        let px = u64::try_from((u128::from(gross) * 1_000_000_000).div_ceil(u128::from(tokens)))
+            .map_err(|_| "price_overflow")?;
+        self.model_mgmt_clear_uncertain(&mint);
+        self.model_mgmt_book(mint, order, tokens, px, Some((gross, fee)));
+        Ok(())
+    }
+
+    fn model_mgmt_book(
+        &mut self,
+        mint: [u8; 32],
+        order: MgmtOrder,
+        tokens: u64,
+        price_fp: u64,
+        settled: Option<(u64, u64)>,
+    ) {
         let inv_before = self.positions.inventory_tokens(&mint).unwrap_or(0);
-        let exit = match self
-            .positions
-            .sell_tokens(&mint, tokens, price_fp, PosExit::ModelManaged)
-        {
+        let sold = match settled {
+            Some(gf) => self.positions.sell_tokens_settled(
+                &mint,
+                tokens,
+                price_fp,
+                PosExit::ModelManaged,
+                gf,
+            ),
+            None => self
+                .positions
+                .sell_tokens(&mint, tokens, price_fp, PosExit::ModelManaged),
+        };
+        let exit = match sold {
             Ok(e) => e,
             Err(r) => {
                 // Named, nothing substituted, order dropped so the next cadence decides afresh.
@@ -700,6 +758,10 @@ impl Engine {
         if let Some(o) = self.model_mgmt.orders.get_mut(&mint) {
             o.filled += tokens;
             o.version += 1;
+            if let Some((g, f)) = settled {
+                o.gross += g;
+                o.fees += f;
+            }
         }
         self.book_exit(exit);
         self.model_mgmt.fills.push(MgmtFill {
@@ -712,6 +774,8 @@ impl Engine {
             spent_lamports: 0,
             cost_lamports: 0,
             is_add: false,
+            gross_lamports: settled.map_or(0, |x| x.0),
+            fee_lamports: settled.map_or(0, |x| x.1),
         });
         if closed {
             self.model_mgmt_forget(&mint);
@@ -1247,6 +1311,8 @@ impl Engine {
             spent_lamports: spent,
             cost_lamports: cost,
             is_add: true,
+            gross_lamports: 0,
+            fee_lamports: 0,
         });
         if let Some(mp) = self.model_mgmt.pos.get_mut(&mint) {
             mp.version += 1;
@@ -1397,6 +1463,8 @@ impl Engine {
                 spent: o.spent,
                 state,
                 last_price_fp,
+                gross: o.gross,
+                fees: o.fees,
             },
         );
         if o.uncertain && preempted && state != SellState::Completed {
@@ -1448,6 +1516,7 @@ impl Engine {
         }
         for id in settled.into_iter().take(self.model_sell_log.len() - cap) {
             self.model_sell_log.remove(&id);
+            self.model_sell_prefix.remove(&id);
             self.model_sell_floor = self.model_sell_floor.max(id);
             self.mrep("held_state:sell_record_compacted");
         }
@@ -1470,103 +1539,151 @@ impl Engine {
         self.model_sell_log.get(&id).copied()
     }
 
-    /// Execution-evidence boundary for a management order. Validates the report against the ISSUED order before
-    /// anything changes: the id must exist (live, or settled/restored from an earlier process; execution identity
-    /// is the order id and is NOT tied to the model session), the mint must match, the action must match the
-    /// order's kind and the stated intended quantity must equal the issued one. A same-order report whose price
-    /// contradicts what the books already applied at that cumulative quantity is a named fault (never ignored as
-    /// "duplicate"). Model text never reaches this function: it takes executor-supplied numbers only.
+    /// Execution-evidence boundary for a management order (the harness report format). The report states the
+    /// order's CUMULATIVE settlement: tokens filled, gross proceeds (REDUCE/EXIT; notional spent for an ADD) and
+    /// all-in fees, all in lamports/raw tokens and all totals since the order began, never a per-fill price. The
+    /// books apply only the INCREMENT over what they already hold, so two partial fills at different prices each book
+    /// their own proceeds. Before anything changes it checks the issued identity (id, mint, action, intended
+    /// quantity), monotonic totals, and `fee <= gross`. An equal report is a duplicate only if ALL totals match;
+    /// an older one is ignored only if it equals a checkpoint the books recorded; contradictions are named faults.
+    /// Model text never reaches this function: it takes executor-supplied numbers only.
+    #[allow(clippy::too_many_arguments)]
     pub fn model_mgmt_ingest_evidence(
         &mut self,
         mint: [u8; 32],
         order_id: u64,
         action: MgmtKind,
         intended: u64,
-        cumulative_tokens: u64,
-        value: u64,
+        cum_tokens: u64,
+        cum_gross: u64,
+        cum_fees: u64,
     ) -> SellReportResult {
-        let issued = self
+        let live = self
             .model_mgmt
             .orders
             .get(&mint)
-            .filter(|o| o.id == order_id)
-            .map(|o| (o.kind, o.intended))
+            .copied()
+            .filter(|o| o.id == order_id);
+        // (kind, intended, filled, gross, fees, spent) as the books hold them.
+        let held = live
+            .map(|o| (o.kind, o.intended, o.filled, o.gross, o.fees, o.spent))
             .or_else(|| {
                 self.model_sell_log
                     .get(&order_id)
                     .filter(|r| r.mint == mint)
-                    .map(|r| (r.kind, r.intended))
+                    .map(|r| (r.kind, r.intended, r.filled, r.gross, r.fees, r.spent))
             });
-        if let Some((kind, iss)) = issued {
-            if kind != action {
-                self.mrep("mgmt:evidence:rejected:action_mismatch");
-                return SellReportResult::Rejected("action_mismatch");
+        let Some((kind, iss, filled, gross, fees, spent)) = held else {
+            // Never issued / compacted / wrong mint: the existing named rejection, nothing applied.
+            return self.model_mgmt_ingest_report(mint, order_id, cum_tokens, cum_gross);
+        };
+        let reject = |s: &mut Self, why: &'static str| {
+            s.mrep(format!("mgmt:evidence:rejected:{why}"));
+            SellReportResult::Rejected(why)
+        };
+        if kind != action {
+            return reject(self, "action_mismatch");
+        }
+        if iss != intended {
+            return reject(self, "intended_mismatch");
+        }
+        if cum_fees > cum_gross || (cum_tokens > 0 && cum_gross == 0) {
+            return reject(self, "amounts_invalid");
+        }
+        if kind == MgmtKind::Add && cum_fees != 0 {
+            return reject(self, "add_fees_not_reportable");
+        }
+        if cum_tokens > iss {
+            self.model_sell_fault(
+                order_id,
+                mint,
+                "report_exceeds_order",
+                filled,
+                vec![cum_tokens],
+            );
+            return SellReportResult::Fault;
+        }
+        let (cur_g, cur_f) = if kind == MgmtKind::Add {
+            (spent, 0)
+        } else {
+            (gross, fees)
+        };
+        if cum_tokens == filled {
+            if (cum_gross, cum_fees) == (cur_g, cur_f) {
+                self.mrep("mgmt:report:duplicate");
+                return SellReportResult::Duplicate;
             }
-            if iss != intended {
-                self.mrep("mgmt:evidence:rejected:intended_mismatch");
-                return SellReportResult::Rejected("intended_mismatch");
+            // Same quantity, different settlement: contradictory evidence (also for an order the simulator filled).
+            self.model_sell_fault(
+                order_id,
+                mint,
+                "report_contradicts_settled",
+                filled,
+                vec![cum_tokens],
+            );
+            return SellReportResult::Fault;
+        }
+        if cum_tokens < filled {
+            let pre = self.model_sell_prefix.get(&order_id);
+            if pre.is_some_and(|v| v.contains(&(cum_tokens, cum_gross, cum_fees))) {
+                self.mrep("mgmt:report:duplicate");
+                return SellReportResult::Duplicate;
             }
-            if kind != MgmtKind::Add && value == 0 {
-                self.mrep("mgmt:evidence:rejected:no_price");
-                return SellReportResult::Rejected("no_price");
-            }
-            // Same cumulative as already booked but a different fill price: contradictory settlement evidence.
-            let booked = self
-                .model_mgmt
-                .fills
-                .iter()
-                .rev()
-                .find(|f| f.order_id == order_id)
-                .map(|f| (f.price_fp, f.tokens));
-            let filled_now = self
-                .model_mgmt
-                .orders
-                .get(&mint)
-                .filter(|o| o.id == order_id)
-                .map(|o| o.filled)
-                .or_else(|| self.model_sell_log.get(&order_id).map(|r| r.filled))
-                .unwrap_or(0);
-            let last_px = booked.map(|b| b.0).or_else(|| {
-                self.model_sell_log
-                    .get(&order_id)
-                    .map(|r| r.last_price_fp)
-                    .filter(|p| *p != 0)
-            });
-            // An OLDER cumulative is harmless only when a fill booked in this process proves it: some prefix of this
-            // order's own booked fills sums to exactly that quantity at exactly that price. Otherwise (restored
-            // order, or no such prefix) staleness is unproven: named, not applied, evidence counted, no money moved.
-            if kind != MgmtKind::Add && cumulative_tokens < filled_now {
-                let mut run = 0u64;
-                let proven = self
-                    .model_mgmt
-                    .fills
-                    .iter()
-                    .filter(|f| f.order_id == order_id)
-                    .any(|f| {
-                        run += f.tokens;
-                        run == cumulative_tokens && f.price_fp == value
-                    });
-                if !proven {
-                    self.mrep("mgmt:evidence:stale_unproven");
-                    return SellReportResult::Rejected("stale_unproven");
-                }
-            }
-            if kind != MgmtKind::Add
-                && cumulative_tokens == filled_now
-                && filled_now > 0
-                && last_px.is_some_and(|p| p != value)
-            {
+            if pre.is_some_and(|v| v.iter().any(|c| c.0 == cum_tokens)) {
                 self.model_sell_fault(
                     order_id,
                     mint,
                     "report_contradicts_settled",
-                    filled_now,
-                    vec![cumulative_tokens],
+                    filled,
+                    vec![cum_tokens],
                 );
                 return SellReportResult::Fault;
             }
+            return reject(self, "stale_unproven");
         }
-        self.model_mgmt_ingest_report(mint, order_id, cumulative_tokens, value)
+        // cum_tokens > filled: a new increment. Totals must not go backwards.
+        if cum_gross < cur_g || cum_fees < cur_f {
+            self.model_sell_fault(
+                order_id,
+                mint,
+                "report_non_monotonic",
+                filled,
+                vec![cum_tokens],
+            );
+            return SellReportResult::Fault;
+        }
+        if live.is_none() {
+            // The books say this order ended at `filled`; the report says more executed. Not applied, not dropped.
+            self.model_sell_fault(
+                order_id,
+                mint,
+                "report_contradicts_settled",
+                filled,
+                vec![cum_tokens],
+            );
+            return SellReportResult::Fault;
+        }
+        let delta = cum_tokens - filled;
+        let r = if kind == MgmtKind::Add {
+            self.model_mgmt_apply_reconciled_add_fill(mint, order_id, delta, cum_gross - cur_g)
+        } else {
+            let (dg, df) = (cum_gross - cur_g, cum_fees - cur_f);
+            if dg == 0 || df > dg {
+                return reject(self, "amounts_invalid");
+            }
+            self.model_mgmt_apply_settled_increment(mint, order_id, delta, dg, df)
+        };
+        match r {
+            Ok(()) => {
+                let v = self.model_sell_prefix.entry(order_id).or_default();
+                v.push((cum_tokens, cum_gross, cum_fees));
+                if v.len() > SELL_PREFIX_CAP {
+                    v.remove(0);
+                }
+                SellReportResult::Applied { delta }
+            }
+            Err(why) => SellReportResult::Rejected(why),
+        }
     }
 
     /// Ingest one execution report for a management order, by CUMULATIVE quantity: `cumulative_tokens` is the
@@ -1750,6 +1867,8 @@ mod add_planner_tests {
                 spent: 0,
                 fee_bps: first.fee_bps,
                 uncertain: false,
+                gross: 0,
+                fees: 0,
             },
         );
         assert!(

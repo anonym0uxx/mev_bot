@@ -15,7 +15,7 @@ use std::path::Path;
 use serde_json::{json, Value};
 
 /// Schema of this file.
-pub const HELD_SCHEMA: u64 = 3;
+pub const HELD_SCHEMA: u64 = 4;
 
 /// One held position, everything needed to rebuild the store entry, its attribution and its management
 /// state. Fixed-point / integer, no floats.
@@ -78,6 +78,9 @@ pub struct HeldPending {
     pub spent: u64,
     /// ADD: fee bp the reservation used.
     pub fee_bps: u32,
+    /// REDUCE/EXIT: cumulative gross proceeds / all-in fees (lamports) applied so far.
+    pub gross: u64,
+    pub fees: u64,
     /// Whether the venue was the AMM.
     pub amm: bool,
     /// Wire-clock ms the order was created.
@@ -141,6 +144,9 @@ pub struct HeldSell {
     pub spent: u64,
     pub state: u8,
     pub last_price_fp: u64,
+    /// Cumulative gross proceeds / all-in fees applied (REDUCE/EXIT).
+    pub gross: u64,
+    pub fees: u64,
 }
 
 /// An unresolved management-order conflict, preserved verbatim; blocks new exposure on its mint.
@@ -157,7 +163,8 @@ pub struct HeldSellFault {
 }
 
 /// The management-conflict sources the engine can write; anything else makes the file untrusted.
-pub const SELL_FAULT_SOURCES: [&str; 3] = [
+pub const SELL_FAULT_SOURCES: [&str; 4] = [
+    "report_non_monotonic",
     "report_exceeds_order",
     "report_contradicts_settled",
     "uncertain_sell_preempted",
@@ -217,6 +224,10 @@ pub struct HeldLedger {
     pub sells: Vec<HeldSell>,
     /// Unresolved management-order conflicts.
     pub sell_faults: Vec<HeldSellFault>,
+    /// Per management order: the cumulative (tokens, gross, fees) checkpoints the books applied, in order. A stale
+    /// report is provably stale only if it equals one of them. `u64::MAX` amounts = a fill whose amounts were
+    /// derived by the simulator (unverifiable).
+    pub sell_prefixes: Vec<(u64, Vec<(u64, u64, u64)>)>,
     /// Management compaction floor (like `order_floor`, own namespace).
     pub sell_floor: u64,
     /// Compaction floor: an order id at or below it that is absent from `orders` was COMPACTED (named, never
@@ -328,7 +339,7 @@ impl HeldLedger {
                 "filled": p.filled,
                 "max_spend": p.max_spend,
                 "spent": p.spent,
-                "fee_bps": p.fee_bps,
+                "fee_bps": p.fee_bps, "gross": p.gross, "fees": p.fees,
                 "amm": p.amm,
                 "created_ms": p.created_ms,
                 "created_slot": p.created_slot,
@@ -342,9 +353,11 @@ impl HeldLedger {
             })).collect::<Vec<_>>(),
             "order_floor": self.order_floor,
             "sell_floor": self.sell_floor,
+            "sell_prefixes": self.sell_prefixes.iter().map(|(id, v)| json!([id, v.iter().map(|(t, g, f)| json!([t, g, f])).collect::<Vec<_>>()])).collect::<Vec<_>>(),
             "sells": self.sells.iter().map(|o| json!({
                 "id": o.id, "mint": hex(&o.mint), "kind": o.kind, "intended": o.intended,
                 "filled": o.filled, "spent": o.spent, "state": o.state, "px": o.last_price_fp,
+                "gross": o.gross, "fees": o.fees,
             })).collect::<Vec<_>>(),
             "sell_faults": self.sell_faults.iter().map(|f| json!({
                 "order_id": f.order_id, "mint": hex(&f.mint), "source": f.source,
@@ -427,6 +440,8 @@ impl HeldLedger {
                 max_spend: u(p, "max_spend")?,
                 spent: u(p, "spent")?,
                 fee_bps: u32::try_from(u(p, "fee_bps")?).map_err(|_| bad("fee_bps"))?,
+                gross: u(p, "gross")?,
+                fees: u(p, "fees")?,
                 amm: p["amm"].as_bool().ok_or(bad("pending.amm"))?,
                 created_ms: i(p, "created_ms")?,
                 created_slot: u(p, "created_slot")?,
@@ -536,6 +551,8 @@ impl HeldLedger {
                 spent: u(o, "spent")?,
                 state: u8::try_from(u(o, "state")?).map_err(|_| bad("sells.state"))?,
                 last_price_fp: u(o, "px")?,
+                gross: u(o, "gross")?,
+                fees: u(o, "fees")?,
             };
             if rec.kind > 2
                 || !(1..=4).contains(&rec.state)
@@ -574,7 +591,34 @@ impl HeldLedger {
         if sells.iter().any(|x| x.id > mgmt_seq) {
             return Err(bad("sells.id_above_mgmt_seq"));
         }
+        let mut sell_prefixes = Vec::new();
+        for e in v["sell_prefixes"].as_array().ok_or(bad("sell_prefixes"))? {
+            let a = e.as_array().ok_or(bad("sell_prefixes"))?;
+            let id = a
+                .first()
+                .and_then(Value::as_u64)
+                .ok_or(bad("sell_prefixes.id"))?;
+            let mut cps = Vec::new();
+            for c in a
+                .get(1)
+                .and_then(Value::as_array)
+                .ok_or(bad("sell_prefixes.list"))?
+            {
+                let t = c.as_array().ok_or(bad("sell_prefixes.cp"))?;
+                let g = |i: usize| {
+                    t.get(i)
+                        .and_then(Value::as_u64)
+                        .ok_or(bad("sell_prefixes.cp"))
+                };
+                cps.push((g(0)?, g(1)?, g(2)?));
+            }
+            if id == 0 || id > mgmt_seq {
+                return Err(bad("sell_prefixes.id"));
+            }
+            sell_prefixes.push((id, cps));
+        }
         Ok(Self {
+            sell_prefixes,
             sells,
             sell_faults,
             sell_floor: u(v, "sell_floor")?,
@@ -717,6 +761,7 @@ mod tests {
                 contradicting: vec![HeldOutcome::NotFilled],
             }],
             order_floor: 2,
+            sell_prefixes: vec![(1, vec![(10, 220_000, 220)])],
             sells: vec![HeldSell {
                 id: 3,
                 mint: [7; 32],
@@ -726,6 +771,8 @@ mod tests {
                 spent: 0,
                 state: 1,
                 last_price_fp: 22_000,
+                gross: 220_000,
+                fees: 220,
             }],
             sell_faults: vec![HeldSellFault {
                 order_id: 3,
@@ -764,6 +811,8 @@ mod tests {
                 max_spend: 0,
                 spent: 0,
                 fee_bps: 0,
+                gross: 0,
+                fees: 0,
                 amm: false,
                 created_ms: 1_700_000_001_000,
                 created_slot: 99,

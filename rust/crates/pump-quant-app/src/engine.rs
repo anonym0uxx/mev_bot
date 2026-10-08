@@ -872,6 +872,7 @@ pub struct Engine {
     model_order_floor: u64,
     /// Management (REDUCE/EXIT/ADD) order log, own id namespace: identity, cumulative fills, terminal state.
     model_sell_log: BTreeMap<u64, model_manage::SellRec>,
+    model_sell_prefix: BTreeMap<u64, Vec<(u64, u64, u64)>>,
     model_sell_faults: BTreeMap<u64, model_manage::SellFault>,
     model_sell_floor: u64,
     /// Process-session id stamped on every inference job (see `model_worker::Job::session`).
@@ -1525,6 +1526,7 @@ impl Engine {
             model_amm_fee: BTreeMap::new(),
             model_order_seq: 0,
             model_sell_log: BTreeMap::new(),
+            model_sell_prefix: BTreeMap::new(),
             model_sell_faults: BTreeMap::new(),
             model_sell_floor: 0,
             model_order_floor: 0,
@@ -2557,7 +2559,8 @@ impl Engine {
                 action,
                 intended,
                 cumulative_tokens,
-                value,
+                cumulative_gross,
+                cumulative_fees,
             } => {
                 if self.paper_model_mode {
                     let kind = match action {
@@ -2573,7 +2576,8 @@ impl Engine {
                             kind,
                             intended,
                             cumulative_tokens,
-                            value,
+                            cumulative_gross,
+                            cumulative_fees,
                         );
                     } else {
                         self.mrep("mgmt:evidence:rejected:bad_action");

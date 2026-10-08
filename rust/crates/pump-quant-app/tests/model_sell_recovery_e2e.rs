@@ -496,13 +496,13 @@ fn a_protective_trigger_over_an_uncertain_sell_sells_nothing_reserved_and_the_po
     );
     // Evidence then settles it exactly once.
     assert_eq!(
-        e2.model_mgmt_ingest_evidence(MINT, id, MgmtKind::Exit, intended, intended, 22_000),
+        e2.ev_px(MINT, id, MgmtKind::Exit, intended, intended, 22_000),
         SellReportResult::Applied { delta: intended }
     );
     assert_eq!(e2.model_inventory_tokens(&MINT), None);
     let realized = e2.model_accounting_view(&MINT).realized;
     assert_eq!(
-        e2.model_mgmt_ingest_evidence(MINT, id, MgmtKind::Exit, intended, intended, 22_000),
+        e2.ev_px(MINT, id, MgmtKind::Exit, intended, intended, 22_000),
         SellReportResult::Duplicate
     );
     assert_eq!(
@@ -539,7 +539,7 @@ fn an_uncertain_partial_reduce_reserves_only_its_own_tokens_and_a_trigger_sells_
     );
     // The executor then reports the REDUCE: its tokens leave once; total sold never exceeds the original inventory.
     assert_eq!(
-        e2.model_mgmt_ingest_evidence(MINT, id, MgmtKind::Reduce, intended, intended, 22_000),
+        e2.ev_px(MINT, id, MgmtKind::Reduce, intended, intended, 22_000),
         SellReportResult::Applied { delta: intended }
     );
     assert_eq!(
@@ -637,6 +637,38 @@ fn a_foreign_session_verdict_cannot_create_a_sell_or_add_order_nor_answer_a_live
     assert_eq!(discarded, 12, "every foreign verdict was named and dropped");
 }
 
+/// Settlement totals for `cum` tokens all filled at `px` (lamports per raw token * 1e9), fee 1% of gross.
+fn totals(cum: u64, px: u64) -> (u64, u64) {
+    let g = u64::try_from((u128::from(cum) * u128::from(px)).div_ceil(1_000_000_000)).unwrap();
+    (g, g / 100)
+}
+
+trait EvPx {
+    fn ev_px(
+        &mut self,
+        mint: [u8; 32],
+        id: u64,
+        k: MgmtKind,
+        iss: u64,
+        cum: u64,
+        px: u64,
+    ) -> SellReportResult;
+}
+impl EvPx for Engine {
+    fn ev_px(
+        &mut self,
+        mint: [u8; 32],
+        id: u64,
+        k: MgmtKind,
+        iss: u64,
+        cum: u64,
+        px: u64,
+    ) -> SellReportResult {
+        let (g, f) = totals(cum, px);
+        self.model_mgmt_ingest_evidence(mint, id, k, iss, cum, g, f)
+    }
+}
+
 fn report(id: u64, action: u8, intended: u64, cum: u64, px: u64) -> AppEvent {
     AppEvent::ModelMgmtReport {
         mint: DomainMint::from_bytes(MINT),
@@ -644,7 +676,8 @@ fn report(id: u64, action: u8, intended: u64, cum: u64, px: u64) -> AppEvent {
         action,
         intended,
         cumulative_tokens: cum,
-        value: px,
+        cumulative_gross: totals(cum, px).0,
+        cumulative_fees: totals(cum, px).1,
     }
 }
 
@@ -670,34 +703,27 @@ fn evidence_is_validated_against_the_issued_order_before_anything_changes() {
             22_000,
             "intended_mismatch",
         ),
-        (MgmtKind::Reduce, intended, intended, 0, "no_price"),
+        (MgmtKind::Reduce, intended, intended, 0, "amounts_invalid"),
     ];
     for (k, iss, cum, px, why) in bad {
         assert_eq!(
-            r.e.model_mgmt_ingest_evidence(MINT, id, k, iss, cum, px),
+            r.e.ev_px(MINT, id, k, iss, cum, px),
             SellReportResult::Rejected(why)
         );
         assert_eq!(books(&r.e), b0, "{why}: nothing changed");
     }
     // A wrong mint never reaches this order, and a never-issued id is named, not applied.
     assert!(matches!(
-        r.e.model_mgmt_ingest_evidence(
-            [0x11; 32],
-            id,
-            MgmtKind::Reduce,
-            intended,
-            intended,
-            22_000
-        ),
+        r.e.ev_px([0x11; 32], id, MgmtKind::Reduce, intended, intended, 22_000),
         SellReportResult::Rejected(_)
     ));
     assert!(matches!(
-        r.e.model_mgmt_ingest_evidence(MINT, id + 77, MgmtKind::Reduce, intended, intended, 22_000),
+        r.e.ev_px(MINT, id + 77, MgmtKind::Reduce, intended, intended, 22_000),
         SellReportResult::Rejected(_)
     ));
     assert_eq!(books(&r.e), b0);
     assert_eq!(
-        r.e.model_mgmt_ingest_evidence(MINT, id, MgmtKind::Reduce, intended, intended, 22_000),
+        r.e.ev_px(MINT, id, MgmtKind::Reduce, intended, intended, 22_000),
         SellReportResult::Applied { delta: intended }
     );
 }
@@ -709,12 +735,12 @@ fn an_equal_quantity_report_with_a_different_price_is_a_named_fault_not_a_duplic
     r.advance_to_order(120_000);
     let (id, _, intended, _) = r.e.model_mgmt_pending(&MINT).expect("REDUCE pending");
     assert!(matches!(
-        r.e.model_mgmt_ingest_evidence(MINT, id, MgmtKind::Reduce, intended, intended, 22_000),
+        r.e.ev_px(MINT, id, MgmtKind::Reduce, intended, intended, 22_000),
         SellReportResult::Applied { .. }
     ));
     let b = books(&r.e);
     assert_eq!(
-        r.e.model_mgmt_ingest_evidence(MINT, id, MgmtKind::Reduce, intended, intended, 21_000),
+        r.e.ev_px(MINT, id, MgmtKind::Reduce, intended, intended, 21_000),
         SellReportResult::Fault
     );
     assert_eq!(books(&r.e), b, "no money moved");
@@ -733,30 +759,31 @@ fn an_older_report_is_ignored_only_when_a_booked_fill_proves_it_otherwise_it_is_
     let (id, _, intended, _) = r.e.model_mgmt_pending(&MINT).expect("REDUCE pending");
     let part = intended / 2;
     assert!(matches!(
-        r.e.model_mgmt_ingest_evidence(MINT, id, MgmtKind::Reduce, intended, part, 22_000),
+        r.e.ev_px(MINT, id, MgmtKind::Reduce, intended, part, 22_000),
         SellReportResult::Applied { .. }
     ));
     assert!(matches!(
-        r.e.model_mgmt_ingest_evidence(MINT, id, MgmtKind::Reduce, intended, intended, 23_000),
+        r.e.ev_px(MINT, id, MgmtKind::Reduce, intended, intended, 23_000),
         SellReportResult::Applied { .. }
     ));
     let b = books(&r.e);
     // Proven stale: the same quantity at the same price as a booked fill prefix.
     assert_eq!(
-        r.e.model_mgmt_ingest_evidence(MINT, id, MgmtKind::Reduce, intended, part, 22_000),
+        r.e.ev_px(MINT, id, MgmtKind::Reduce, intended, part, 22_000),
         SellReportResult::Duplicate
     );
-    // Older quantity with a price no booked fill matches: unproven, named, nothing applied.
+    // Same older quantity as a booked checkpoint but DIFFERENT amounts: contradictory settlement evidence.
     assert_eq!(
-        r.e.model_mgmt_ingest_evidence(MINT, id, MgmtKind::Reduce, intended, part, 19_000),
-        SellReportResult::Rejected("stale_unproven")
+        r.e.ev_px(MINT, id, MgmtKind::Reduce, intended, part, 19_000),
+        SellReportResult::Fault
     );
+    assert!(r.e.model_sell_faults().contains_key(&id));
     // An older quantity that is not a booked prefix is also unproven.
     assert_eq!(
-        r.e.model_mgmt_ingest_evidence(MINT, id, MgmtKind::Reduce, intended, 3, 22_000),
+        r.e.ev_px(MINT, id, MgmtKind::Reduce, intended, 3, 22_000),
         SellReportResult::Rejected("stale_unproven")
     );
-    assert_eq!(books(&r.e), b);
+    assert_eq!(books(&r.e), b, "no report changed any money or inventory");
 }
 
 /// The whole inbox, in file order, replayed into an engine (what a restarted daemon does: offset is not persisted).
@@ -835,4 +862,100 @@ fn execution_evidence_for_an_order_restored_from_an_earlier_process_is_accepted_
     assert!(e2
         .model_sell_rec(id)
         .is_some_and(|x| x.state == SellState::Completed));
+}
+
+/// Two partial fills at DIFFERENT prices and fees, reported as cumulative settlement totals. Each increment books
+/// its own proceeds (gross and fee exactly as reported), not quantity times one price. Expected values are
+/// computed here independently of the engine.
+#[test]
+fn two_partial_fills_at_different_prices_and_fees_book_their_own_increments_then_restart_and_replay(
+) {
+    let hp = held_path("s_x");
+    let mut r = rig(|step| if step == 0 { EXIT } else { HOLD }, &hp);
+    r.advance_to_order(120_000);
+    let (id, _, intended, _) = r.e.model_mgmt_pending(&MINT).expect("EXIT pending");
+    let inv0 = r.e.model_inventory_tokens(&MINT).unwrap();
+    assert_eq!(inv0, intended);
+    let t1 = intended / 4;
+    let v0 = r.e.model_accounting_view(&MINT);
+    let (realized0, cost_basis0) = (v0.realized, v0.remaining_cost_basis.unwrap());
+    // Fill 1: t1 tokens, gross 1_000_000 lamports, fee 10_000. Fill 2: t2 tokens, gross 3_300_000, fee 99_000.
+    let (g1, f1) = (1_000_000_u64, 10_000_u64);
+    let t2 = intended / 2;
+    let (g2, f2) = (3_300_000_u64, 99_000_u64);
+    let (c_g, c_f) = (g1 + g2, f1 + f2);
+    assert!(matches!(
+        r.e.model_mgmt_ingest_evidence(MINT, id, MgmtKind::Exit, intended, t1, g1, f1),
+        SellReportResult::Applied { delta } if delta == t1
+    ));
+    let realized1 = r.e.model_accounting_view(&MINT).realized;
+    assert!(matches!(
+        r.e.model_mgmt_ingest_evidence(MINT, id, MgmtKind::Exit, intended, t1 + t2, c_g, c_f),
+        SellReportResult::Applied { delta } if delta == t2
+    ));
+    let fills = r.e.model_mgmt_fills().to_vec();
+    assert_eq!(fills.len(), 2);
+    assert_eq!(
+        (
+            fills[0].tokens,
+            fills[0].gross_lamports,
+            fills[0].fee_lamports
+        ),
+        (t1, g1, f1)
+    );
+    assert_eq!(
+        (
+            fills[1].tokens,
+            fills[1].gross_lamports,
+            fills[1].fee_lamports
+        ),
+        (t2, g2, f2)
+    );
+    assert_eq!(r.e.model_inventory_tokens(&MINT), Some(inv0 - t1 - t2));
+    // Independent expectation: each increment realises (its own gross - its own fee) less its pro-rata share of
+    // the position's cost basis. frac_bps = floor(tokens * remaining_bps / inventory) (floor: the remainder carries
+    // the rounding), with the inventory and remaining fraction as they stood BEFORE that increment.
+    let cost0 = cost_basis0;
+    let fr1 = u128::from(t1) * 10_000 / u128::from(inv0);
+    let rem1 = 10_000 - fr1;
+    let fr2 = u128::from(t2) * rem1 / u128::from(inv0 - t1);
+    let exp1 = i128::from(g1) - i128::from(f1) - (u128::from(cost0) * fr1 / 10_000) as i128;
+    let exp2 = i128::from(g2) - i128::from(f2) - (u128::from(cost0) * fr2 / 10_000) as i128;
+    assert_eq!(
+        realized1 - realized0,
+        exp1,
+        "increment 1 books its own gross and fee"
+    );
+    let realized2 = r.e.model_accounting_view(&MINT).realized;
+    assert_eq!(
+        realized2 - realized1,
+        exp2,
+        "increment 2 books ITS gross and fee, not quantity x one price"
+    );
+    assert!(r.e.model_held_persist_now());
+    let b = books(&r.e);
+    drop(r);
+    let mut e2 = fresh(&hp);
+    e2.model_held_restore().unwrap().unwrap();
+    assert_eq!(books(&e2), b, "restart restores the same books");
+    // Replay the whole report history after the restart: nothing moves.
+    for (cum, g, f) in [(t1, g1, f1), (t1 + t2, c_g, c_f), (t1, g1, f1)] {
+        assert_eq!(
+            e2.model_mgmt_ingest_evidence(MINT, id, MgmtKind::Exit, intended, cum, g, f),
+            SellReportResult::Duplicate
+        );
+    }
+    assert_eq!(books(&e2), b);
+    // A contradictory total at an already-booked quantity is a named fault; money still unchanged.
+    assert_eq!(
+        e2.model_mgmt_ingest_evidence(MINT, id, MgmtKind::Exit, intended, t1 + t2, c_g, c_f + 1),
+        SellReportResult::Fault
+    );
+    assert_eq!(books(&e2), b);
+    // Non-monotonic: more tokens but LOWER gross than already applied.
+    assert_eq!(
+        e2.model_mgmt_ingest_evidence(MINT, id, MgmtKind::Exit, intended, intended, c_g - 1, c_f),
+        SellReportResult::Fault
+    );
+    assert_eq!(books(&e2), b);
 }

@@ -93,6 +93,8 @@ impl Engine {
                 max_spend: 0,
                 spent: 0,
                 fee_bps: 0,
+                gross: 0,
+                fees: 0,
                 amm: o.amm,
                 created_ms: o.created_ms,
                 created_slot: o.created_slot,
@@ -120,6 +122,8 @@ impl Engine {
                 max_spend: o.max_spend,
                 spent: o.spent,
                 fee_bps: o.fee_bps,
+                gross: o.gross,
+                fees: o.fees,
                 amm: o.amm,
                 created_ms: o.created_ms,
                 created_slot: o.created_slot,
@@ -175,6 +179,8 @@ impl Engine {
                     super::model_manage::SellState::Preempted => 4,
                 },
                 last_price_fp: r.last_price_fp,
+                gross: r.gross,
+                fees: r.fees,
             })
             .collect();
         let sell_faults: Vec<crate::held_state::HeldSellFault> = self
@@ -205,6 +211,11 @@ impl Engine {
             })
             .collect();
         HeldLedger {
+            sell_prefixes: self
+                .model_sell_prefix
+                .iter()
+                .map(|(k, v)| (*k, v.clone()))
+                .collect(),
             sells,
             sell_faults,
             sell_floor: self.model_sell_floor,
@@ -614,6 +625,8 @@ impl Engine {
                             spent: p.spent,
                             fee_bps: p.fee_bps,
                             uncertain: true,
+                            gross: p.gross,
+                            fees: p.fees,
                         },
                     );
                 }
@@ -693,6 +706,9 @@ impl Engine {
         }
         // Management orders: settled identity + cumulative fills + terminal state; restored AS RECORDS only.
         self.model_sell_floor = l.sell_floor;
+        for (id, cps) in &l.sell_prefixes {
+            self.model_sell_prefix.insert(*id, cps.clone());
+        }
         for o in &l.sells {
             self.model_sell_log.insert(
                 o.id,
@@ -714,6 +730,8 @@ impl Engine {
                         _ => super::model_manage::SellState::Preempted,
                     },
                     last_price_fp: o.last_price_fp,
+                    gross: o.gross,
+                    fees: o.fees,
                 },
             );
         }

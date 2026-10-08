@@ -470,7 +470,10 @@ pub enum AppEvent {
         /// The order's issued intended quantity, restated by the executor. Must match.
         intended: u64,
         cumulative_tokens: u64,
-        value: u64,
+        /// Cumulative gross proceeds (lamports); for an ADD, cumulative notional spent.
+        cumulative_gross: u64,
+        /// Cumulative all-in fees (lamports); must be 0 for an ADD.
+        cumulative_fees: u64,
     },
     OurBuyConfirmed {
         /// The mint that was bought.

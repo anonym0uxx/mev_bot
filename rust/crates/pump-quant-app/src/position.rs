@@ -630,6 +630,18 @@ impl HeldPosition {
             .saturating_sub(cost as i128)
             .saturating_sub(i128::from(p.fixed_lamports_per_leg))
     }
+
+    /// Book a sell from AUTHORITATIVE settlement totals (gross proceeds and all-in fees, lamports, for exactly this
+    /// tranche) instead of the simulated price/impairment/fee model. Net = gross - fees - the tranche's pro-rata
+    /// entry cost. The reported fee is all-in (venue fee plus landing cost), so no extra fixed leg cost is charged.
+    fn realize_settled(&mut self, frac_bps: u32, gross: u64, fee: u64) -> i128 {
+        let frac_bps = frac_bps.min(self.remaining_bps);
+        let cost = u128::from(self.cost_lamports) * u128::from(frac_bps) / 10_000;
+        self.remaining_bps -= frac_bps;
+        i128::from(gross)
+            .saturating_sub(i128::from(fee))
+            .saturating_sub(cost as i128)
+    }
 }
 
 /// The bounded per-mint held-position manager. Fed by the engine's admit + swap +
@@ -854,6 +866,29 @@ impl ScalpLifecycle {
         price_fp: u64,
         reason: ExitReason,
     ) -> Result<Exit, SellRefusal> {
+        self.sell_tokens_inner(mint, tokens, price_fp, reason, None)
+    }
+
+    /// As [`Self::sell_tokens`], but the proceeds are the executor's authoritative `(gross, fee)` for this tranche.
+    pub fn sell_tokens_settled(
+        &mut self,
+        mint: &[u8; 32],
+        tokens: u64,
+        price_fp: u64,
+        reason: ExitReason,
+        gross_fee: (u64, u64),
+    ) -> Result<Exit, SellRefusal> {
+        self.sell_tokens_inner(mint, tokens, price_fp, reason, Some(gross_fee))
+    }
+
+    fn sell_tokens_inner(
+        &mut self,
+        mint: &[u8; 32],
+        tokens: u64,
+        price_fp: u64,
+        reason: ExitReason,
+        settled: Option<(u64, u64)>,
+    ) -> Result<Exit, SellRefusal> {
         let params = self.params;
         let Some(pos) = self.open.get_mut(mint) else {
             return Err(SellRefusal::NotHeld);
@@ -886,7 +921,10 @@ impl ScalpLifecycle {
             .unwrap_or(pos.remaining_bps)
             .min(pos.remaining_bps)
         };
-        let net = pos.realize(frac_bps, mult, &params);
+        let net = match settled {
+            Some((g, f)) => pos.realize_settled(frac_bps, g, f),
+            None => pos.realize(frac_bps, mult, &params),
+        };
         pos.inventory_tokens -= tokens;
         let exit_px = u64::try_from(u128::from(pos.entry_price_fp) * u128::from(mult) / 10_000)
             .unwrap_or(pos.entry_price_fp);

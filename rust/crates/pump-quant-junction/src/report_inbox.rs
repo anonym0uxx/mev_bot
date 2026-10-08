@@ -1,7 +1,9 @@
 //! Management-sell report inbox: the channel through which a REDUCE / EXIT / ADD fill report reaches the engine.
 //! One JSON object per line, appended to a file the daemon polls. Fields: `mint` (64 hex), `order_id`, `action`
 //! (`reduce`|`exit`|`add`), `intended` (the issued quantity, restated), `cumulative_tokens` (the TOTAL the order has
-//! filled), `value` (fill price, or cumulative notional for an ADD).
+//! filled), `cumulative_gross` (TOTAL gross proceeds in lamports; for an ADD the TOTAL notional spent) and
+//! `cumulative_fees` (TOTAL all-in fees in lamports; 0 for an ADD). There is NO per-fill price field: price is
+//! derived by the engine from the increment of the totals, so it can never be ambiguous.
 //!
 //! AUTHORITY: HARNESS-ONLY. The producer is the offline paper-replay harness (a stand-in executor writing what a real
 //! executor would report). The daemon polls this file only under `PQ_OFFLINE_PAPER_REPLAY=1` without `--live`
@@ -55,7 +57,8 @@ pub fn parse_line(line: &str) -> Result<AppEvent, LineRefusal> {
         action,
         intended: u("intended")?,
         cumulative_tokens: u("cumulative_tokens")?,
-        value: u("value")?,
+        cumulative_gross: u("cumulative_gross")?,
+        cumulative_fees: u("cumulative_fees")?,
     })
 }
 
@@ -119,7 +122,7 @@ mod tests {
 
     fn line(order: u64, cum: u64) -> String {
         format!(
-            r#"{{"mint":"{}","order_id":{order},"action":"exit","intended":900,"cumulative_tokens":{cum},"value":22000}}"#,
+            r#"{{"mint":"{}","order_id":{order},"action":"exit","intended":900,"cumulative_tokens":{cum},"cumulative_gross":{cum}000,"cumulative_fees":{cum}}}"#,
             "ab".repeat(32)
         )
     }
@@ -133,7 +136,8 @@ mod tests {
                 action: 1,
                 intended: 900,
                 cumulative_tokens: 500,
-                value: 22_000,
+                cumulative_gross: 500_000,
+                cumulative_fees: 500,
                 ..
             })
         ));
@@ -143,7 +147,7 @@ mod tests {
             Err(LineRefusal::BadMint)
         );
         let no_cum = format!(
-            r#"{{"mint":"{}","order_id":1,"action":"exit","intended":9,"value":1}}"#,
+            r#"{{"mint":"{}","order_id":1,"action":"exit","intended":9,"cumulative_gross":1,"cumulative_fees":0}}"#,
             "ab".repeat(32)
         );
         assert_eq!(
