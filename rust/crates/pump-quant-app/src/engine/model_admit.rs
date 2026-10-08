@@ -841,6 +841,7 @@ impl Engine {
     ///   work bound, and the unexamined stay queued in the same order (no starvation: oldest first);
     /// * lane backpressure (request table / pool queue full) or a lane-wide block stops entry starts for the
     ///   tick and leaves the rest queued.
+    ///
     /// Held-position management has its OWN request table and runs BEFORE this in the tick, so an entry
     /// backlog cannot take its slots. Legacy watchlist state is never read here.
     pub(super) fn model_stream_schedule(&mut self) {

@@ -204,6 +204,9 @@ pub struct DecisionState {
     pub through_ms: i64,
 }
 
+/// One cumulative settlement checkpoint of a sell order: (tokens, gross, fees).
+pub type SettlementPoint = (u64, u64, u64);
+
 /// The whole durable record.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeldLedger {
@@ -240,7 +243,7 @@ pub struct HeldLedger {
     /// Per management order: the cumulative (tokens, gross, fees) checkpoints the books applied, in order. A stale
     /// report is provably stale only if it equals one of them. `u64::MAX` amounts = a fill whose amounts were
     /// derived by the simulator (unverifiable).
-    pub sell_prefixes: Vec<(u64, Vec<(u64, u64, u64)>)>,
+    pub sell_prefixes: Vec<(u64, Vec<SettlementPoint>)>,
     /// Management compaction floor (like `order_floor`, own namespace).
     pub sell_floor: u64,
     /// Compaction floor: an order id at or below it that is absent from `orders` was COMPACTED (named, never

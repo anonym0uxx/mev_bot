@@ -1399,6 +1399,7 @@ impl Engine {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn model_mgmt_book_add(
         &mut self,
         mint: [u8; 32],
@@ -1751,6 +1752,7 @@ impl Engine {
     /// * totals > 0 (< intended) + terminal -> the increment settles through the normal path FIRST (prior partial
     ///   settlement preserved), then the remainder is definitively cancelled: `EndedPartial`, remainder released;
     /// * no terminal flag            -> [`Self::model_mgmt_ingest_evidence`]: the remainder stays working/unknown.
+    ///
     /// Identity checks are the existing ones. A repeat of the same terminal evidence is a duplicate no-op; terminal
     /// evidence that disagrees with a settled record, or ANY later evidence that adds execution after a terminal
     /// statement, is a durable `report_contradicts_settled` fault (mint blocked, nothing applied). Timeouts, TTL and
@@ -2153,6 +2155,35 @@ impl Engine {
     }
 }
 
+/// Why a held AMM position's price-based protection is unavailable at wire clock `now_ms`, or `None` when it is
+/// protected. The age is taken from the last VERIFIED mark - not from the newest hint, a rejected swap, or the
+/// connection being up - and the bound is the existing pricing budget (no new threshold).
+///
+/// What a mark means: an AMM swap event carries the pool's PRE-trade reserves, so each mark is the state before
+/// that swap and does not include its own price impact. Protection can therefore detect only what a LATER swap's
+/// pre-trade state reveals; a price-moving swap followed by silence is invisible until the budget elapses and this
+/// gap is raised.
+#[must_use]
+pub fn amm_protection_gap(status: &HeldDataStatus, now_ms: i64) -> Option<String> {
+    if !status.amm {
+        return None;
+    }
+    let budget = crate::curve_annotation::PRICING_BUDGET_MS;
+    let newest_ignored_after_mark = status
+        .protect_ignored
+        .filter(|(_, t)| status.protect_mark_ms.is_none_or(|m| *t >= m));
+    match (status.protect_mark_ms, newest_ignored_after_mark) {
+        (_, Some(("no_spot_basis", _))) => {
+            Some("protection_mark_unavailable:missing_spot_basis".to_string())
+        }
+        (None, _) => Some("protection_mark_unavailable:no_verified_mark".to_string()),
+        (Some(m), _) if now_ms.saturating_sub(m) > budget => {
+            Some("protection_mark_stale:no_valid_update".to_string())
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod add_planner_tests {
     use super::*;
@@ -2256,34 +2287,5 @@ mod add_planner_tests {
             "mgmt:refuse:add_insufficient_funds",
             "second order sees the reservation"
         );
-    }
-}
-
-/// Why a held AMM position's price-based protection is unavailable at wire clock `now_ms`, or `None` when it is
-/// protected. The age is taken from the last VERIFIED mark - not from the newest hint, a rejected swap, or the
-/// connection being up - and the bound is the existing pricing budget (no new threshold).
-///
-/// What a mark means: an AMM swap event carries the pool's PRE-trade reserves, so each mark is the state before
-/// that swap and does not include its own price impact. Protection can therefore detect only what a LATER swap's
-/// pre-trade state reveals; a price-moving swap followed by silence is invisible until the budget elapses and this
-/// gap is raised.
-#[must_use]
-pub fn amm_protection_gap(status: &HeldDataStatus, now_ms: i64) -> Option<String> {
-    if !status.amm {
-        return None;
-    }
-    let budget = crate::curve_annotation::PRICING_BUDGET_MS;
-    let newest_ignored_after_mark = status
-        .protect_ignored
-        .filter(|(_, t)| status.protect_mark_ms.is_none_or(|m| *t >= m));
-    match (status.protect_mark_ms, newest_ignored_after_mark) {
-        (_, Some((why, _))) if why == "no_spot_basis" => {
-            Some("protection_mark_unavailable:missing_spot_basis".to_string())
-        }
-        (None, _) => Some("protection_mark_unavailable:no_verified_mark".to_string()),
-        (Some(m), _) if now_ms.saturating_sub(m) > budget => {
-            Some("protection_mark_stale:no_valid_update".to_string())
-        }
-        _ => None,
     }
 }

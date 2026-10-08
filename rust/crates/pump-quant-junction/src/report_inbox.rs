@@ -36,7 +36,8 @@ fn unhex(s: &str) -> Option<[u8; 32]> {
     }
     let mut out = [0u8; 32];
     for (i, o) in out.iter_mut().enumerate() {
-        *o = u8::from_str_radix(s.get(i * 2..i * 2 + 2)?, 16).ok()?;
+        let at = i.checked_mul(2)?;
+        *o = u8::from_str_radix(s.get(at..at.checked_add(2)?)?, 16).ok()?;
     }
     Some(out)
 }
@@ -133,7 +134,7 @@ impl InboxReader {
         };
         if !same {
             if self.offset > 0 {
-                self.replaced += 1;
+                self.replaced = self.replaced.saturating_add(1);
             }
             self.offset = 0;
             self.ident = None;
@@ -147,9 +148,9 @@ impl InboxReader {
             return Vec::new();
         }
         let buf = String::from_utf8_lossy(&raw).into_owned();
-        let complete = buf.rfind('\n').map_or(0, |i| i + 1);
-        self.partial_bytes = (buf.len() - complete) as u64;
-        self.offset += complete as u64;
+        let complete = buf.rfind('\n').map_or(0, |i| i.saturating_add(1));
+        self.partial_bytes = buf.len().saturating_sub(complete) as u64;
+        self.offset = self.offset.saturating_add(complete as u64);
         if self.offset > 0 {
             // Remember the identity prefix of what has been consumed (read the file's own first bytes).
             if let Ok(mut g) = std::fs::File::open(path) {
@@ -164,7 +165,7 @@ impl InboxReader {
         for line in buf[..complete].lines().filter(|l| !l.trim().is_empty()) {
             match parse_line(line) {
                 Ok(ev) => {
-                    self.accepted += 1;
+                    self.accepted = self.accepted.saturating_add(1);
                     out.push(ev);
                 }
                 Err(e) => {
@@ -175,7 +176,10 @@ impl InboxReader {
                         LineRefusal::BadAction => "bad_action",
                         LineRefusal::BadTerminal => "bad_terminal",
                     };
-                    *self.refused.entry(k).or_insert(0) += 1;
+                    {
+                        let c = self.refused.entry(k).or_insert(0);
+                        *c = c.saturating_add(1);
+                    }
                 }
             }
         }

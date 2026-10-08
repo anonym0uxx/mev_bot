@@ -1923,7 +1923,7 @@ fn gated_engine(
 
 #[test]
 fn a_verdict_from_an_abandoned_process_creates_no_order_and_cannot_answer_a_new_request() {
-    let (hp, id, q) = pending_entry_world("fv_a");
+    let (hp, id, _q) = pending_entry_world("fv_a");
     let before_orders;
     {
         let mut e2 = fresh_engine(2_000_000_000, &hp);

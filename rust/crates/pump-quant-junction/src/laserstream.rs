@@ -241,13 +241,13 @@ pub fn decode_amm_swaps(tx: &LaserStreamTx) -> (Vec<AmmSwapFacts>, u32) {
                     (Some(p), true)
                 } else {
                     // Parent is not the swap instruction of this pool: refuse by exclusion, never fall back.
-                    excluded += 1;
+                    excluded = excluded.saturating_add(1);
                     continue;
                 }
             }
             Err("no_invocation_position") => (None, false),
             Err(_) => {
-                excluded += 1;
+                excluded = excluded.saturating_add(1);
                 continue;
             }
         };
@@ -324,7 +324,7 @@ pub fn decode_amm_swaps(tx: &LaserStreamTx) -> (Vec<AmmSwapFacts>, u32) {
             token_amount: tok_amt,
             quote_lamports: quote_amt,
             trader: user,
-            swap_ix: Some(found_ix).filter(|_| positions_given),
+            swap_ix: positions_given.then_some(found_ix),
             canonical,
             quote_is_wsol,
         });
@@ -522,7 +522,7 @@ pub fn invocation_parent(tx: &LaserStreamTx, idx: usize) -> Result<usize, &'stat
     if depth < 2 {
         return Err("outer_instruction_has_no_parent");
     }
-    let want = depth - 1;
+    let want = depth.saturating_sub(1); // depth >= 2 checked above
     if want == 1 {
         // The parent is the OUTER instruction itself (depth 1, carrying its own index).
         return tx
@@ -951,7 +951,7 @@ pub fn parse_ndjson_line(line: &str) -> Option<LaserStreamUpdate> {
                         .enumerate()
                         .map(|(i, k)| match k.as_str() {
                             Some(s) if s == ARCHIVAL_B58_ZERO_KEY => {
-                                repaired_zero_keys += 1;
+                                repaired_zero_keys = repaired_zero_keys.saturating_add(1);
                                 [0u8; 32]
                             }
                             Some(s) => match Pubkey::from_str(s) {

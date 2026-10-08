@@ -72,15 +72,15 @@ const WSOL_MINT: [u8; 32] = [
 fn decode_quote(data: &[u8]) -> QuoteIdentity {
     // mint32 sol8 tok8 buy1 user32 ts8 vs8 vt8 rs8 rt8 fee_recipient32 fee_bps8 fee8 creator32 cfee_bps8 cfee8
     // track1 unclaimed8 claimed8 cur_vol8 last_ts8  => ix_name starts at byte 266 (verified on 72,068 captured events)
-    let mut o =
+    let mut o: usize =
         16 + 32 + 8 + 8 + 1 + 32 + 8 + 8 + 8 + 8 + 8 + 32 + 8 + 8 + 32 + 8 + 8 + 1 + 8 + 8 + 8 + 8;
     let step = (|| -> Option<QuoteIdentity> {
-        let n = u32::from_le_bytes(data.get(o..o + 4)?.try_into().ok()?) as usize;
+        let n = u32::from_le_bytes(data.get(o..o.checked_add(4)?)?.try_into().ok()?) as usize;
         o = o.checked_add(4)?.checked_add(n)?;
         o = o.checked_add(1 + 8 + 8 + 8 + 8)?; // mayhem_mode + cashback bps/amt + buyback bps/amt
-        let sh = u32::from_le_bytes(data.get(o..o + 4)?.try_into().ok()?) as usize;
+        let sh = u32::from_le_bytes(data.get(o..o.checked_add(4)?)?.try_into().ok()?) as usize;
         o = o.checked_add(4)?.checked_add(sh.checked_mul(34)?)?;
-        let q: [u8; 32] = data.get(o..o + 32)?.try_into().ok()?;
+        let q: [u8; 32] = data.get(o..o.checked_add(32)?)?.try_into().ok()?;
         Some(if q == [0u8; 32] || q == WSOL_MINT {
             QuoteIdentity::Sol
         } else {
@@ -138,7 +138,8 @@ fn decode_trade_event(data: &[u8], ordinal: u32) -> Option<Result<CurveTradeEven
     if data.len() < TRADE_EVENT_MIN_LEN {
         return Some(Err("trade_event_truncated"));
     }
-    let arr = |lo: usize| -> Option<[u8; 32]> { data.get(lo..lo + 32)?.try_into().ok() };
+    let arr =
+        |lo: usize| -> Option<[u8; 32]> { data.get(lo..lo.checked_add(32)?)?.try_into().ok() };
     let ev = (|| {
         Some(CurveTradeEvent {
             mint: arr(16)?,
@@ -457,9 +458,9 @@ pub fn ingest_curve_tx(
                 match e.quote {
                     QuoteIdentity::Other(_) => {
                         if dedup.first_time(&tx.signature, e.ix_ordinal) {
-                            dedup.unsupported_quote += 1;
+                            dedup.unsupported_quote = dedup.unsupported_quote.saturating_add(1);
                         } else {
-                            d += 1;
+                            d = d.saturating_add(1);
                         }
                         continue;
                     }
@@ -469,23 +470,26 @@ pub fn ingest_curve_tx(
                     QuoteIdentity::Sol => {}
                 }
                 if !dedup.first_time(&tx.signature, e.ix_ordinal) {
-                    d += 1;
+                    d = d.saturating_add(1);
                     continue;
                 }
                 let feature = match corpus_basis_for(tx, e.ix_ordinal as usize, e, &not_launch) {
                     Ok(f) => {
-                        dedup.corpus_basis_resolved += 1;
+                        dedup.corpus_basis_resolved = dedup.corpus_basis_resolved.saturating_add(1);
                         Some(f)
                     }
                     Err(why) => {
-                        *dedup.outside_corpus.entry(why).or_insert(0) += 1;
+                        {
+                            let c = dedup.outside_corpus.entry(why).or_insert(0);
+                            *c = c.saturating_add(1);
+                        }
                         None
                     }
                 };
                 match curve_trade_to_event(e, tx, tx.is_live, feature) {
                     Some(pe) => {
                         out.push(pe);
-                        n += 1;
+                        n = n.saturating_add(1);
                     }
                     None => return EventIngest::Incomplete("trade_event_unrepresentable"),
                 }
@@ -554,13 +558,13 @@ pub fn ingest_amm_rows(
     });
     if tx.tx_ok != Some(true) {
         if has_swap {
-            stats.not_verified_success_txs += 1;
+            stats.not_verified_success_txs = stats.not_verified_success_txs.saturating_add(1);
         }
         return;
     }
     let Some(bal) = tx.balances.as_ref() else {
         if has_swap {
-            stats.no_balances_txs += 1;
+            stats.no_balances_txs = stats.no_balances_txs.saturating_add(1);
         }
         return;
     };
@@ -584,8 +588,11 @@ pub fn ingest_amm_rows(
         ) {
             Ok(r) => r,
             Err(why) => {
-                stats.resolver_rejects += 1;
-                *stats.reject_reasons.entry(why.as_str()).or_insert(0) += 1;
+                stats.resolver_rejects = stats.resolver_rejects.saturating_add(1);
+                {
+                    let c = stats.reject_reasons.entry(why.as_str()).or_insert(0);
+                    *c = c.saturating_add(1);
+                }
                 // Population: which quote asset moved in the transaction (the frozen builder keys nothing on it, but
                 // it explains WHY no sign pattern exists), and whether the tx also carried a USDC leg.
                 let usdc = bal
@@ -602,24 +609,30 @@ pub fn ingest_amm_rows(
                         "no_usdc_leg"
                     }
                 );
-                *stats.reject_population.entry(key).or_insert(0) += 1;
+                {
+                    let c = stats.reject_population.entry(key).or_insert(0);
+                    *c = c.saturating_add(1);
+                }
                 continue;
             }
         };
         let Ok(tokens_raw) = i64::try_from(row.tokens_raw) else {
-            stats.resolver_rejects += 1;
-            *stats
-                .reject_reasons
-                .entry("tokens_raw_overflow")
-                .or_insert(0) += 1;
+            stats.resolver_rejects = stats.resolver_rejects.saturating_add(1);
+            {
+                let c = stats
+                    .reject_reasons
+                    .entry("tokens_raw_overflow")
+                    .or_insert(0);
+                *c = c.saturating_add(1);
+            }
             continue;
         };
         // Row identity lives in its own domain, keyed by the row's instruction index.
         if !dedup.first_time_row(&tx.signature, ordinal) {
-            stats.duplicates += 1;
+            stats.duplicates = stats.duplicates.saturating_add(1);
             continue;
         }
-        stats.emitted += 1;
+        stats.emitted = stats.emitted.saturating_add(1);
         out.push(ProvenancedEvent {
             event: AppEvent::CorpusFlowRow {
                 mint: Mint(row.mint),

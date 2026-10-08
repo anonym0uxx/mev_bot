@@ -117,9 +117,11 @@ fn first_amt(entries: &[TokBal], owner: &[u8; 32], mint: &[u8; 32]) -> i128 {
 fn deltas(m: &BalanceMeta, ai: usize, owner: &[u8; 32], mint: &[u8; 32]) -> Option<(i128, i128)> {
     let pre = i128::from(*m.pre_sol.get(ai)?);
     let post = i128::from(*m.post_sol.get(ai)?);
-    let sd =
-        (post - pre) + (first_amt(&m.post_tok, owner, &WSOL) - first_amt(&m.pre_tok, owner, &WSOL));
-    let td = first_amt(&m.post_tok, owner, mint) - first_amt(&m.pre_tok, owner, mint);
+    // Token amounts are u64 lifted to i128 and SOL balances are u64: these differences cannot overflow i128.
+    let wsol =
+        first_amt(&m.post_tok, owner, &WSOL).checked_sub(first_amt(&m.pre_tok, owner, &WSOL))?;
+    let sd = post.checked_sub(pre)?.checked_add(wsol)?;
+    let td = first_amt(&m.post_tok, owner, mint).checked_sub(first_amt(&m.pre_tok, owner, mint))?;
     Some((sd, td))
 }
 
@@ -145,7 +147,6 @@ fn candidate_mints(m: &BalanceMeta, not_launch: &HashSet<[u8; 32]>) -> Vec<[u8; 
 
 /// Resolve the corpus row for ONE corpus-known pump.fun instruction. `ix_accounts` are the instruction's account
 /// indices into `keys`. `None` = the corpus would have rejected it (counted by the caller, never guessed).
-#[must_use]
 pub fn resolve_row_why(
     prefer_ix: Option<usize>,
     is_buy: bool,
@@ -203,11 +204,11 @@ pub fn resolve_row_why(
         // ---- whole-transaction net-position fallback (wide_resolve), per candidate mint
         for mint in &mints {
             let mut hits: Vec<(usize, [u8; 32], i128, i128)> = Vec::new();
-            for j in 0..keys.len().min(m.pre_sol.len()).min(m.post_sol.len()) {
+            let n = keys.len().min(m.pre_sol.len()).min(m.post_sol.len());
+            for (j, ow) in keys.iter().copied().enumerate().take(n) {
                 if invalid_key_idx.contains(&j) {
                     continue; // an unparseable key is never an owner, even though its placeholder bytes are zero
                 }
-                let ow = keys[j];
                 if let Some((sd, td)) = deltas(m, j, &ow, mint) {
                     if pattern_ok(is_buy, sd, td) {
                         hits.push((j, ow, td, sd));
@@ -226,8 +227,10 @@ pub fn resolve_row_why(
             }
             let tot: i128 = owners
                 .iter()
-                .map(|o| first_amt(&m.post_tok, o, mint) - first_amt(&m.pre_tok, o, mint))
-                .sum();
+                .map(|o| {
+                    first_amt(&m.post_tok, o, mint).saturating_sub(first_amt(&m.pre_tok, o, mint))
+                })
+                .fold(0i128, i128::saturating_add);
             let mut best = hits[0];
             for h in &hits[1..] {
                 if h.2.unsigned_abs() > best.2.unsigned_abs() {
@@ -245,13 +248,14 @@ pub fn resolve_row_why(
     let Some((mint, owner, sd, via)) = found else {
         return Err(if conservation_failed {
             RowReject::WideConservationFailed
-        } else if saw_wide_hits {
-            RowReject::NoSignPatternAnywhere
         } else {
+            // With or without wide hits the corpus names the same reason.
+            let _ = saw_wide_hits;
             RowReject::NoSignPatternAnywhere
         });
     };
-    let tok = first_amt(&m.post_tok, &owner, &mint) - first_amt(&m.pre_tok, &owner, &mint);
+    let tok =
+        first_amt(&m.post_tok, &owner, &mint).saturating_sub(first_amt(&m.pre_tok, &owner, &mint));
     if sd == 0 || tok == 0 {
         return Err(RowReject::ZeroSolOrToken);
     }

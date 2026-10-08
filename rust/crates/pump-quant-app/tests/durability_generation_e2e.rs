@@ -78,7 +78,7 @@ fn an_older_copy_of_the_ledger_swapped_in_is_the_same_refusal() {
     // Capture generation 3, advance to 5 (history now saw 5), then roll the ledger back to a generation-3 copy.
     let old = std::fs::read(&held).unwrap();
     let mut e = engine(&held);
-    assert!(matches!(e.model_held_restore(), Ok(_)));
+    assert!(e.model_held_restore().is_ok());
     assert!(matches!(
         e.model_flow_attach(&flow, FlowParams::default(), prov(), 0),
         FlowAttach::Restored { .. }

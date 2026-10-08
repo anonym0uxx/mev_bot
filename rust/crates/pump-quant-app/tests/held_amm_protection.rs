@@ -55,6 +55,7 @@ fn entity(w: &[u8; 32]) -> u64 {
     x | 1
 }
 
+#[allow(dead_code)]
 struct Run {
     e: Engine,
     calls: Arc<AtomicUsize>,
@@ -146,6 +147,7 @@ fn feed_line(e: &mut Engine, v: &serde_json::Value, m: DomainMint, t: i64) {
     }
 }
 
+#[allow(dead_code)]
 fn replay(stop_before_first_amm: bool) -> Run {
     let mut cfg = Config::dev_portable();
     cfg.bankroll_initial_lamports = 2_000_000_000;
@@ -189,6 +191,7 @@ fn replay(stop_before_first_amm: bool) -> Run {
     }
 }
 
+#[allow(dead_code)]
 fn amm_run_with_fill() -> Run {
     let r = replay(false);
     assert!(

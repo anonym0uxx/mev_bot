@@ -5,6 +5,7 @@
 //!     hint only);
 //!   * an executed priced print (the real executed quantity) does reach them, exactly once;
 //!   * replaying the same executed print (same event identity) adds nothing the second time.
+//!
 //! Synthetic quantities; the captured-transaction side of this contract is in `pump-quant-junction/tests`.
 
 use pump_quant_app::config::Config;

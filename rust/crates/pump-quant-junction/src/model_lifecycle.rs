@@ -589,7 +589,10 @@ impl StaleCallout {
     /// Positions currently degraded.
     #[must_use]
     pub fn degraded_count(&self) -> usize {
-        self.state.len() + self.protect.len() + self.reserved.len()
+        self.state
+            .len()
+            .saturating_add(self.protect.len())
+            .saturating_add(self.reserved.len())
     }
 }
 

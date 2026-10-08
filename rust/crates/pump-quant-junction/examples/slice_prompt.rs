@@ -94,7 +94,7 @@ fn main() {
     let mut n_other_mint = 0u64;
     let mut n_amm_rows = 0u64;
     let mut amm_stats = AmmRowStats::default();
-    let mut emit = |cache: &DecisionCache, t: i64, n_trades: u64, dedup: &EventDedup| {
+    let emit = |cache: &DecisionCache, t: i64, n_trades: u64, dedup: &EventDedup| {
         let rec = match cache.snapshot(&mint, t) {
             Ok(s) => {
                 serde_json::json!({"t": t, "prompt": s.user_prompt, "system": s.system_prompt, "n_prior": s.n_prior_trades,
@@ -248,7 +248,7 @@ fn main() {
                                     .append(true)
                                     .open(p)
                                 {
-                                    let (sol, tok, tr) = feature.map_or((0, 0, [0u8; 32]), |f| {
+                                    let (sol, tok, _tr) = feature.map_or((0, 0, [0u8; 32]), |f| {
                                         (f.sol_lamports, f.tokens_raw, f.trader)
                                     });
                                     let _ = writeln!(
@@ -259,7 +259,7 @@ fn main() {
                                         sol,
                                         tok,
                                         quote_lamports,
-                                        signed_base + i64::from(tr[0]) * 0
+                                        signed_base
                                     );
                                 }
                             }
@@ -287,21 +287,19 @@ fn main() {
                     slot,
                     recv_unix_ms,
                     ..
-                } => {
-                    if pubkey == curve_pda {
-                        if let (Some(c), Some(ts)) = (decode_pump_curve(&data), recv_unix_ms) {
-                            let _ = cache.observe_curve(
-                                mint,
-                                pump_quant_app::curve_annotation::CurveObservation {
-                                    v_sol_lamports: c.virtual_sol,
-                                    v_tokens: c.virtual_token,
-                                    real_sol_lamports: c.real_sol,
-                                    real_tokens: c.real_token,
-                                    ts_ms: ts,
-                                    slot,
-                                },
-                            );
-                        }
+                } if pubkey == curve_pda => {
+                    if let (Some(c), Some(ts)) = (decode_pump_curve(&data), recv_unix_ms) {
+                        let _ = cache.observe_curve(
+                            mint,
+                            pump_quant_app::curve_annotation::CurveObservation {
+                                v_sol_lamports: c.virtual_sol,
+                                v_tokens: c.virtual_token,
+                                real_sol_lamports: c.real_sol,
+                                real_tokens: c.real_token,
+                                ts_ms: ts,
+                                slot,
+                            },
+                        );
                     }
                 }
                 _ => {}

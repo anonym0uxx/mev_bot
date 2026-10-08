@@ -156,6 +156,7 @@ fn warm_events(n: u32) -> Vec<AppEvent> {
     ev
 }
 
+#[allow(dead_code)] // `calls` is kept for debugging request counts
 struct Rig {
     e: Engine,
     calls: Arc<AtomicUsize>,
@@ -460,7 +461,7 @@ fn conflicting_management_reports_preserve_evidence_block_new_exposure_and_survi
         e2.model_mint_is_blocked(&MINT),
         "new exposure on the mint is blocked"
     );
-    assert_eq!(e2.model_inventory_tokens(&MINT).is_some(), true);
+    assert!(e2.model_inventory_tokens(&MINT).is_some());
     // Nothing was applied: the order is still pending at 0 filled.
     assert_eq!(e2.model_mgmt_pending(&MINT).map(|p| p.3), Some(0));
     // The fault survives a restart, still blocking, still refusing a re-arm.
@@ -858,7 +859,7 @@ fn an_older_report_is_ignored_only_when_a_booked_fill_proves_it_otherwise_it_is_
 /// The whole inbox, in file order, replayed into an engine (what a restarted daemon does: offset is not persisted).
 fn replay_inbox(e: &mut Engine, lines: &[AppEvent]) {
     for l in lines {
-        e.tick(l.clone());
+        e.tick(*l);
     }
 }
 
@@ -1730,7 +1731,7 @@ fn history_behind_books_is_rebuilt_by_overlap_replay_without_reapplying_fills_or
     );
     // OVERLAP REPLAY of the feed (observations only: no reports, no fills).
     for ev in &log {
-        e.tick(ev.clone());
+        e.tick(*ev);
     }
     ticks(&mut e, 2);
     let after = observe(&e, t_end);
@@ -1801,7 +1802,7 @@ fn if_the_overlap_cannot_be_replayed_the_history_stays_refused_by_name_and_the_b
     );
     // Only the LATER part of the feed arrives (the interval right after the snapshot is not replayable).
     for ev in log.iter().rev().take(4).rev() {
-        e.tick(ev.clone());
+        e.tick(*ev);
     }
     ticks(&mut e, 2);
     assert_eq!(

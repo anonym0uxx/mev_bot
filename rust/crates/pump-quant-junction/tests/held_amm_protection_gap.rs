@@ -55,6 +55,7 @@ fn entity(w: &[u8; 32]) -> u64 {
     x | 1
 }
 
+#[allow(dead_code)]
 struct Run {
     e: Engine,
     calls: Arc<AtomicUsize>,
@@ -146,6 +147,7 @@ fn feed_line(e: &mut Engine, v: &serde_json::Value, m: DomainMint, t: i64) {
     }
 }
 
+#[allow(dead_code)]
 fn replay(stop_before_first_amm: bool) -> Run {
     let mut cfg = Config::dev_portable();
     cfg.bankroll_initial_lamports = 2_000_000_000;
@@ -189,6 +191,7 @@ fn replay(stop_before_first_amm: bool) -> Run {
     }
 }
 
+#[allow(dead_code)]
 fn amm_run_with_fill() -> Run {
     let r = replay(false);
     assert!(
@@ -241,6 +244,7 @@ fn held() -> (Run, DomainMint) {
     panic!("no held AMM position was produced by the captured replay");
 }
 
+#[allow(dead_code)]
 fn swap(m: DomainMint, pool: &str, t: i64, slot: u64, buy: bool, tok: u64, sol: u64) -> AppEvent {
     swap_at(
         m,
@@ -309,6 +313,7 @@ fn hint(m: DomainMint, t: i64, quote: u64) -> AppEvent {
 }
 
 #[derive(Debug, PartialEq, Eq)]
+#[allow(dead_code)]
 struct Snap {
     open: bool,
     inv: Option<u64>,
@@ -317,6 +322,7 @@ struct Snap {
     print_age_minus_clock: Option<i64>,
     realized: i128,
 }
+#[allow(dead_code)]
 fn snap(e: &Engine, m: &DomainMint) -> Snap {
     let st = e.model_held_data_status();
     let s = st.iter().find(|s| &s.mint == m.as_bytes()).unwrap();
@@ -354,7 +360,7 @@ fn protected_alerts(c: &mut StaleCallout, e: &Engine, now: i64) -> Vec<String> {
 
 #[test]
 fn time_advancing_with_no_further_swap_surfaces_a_named_protection_gap_through_the_alert_path() {
-    let (mut r, m) = held();
+    let (r, m) = held();
     let mut c = StaleCallout::default();
     let t0 = r.e.model_clock_ms_now();
     // Right after the fill the verified mark is the landing swap: protected, silent.

@@ -132,7 +132,7 @@ fn main() {
                     _,
                 ) = (pe.event, 0)
                 {
-                    let s = span.entry(*mint.as_bytes()).or_insert((*&r, r, 0));
+                    let s = span.entry(*mint.as_bytes()).or_insert((r, r, 0));
                     s.1 = r;
                     s.2 += 1;
                 }

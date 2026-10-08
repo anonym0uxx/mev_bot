@@ -2264,7 +2264,7 @@ mod tests {
     fn id_trade(i: u32) -> TradeObs {
         let mut t = trade(i);
         t.event_id = Some(1_000 + u128::from(i));
-        let buy = i % 3 != 0;
+        let buy = !i.is_multiple_of(3);
         let w = t.trader.unwrap();
         t.feature = Some(crate::event::FeatureBasis {
             sol_lamports: if buy {

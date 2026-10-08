@@ -1,7 +1,9 @@
 //! Instruction LIMITS are not executed quantities. Real captured, successful PumpSwap buys (mainnet wire lines) go through
 //! the production parse -> classify -> event path:
+//!
 //!   * `amm_buy_unlimited_bound`: `max_quote_amount_in == u64::MAX` (no limit) with a finite executed amount;
 //!   * `amm_buy_finite_bound`: a finite limit that differs from the executed amount.
+//!
 //! Assertions: the bound never appears as a quantity in ANY emitted event; the executed quote appears exactly once, on the
 //! verified-event-derived `AmmSwap`, and equals the signer's own balance change in the same transaction.
 use pump_quant_app::event::AppEvent;

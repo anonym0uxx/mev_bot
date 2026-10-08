@@ -4779,7 +4779,7 @@ fn main() -> ExitCode {
                     }
                 }
             }
-            if model_armed && replay_harness && (tick_counter % 5 == 0 || barrier_fire) {
+            if model_armed && replay_harness && (tick_counter.is_multiple_of(5) || barrier_fire) {
                 let evs = report_inbox.poll(std::path::Path::new(&report_inbox_path));
                 if !evs.is_empty() || report_inbox.refused_total() > 0 {
                     eprintln!(

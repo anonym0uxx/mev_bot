@@ -272,6 +272,7 @@ impl FlowMeta {
     /// * An id older than the retention window and not held as a late record cannot be proven new or duplicate. That
     ///   case is treated as late (recorded, refusing by scope), never double-counted. `counters` keeps attempts and
     ///   unique evidence apart.
+    #[allow(clippy::too_many_arguments)]
     pub fn admit(
         &mut self,
         source: &str,
@@ -318,6 +319,7 @@ impl FlowMeta {
         Offer::Applied
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn push_late(
         &mut self,
         source: &str,
@@ -345,6 +347,7 @@ impl FlowMeta {
 
     /// Record an event the caller could not apply (e.g. older than its mint's newest print) as a durable late record,
     /// unless its id is already known. Never marks the event applied.
+    #[allow(clippy::too_many_arguments)]
     pub fn record_late(
         &mut self,
         source: &str,
@@ -391,6 +394,7 @@ impl FlowMeta {
     ///   whose 300 s window contains that wallet as a buyer (`late_event_shared_wallet`);
     /// * for a late BUY, the co-entry links between its trader and the mint's early buyers, for any later decision on
     ///   a mint whose window contains one of those wallets (`late_event_coentry_link`).
+    ///
     /// A decision EARLIER than the late event never contained it, so it is unaffected. Overflow of the late record
     /// loses the mint/wallet scope, so it refuses everywhere (`late_overflow_unscoped`).
     ///
@@ -947,7 +951,7 @@ mod tests {
             &ev(900_000, 3, 9, Side::Buy, -2_000_000_000),
             &mut st,
         );
-        fs::write(p.with_extension("tmp"), h.encode()[..50].to_vec()).unwrap(); // torn temp
+        fs::write(p.with_extension("tmp"), &h.encode()[..50]).unwrap(); // torn temp
         let Load::Loaded(r) = load(FlowParams::default(), &p) else {
             panic!()
         };
