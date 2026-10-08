@@ -332,7 +332,17 @@ impl Engine {
                     .attach_flow_history(FlowHistory::new(params, provenance));
                 FlowAttach::Fresh
             }
-            Load::Loaded(h) if h.meta.held_gen_seen > self.model_held.generation => {
+            Load::Loaded(h)
+                if h.meta.held_gen_seen.is_none() && self.model_held.restored_from_file =>
+            {
+                // No generation field: this history cannot be tied to the ledger that was just restored.
+                // Absence of metadata is not compatibility. Readiness is refused by name; the file is untouched.
+                self.model_cache
+                    .flow_state_untrusted("flow_generation_unbound");
+                self.mrep("flow_history:untrusted:flow_generation_unbound");
+                FlowAttach::Untrusted("flow_generation_unbound")
+            }
+            Load::Loaded(h) if h.meta.held_gen_seen.unwrap_or(0) > self.model_held.generation => {
                 // The history has seen books NEWER than the durable ledger now attached: the ledger was deleted,
                 // replaced by an older copy or rolled back. Financial effects between the two are unaccounted for.
                 // Nothing is applied and the file is never overwritten.
@@ -404,7 +414,7 @@ impl Engine {
             return;
         };
         // Bind this snapshot to the durable financial generation current right now.
-        m.held_gen_seen = self.model_held.generation;
+        m.held_gen_seen = Some(self.model_held.generation);
         let us = t0.elapsed().as_micros() as u64;
         self.flow_store.last_clone_us = us;
         self.flow_store.max_clone_us = self.flow_store.max_clone_us.max(us);
@@ -614,6 +624,26 @@ impl Engine {
             self.model_cache
                 .note_missing_observation(mint, drop_unix_ms, kind, source_id);
         }
+    }
+
+    /// Read-only (tests, status): flow aggregates for `mint` at `t_ms`, and the history's scope refusal.
+    #[must_use]
+    pub fn model_flow_aggregates(
+        &self,
+        mint: &[u8; 32],
+        t_ms: i64,
+    ) -> pump_quant_market_state::flow_reducer::FlowOutcome {
+        self.model_cache.flow_aggregates(mint, t_ms)
+    }
+
+    /// See [`Self::model_flow_aggregates`].
+    #[must_use]
+    pub fn model_flow_scope_refusal(
+        &self,
+        mint: &[u8; 32],
+        t_ms: i64,
+    ) -> Option<(&'static str, i64, i64)> {
+        self.model_cache.flow_scope_refusal(mint, t_ms)
     }
 
     /// Low-frequency health view of upstream-dropped prints for the status writers: the

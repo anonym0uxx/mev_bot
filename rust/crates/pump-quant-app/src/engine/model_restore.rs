@@ -38,6 +38,8 @@ pub(super) struct HeldPersist {
     pub writes: u64,
     /// Generation of the last ledger that is durable (restored or written). 0 = none.
     pub generation: u64,
+    /// A ledger FILE was read and applied (as opposed to a clean start with no file).
+    pub restored_from_file: bool,
 }
 
 fn wl_lane(i: u8) -> Option<WlLane> {
@@ -533,6 +535,7 @@ impl Engine {
         self.model_mgmt.seq = self.model_mgmt.seq.max(l.mgmt_seq);
         self.model_replay_through_ms = l.decision.through_ms;
         self.model_held.generation = l.generation;
+        self.model_held.restored_from_file = true;
         for (m, t) in &l.decision.last_ask {
             self.model_last_ask.insert(*m, *t);
         }

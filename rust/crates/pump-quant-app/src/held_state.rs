@@ -165,7 +165,8 @@ pub struct HeldSellFault {
 }
 
 /// The management-conflict sources the engine can write; anything else makes the file untrusted.
-pub const SELL_FAULT_SOURCES: [&str; 4] = [
+pub const SELL_FAULT_SOURCES: [&str; 5] = [
+    "add_exceeds_reservation",
     "report_non_monotonic",
     "report_exceeds_order",
     "report_contradicts_settled",

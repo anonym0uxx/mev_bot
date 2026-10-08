@@ -151,7 +151,9 @@ fn a_ledger_written_before_generations_existed_reads_as_generation_zero_and_cann
     assert!(e.model_flow_flush(Duration::from_secs(5)));
     let h = pump_quant_app::flow_checkpoint::load(FlowParams::default(), &flow);
     match h {
-        pump_quant_app::flow_checkpoint::Load::Loaded(h) => assert_eq!(h.meta.held_gen_seen, 0),
+        pump_quant_app::flow_checkpoint::Load::Loaded(h) => {
+            assert_eq!(h.meta.held_gen_seen, Some(0))
+        }
         _ => panic!("loads"),
     }
 }

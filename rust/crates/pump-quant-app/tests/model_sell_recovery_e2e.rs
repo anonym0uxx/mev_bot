@@ -2,7 +2,7 @@
 //! so applying it is idempotent. Expected values are computed independently from the fixture's own numbers.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use pump_quant_app::config::Config;
@@ -65,35 +65,52 @@ fn ticks(e: &mut Engine, n: usize) {
         std::thread::sleep(Duration::from_millis(20));
     }
 }
+thread_local! {
+    /// Every FEED event this test thread delivered, in order (what a durable feed would be able to replay).
+    static FEED_LOG: std::cell::RefCell<Vec<AppEvent>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+fn tick_log(e: &mut Engine, ev: AppEvent) {
+    FEED_LOG.with(|l| l.borrow_mut().push(ev));
+    e.tick(ev);
+}
+fn feed_log() -> Vec<AppEvent> {
+    FEED_LOG.with(|l| l.borrow().clone())
+}
 fn curve_obs(e: &mut Engine, ts: i64, slot: u64, dsol: u64) {
-    e.tick(AppEvent::CurveObserved {
-        mint: mint(),
-        v_sol_lamports: VSOL + dsol,
-        v_tokens: VTOK - 4_000_000_000_000,
-        real_sol_lamports: 8_100_000_000,
-        real_tokens: 565_000_000_000_000,
-        recv_unix_ms: Some(ts),
-        slot,
-    });
+    tick_log(
+        e,
+        AppEvent::CurveObserved {
+            mint: mint(),
+            v_sol_lamports: VSOL + dsol,
+            v_tokens: VTOK - 4_000_000_000_000,
+            real_sol_lamports: 8_100_000_000,
+            real_tokens: 565_000_000_000_000,
+            recv_unix_ms: Some(ts),
+            slot,
+        },
+    );
 }
 fn print(e: &mut Engine, i: u32, ts: i64, slot: u64, price: i128) {
-    e.tick(AppEvent::MarketTrade {
-        mint: mint(),
-        price_fp: price,
-        quote_lamports: 500_000_000 + u64::from(i),
-        liquidity_lamports: VSOL,
-        signed_base: 30_000_000_000,
-        buyer_entity: 1 + u64::from(i),
-        age_slots: 30,
-        recv_unix_ms: Some(ts),
-        trader_pubkey: Some(wallet(i)),
-        slot: Some(slot),
-        fee_lamports: Some(60_000 + u64::from(i) * 100),
-        cu_consumed: Some(90_000 + u64::from(i)),
-        venue: Some(TradeVenue::PumpFun),
-        event_id: None,
-        feature: None,
-    });
+    tick_log(
+        e,
+        AppEvent::MarketTrade {
+            mint: mint(),
+            price_fp: price,
+            quote_lamports: 500_000_000 + u64::from(i),
+            liquidity_lamports: VSOL,
+            signed_base: 30_000_000_000,
+            buyer_entity: 1 + u64::from(i),
+            age_slots: 30,
+            recv_unix_ms: Some(ts),
+            trader_pubkey: Some(wallet(i)),
+            slot: Some(slot),
+            fee_lamports: Some(60_000 + u64::from(i) * 100),
+            cu_consumed: Some(90_000 + u64::from(i)),
+            venue: Some(TradeVenue::PumpFun),
+            event_id: None,
+            feature: None,
+        },
+    );
 }
 fn warm_events(n: u32) -> Vec<AppEvent> {
     let mut ev = vec![AppEvent::LaunchObserved {
@@ -155,6 +172,24 @@ fn held_path(tag: &str) -> std::path::PathBuf {
 }
 
 fn rig(answer: fn(i64) -> &'static str, held: &std::path::Path) -> Rig {
+    rig_with(answer, held, None)
+}
+
+fn flow_prov() -> pump_quant_app::flow_checkpoint::Provenance {
+    pump_quant_app::flow_checkpoint::Provenance {
+        seed_source: "t".into(),
+        seed_sha256: String::new(),
+        seed_before_ms: 0,
+        producer: "t".into(),
+    }
+}
+
+fn rig_with(
+    answer: fn(i64) -> &'static str,
+    held: &std::path::Path,
+    flow: Option<&std::path::Path>,
+) -> Rig {
+    FEED_LOG.with(|l| l.borrow_mut().clear());
     let calls = Arc::new(AtomicUsize::new(0));
     let mut e = Engine::new(cfg(), RunMode::Paper);
     e.enable_paper_model(Script {
@@ -162,8 +197,16 @@ fn rig(answer: fn(i64) -> &'static str, held: &std::path::Path) -> Rig {
         answer,
     });
     e.model_held_attach(held);
+    if let Some(f) = flow {
+        e.model_flow_attach(
+            f,
+            pump_quant_market_state::flow_reducer::FlowParams::default(),
+            flow_prov(),
+            0,
+        );
+    }
     for ev in &warm_events(40) {
-        e.tick(*ev);
+        tick_log(&mut e, *ev);
     }
     ticks(&mut e, 8);
     let t_last = T0 + 1_000 + 40 * 2_000;
@@ -1234,7 +1277,7 @@ fn add_pending_world(tag: &str) -> (std::path::PathBuf, u64, u64, u64, u32) {
 
 #[test]
 fn a_partial_add_restart_reconcile_books_exact_cash_basis_fees_and_releases_its_reservation() {
-    let (hp, id, intended, max_spend, fee_bps) = add_pending_world("a_p");
+    let (hp, id, intended, max_spend, _fee_bps) = add_pending_world("a_p");
     let mut e2 = fresh(&hp);
     e2.model_held_restore().unwrap().unwrap();
     let inv0 = e2.model_inventory_tokens(&MINT).unwrap();
@@ -1301,43 +1344,99 @@ fn a_partial_add_restart_reconcile_books_exact_cash_basis_fees_and_releases_its_
 }
 
 #[test]
-fn an_add_fill_beyond_its_reservation_is_refused_and_the_remainder_completion_releases_it() {
+fn an_add_that_already_executed_beyond_its_reservation_is_booked_as_executed_faulted_by_name_and_blocks_the_mint(
+) {
     let (hp, id, intended, max_spend, fee_bps) = add_pending_world("a_q");
     let mut e2 = fresh(&hp);
     e2.model_held_restore().unwrap().unwrap();
     let inv0 = e2.model_inventory_tokens(&MINT).unwrap();
     let b0 = e2.model_accounting_view(&MINT);
-    // Spend above the order's own bound, and fees above its reserved fee bound: refused, nothing booked.
-    assert_eq!(
-        e2.model_mgmt_ingest_evidence(
-            MINT,
-            id,
-            MgmtKind::Add,
-            intended,
-            intended / 2,
-            max_spend + 1,
-            10
-        ),
-        SellReportResult::Rejected("spend_bound")
-    );
+    // FEES above the reserved bound, reported by an executor for an order that already executed.
     let fee_cap = u64::try_from((u128::from(max_spend) * u128::from(fee_bps)).div_ceil(10_000))
         .unwrap()
         + pump_quant_app::cost_model::FIXED_LAMPORTS_PER_LEG;
+    // PRE-submission an estimate above the reservation refuses the order (planner tests). POST-execution it is
+    // evidence of what happened: the books must show it. Expected values below are computed independently.
+    let (tk, sp, fee_hi) = (intended / 2, max_spend / 2, fee_cap + 5_000);
+    let committed0 = b0.committed;
+    let basis0 = b0.remaining_cost_basis.unwrap();
+    assert!(matches!(
+        e2.model_mgmt_ingest_evidence(MINT, id, MgmtKind::Add, intended, tk, sp, fee_hi),
+        SellReportResult::Applied { delta } if delta == tk
+    ));
+    let b1 = e2.model_accounting_view(&MINT);
     assert_eq!(
-        e2.model_mgmt_ingest_evidence(
-            MINT,
-            id,
-            MgmtKind::Add,
-            intended,
-            intended / 2,
-            max_spend / 2,
-            fee_cap + 1
-        ),
-        SellReportResult::Rejected("fees_exceed_reservation"),
-        "one lamport above the reserved fee bound"
+        e2.model_inventory_tokens(&MINT),
+        Some(inv0 + tk),
+        "tokens that were acquired are in inventory"
     );
-    assert_eq!(e2.model_accounting_view(&MINT), b0);
-    assert_eq!(e2.model_inventory_tokens(&MINT), Some(inv0));
+    assert_eq!(
+        b1.committed,
+        committed0 + sp + fee_hi,
+        "cash: spend plus the ACTUAL fee left the free cash, not the capped fee"
+    );
+    assert_eq!(
+        b1.remaining_cost_basis.unwrap(),
+        basis0 + sp + fee_hi,
+        "cost basis carries the actual all-in cost"
+    );
+    let f = e2
+        .model_sell_faults()
+        .get(&id)
+        .expect("overrun is a named fault");
+    assert_eq!(f.source, "add_exceeds_reservation");
+    assert!(
+        e2.model_mint_is_blocked(&MINT),
+        "no further exposure while the overrun is unresolved"
+    );
+    // Durable: the fault survives a restart and keeps blocking (clean books are not reported).
+    assert!(e2.model_held_persist_now());
+    drop(e2);
+    let mut e3 = fresh(&hp);
+    e3.model_held_restore().unwrap().unwrap();
+    assert_eq!(
+        e3.model_sell_faults().get(&id).map(|f| f.source),
+        Some("add_exceeds_reservation")
+    );
+    assert!(e3.model_mint_is_blocked(&MINT));
+    assert_eq!(e3.model_inventory_tokens(&MINT), Some(inv0 + tk));
+    // Spend above the order's own bound is the same: booked as executed, faulted by name.
+    let mut e4 = {
+        let (hp4, id4, intended4, max_spend4, _) = add_pending_world("a_q4");
+        let mut e = fresh(&hp4);
+        e.model_held_restore().unwrap().unwrap();
+        let inv = e.model_inventory_tokens(&MINT).unwrap();
+        assert!(matches!(
+            e.model_mgmt_ingest_evidence(
+                MINT,
+                id4,
+                MgmtKind::Add,
+                intended4,
+                intended4 / 2,
+                max_spend4 + 1,
+                10
+            ),
+            SellReportResult::Applied { .. }
+        ));
+        assert_eq!(e.model_inventory_tokens(&MINT), Some(inv + intended4 / 2));
+        assert_eq!(
+            e.model_sell_faults().get(&id4).map(|f| f.source),
+            Some("add_exceeds_reservation")
+        );
+        e
+    };
+    assert!(e4.model_mint_is_blocked(&MINT));
+    ticks(&mut e4, 3);
+}
+
+#[test]
+fn an_add_within_its_bounds_completes_releases_its_reservation_and_a_larger_duplicate_is_a_named_fault(
+) {
+    let (hp, id, intended, max_spend, _fee_bps) = add_pending_world("a_q2");
+    let mut e2 = fresh(&hp);
+    e2.model_held_restore().unwrap().unwrap();
+    let inv0 = e2.model_inventory_tokens(&MINT).unwrap();
+    let b0 = e2.model_accounting_view(&MINT);
     // The full fill, within bounds, completes it: the order ends, its reservation is gone, the record is terminal.
     let spent = max_spend / 2;
     let fee = 777u64;
@@ -1432,15 +1531,40 @@ fn persisted_settlement_totals_and_books_agree_at_every_publication_point_so_rer
                 "k={k}: persisted totals are the last report's, verbatim"
             );
         }
+        // INVARIANT (stated generally): remaining inventory = prior inventory + reconciled acquisitions
+        // - reconciled disposals. Here the order is a sell, so acquisitions = 0; disposals are summed from the fills
+        // the engine actually BOOKED (not from the report), and the persisted totals must equal that booked sum.
+        let booked = e.model_mgmt_fills().to_vec();
+        let disposals: u64 = booked
+            .iter()
+            .filter(|f| f.order_id == id)
+            .map(|f| f.tokens)
+            .sum();
+        let acquisitions = 0u64;
+        // The restored engine has no in-process fills (they are archival); the booked effect is the inventory.
         let left = e.model_inventory_tokens(&MINT);
+        let expected_left = (inv0 + acquisitions) - done;
         assert_eq!(
             left,
-            if done == inv0 {
-                None
-            } else {
-                Some(inv0 - done)
-            },
-            "k={k}: inventory left matches tokens filled"
+            if expected_left == 0 { None } else { Some(expected_left) },
+            "k={k}: remaining = prior + acquisitions({acquisitions}) - disposals({done}); restored fills seen={}",
+            disposals
+        );
+        // Independent increments: in the uninterrupted reference the booked per-fill gross/fee sum to the totals.
+        let ref_fills: Vec<_> =
+            r0.e.model_mgmt_fills()
+                .iter()
+                .filter(|f| f.order_id == id)
+                .cloned()
+                .collect();
+        let n_applied = k;
+        let (sg, sf): (u64, u64) = ref_fills.iter().take(n_applied).fold((0, 0), |a, f| {
+            (a.0 + f.gross_lamports, a.1 + f.fee_lamports)
+        });
+        assert_eq!(
+            (sg, sf),
+            (g_exp, f_exp),
+            "k={k}: persisted totals equal the sum of the increments the engine booked"
         );
         // Re-read from offset zero: lands on the uninterrupted books exactly.
         replay_inbox(&mut e, &inbox);
@@ -1448,4 +1572,291 @@ fn persisted_settlement_totals_and_books_agree_at_every_publication_point_so_rer
         replay_inbox(&mut e, &inbox);
         assert_eq!(books(&e), reference, "k={k}: and idempotent");
     }
+}
+
+// ===================== HISTORY BEHIND BOOKS =====================
+/// What a run exposes that a restart must reproduce: the flow history's aggregates and scope for the held mint at a
+/// fixed decision time, the books, the unresolved order and its reservation.
+#[derive(Debug, PartialEq)]
+struct Obs {
+    flow: String,
+    scope: Option<(&'static str, i64, i64)>,
+    books: (i128, u64, u64, Option<u64>, Option<u64>),
+    pending: Option<(u64, u64)>,
+    reserved: u64,
+}
+fn observe(e: &Engine, t_dec: i64) -> Obs {
+    Obs {
+        flow: format!("{:?}", e.model_flow_aggregates(&MINT, t_dec)),
+        scope: e.model_flow_scope_refusal(&MINT, t_dec),
+        books: books(e),
+        pending: e.model_mgmt_pending(&MINT).map(|(id, _, i, f)| (id, i - f)),
+        reserved: e
+            .model_held_data_status()
+            .iter()
+            .find(|s| s.mint == MINT)
+            .map_or(0, |s| s.sell_reserved_tokens),
+    }
+}
+/// Quiet feed: more curve observations and prints on the held mint (no verdict needed).
+fn feed_more(r: &mut Rig, secs: i64) {
+    for _ in 0..secs {
+        r.clock += 1_000;
+        r.slot += 1;
+        r.n += 1;
+        curve_obs(&mut r.e, r.clock, r.slot, 200_000_000);
+        print(&mut r.e, r.n, r.clock, r.slot, 45_300 + i128::from(r.n % 7));
+        ticks(&mut r.e, 1);
+    }
+}
+
+/// The scenario: history published at P0, then (feed + a PARTIAL REDUCE fill) happen and the BOOKS are published,
+/// but the process dies before the next history snapshot. Restart: books restored, history older than the books.
+/// Accepted ONLY if replaying the overlap of the feed rebuilds the missing history without touching the books.
+fn behind_world(
+    tag: &str,
+    crash: bool,
+) -> (
+    Obs,
+    Obs,
+    Vec<AppEvent>,
+    std::path::PathBuf,
+    std::path::PathBuf,
+    u64,
+    i64,
+    u64,
+) {
+    let (hp, fp) = (held_path(tag), held_path(&format!("{tag}_f")));
+    let mut r = rig_with(|s| if s == 0 { REDUCE } else { HOLD }, &hp, Some(&fp));
+    r.advance_to_order(120_000);
+    let (id, _, intended, _) = r.e.model_mgmt_pending(&MINT).expect("REDUCE pending");
+    assert!(r.e.model_mgmt_mark_ack_uncertain(&MINT, id));
+    assert!(r.e.model_held_persist_now());
+    assert!(
+        r.e.model_flow_flush(Duration::from_secs(5)),
+        "P0: history published"
+    );
+    let t_p0 = r.clock;
+    let at_p0 = observe(&r.e, t_p0);
+    // Between the generations: more feed, then a partial fill, then the BOOKS are published (history is not).
+    feed_more(&mut r, 6);
+    let part = intended / 3;
+    r.e.tick(report(id, 0, intended, part, 22_000));
+    // The remainder's acknowledgement is still unknown: it stays unresolved, never simulated-filled.
+    assert!(r.e.model_mgmt_mark_ack_uncertain(&MINT, id));
+    assert!(
+        r.e.model_held_persist_now(),
+        "books published after the financial effect"
+    );
+    feed_more(&mut r, 4);
+    let t_end = r.clock;
+    let end_ref = observe(&r.e, t_end);
+    let _ = (crash, t_end);
+    let log = feed_log();
+    (at_p0, end_ref, log, hp, fp, id, t_p0, part)
+}
+
+#[test]
+fn history_behind_books_is_rebuilt_by_overlap_replay_without_reapplying_fills_or_changing_earlier_decisions(
+) {
+    // Uninterrupted reference.
+    let (p0_ref, end_ref, log, hp, fp, id, t_p0, intended_part) = behind_world("hb_ref", false);
+    let gen_books = pump_quant_app::held_state::HeldLedger::read(&hp)
+        .unwrap()
+        .generation;
+    // The crash happened before the last 4 s of feed was ever snapshotted: the history file on disk is the P0 one.
+    let seen = match pump_quant_app::flow_checkpoint::load(
+        pump_quant_market_state::flow_reducer::FlowParams::default(),
+        &fp,
+    ) {
+        pump_quant_app::flow_checkpoint::Load::Loaded(h) => h.meta.held_gen_seen.expect("bound"),
+        _ => panic!("history on disk"),
+    };
+    assert!(
+        seen < gen_books,
+        "history is BEHIND the books: history saw generation {seen}, books are at {gen_books}"
+    );
+    // RESTART from exactly those two files.
+    let mut e = fresh(&hp);
+    e.model_held_restore().unwrap().unwrap();
+    let attach = e.model_flow_attach(
+        &fp,
+        pump_quant_market_state::flow_reducer::FlowParams::default(),
+        flow_prov(),
+        0,
+    );
+    assert!(
+        matches!(
+            attach,
+            pump_quant_app::engine::model_admit::FlowAttach::Restored { .. }
+        ),
+        "{attach:?}"
+    );
+    let t_end = log
+        .iter()
+        .filter_map(|ev| match ev {
+            AppEvent::MarketTrade {
+                recv_unix_ms: Some(t),
+                ..
+            } => Some(*t),
+            _ => None,
+        })
+        .max()
+        .unwrap();
+    let before_replay = observe(&e, t_end);
+    assert_ne!(
+        before_replay.flow, end_ref.flow,
+        "the restored history is genuinely missing the post-P0 interval (the test can fail)"
+    );
+    // Books restored exactly as published (the partial fill is in them); reservation intact.
+    assert_eq!(before_replay.books, end_ref.books);
+    // The reservation is derived from the order book on each tick: it must equal the unfilled remainder after one.
+    ticks(&mut e, 1);
+    assert_eq!(
+        observe(&e, t_end).reserved,
+        end_ref.reserved,
+        "restored reservation = uninterrupted reservation, before any replay"
+    );
+    // OVERLAP REPLAY of the feed (observations only: no reports, no fills).
+    for ev in &log {
+        e.tick(ev.clone());
+    }
+    ticks(&mut e, 2);
+    let after = observe(&e, t_end);
+    assert_eq!(
+        after.flow, end_ref.flow,
+        "history rebuilt: same aggregates as uninterrupted"
+    );
+    assert_eq!(
+        after.books, end_ref.books,
+        "no fill re-applied, no cash or inventory moved"
+    );
+    assert_eq!(
+        after.pending, end_ref.pending,
+        "the remaining order is unchanged"
+    );
+    // The restored order is still pending with exactly the unfilled remainder: nothing re-applied the partial fill.
+    let (pid, _, pint, pfill) = e.model_mgmt_pending(&MINT).expect("still pending");
+    assert_eq!((pid, pfill), (id, intended_part));
+    assert_eq!(end_ref.pending.unwrap().1, pint - pfill);
+    assert_eq!(
+        end_ref.reserved,
+        pint - pfill,
+        "reservation = unfilled remainder"
+    );
+    // EARLIER decisions are unchanged: the history read at P0's decision time is what it was uninterrupted
+    // (replay re-delivered only events the history already held or newer ones; none was folded into the past).
+    assert_eq!(
+        observe(&e, t_p0).flow,
+        p0_ref.flow,
+        "an earlier decision reads the same history after the replay as it did before the crash"
+    );
+}
+
+#[test]
+fn if_the_overlap_cannot_be_replayed_the_history_stays_refused_by_name_and_the_books_are_untouched()
+{
+    let (_p0, end_ref, log, hp, fp, id, _t_p0, intended_part) = behind_world("hb_gap", false);
+    let mut e = fresh(&hp);
+    e.model_held_restore().unwrap().unwrap();
+    // The process resumes far later than the snapshot (declared resume clock): a named gap, not a bridge.
+    let resume = log
+        .iter()
+        .filter_map(|ev| match ev {
+            AppEvent::MarketTrade {
+                recv_unix_ms: Some(t),
+                ..
+            } => Some(*t),
+            _ => None,
+        })
+        .max()
+        .unwrap()
+        + 600_000;
+    let a = e.model_flow_attach(
+        &fp,
+        pump_quant_market_state::flow_reducer::FlowParams::default(),
+        flow_prov(),
+        resume,
+    );
+    assert!(
+        matches!(
+            a,
+            pump_quant_app::engine::model_admit::FlowAttach::Restored {
+                complete: false,
+                ..
+            }
+        ),
+        "{a:?}"
+    );
+    // Only the LATER part of the feed arrives (the interval right after the snapshot is not replayable).
+    for ev in log.iter().rev().take(4).rev() {
+        e.tick(ev.clone());
+    }
+    ticks(&mut e, 2);
+    assert_eq!(
+        e.model_flow_scope_refusal(&MINT, resume + 1).map(|x| x.0),
+        Some("feed_gap"),
+        "readiness stays refused by name while a needed interval is missing"
+    );
+    // Refusing readiness never touched the money or the order.
+    assert_eq!(books(&e).4, end_ref.books.4);
+    assert_eq!(
+        e.model_mgmt_pending(&MINT).map(|(i, _, _, f)| (i, f)),
+        Some((id, intended_part))
+    );
+}
+
+#[test]
+fn a_history_file_with_no_generation_field_cannot_be_tied_to_restored_books_and_is_refused() {
+    let (_p0, _end, _log, hp, fp, _id, _t, _p) = behind_world("hb_g0", false);
+    // Rewrite the history header as a pre-generation file: drop the field, keep everything else byte-valid.
+    let raw = std::fs::read(&fp).unwrap();
+    let nl = raw.iter().position(|b| *b == b'\n').unwrap();
+    let mut hdr: serde_json::Value = serde_json::from_slice(&raw[..nl]).unwrap();
+    assert!(hdr
+        .as_object_mut()
+        .unwrap()
+        .remove("held_gen_seen")
+        .is_some());
+    let mut out = serde_json::to_vec(&hdr).unwrap();
+    out.push(b'\n');
+    out.extend_from_slice(&raw[nl + 1..]);
+    std::fs::write(&fp, &out).unwrap();
+    let mut e = fresh(&hp);
+    e.model_held_restore().unwrap().unwrap();
+    let a = e.model_flow_attach(
+        &fp,
+        pump_quant_market_state::flow_reducer::FlowParams::default(),
+        flow_prov(),
+        0,
+    );
+    assert!(
+        matches!(
+            a,
+            pump_quant_app::engine::model_admit::FlowAttach::Untrusted("flow_generation_unbound")
+        ),
+        "{a:?}"
+    );
+    assert_eq!(
+        std::fs::read(&fp).unwrap(),
+        out,
+        "the file is left as evidence"
+    );
+    // A genuinely clean start (no books file) with a legacy history is not blocked by this rule.
+    let hp2 = held_path("hb_g0_clean");
+    let mut e2 = fresh(&hp2);
+    assert!(matches!(e2.model_held_restore(), Ok(None)));
+    let a2 = e2.model_flow_attach(
+        &fp,
+        pump_quant_market_state::flow_reducer::FlowParams::default(),
+        flow_prov(),
+        0,
+    );
+    assert!(
+        !matches!(
+            a2,
+            pump_quant_app::engine::model_admit::FlowAttach::Untrusted("flow_generation_unbound")
+        ),
+        "{a2:?}"
+    );
 }

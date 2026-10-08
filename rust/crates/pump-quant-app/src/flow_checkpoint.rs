@@ -133,7 +133,9 @@ pub struct FlowMeta {
     pub counters: Counters,
     /// Generation of the held (financial) ledger that was durable when this snapshot was taken. 0 = never saw books
     /// (also: a checkpoint written before this field existed).
-    pub held_gen_seen: u64,
+    /// `None` = the file carries NO generation field (written before generations existed): UNBOUND, which proves
+    /// nothing about its relation to any ledger. `Some(0)` = bound, and it saw no durable books.
+    pub held_gen_seen: Option<u64>,
 }
 
 /// Delivery attempts and unique evidence are different quantities: redelivery inflates the first and never the second.
@@ -255,7 +257,7 @@ impl FlowMeta {
             late_overflow: 0,
             acknowledged: Vec::new(),
             counters: Counters::default(),
-            held_gen_seen: 0,
+            held_gen_seen: Some(0),
         }
     }
 
@@ -454,7 +456,7 @@ impl FlowMeta {
                        "trader": l.trader.iter().map(|b| format!("{b:02x}")).collect::<String>(), "buy": l.buy})).collect::<Vec<_>>(),
             "late_overflow": self.late_overflow,
             "acknowledged": self.acknowledged.iter().map(|w| json!([w.0, w.1, w.2])).collect::<Vec<_>>(),
-            "held_gen_seen": self.held_gen_seen,
+            "held_gen_seen": self.held_gen_seen.unwrap_or(0),
             "counters": [self.counters.attempts, self.counters.applied, self.counters.duplicates, self.counters.late_unique],
         });
         let mut out = serde_json::to_vec(&hdr).unwrap_or_default();
@@ -783,7 +785,7 @@ pub fn decode(params: FlowParams, body: &[u8]) -> Load {
             coverage: Coverage { segments, gaps },
             late,
             late_overflow: h["late_overflow"].as_u64().unwrap_or(0),
-            held_gen_seen: h["held_gen_seen"].as_u64().unwrap_or(0),
+            held_gen_seen: h["held_gen_seen"].as_u64(),
             acknowledged,
             counters,
         },

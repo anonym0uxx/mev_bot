@@ -961,6 +961,18 @@ impl DecisionCache {
         self.flow.on_event(e);
     }
 
+    /// Read-only: the history's scope refusal for `mint` at `t_dec_ms` (name, from_ms, to_ms), if any.
+    #[must_use]
+    pub fn flow_scope_refusal(
+        &self,
+        mint: &[u8; 32],
+        t_dec_ms: i64,
+    ) -> Option<(&'static str, i64, i64)> {
+        self.flow_meta
+            .as_ref()
+            .and_then(|m| m.scope_refusal(&self.flow, mint, t_dec_ms))
+    }
+
     /// Read-only view of the flow reducer's aggregates for `mint` at `t_dec_ms` (measurement and
     /// tests; the serving path goes through `snapshot`, which also applies every refusal).
     #[must_use]

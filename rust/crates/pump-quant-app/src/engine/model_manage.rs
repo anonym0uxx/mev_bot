@@ -1473,19 +1473,17 @@ impl Engine {
             self.mrep("mgmt:recon:rejected:quantity");
             return Err("quantity");
         }
-        if spent > order.max_spend.saturating_sub(order.spent) {
-            self.mrep("mgmt:recon:rejected:spend_bound");
-            return Err("spend_bound");
-        }
+        // POST-EXECUTION evidence: the executor says these tokens WERE acquired for this spend and these fees. A
+        // reservation is a PRE-submission limit; evidence that it was exceeded is not discarded (that would leave the
+        // books claiming cash and inventory that do not match what executed). The actual effect is booked, and the
+        // overrun is an explicit named fault that blocks further exposure on the mint until an operator clears it.
+        let spend_over = spent > order.max_spend.saturating_sub(order.spent);
         let fee_cap = u64::try_from(
             (u128::from(order.max_spend) * u128::from(order.fee_bps)).div_ceil(10_000),
         )
         .unwrap_or(u64::MAX)
         .saturating_add(crate::cost_model::FIXED_LAMPORTS_PER_LEG);
-        if order.fees.saturating_add(fee) > fee_cap {
-            self.mrep("mgmt:recon:rejected:fees_exceed_reservation");
-            return Err("fees_exceed_reservation");
-        }
+        let fee_over = order.fees.saturating_add(fee) > fee_cap;
         let px = u64::try_from((u128::from(spent) * 1_000_000_000).div_ceil(u128::from(tokens)))
             .map_err(|_| "price_overflow")?;
         self.model_mgmt_clear_uncertain(&mint);
@@ -1494,6 +1492,22 @@ impl Engine {
             o.fees += fee;
         } else if let Some(r) = self.model_sell_log.get_mut(&order_id) {
             r.fees += fee;
+        }
+        if spend_over || fee_over {
+            let filled_now = order.filled + tokens;
+            self.model_sell_fault(
+                order_id,
+                mint,
+                "add_exceeds_reservation",
+                filled_now,
+                vec![filled_now],
+            );
+            if spend_over {
+                self.mrep("mgmt:recon:booked_over_reservation:spend");
+            }
+            if fee_over {
+                self.mrep("mgmt:recon:booked_over_reservation:fees");
+            }
         }
         Ok(())
     }
