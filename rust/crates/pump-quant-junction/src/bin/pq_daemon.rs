@@ -2030,6 +2030,11 @@ fn main() -> ExitCode {
     let mut model_stop_last_alert = Instant::now() - Duration::from_secs(3600);
     let mut model_stop_session = pump_quant_junction::model_lifecycle::StopSession::new();
     let mut stale_callout = pump_quant_junction::model_lifecycle::StaleCallout::default();
+    // Management-sell report inbox (REDUCE/EXIT/ADD fills reported by the executor/operator). Cumulative reports are
+    // idempotent, so a restart that re-reads the whole file applies nothing twice.
+    let report_inbox_path = std::env::var("PQ_MGMT_REPORT_INBOX")
+        .unwrap_or_else(|_| "data/mgmt_reports.ndjson".to_string());
+    let mut report_inbox = pump_quant_junction::report_inbox::InboxReader::default();
     let replay_harness =
         !args.live_mode && std::env::var("PQ_OFFLINE_PAPER_REPLAY").as_deref() == Ok("1");
 
@@ -4728,6 +4733,11 @@ fn main() -> ExitCode {
                 let _ = std::fs::remove_file("data/FLOW_FLUSH");
                 let _ = std::fs::write("data/FLOW_FLUSHED", if ok { "ok" } else { "timeout" });
                 eprintln!("[pq-daemon] replay-harness flow flush: durable={ok}");
+            }
+            if model_armed && replay_harness && (tick_counter % 5 == 0 || barrier_fire) {
+                for ev in report_inbox.poll(std::path::Path::new(&report_inbox_path)) {
+                    engine.tick(ev);
+                }
             }
             #[allow(clippy::manual_is_multiple_of)] // MSRV 1.85: is_multiple_of stabilised in 1.87
             if model_armed && (tick_counter % 20 == 0 || barrier_fire) {

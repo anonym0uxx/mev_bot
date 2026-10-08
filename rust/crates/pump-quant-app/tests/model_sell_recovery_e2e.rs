@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use pump_quant_app::config::Config;
-use pump_quant_app::engine::model_manage::{SellReportResult, SellState};
+use pump_quant_app::engine::model_manage::{MgmtKind, SellReportResult, SellState};
 use pump_quant_app::engine::{Engine, RunMode};
 use pump_quant_app::event::{AppEvent, TradeVenue};
 use pump_quant_app::model_authority::ModelSource;
@@ -455,7 +455,7 @@ fn an_unknown_or_compacted_management_report_is_named_and_never_applied() {
 }
 
 #[test]
-fn a_protective_close_over_an_uncertain_sell_raises_a_named_fault_and_a_late_report_cannot_resurrect_inventory(
+fn a_protective_trigger_over_an_uncertain_sell_sells_nothing_reserved_and_the_position_stays_protected(
 ) {
     let hp = held_path("s_f");
     let mut r = rig(|step| if step == 0 { EXIT } else { HOLD }, &hp);
@@ -464,45 +464,88 @@ fn a_protective_close_over_an_uncertain_sell_raises_a_named_fault_and_a_late_rep
     assert!(r.e.model_mgmt_mark_ack_uncertain(&MINT, id));
     assert!(r.e.model_held_persist_now());
     drop(r);
-    // Restart: the unresolved EXIT is restored; then the agreed hard safeguard closes the position.
     let mut e2 = fresh(&hp);
     e2.model_held_restore().unwrap().unwrap();
-    assert!(e2.model_position_open(&MINT));
+    let b0 = books(&e2);
+    let inv0 = b0.4.unwrap();
+    assert_eq!(inv0, intended, "the EXIT covers the whole inventory");
+    // The agreed hard safeguard fires while the EXIT's acknowledgement is unknown.
     let clock = T0 + 1_000 + 40 * 2_000 + 400_000;
     hard_collapse(&mut e2, clock, 9_000);
+    // The trigger alone removed no inventory and credited no cash: every token is reserved by the unresolved sell.
     assert!(
-        !e2.model_position_open(&MINT),
-        "the protective path closed it"
+        e2.model_position_open(&MINT),
+        "position stays open and monitored"
     );
-    // The uncertain management order may have executed too: it is NOT silently dropped.
-    let rec = e2.model_sell_rec(id).expect("ended order recorded");
-    assert_eq!((rec.state, rec.filled), (SellState::Preempted, 0));
-    let f = e2.model_sell_faults().get(&id).expect("named fault");
-    assert_eq!(f.source, "uncertain_sell_preempted");
+    assert_eq!(
+        books(&e2),
+        b0,
+        "no inventory removed, no cash credited, by a trigger"
+    );
     assert!(
-        e2.model_mint_is_blocked(&MINT),
-        "new exposure on the mint stays blocked"
+        e2.model_protection_deferred() >= 1,
+        "the deferral is counted, not silent"
     );
-    assert!(e2.model_safety_rearm("alon").is_err());
+    assert!(
+        e2.model_mgmt_pending(&MINT).is_some(),
+        "the unresolved EXIT is not dropped"
+    );
+    assert!(
+        e2.model_sell_faults().get(&id).is_none(),
+        "no fault: nothing was done under it"
+    );
+    // Evidence then settles it exactly once.
+    assert_eq!(
+        e2.model_mgmt_ingest_evidence(MINT, id, MgmtKind::Exit, intended, intended, 22_000),
+        SellReportResult::Applied { delta: intended }
+    );
+    assert_eq!(e2.model_inventory_tokens(&MINT), None);
     let realized = e2.model_accounting_view(&MINT).realized;
-    // A late report that the EXIT filled: evidence preserved, nothing applied, no inventory resurrected.
     assert_eq!(
-        e2.model_mgmt_ingest_report(MINT, id, intended, 22_000),
-        SellReportResult::Fault
-    );
-    assert_eq!(
-        e2.model_inventory_tokens(&MINT),
-        None,
-        "a closed position stays closed"
+        e2.model_mgmt_ingest_evidence(MINT, id, MgmtKind::Exit, intended, intended, 22_000),
+        SellReportResult::Duplicate
     );
     assert_eq!(
         e2.model_accounting_view(&MINT).realized,
         realized,
         "no second credit"
     );
+}
+
+#[test]
+fn an_uncertain_partial_reduce_reserves_only_its_own_tokens_and_a_trigger_sells_only_the_free_remainder(
+) {
+    let hp = held_path("s_r");
+    let mut r = rig(|step| if step == 0 { REDUCE } else { HOLD }, &hp);
+    r.advance_to_order(120_000);
+    let (id, _, intended, _) = r.e.model_mgmt_pending(&MINT).expect("REDUCE pending");
+    assert!(r.e.model_mgmt_mark_ack_uncertain(&MINT, id));
+    assert!(r.e.model_held_persist_now());
+    drop(r);
+    let mut e2 = fresh(&hp);
+    e2.model_held_restore().unwrap().unwrap();
+    let inv0 = e2.model_inventory_tokens(&MINT).unwrap();
+    let clock = T0 + 1_000 + 40 * 2_000 + 400_000;
+    hard_collapse(&mut e2, clock, 9_000);
+    // Only the free part (inventory - reserved) was sold; the reserved tokens remain and stay protected.
+    assert_eq!(e2.model_inventory_tokens(&MINT), Some(intended));
     assert_eq!(
-        e2.model_sell_faults().get(&id).map(|f| f.reported.clone()),
-        Some(vec![intended])
+        inv0 - intended,
+        inv0 - e2.model_inventory_tokens(&MINT).unwrap()
+    );
+    assert!(
+        e2.model_position_open(&MINT),
+        "the reserved remainder is still held and protected"
+    );
+    // The executor then reports the REDUCE: its tokens leave once; total sold never exceeds the original inventory.
+    assert_eq!(
+        e2.model_mgmt_ingest_evidence(MINT, id, MgmtKind::Reduce, intended, intended, 22_000),
+        SellReportResult::Applied { delta: intended }
+    );
+    assert_eq!(
+        e2.model_inventory_tokens(&MINT),
+        None,
+        "inventory ends at exactly zero, never negative or resurrected"
     );
 }
 
@@ -592,4 +635,204 @@ fn a_foreign_session_verdict_cannot_create_a_sell_or_add_order_nor_answer_a_live
             .map(|(_, v)| *v)
             .sum();
     assert_eq!(discarded, 12, "every foreign verdict was named and dropped");
+}
+
+fn report(id: u64, action: u8, intended: u64, cum: u64, px: u64) -> AppEvent {
+    AppEvent::ModelMgmtReport {
+        mint: DomainMint::from_bytes(MINT),
+        order_id: id,
+        action,
+        intended,
+        cumulative_tokens: cum,
+        value: px,
+    }
+}
+
+#[test]
+fn evidence_is_validated_against_the_issued_order_before_anything_changes() {
+    let hp = held_path("s_v");
+    let mut r = rig(|step| if step == 0 { REDUCE } else { HOLD }, &hp);
+    r.advance_to_order(120_000);
+    let (id, _, intended, _) = r.e.model_mgmt_pending(&MINT).expect("REDUCE pending");
+    let b0 = books(&r.e);
+    let bad = [
+        (
+            MgmtKind::Exit,
+            intended,
+            intended,
+            22_000,
+            "action_mismatch",
+        ),
+        (
+            MgmtKind::Reduce,
+            intended + 1,
+            intended,
+            22_000,
+            "intended_mismatch",
+        ),
+        (MgmtKind::Reduce, intended, intended, 0, "no_price"),
+    ];
+    for (k, iss, cum, px, why) in bad {
+        assert_eq!(
+            r.e.model_mgmt_ingest_evidence(MINT, id, k, iss, cum, px),
+            SellReportResult::Rejected(why)
+        );
+        assert_eq!(books(&r.e), b0, "{why}: nothing changed");
+    }
+    // A wrong mint never reaches this order, and a never-issued id is named, not applied.
+    assert!(matches!(
+        r.e.model_mgmt_ingest_evidence(
+            [0x11; 32],
+            id,
+            MgmtKind::Reduce,
+            intended,
+            intended,
+            22_000
+        ),
+        SellReportResult::Rejected(_)
+    ));
+    assert!(matches!(
+        r.e.model_mgmt_ingest_evidence(MINT, id + 77, MgmtKind::Reduce, intended, intended, 22_000),
+        SellReportResult::Rejected(_)
+    ));
+    assert_eq!(books(&r.e), b0);
+    assert_eq!(
+        r.e.model_mgmt_ingest_evidence(MINT, id, MgmtKind::Reduce, intended, intended, 22_000),
+        SellReportResult::Applied { delta: intended }
+    );
+}
+
+#[test]
+fn an_equal_quantity_report_with_a_different_price_is_a_named_fault_not_a_duplicate() {
+    let hp = held_path("s_p");
+    let mut r = rig(|step| if step == 0 { REDUCE } else { HOLD }, &hp);
+    r.advance_to_order(120_000);
+    let (id, _, intended, _) = r.e.model_mgmt_pending(&MINT).expect("REDUCE pending");
+    assert!(matches!(
+        r.e.model_mgmt_ingest_evidence(MINT, id, MgmtKind::Reduce, intended, intended, 22_000),
+        SellReportResult::Applied { .. }
+    ));
+    let b = books(&r.e);
+    assert_eq!(
+        r.e.model_mgmt_ingest_evidence(MINT, id, MgmtKind::Reduce, intended, intended, 21_000),
+        SellReportResult::Fault
+    );
+    assert_eq!(books(&r.e), b, "no money moved");
+    assert_eq!(
+        r.e.model_sell_faults().get(&id).map(|f| f.source),
+        Some("report_contradicts_settled")
+    );
+    assert!(r.e.model_mint_is_blocked(&MINT), "new exposure blocked");
+}
+
+#[test]
+fn an_older_report_is_ignored_only_when_a_booked_fill_proves_it_otherwise_it_is_named() {
+    let hp = held_path("s_o");
+    let mut r = rig(|step| if step == 0 { REDUCE } else { HOLD }, &hp);
+    r.advance_to_order(120_000);
+    let (id, _, intended, _) = r.e.model_mgmt_pending(&MINT).expect("REDUCE pending");
+    let part = intended / 2;
+    assert!(matches!(
+        r.e.model_mgmt_ingest_evidence(MINT, id, MgmtKind::Reduce, intended, part, 22_000),
+        SellReportResult::Applied { .. }
+    ));
+    assert!(matches!(
+        r.e.model_mgmt_ingest_evidence(MINT, id, MgmtKind::Reduce, intended, intended, 23_000),
+        SellReportResult::Applied { .. }
+    ));
+    let b = books(&r.e);
+    // Proven stale: the same quantity at the same price as a booked fill prefix.
+    assert_eq!(
+        r.e.model_mgmt_ingest_evidence(MINT, id, MgmtKind::Reduce, intended, part, 22_000),
+        SellReportResult::Duplicate
+    );
+    // Older quantity with a price no booked fill matches: unproven, named, nothing applied.
+    assert_eq!(
+        r.e.model_mgmt_ingest_evidence(MINT, id, MgmtKind::Reduce, intended, part, 19_000),
+        SellReportResult::Rejected("stale_unproven")
+    );
+    // An older quantity that is not a booked prefix is also unproven.
+    assert_eq!(
+        r.e.model_mgmt_ingest_evidence(MINT, id, MgmtKind::Reduce, intended, 3, 22_000),
+        SellReportResult::Rejected("stale_unproven")
+    );
+    assert_eq!(books(&r.e), b);
+}
+
+/// The whole inbox, in file order, replayed into an engine (what a restarted daemon does: offset is not persisted).
+fn replay_inbox(e: &mut Engine, lines: &[AppEvent]) {
+    for l in lines {
+        e.tick(l.clone());
+    }
+}
+
+#[test]
+fn rereading_the_whole_inbox_after_a_crash_neither_loses_nor_double_books_any_report() {
+    let hp = held_path("s_x");
+    let mut r = rig(|step| if step == 0 { REDUCE } else { HOLD }, &hp);
+    r.advance_to_order(120_000);
+    let (id, _, intended, _) = r.e.model_mgmt_pending(&MINT).expect("REDUCE pending");
+    let part = intended / 2;
+    let inbox = vec![
+        report(id, 0, intended, part, 22_000),
+        report(id, 0, intended, intended, 23_000),
+    ];
+    // Uninterrupted reference.
+    let reference = {
+        let hp2 = held_path("s_x_ref");
+        let mut r2 = rig(|step| if step == 0 { REDUCE } else { HOLD }, &hp2);
+        r2.advance_to_order(120_000);
+        replay_inbox(&mut r2.e, &inbox);
+        books(&r2.e)
+    };
+    // Crash A: report 1 applied but NEVER published (ledger older), then restart + full re-read.
+    assert!(r.e.model_held_persist_now());
+    replay_inbox(&mut r.e, &inbox[..1]);
+    drop(r);
+    let mut a = fresh(&hp);
+    a.model_held_restore().unwrap().unwrap();
+    replay_inbox(&mut a, &inbox);
+    assert_eq!(
+        books(&a),
+        reference,
+        "unpublished report is re-applied once, nothing lost"
+    );
+    // Crash B: both applied AND published, ack lost, restart + full re-read.
+    assert!(a.model_held_persist_now());
+    drop(a);
+    let mut b = fresh(&hp);
+    b.model_held_restore().unwrap().unwrap();
+    let after_restore = books(&b);
+    assert_eq!(after_restore, reference);
+    replay_inbox(&mut b, &inbox);
+    replay_inbox(&mut b, &inbox);
+    assert_eq!(
+        books(&b),
+        reference,
+        "a settled report is never applied twice, however often it is re-read"
+    );
+}
+
+#[test]
+fn execution_evidence_for_an_order_restored_from_an_earlier_process_is_accepted_but_a_foreign_verdict_is_not(
+) {
+    let hp = held_path("s_y");
+    let mut r = rig(|step| if step == 0 { EXIT } else { HOLD }, &hp);
+    r.advance_to_order(120_000);
+    let (id, _, intended, _) = r.e.model_mgmt_pending(&MINT).expect("EXIT pending");
+    assert!(r.e.model_mgmt_mark_ack_uncertain(&MINT, id));
+    assert!(r.e.model_held_persist_now());
+    drop(r);
+    // A new process has a new model session; the restored order keeps its execution identity.
+    let mut e2 = fresh(&hp);
+    e2.model_held_restore().unwrap().unwrap();
+    e2.tick(report(id, 1, intended, intended, 22_000));
+    assert_eq!(
+        e2.model_inventory_tokens(&MINT),
+        None,
+        "previous-session evidence settled the restored order"
+    );
+    assert!(e2
+        .model_sell_rec(id)
+        .is_some_and(|x| x.state == SellState::Completed));
 }

@@ -1985,6 +1985,7 @@ impl Engine {
 
     /// Feed one event.
     pub fn tick(&mut self, ev: AppEvent) {
+        self.model_sync_sell_reservations();
         match ev {
             AppEvent::MarketTrade {
                 mint,
@@ -2548,6 +2549,35 @@ impl Engine {
                         clip_lamports,
                         filled,
                     );
+                }
+            }
+            AppEvent::ModelMgmtReport {
+                mint,
+                order_id,
+                action,
+                intended,
+                cumulative_tokens,
+                value,
+            } => {
+                if self.paper_model_mode {
+                    let kind = match action {
+                        0 => Some(model_manage::MgmtKind::Reduce),
+                        1 => Some(model_manage::MgmtKind::Exit),
+                        2 => Some(model_manage::MgmtKind::Add),
+                        _ => None,
+                    };
+                    if let Some(kind) = kind {
+                        let _ = self.model_mgmt_ingest_evidence(
+                            *mint.as_bytes(),
+                            order_id,
+                            kind,
+                            intended,
+                            cumulative_tokens,
+                            value,
+                        );
+                    } else {
+                        self.mrep("mgmt:evidence:rejected:bad_action");
+                    }
                 }
             }
             AppEvent::OurBuyConfirmed {

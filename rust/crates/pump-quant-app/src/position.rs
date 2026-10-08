@@ -644,6 +644,11 @@ pub struct ScalpLifecycle {
     /// `mem::take`, so the per-tick exit scan allocates nothing in steady state.
     /// Bounded by `cap` (≤ max_concurrent_positions). No state crosses ticks.
     fired_buf: Vec<[u8; 32]>,
+    /// Tokens that an UNRESOLVED sell (acknowledgement unknown) may already have executed. A protective close
+    /// never sells them: it sells only `inventory - reserved`, and when nothing is free it defers (counted).
+    sell_reserved: BTreeMap<[u8; 32], u64>,
+    /// Protective closes deferred because every remaining token was reserved by an unresolved sell.
+    pub protect_deferred: u64,
 }
 
 impl ScalpLifecycle {
@@ -655,7 +660,24 @@ impl ScalpLifecycle {
             params,
             cap: cap.max(1),
             fired_buf: Vec::with_capacity(cap.max(1)),
+            sell_reserved: BTreeMap::new(),
+            protect_deferred: 0,
         }
+    }
+
+    /// Set (or clear, with 0) the tokens reserved by an unresolved sell on `mint`.
+    pub fn set_sell_reserved(&mut self, mint: &[u8; 32], tokens: u64) {
+        if tokens == 0 {
+            self.sell_reserved.remove(mint);
+        } else {
+            self.sell_reserved.insert(*mint, tokens);
+        }
+    }
+
+    /// Tokens currently reserved by an unresolved sell on `mint`.
+    #[must_use]
+    pub fn sell_reserved(&self, mint: &[u8; 32]) -> u64 {
+        self.sell_reserved.get(mint).copied().unwrap_or(0)
     }
 
     /// A snapshot of every open position for report-plane consumption (item 2c).
@@ -1209,7 +1231,7 @@ impl ScalpLifecycle {
             let drop = ((u128::from(prev_price_fp - price_fp) * 10_000) / u128::from(prev_price_fp))
                 as u32;
             if drop >= p.precursor_drop_bps {
-                return Some(self.close(mint, mult, ExitReason::RugPrecursor));
+                return self.close_guarded(mint, mult, ExitReason::RugPrecursor);
             }
         }
 
@@ -1226,7 +1248,7 @@ impl ScalpLifecycle {
             let hard_level =
                 protection_level_fp(pos.entry_price_fp, pos.entry_price_fp, 10_000, hard_sl);
             if price_fp <= hard_level {
-                return Some(self.close(mint, mult, ExitReason::HardStop));
+                return self.close_guarded(mint, mult, ExitReason::HardStop);
             }
             return None;
         }
@@ -1240,14 +1262,14 @@ impl ScalpLifecycle {
             } else {
                 ExitReason::TrailingStop
             };
-            return Some(self.close(mint, mult, reason));
+            return self.close_guarded(mint, mult, reason);
         }
 
         // §24(d) LAW 5 exit-into-strength: an authentic buy-side climax while in
         // profit — sell the remainder INTO the buyers (harvest strength rather than
         // wait for exhaustion). Terminal; ranks below the protective stops above.
         if climax {
-            return Some(self.close(mint, mult, ExitReason::IntoStrength));
+            return self.close_guarded(mint, mult, ExitReason::IntoStrength);
         }
 
         // P2 thesis-invalidation: CVD rolled over, or a stall while in profit.
@@ -1298,7 +1320,7 @@ impl ScalpLifecycle {
                     });
                 }
             }
-            return Some(self.close(mint, mult, ExitReason::ThesisInvalidation));
+            return self.close_guarded(mint, mult, ExitReason::ThesisInvalidation);
         }
 
         // P3 principal-recovery ladder (partial tranches; position stays open).
@@ -1446,7 +1468,7 @@ impl ScalpLifecycle {
             let mult = latest_price_fp(&mint)
                 .map(|pr| self.open[&mint].mult_bps(pr))
                 .unwrap_or(10_000_u32.saturating_sub(p.hard_sl_bps));
-            out.push(self.close(&mint, mult, ExitReason::TimeStop));
+            out.extend(self.close_guarded(&mint, mult, ExitReason::TimeStop));
         }
         self.fired_buf = fired;
         out
@@ -1491,7 +1513,7 @@ impl ScalpLifecycle {
             let mult = latest_price_fp(&mint)
                 .map(|pr| self.open[&mint].mult_bps(pr))
                 .unwrap_or(10_000_u32.saturating_sub(p.hard_sl_bps));
-            out.push(self.close(&mint, mult, ExitReason::TimeStop));
+            out.extend(self.close_guarded(&mint, mult, ExitReason::TimeStop));
         }
         self.fired_buf = fired;
         out
@@ -1501,7 +1523,7 @@ impl ScalpLifecycle {
             return None;
         }
         let mult = self.open[mint].mult_bps(price_fp);
-        Some(self.close(mint, mult, reason))
+        self.close_guarded(mint, mult, reason)
     }
 
     /// Force-close every remaining open position at its last-known multiple (end of
@@ -1519,7 +1541,7 @@ impl ScalpLifecycle {
             let mult = latest_price_fp(&mint)
                 .map(|pr| self.open[&mint].mult_bps(pr))
                 .unwrap_or(10_000_u32.saturating_sub(sl));
-            out.push(self.close(&mint, mult, ExitReason::ForceClose));
+            out.extend(self.close_guarded(&mint, mult, ExitReason::ForceClose));
         }
         out
     }
@@ -1540,7 +1562,7 @@ impl ScalpLifecycle {
             let mult = latest_price_fp(&mint)
                 .map(|pr| self.open[&mint].mult_bps(pr))
                 .unwrap_or(10_000_u32.saturating_sub(sl));
-            out.push(self.close(&mint, mult, ExitReason::ForceClose));
+            out.extend(self.close_guarded(&mint, mult, ExitReason::ForceClose));
         }
         out
     }
@@ -1614,6 +1636,45 @@ impl ScalpLifecycle {
             true
         } else {
             false
+        }
+    }
+
+    /// A protective/administrative close that never sells tokens an unresolved sell may already have executed.
+    /// No reservation: identical to `close`. Reservation and free inventory: sells ONLY the free part (a partial,
+    /// the remainder keeps its protection). Everything reserved, or inventory unknown: nothing is sold and the
+    /// deferral is counted; the position stays open and every trigger stays armed.
+    fn close_guarded(
+        &mut self,
+        mint: &[u8; 32],
+        mult_bps: u32,
+        reason: ExitReason,
+    ) -> Option<Exit> {
+        let reserved = self.sell_reserved(mint);
+        if reserved == 0 {
+            return Some(self.close(mint, mult_bps, reason));
+        }
+        let (inv, known) = self
+            .open
+            .get(mint)
+            .map_or((0, false), |p| (p.inventory_tokens, p.inventory_from_fill));
+        let free = if known {
+            inv.saturating_sub(reserved)
+        } else {
+            0
+        };
+        if free == 0 {
+            self.protect_deferred += 1;
+            return None;
+        }
+        let price_fp = self.open.get(mint).map_or(0, |p| {
+            u64::try_from(u128::from(p.entry_price_fp) * u128::from(mult_bps) / 10_000).unwrap_or(0)
+        });
+        match self.sell_tokens(mint, free, price_fp, reason) {
+            Ok(e) => Some(e),
+            Err(_) => {
+                self.protect_deferred += 1;
+                None
+            }
         }
     }
 

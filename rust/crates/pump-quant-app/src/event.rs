@@ -460,6 +460,18 @@ pub enum AppEvent {
         clip_lamports: u64,
         filled: Option<(u64, u64)>,
     },
+    /// Cumulative management-sell report (REDUCE / EXIT, or ADD with `value` = cumulative notional spent): the
+    /// TOTAL the order has filled, so applying it is idempotent. Bound to order id and mint.
+    ModelMgmtReport {
+        mint: Mint,
+        order_id: u64,
+        /// 0 = reduce, 1 = exit, 2 = add. Must match the issued order.
+        action: u8,
+        /// The order's issued intended quantity, restated by the executor. Must match.
+        intended: u64,
+        cumulative_tokens: u64,
+        value: u64,
+    },
     OurBuyConfirmed {
         /// The mint that was bought.
         mint: Mint,
@@ -535,6 +547,7 @@ impl AppEvent {
             | AppEvent::MarketAuxiliary { mint, .. }
             | AppEvent::NarrativeResolved { mint, .. }
             | AppEvent::ModelOrderEvidence { mint, .. }
+            | AppEvent::ModelMgmtReport { mint, .. }
             | AppEvent::OurBuyConfirmed { mint, .. }
             | AppEvent::OurBuyFailed { mint, .. }
             | AppEvent::OurSellConfirmed { mint, .. }

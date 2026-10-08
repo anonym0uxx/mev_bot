@@ -130,6 +130,7 @@ pub mod narrative_lexicon;
 pub mod outbound;
 pub mod pumpportal;
 pub mod queue;
+pub mod report_inbox;
 pub mod reserve_delta;
 pub mod state_fetch;
 pub mod tape_export;

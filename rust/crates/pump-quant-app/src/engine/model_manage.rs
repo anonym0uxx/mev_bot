@@ -1306,6 +1306,31 @@ impl Engine {
         Ok(())
     }
 
+    /// Protective closes deferred (wholly or in part) because an unresolved sell reserves the tokens.
+    #[must_use]
+    pub fn model_protection_deferred(&self) -> u64 {
+        self.positions.protect_deferred
+    }
+
+    /// Reservation sync: tokens an UNRESOLVED (uncertain) REDUCE/EXIT may already have executed are held back from
+    /// every protective close (`ScalpLifecycle::close_guarded`). Derived from the order book each tick, so it
+    /// cannot drift: a resolved, filled, ended or absent order reserves nothing.
+    pub(super) fn model_sync_sell_reservations(&mut self) {
+        let want: std::collections::BTreeMap<[u8; 32], u64> = self
+            .model_mgmt
+            .orders
+            .iter()
+            .filter(|(_, o)| o.uncertain && o.kind != MgmtKind::Add)
+            .map(|(m, o)| (*m, o.intended.saturating_sub(o.filled)))
+            .collect();
+        for m in self.positions.held_records().iter().map(|h| h.mint) {
+            let w = want.get(&m).copied().unwrap_or(0);
+            if self.positions.sell_reserved(&m) != w {
+                self.positions.set_sell_reserved(&m, w);
+            }
+        }
+    }
+
     /// Mark a pending management order's acknowledgement UNCERTAIN: it stays pending and unresolved.
     pub fn model_mgmt_mark_ack_uncertain(&mut self, mint: &[u8; 32], order_id: u64) -> bool {
         match self.model_mgmt.orders.get_mut(mint) {
@@ -1443,6 +1468,105 @@ impl Engine {
     #[must_use]
     pub fn model_sell_rec(&self, id: u64) -> Option<SellRec> {
         self.model_sell_log.get(&id).copied()
+    }
+
+    /// Execution-evidence boundary for a management order. Validates the report against the ISSUED order before
+    /// anything changes: the id must exist (live, or settled/restored from an earlier process; execution identity
+    /// is the order id and is NOT tied to the model session), the mint must match, the action must match the
+    /// order's kind and the stated intended quantity must equal the issued one. A same-order report whose price
+    /// contradicts what the books already applied at that cumulative quantity is a named fault (never ignored as
+    /// "duplicate"). Model text never reaches this function: it takes executor-supplied numbers only.
+    pub fn model_mgmt_ingest_evidence(
+        &mut self,
+        mint: [u8; 32],
+        order_id: u64,
+        action: MgmtKind,
+        intended: u64,
+        cumulative_tokens: u64,
+        value: u64,
+    ) -> SellReportResult {
+        let issued = self
+            .model_mgmt
+            .orders
+            .get(&mint)
+            .filter(|o| o.id == order_id)
+            .map(|o| (o.kind, o.intended))
+            .or_else(|| {
+                self.model_sell_log
+                    .get(&order_id)
+                    .filter(|r| r.mint == mint)
+                    .map(|r| (r.kind, r.intended))
+            });
+        if let Some((kind, iss)) = issued {
+            if kind != action {
+                self.mrep("mgmt:evidence:rejected:action_mismatch");
+                return SellReportResult::Rejected("action_mismatch");
+            }
+            if iss != intended {
+                self.mrep("mgmt:evidence:rejected:intended_mismatch");
+                return SellReportResult::Rejected("intended_mismatch");
+            }
+            if kind != MgmtKind::Add && value == 0 {
+                self.mrep("mgmt:evidence:rejected:no_price");
+                return SellReportResult::Rejected("no_price");
+            }
+            // Same cumulative as already booked but a different fill price: contradictory settlement evidence.
+            let booked = self
+                .model_mgmt
+                .fills
+                .iter()
+                .rev()
+                .find(|f| f.order_id == order_id)
+                .map(|f| (f.price_fp, f.tokens));
+            let filled_now = self
+                .model_mgmt
+                .orders
+                .get(&mint)
+                .filter(|o| o.id == order_id)
+                .map(|o| o.filled)
+                .or_else(|| self.model_sell_log.get(&order_id).map(|r| r.filled))
+                .unwrap_or(0);
+            let last_px = booked.map(|b| b.0).or_else(|| {
+                self.model_sell_log
+                    .get(&order_id)
+                    .map(|r| r.last_price_fp)
+                    .filter(|p| *p != 0)
+            });
+            // An OLDER cumulative is harmless only when a fill booked in this process proves it: some prefix of this
+            // order's own booked fills sums to exactly that quantity at exactly that price. Otherwise (restored
+            // order, or no such prefix) staleness is unproven: named, not applied, evidence counted, no money moved.
+            if kind != MgmtKind::Add && cumulative_tokens < filled_now {
+                let mut run = 0u64;
+                let proven = self
+                    .model_mgmt
+                    .fills
+                    .iter()
+                    .filter(|f| f.order_id == order_id)
+                    .any(|f| {
+                        run += f.tokens;
+                        run == cumulative_tokens && f.price_fp == value
+                    });
+                if !proven {
+                    self.mrep("mgmt:evidence:stale_unproven");
+                    return SellReportResult::Rejected("stale_unproven");
+                }
+            }
+            if kind != MgmtKind::Add
+                && cumulative_tokens == filled_now
+                && filled_now > 0
+                && last_px.is_some_and(|p| p != value)
+            {
+                self.model_sell_fault(
+                    order_id,
+                    mint,
+                    "report_contradicts_settled",
+                    filled_now,
+                    vec![cumulative_tokens],
+                );
+                return SellReportResult::Fault;
+            }
+        }
+        self.model_mgmt_ingest_report(mint, order_id, cumulative_tokens, value)
     }
 
     /// Ingest one execution report for a management order, by CUMULATIVE quantity: `cumulative_tokens` is the
