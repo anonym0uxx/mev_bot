@@ -2052,3 +2052,52 @@ fn paper_fills_record_the_cumulative_settlement_that_moved_cash_and_replay_settl
         "no replay moved money or inventory"
     );
 }
+
+/// An order the external executor has PARTIALLY filled is still working there: its remainder stays reserved, the paper
+/// executor never fills it, and a protective trigger sells only inventory outside it (never ending it as "unsubmitted").
+#[test]
+fn a_partially_reported_reduce_keeps_its_remainder_reserved_and_protection_never_overlaps_it() {
+    let (mut e, rid, intended, inv0, clock) = restored_with_uncertain("reduce", "p_part");
+    let part = intended / 3;
+    assert!(matches!(
+        e.ev_px(MINT, rid, MgmtKind::Reduce, intended, part, 22_000),
+        SellReportResult::Applied { delta } if delta == part
+    ));
+    let inv1 = inv0 - part;
+    assert_eq!(e.model_inventory_tokens(&MINT), Some(inv1));
+    ticks(&mut e, 2);
+    let st = e
+        .model_held_data_status()
+        .into_iter()
+        .find(|s| s.mint == MINT)
+        .unwrap();
+    assert_eq!(
+        st.sell_reserved_tokens,
+        intended - part,
+        "the unfilled remainder stays reserved"
+    );
+    // A landing observation must not paper-fill an externally working order.
+    land(&mut e, clock + 500, 9_100, 3);
+    assert_eq!(
+        e.model_mgmt_pending(&MINT).map(|p| (p.0, p.3)),
+        Some((rid, part)),
+        "still working, not paper-filled"
+    );
+    assert_eq!(e.model_inventory_tokens(&MINT), Some(inv1));
+    // Protection fires: only the free part is sold; the REDUCE survives.
+    hard_collapse(&mut e, clock + 2_000, 9_200);
+    let (pid, pq, _, _) = e
+        .model_protect_pending_order(&MINT)
+        .expect("protective order for the free part");
+    assert_ne!(pid, rid);
+    assert_eq!(
+        pq,
+        inv1 - (intended - part),
+        "free = inventory - reserved remainder"
+    );
+    assert_eq!(
+        e.model_mgmt_pending(&MINT).map(|p| p.0),
+        Some(rid),
+        "the working REDUCE is never ended as unsubmitted"
+    );
+}

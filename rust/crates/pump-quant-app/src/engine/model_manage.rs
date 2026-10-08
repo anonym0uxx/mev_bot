@@ -1733,16 +1733,36 @@ impl Engine {
         cum_fees: u64,
     ) -> SellReportResult {
         // A report naming the working PROTECTIVE order settles through exactly the same checks and books.
-        if let Some(r) = self.model_with_protect_id(&mint, order_id, |e| {
+        let r = match self.model_with_protect_id(&mint, order_id, |e| {
             e.model_mgmt_ingest_evidence_inner(
                 mint, order_id, action, intended, cum_tokens, cum_gross, cum_fees,
             )
         }) {
-            return r;
+            Some(r) => r,
+            None => self.model_mgmt_ingest_evidence_inner(
+                mint, order_id, action, intended, cum_tokens, cum_gross, cum_fees,
+            ),
+        };
+        // EXTERNAL execution evidence proves the order is working at the executor. If a remainder is still open it
+        // stays WORKING there (reserved, never paper-filled, never ended as unsubmitted) until definitive evidence.
+        if matches!(r, SellReportResult::Applied { .. }) {
+            for o in [
+                self.model_mgmt.orders.get_mut(&mint),
+                self.model_mgmt.protect.get_mut(&mint),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                if o.id == order_id && o.filled < o.intended {
+                    o.uncertain = true;
+                    self.model_report
+                        .entry("mgmt:external_partial_remainder_working".to_string())
+                        .and_modify(|n| *n += 1)
+                        .or_insert(1);
+                }
+            }
         }
-        self.model_mgmt_ingest_evidence_inner(
-            mint, order_id, action, intended, cum_tokens, cum_gross, cum_fees,
-        )
+        r
     }
 
     #[allow(clippy::too_many_arguments)]
