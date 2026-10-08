@@ -180,3 +180,23 @@ Engine/unit scope only unless stated. Synthetic-protection evidence proves lifec
 - OPERATOR-BLOCKED: finalize/report() force-close (OPERATOR_RESOLUTION_PACKAGE.md item 2); reads of xA1 and cA1_1.
 - OPEN (M1): daemon matrix (SAFETY_OFF clear/tripped, Qwen unavailable, reserved/free, partial/full protective fill,
   deferral alert, late report, restart with pending protection, revised reader in a daemon run, startup generation refusal).
+
+## M1 daemon matrix (2026-10-08 PT). Phase-1 = real daemon + mint-specific stub + durable HARNESS_HOLD; phase-2 = restore + collapse_wire_v2
+Fixes found by daemon runs (each: test + mutation caught, 1,137 app+junction at normal concurrency):
+- f88bf4fe: management + protective unresolved sells on one mint reserved max not SUM (qA1 reserved_ok=false).
+- e5eb15ea: reservation not re-synced after a settling report until the next tick (qB3 reserved_ok=false).
+- 37e12529/82cf1bdb: harness-only external-execution mode, HARNESS_CKPT/HOLD, post-final-barrier inbox poll (no Tick/clock).
+Runs (binary sha256 prefix / head):
+- pR1 partial REDUCE prerequisite MET; pE1 full EXIT unresolved reservation MET (37e12529 binary).
+- qA3 97181c45/e5eb15ea: restored partial REDUCE + collapse -> protective sells only free part; partial protective fill; dup no-op. PASS.
+- qB4 97181c45/e5eb15ea: restart with pending partial protective + partial REDUCE; inbox re-read from 0 changes nothing; no
+  resubmission; late REDUCE completion then protective completion -> exact inventory, reservation = remainder; dups no-op. PASS.
+- qC1 97181c45: fully reserved EXIT + collapse -> no overlapping sell, PROTECTION DEFERRED onset+reminder. PASS. Unavailable-Qwen
+  SAFETY_OFF trip: PREREQUISITE NOT MET (no inference request issued; mgmt prompts refused pre-inference). Classification qC1_CLASSIFICATION.md.
+- qD1 97181c45: SAFETY_OFF tripped via controlled-shutdown path (persisted, INCOMPLETE SHUTDOWN alert, process stays up); fully
+  reserved deferral, partial then complete EXIT, dups no resurrection. PASS.
+- qE1 97181c45: mixed-generation startup -> Untrusted(flow_ahead_of_books), readiness bootstrap_failed_untrusted, books unchanged. PASS.
+- qF1 97181c45: handoff ack -> final report(): pre-report durable state recorded; post held.json differs only generation/wall time.
+  No durable destructive mutation OBSERVED; finalize defect NOT cleared (in-memory force-close remains). Handoff acceptance OPEN.
+Open in M1: endpoint-hang SAFETY_OFF trip in daemon (unmet prerequisite); finalize fix (operator-blocked); definitive
+"not executed" release has no inbox route (engine-only).
