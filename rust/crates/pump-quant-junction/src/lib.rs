@@ -122,6 +122,7 @@ pub mod decode;
 pub mod engine_replay; // Phase 3: config-driven engine re-simulation
 pub mod event_stream;
 pub mod laserstream;
+pub mod launch_bootstrap;
 pub mod layout_fixtures;
 pub mod live_adapters;
 pub mod memory_bank;

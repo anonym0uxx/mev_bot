@@ -1,0 +1,2112 @@
+{
+"_provenance": "Real transactions from /mnt/data/mev_bot-artifacts/north_star/capture/20260909_144906_000490 (read-only), converted to getTransaction json shape by m2 fixture builder. NOT Helius responses. Normalisation: the capture encodes the all-zero System Program key as 33 '1' chars; rewritten to canonical 32 '1' (the only change).",
+"creates": [
+{
+"mint": "6mnQg9Ja7nsasBbmezVUVXNSdyYjTpyM9XQSTW3cpump",
+"table_creator": "GvAr1eeVFVCm7AVMrqBRGdWbasJt7tN5PJGAV8dmjepu",
+"tx": {
+"slot": 445639909,
+"transactionIndex": 1974,
+"blockTime": null,
+"_fixture_note": "CONVERTED from 2026-09-09 LaserStream capture record (not a Helius response); blockTime unknown in capture",
+"transaction": {
+"signatures": [
+"4NcFgcFkismvWwbC288f99mrCZ1eDRDim9pjF7jrHmG8wH719HvstVnq6UDyEmuxKazCsAFPs1tZp7Q8fgUFZ6ps"
+],
+"message": {
+"accountKeys": [
+"GvAr1eeVFVCm7AVMrqBRGdWbasJt7tN5PJGAV8dmjepu",
+"6mnQg9Ja7nsasBbmezVUVXNSdyYjTpyM9XQSTW3cpump",
+"tv62ZyU2TR7KZ3JD8GPXAZPmukw8rx8p2jfKNWFPjJk",
+"3WQe8KPX2NxcH4Y6h8inz3PXfA8Q2pWiDLPnmTgn8Lnv",
+"8KcnR9YQLeMvoM1FD6SDwAFCZfY9ygumsnzhrMnjsFsk",
+"8WYEPwM8YjsW3kL72Jg31DcQbdbYFg9wEuLSbUjUHvqj",
+"8q4fjDKTKwXGXc6H8KH6rGDuMbqGhMyVQdqYEoG18j93",
+"ADaUMid9yfUytqMBgopwjb2DTLSokTSzL1zt6iGPaS49",
+"B1fB48uhnpZRfN1BDvN3tAB57jAWKvqetgPjjtyHYG2W",
+"CoFjLrJ8YZVQB7cwSRTsEcfjs1CE9MPLdCNys3tNJXLY",
+"CvmVYjVwUAzX3UiCWWvDnw9zueURUD8kQttdU3rytY6r",
+"FmvEYjEbiJBLPLiACcPBzZygzaRVqkqfw5mFZ53VSrJH",
+"GawePaUN824EJn1dhG9QtGjWrjgNmXFDffZUq7ULZ48s",
+"GqdWw5FjD8B684thrRBG8hLQtkTxAMSNpXkphJ7cHEYs",
+"11111111111111111111111111111111",
+"6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",
+"ComputeBudget111111111111111111111111111111",
+"ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL",
+"CGRyPwLbnm69yqJE974AAPB2fE4G4QMGY4az9382VWA4"
+],
+"instructions": [
+{
+"programIdIndex": 16,
+"accounts": [
+30
+],
+"data": "EvSMNP"
+},
+{
+"programIdIndex": 16,
+"accounts": [],
+"data": "3GAG5eogvTjV"
+},
+{
+"programIdIndex": 15,
+"accounts": [
+1,
+27,
+6,
+8,
+32,
+0,
+14,
+29,
+17,
+19,
+25,
+21,
+9,
+10,
+34,
+15
+],
+"data": "2EYfNEVD2g597jhGFFycUgoxknzvj94gRYJMd73fU1mZ1DofmsSaA3WGYKmvEfPW6yJzEhtvdnfoBCDnvuXcH6M8sfsoCyEW5TKh9iqZaNgLQdqZA5w4zBDfYN63bHt49g7PDXUvjrCBqiDS14sTDChjT9Q2VUTGv11YtAHj95xTePjz9UFqL8CcNY5d"
+},
+{
+"programIdIndex": 17,
+"accounts": [
+0,
+12,
+0,
+1,
+14,
+29
+],
+"data": "2"
+},
+{
+"programIdIndex": 15,
+"accounts": [
+32,
+1,
+26,
+29,
+28,
+17,
+24,
+22,
+20,
+23,
+6,
+8,
+5,
+0,
+12,
+4,
+11,
+2,
+18,
+35,
+13,
+3,
+33,
+31,
+14,
+34,
+15
+],
+"data": "HnQ14hy6fxGQWem926oRd3xGoZMFgiVVY"
+},
+{
+"programIdIndex": 14,
+"accounts": [
+0,
+7
+],
+"data": "3Bxs4bKJokCfyEib"
+}
+]
+}
+},
+"meta": {
+"err": null,
+"loadedAddresses": {
+"writable": [
+"MAyhSmzXzV1pTf7LsNkrNwkWKTo4ougAJ1PPg47MD4e",
+"5eHhjP8JaYkz83CWwvGU2uMUXefd3AazWGx4gpcuEEYD",
+"BwWK17cbHxwWBKZkUYvzxLcNQ1YVyaFezduWbtm2de6s",
+"C93K8DX4YsABYJtHX9awzgZW3LWzBqBVezEbbLJH4yet",
+"CASRL2zkwDnppxEFQ4LgdwgR9pdz5Q8R8nEMKVZ9QoLp",
+"GesfTA3X2arioaHp8bbKdjG9vJtskViWACZoYvxp4twS"
+],
+"readonly": [
+"13ec7XdrjF3h3YcqBTFDSReRcUFwbCnJaAQspM4j6DDJ",
+"So11111111111111111111111111111111111111112",
+"TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM",
+"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+"TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+"jitodontfront111111111111111111nopainnogain",
+"pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ",
+"4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf",
+"8Wf5TiAheLUqBrKXeYg2JtAFFMWtKdG2BSFgqUcPVwTt",
+"Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1",
+"Hq2wp8uJ9jCPsYgNHex8RtqdvMPfVGoYwjvF1ATiwn2Y"
+]
+},
+"innerInstructions": [
+{
+"index": 2,
+"instructions": [
+{
+"programIdIndex": 14,
+"accounts": [
+0,
+1
+],
+"data": "11113TWSuBR9M5P8AUg14aLwwd7n25zhZWoUjHQnmN4h8bJtfW3jDMagyGRpkwgUzve3D5"
+},
+{
+"programIdIndex": 29,
+"accounts": [
+1
+],
+"data": "GC3i2jSx8awwe9xBfbR9LBTrzgFPUE9b56kGnez3cWMeYXFYMhtYc53uqCqtubVXHNQgXLzCsSK3eH26vAPgYKbRM8"
+},
+{
+"programIdIndex": 29,
+"accounts": [
+1
+],
+"data": "2zt6UCCHp66bJGRS4G7bTsjdxFh6FQ9sBEyRfGyPQKxYisAw"
+},
+{
+"programIdIndex": 14,
+"accounts": [
+0,
+6
+],
+"data": "11114oAXGVMNM4cnysg7h656y1MKBc93wvxRPLpxJ8KnxVoJW5YxUqmh4cWABQGFP9gSHu"
+},
+{
+"programIdIndex": 17,
+"accounts": [
+0,
+8,
+6,
+1,
+14,
+29
+],
+"data": "1"
+},
+{
+"programIdIndex": 29,
+"accounts": [
+1
+],
+"data": "84eT"
+},
+{
+"programIdIndex": 14,
+"accounts": [
+0,
+8
+],
+"data": "11116xBqNGt2jRnNF93sBfXRMDRbjh466M9yeHqsaJtM3avCkbYd5cAUmmmeYjXJGnd4f"
+},
+{
+"programIdIndex": 29,
+"accounts": [
+8
+],
+"data": "P"
+},
+{
+"programIdIndex": 29,
+"accounts": [
+8,
+1
+],
+"data": "6UxmLfQrFcno6o6BoDUUSLEfHrVR677FC7Z1PjNwpRsa1"
+},
+{
+"programIdIndex": 14,
+"accounts": [
+0,
+1
+],
+"data": "3Bxs4HUcP1et4CWT"
+},
+{
+"programIdIndex": 29,
+"accounts": [
+1,
+27,
+1,
+27
+],
+"data": "HTa3dWrCYmkBujoo8n1Bj4eFR5YE519FtrXoa4abVm6eYQS9TS17E5VEqJsaekR9Xe6Y4KBRDYGnDggVPCzmUD8ZVDEvy784zwD5STHR8Fie2Bg3ipUyoN4K9K5w6EUcCv"
+},
+{
+"programIdIndex": 29,
+"accounts": [
+1,
+27
+],
+"data": "BjBG9fDQbu1raSNbBZQYubkmLijGDjgXJHpedBBGGrFrgSFFPaBAwnF"
+},
+{
+"programIdIndex": 19,
+"accounts": [
+0,
+25,
+27,
+21,
+1,
+10,
+9,
+14,
+29,
+17
+],
+"data": "TPGpxKtZ4cc"
+},
+{
+"programIdIndex": 17,
+"accounts": [
+0,
+10,
+21,
+1,
+14,
+29
+],
+"data": "1"
+},
+{
+"programIdIndex": 29,
+"accounts": [
+1
+],
+"data": "84eT"
+},
+{
+"programIdIndex": 14,
+"accounts": [
+0,
+10
+],
+"data": "11116xBqNGt2jRnNF93sBfXRMDRbjh466M9yeHqsaJtM3avCkbYd5cAUmmmeYjXJGnd4f"
+},
+{
+"programIdIndex": 29,
+"accounts": [
+10
+],
+"data": "P"
+},
+{
+"programIdIndex": 29,
+"accounts": [
+10,
+1
+],
+"data": "6Y5CywK9PapDLSofGZi8LSK3ktu8KPKXMhZ5N6USqvnXq"
+},
+{
+"programIdIndex": 14,
+"accounts": [
+0,
+9
+],
+"data": "1111893pPWtvmcmjvwFr4cBzXmYc1MQPgz8L8ajdpYZnhb5w54f5qX5HBMHiTAUTSj8FUv"
+},
+{
+"programIdIndex": 29,
+"accounts": [
+1,
+8,
+27
+],
+"data": "6ApXSNCamGdm"
+},
+{
+"programIdIndex": 29,
+"accounts": [
+1,
+10,
+27
+],
+"data": "6ApXSNCamGdm"
+},
+{
+"programIdIndex": 29,
+"accounts": [
+1,
+27
+],
+"data": "31tb"
+},
+{
+"programIdIndex": 15,
+"accounts": [
+34
+],
+"data": "2euXLkcfZLoMHTht4sYjq254anhYawt6kZyMx9TVHPDHBs9XPrAJBPddwRE7zHSDjTEmypuSG6XYhurzKy9RaV8fbwWsP1LPSSRvvPVuMrigdwWLk3Ue6ZCoxqBkbLGg8BBi2EiGnxDqPuRvKkvzJJzsCMY9kq3nNEKcdnGG88BYgJDqmaLPRZn6hGzfd22xcCgW5fcQQZqWWFHzUeor3VNfRWxJyzBftsLsrepgxCQJ44i2w4G1Hi2DgVrRT2zk4PgJJNMrZHYwNbbvdABQDCb1fteM7pANKpKFKi7HUmKHBPmy2xBzThZnpnwMqCYTxhYqNkY5pwa3WyQSTFT16G2WmqrV1y6aBx4iGhBXTFQQ4EgVUqpofZN6JofEA9ueDmJbpSpkaEKuqDUbxtYwuvjJyhTwzijrSLpDp3D4e6RrAUjWNDotHdc1KPwteoTXu7qf2VZSuoNke6tdRpZVBTFV"
+}
+]
+},
+{
+"index": 3,
+"instructions": [
+{
+"programIdIndex": 29,
+"accounts": [
+1
+],
+"data": "84eT"
+},
+{
+"programIdIndex": 14,
+"accounts": [
+0,
+12
+],
+"data": "11116xBqNGt2jRnNF93sBfXRMDRbjh466M9yeHqsaJtM3avCkbYd5cAUmmmeYjXJGnd4f"
+},
+{
+"programIdIndex": 29,
+"accounts": [
+12
+],
+"data": "P"
+},
+{
+"programIdIndex": 29,
+"accounts": [
+12,
+1
+],
+"data": "6d3sWwrBHYLUbNeaswzNkkbwz5kthXddn6DS1yiKb2oFs"
+}
+]
+},
+{
+"index": 4,
+"instructions": [
+{
+"programIdIndex": 31,
+"accounts": [
+33,
+15
+],
+"data": "6E5CZKNB2G93HVu9Syn6kkEUE5ZYBEkjrAYaVfj7wS7Yyu1"
+},
+{
+"programIdIndex": 29,
+"accounts": [
+8,
+1,
+12,
+6
+],
+"data": "ihgWVsdhQhN2h"
+},
+{
+"programIdIndex": 14,
+"accounts": [
+0,
+11
+],
+"data": "3Bxs4FJ7Z3sMTEAK"
+},
+{
+"programIdIndex": 14,
+"accounts": [
+0,
+6
+],
+"data": "3Bxs4a4Qh4EP6eWs"
+},
+{
+"programIdIndex": 14,
+"accounts": [
+0,
+24
+],
+"data": "3Bxs4f5fRVvnzfpj"
+},
+{
+"programIdIndex": 15,
+"accounts": [
+34
+],
+"data": "T2jLjveMmM4gJ1fdXs3mfxVkePFtwN7DdTmcfmFLdNpaKppLsJQ7eZsbadMUeLTfrcHADgCkpJM8gPpPbKJurjBr4BEr13KTxRRD3AtTdYdahv2pTJDaKwzwyQ4Av79QDVbd3Xqz68aohTjHvwFPzbwY8VbQguCT2N9Rr3SuYYeBQcbQVPha9s9aYA3iUUt3PfvXD5XLAJHp1kLiFuCo1JD5kxzuJC6VE7iAiEUf9i15AwTaZTTqiBRWmw13aWgiGqYztzsFvVYe2WKrZdGu2QCXJKeNThz8uTiRVL9yU4QmCGEYwYCqzuG7XiEq1hb9CxmJ9zSBcXXmAFyCZXmgmLpZZtnkWo22aUEV5ASCDZ3kfd5f83qwoRVZ9vWA2dfLdv7vm961PMmyeTj2yjEBnmMx8oGNGgqrFmcg2pHWKyon5G3aNy1H4xTpU3PiRZFKoNnFxvMy7GVTk3nBJMoPR85fFhgqZkPvDxZ5Xwt7yaesyXKfWEj1"
+}
+]
+}
+]
+}
+}
+},
+{
+"mint": "3gXQU9J9N9PNmAE6T6PLb6rR5y4CB6Kg4SFtJEzTpump",
+"table_creator": "2zSHzFMWT2xAEUCz5mDJWUnzjyXKYzj9J3FZpNjgVgiF",
+"tx": {
+"slot": 445639415,
+"transactionIndex": 1409,
+"blockTime": null,
+"_fixture_note": "CONVERTED from 2026-09-09 LaserStream capture record (not a Helius response); blockTime unknown in capture",
+"transaction": {
+"signatures": [
+"3obSxp9vwGwvDrmxt9VPPcvZStkH8uVkFRUTqVWr682zBuMfBycoux8tyreeCZ21wBfEtL3dbULPVgqiAEX84P7f"
+],
+"message": {
+"accountKeys": [
+"2zSHzFMWT2xAEUCz5mDJWUnzjyXKYzj9J3FZpNjgVgiF",
+"3gXQU9J9N9PNmAE6T6PLb6rR5y4CB6Kg4SFtJEzTpump",
+"bk5SnttgWwV5b3H9nSP8tF4LoH2Rvh9fg4s8KF1pXdS",
+"2o3rx68e4hPG6Nkg9UZLpwqrLGQ3EbLZ9KxhSjknSnKh",
+"2smqeC3n8kQvGxJYsYt7eD468TMmDsm7eQ2phbv8eoZW",
+"5jGjpRT7YvxdprcqAHGrL7yRu9uPLu6KzCwcQiP8uLZp",
+"89dRqReHY3TmgTXF1bVjNb1cc2RRHCepDmR3nkA2nE1z",
+"9dJN3puydMU2yQF8Yu5gd3kf3utF5fZu8rnAdzfBqY5A",
+"BcPawupmBEBAtynLmf1KQTVFZ3xDesx3USkmH9ATts4w",
+"Cw8CFyM9FkoMi7K7Crf6HNQqf4uEMzpKw6QNghXLvLkY",
+"DDzFzBp7cn9fuxaUtF5Q6MKHa2yT9Tmp5y4m5T8rXU5E",
+"DKjcTKV5H5e5D4sXE6CXzAP14MwxQycQte8kWoJns9u1",
+"Fu4S3eWf5AvS8ta8bTCJjNzPZ5FV6tDb28X2b8491fnV",
+"J9wbRZ3j9Dw8LHZgxXsVsm3aW3SpYuQJ37Bhcmezhfbm",
+"11111111111111111111111111111111",
+"6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",
+"ComputeBudget111111111111111111111111111111",
+"6pwrMsLzxU43KCRpPUKyhyFL7XScdR8e4bPbY5Bpenw4",
+"ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+],
+"instructions": [
+{
+"programIdIndex": 16,
+"accounts": [
+30
+],
+"data": "EvSMNP"
+},
+{
+"programIdIndex": 16,
+"accounts": [],
+"data": "3GAG5eogvTjV"
+},
+{
+"programIdIndex": 15,
+"accounts": [
+1,
+27,
+4,
+3,
+32,
+0,
+14,
+29,
+18,
+19,
+25,
+22,
+13,
+2,
+34,
+15
+],
+"data": "2EYfNEVD2g597jhGFETAHwNDinDhX7hpJP5P61Ap8LgLenVLnXETa979WTGhiSAHif5GFTnHANFYuJghBFNmxowHPDwYcmrQ2RzwxowsXB8tatMnXGppmAwkm5bzrVSQyQXGx5psCvsUpA6uuxkzwMkD49cmAe4qBB3AJy4pSb8rGFaqFxQPFBt59P5Z"
+},
+{
+"programIdIndex": 18,
+"accounts": [
+0,
+7,
+0,
+1,
+14,
+29
+],
+"data": "2"
+},
+{
+"programIdIndex": 15,
+"accounts": [
+32,
+1,
+26,
+29,
+28,
+18,
+23,
+20,
+21,
+24,
+4,
+3,
+12,
+0,
+7,
+10,
+5,
+11,
+17,
+35,
+6,
+8,
+33,
+31,
+14,
+34,
+15
+],
+"data": "HnQ14hy6fxFyWFo37em75c3QQ8voPUd4i"
+},
+{
+"programIdIndex": 14,
+"accounts": [
+0,
+9
+],
+"data": "3Bxs4YUqkGvWVu1Z"
+}
+]
+}
+},
+"meta": {
+"err": null,
+"loadedAddresses": {
+"writable": [
+"MAyhSmzXzV1pTf7LsNkrNwkWKTo4ougAJ1PPg47MD4e",
+"2i3uCDzDhr3pSvMPF5uBpUckLAv7XGdo2a8soiqNJMHk",
+"5cjcW9wExnJJiqgLjq7DEG75Pm6JBgE1hNv4B2vHXUW6",
+"BwWK17cbHxwWBKZkUYvzxLcNQ1YVyaFezduWbtm2de6s",
+"Fh9HmeLNUMVCvejxCtCL2DbYaRyBFVJ5xrWkLnMH6fdk",
+"GYH1Gae1wJytMSvMvw8JVcv7nuAbxi8i9erNVbERnzXd"
+],
+"readonly": [
+"13ec7XdrjF3h3YcqBTFDSReRcUFwbCnJaAQspM4j6DDJ",
+"So11111111111111111111111111111111111111112",
+"TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM",
+"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+"TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+"jitodontfront111111111111111111nopainnogain",
+"pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ",
+"4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf",
+"8Wf5TiAheLUqBrKXeYg2JtAFFMWtKdG2BSFgqUcPVwTt",
+"Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1",
+"Hq2wp8uJ9jCPsYgNHex8RtqdvMPfVGoYwjvF1ATiwn2Y"
+]
+},
+"innerInstructions": [
+{
+"index": 2,
+"instructions": [
+{
+"programIdIndex": 14,
+"accounts": [
+0,
+1
+],
+"data": "11113TWSuBR9M5P8AUg14aLwwd7n25zhZWoUjHQnmN4h8bJtfW3jDMagyGRpkwgUzve3D5"
+},
+{
+"programIdIndex": 29,
+"accounts": [
+1
+],
+"data": "GC3i2jSx8awwe9xBfbR9LBTrzgFPUE9b56kGnez3cWMeYXCT6hgYbeJGLzjsXvHdBEWG1KSCNu2Jzbw1mcERVAbRM8"
+},
+{
+"programIdIndex": 29,
+"accounts": [
+1
+],
+"data": "2zt6UCCHp66bJGRS4G7bTsjdxFh6FQ9sBEyRfGyPQKxYisAw"
+},
+{
+"programIdIndex": 14,
+"accounts": [
+0,
+4
+],
+"data": "11114oAXGVMNM4cnysg7h656y1MKBc93wvxRPLpxJ8KnxVoJW5YxUqmh4cWABQGFP9gSHu"
+},
+{
+"programIdIndex": 18,
+"accounts": [
+0,
+3,
+4,
+1,
+14,
+29
+],
+"data": "1"
+},
+{
+"programIdIndex": 29,
+"accounts": [
+1
+],
+"data": "84eT"
+},
+{
+"programIdIndex": 14,
+"accounts": [
+0,
+3
+],
+"data": "11116xBqNGt2jRnNF93sBfXRMDRbjh466M9yeHqsaJtM3avCkbYd5cAUmmmeYjXJGnd4f"
+},
+{
+"programIdIndex": 29,
+"accounts": [
+3
+],
+"data": "P"
+},
+{
+"programIdIndex": 29,
+"accounts": [
+3,
+1
+],
+"data": "6P1UWaPaaRbgkYSQ4xi5T8BVUdLwadd2pMKCgCBbwwwzU"
+},
+{
+"programIdIndex": 14,
+"accounts": [
+0,
+1
+],
+"data": "3Bxs4HUcP1et4CWT"
+},
+{
+"programIdIndex": 29,
+"accounts": [
+1,
+27,
+1,
+27
+],
+"data": "HTa3dWrCYmkBujoo8RJScrr3xFRTM1sfoECLDmZNr3hwoNsRNZZzVbk1ko8dHchjfxUKRZegANCtLWoLoRZ5eChMPTHqtPL6D7kuFPMHzq3wphc16cEgZ9TvQAAwKeqS8T"
+},
+{
+"programIdIndex": 29,
+"accounts": [
+1,
+27
+],
+"data": "BjBG9fDQbu1raSNbBZQYubkmLijGDjgXJHpedBBGGrFrgSFFPaBAwnF"
+},
+{
+"programIdIndex": 19,
+"accounts": [
+0,
+25,
+27,
+22,
+1,
+2,
+13,
+14,
+29,
+18
+],
+"data": "TPGpxKtZ4cc"
+},
+{
+"programIdIndex": 18,
+"accounts": [
+0,
+2,
+22,
+1,
+14,
+29
+],
+"data": "1"
+},
+{
+"programIdIndex": 29,
+"accounts": [
+1
+],
+"data": "84eT"
+},
+{
+"programIdIndex": 14,
+"accounts": [
+0,
+2
+],
+"data": "11116xBqNGt2jRnNF93sBfXRMDRbjh466M9yeHqsaJtM3avCkbYd5cAUmmmeYjXJGnd4f"
+},
+{
+"programIdIndex": 29,
+"accounts": [
+2
+],
+"data": "P"
+},
+{
+"programIdIndex": 29,
+"accounts": [
+2,
+1
+],
+"data": "6Y5CywK9PapDLSofGZi8LSK3ktu8KPKXMhZ5N6USqvnXq"
+},
+{
+"programIdIndex": 14,
+"accounts": [
+0,
+13
+],
+"data": "1111893pPWtvmcmjvwFr4cBzXmYc1MQPgz8L8ajdpYZnhb5w54f5qX5HBMHiTAUTSj8FUv"
+},
+{
+"programIdIndex": 29,
+"accounts": [
+1,
+3,
+27
+],
+"data": "6ApXSNCamGdm"
+},
+{
+"programIdIndex": 29,
+"accounts": [
+1,
+2,
+27
+],
+"data": "6ApXSNCamGdm"
+},
+{
+"programIdIndex": 29,
+"accounts": [
+1,
+27
+],
+"data": "31tb"
+},
+{
+"programIdIndex": 15,
+"accounts": [
+34
+],
+"data": "2euXLkcfZLoMHTht4sYjq254anhYYLvYLRhT5hTY3FsJChrMiUYuK1mspMQUUuDVbwyhyNWZjNPz9JL5rAjbeLqACavNA1yU7EPYhjdbKhEGsck7qfQdEpbeyZtPwVqu7RUeDtGcaHrjAt1VpHWK9iNAkiuwtyFRMuoSniCEM23nSuBNE6SRwVjfFcdpXkMbD9VPsk54KBJJo5Ukqio4RkUo2npuaE9V2PFvoRrWWydyksB3UA9ToSZnh554HEXEvdrbGT7uF5Cc4kLwTcv1iHFe9nQETyc43nJeXtdnK5Gaai171yoTLvopN1W4Le6H5yUomf2BqsWfveNBpYCkHeTwywvuda3NAvoJUYJf8kTWzhL4baMd9NVK7mJ5WZgKsh7opxjUHMysTtW82xEdkCzYwWWixycxReJbbR6GDg1A4LYgXwpsTZYqDknYrk12V8pg8tdiSgLY45vivr7ZmTTM"
+}
+]
+},
+{
+"index": 3,
+"instructions": [
+{
+"programIdIndex": 29,
+"accounts": [
+1
+],
+"data": "84eT"
+},
+{
+"programIdIndex": 14,
+"accounts": [
+0,
+7
+],
+"data": "11116xBqNGt2jRnNF93sBfXRMDRbjh466M9yeHqsaJtM3avCkbYd5cAUmmmeYjXJGnd4f"
+},
+{
+"programIdIndex": 29,
+"accounts": [
+7
+],
+"data": "P"
+},
+{
+"programIdIndex": 29,
+"accounts": [
+7,
+1
+],
+"data": "6P88xvStJjtDzVxJWAvQdzTEPEs78xjzqzxRRJxRVnq9D"
+}
+]
+},
+{
+"index": 4,
+"instructions": [
+{
+"programIdIndex": 31,
+"accounts": [
+33,
+15
+],
+"data": "6E5CZKNB2G93HVu9Syn6kkEUE5ZYBEkjrAY3ydFoTyftm5H"
+},
+{
+"programIdIndex": 29,
+"accounts": [
+3,
+1,
+7,
+4
+],
+"data": "g8BA8yLkXeGRs"
+},
+{
+"programIdIndex": 14,
+"accounts": [
+0,
+5
+],
+"data": "3Bxs4GaYqfvNoc9d"
+},
+{
+"programIdIndex": 14,
+"accounts": [
+0,
+4
+],
+"data": "3Bxs4T9PE2K34TbD"
+},
+{
+"programIdIndex": 14,
+"accounts": [
+0,
+23
+],
+"data": "3Bxs4iqbH75pfaLo"
+},
+{
+"programIdIndex": 15,
+"accounts": [
+34
+],
+"data": "T2jLjveMmM4gJ1fdXs3mfxL9Qdv96CLFw34vv8z1zWnvEFFmMduyHX5UKR5wBaAE8DCZXYwmkNYcAZqJxZwqjbLqqJGyRFxx1Qp41BBkiFEiPbyP5Lume75ZmHzerTuC26LF7vUqFuJYhVqgZzfe5iXGuPPggqFhPjYGUKDb7YkdCCYbQC8oc9Ds2hNr8mQPr6M8c1H256t4HZyH52eona7AnaKVYceRFGHE8j7drzZoeLN2NPAfdCURgUM5tRFY7s4m78e1Gx4AZo7bzYaTnpJH15ndcSzKn5JDCXQVWFsTCEnQiErQo2Ur41dXD1ycxta7MAk9St5EBE4qjsJL9BzzacgLxjME8KjJr2Fk4pws2q5wUP1teNfGY4vAeKgT8AGMVuCW1WJNEhfv2x7wxmzftUiy4tPbkNmwNUry4YaeUkR4kCTTr2Jn4L2SYwdPynksm5BAMZqZGsZGPZo8wVetxWD7H9SBYsV9W4C7ZWXvpz83a8xf"
+}
+]
+}
+]
+}
+}
+}
+],
+"non_creates": [
+{
+"mint": "6HW7Na6m1Nn3vZg4cs6ekUjEC26GBzydWv9hVE7Bpump",
+"tx": {
+"slot": 445637646,
+"transactionIndex": 765,
+"blockTime": null,
+"_fixture_note": "CONVERTED from 2026-09-09 LaserStream capture record (not a Helius response); blockTime unknown in capture",
+"transaction": {
+"signatures": [
+"2dNRhpXGTcAMFGqjANKnXra2SSWuC4DaL7Qf9aiCWYNPdkVFrBMw8PTJB6Gbkfsk7xmZpfcRXeKHfwjof3YYgJMz"
+],
+"message": {
+"accountKeys": [
+"MhKNJZA8EQkBXqhbs8qWxXRAJeQrTqwQ9hUbAFripwS",
+"93SCfkWsNhj4iB8TgtHEHQttEz9Ap1GZRb8LPP8SvqcH",
+"8ZjzUhmxDREvwhYfoGYsfsvhLHoKy2BLA5iLCm1GZGVT",
+"3PE2buu6VjQJ5QHoCDAEjUF6sNXedkKTi7EHUXvPA4cE",
+"AaVkWvcZ8ENa9jC4NXKEEU4nYFKMyoQJ6WUkHdEB8zGR",
+"7UdKdngMikDqyRBSgguBf8T2hvZbgxFu9BGoene6wn3X",
+"AaWBKn8dAi7M1qy8nSae2Eu4MZ7H5DtNWhrj7nVTLGwn",
+"3Wo4BMYjwzjKkPmwpr7X1eVuPmyqAh7gZfWZwD33gKhP",
+"DRtK9PaLWhYMhRUQkBVbWGKRagoNGn5La4JgHqoHTxEy",
+"378MAiZdNw1zVtvdmSqrdfMchpEJeAfdMYBZmZQ5XYpx",
+"8Bkn3WN1rh9Hivekq6G4KPg7fMjLbFHffqqb5fyJJFRn",
+"6HW7Na6m1Nn3vZg4cs6ekUjEC26GBzydWv9hVE7Bpump",
+"11111111111111111111111111111111",
+"8psNvWTrdNTiVRNzAgsou9kETXNJm2SXZyaKuJraVRtf",
+"proVF4pMXVaYqmy4NjniPh4pqKNfMmsihgd4wdkCX3u",
+"ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL",
+"FrQVBmaDh6TvKML968aYBWBsycMZdvhwBVgfmroEtEjQ",
+"ComputeBudget111111111111111111111111111111"
+],
+"instructions": [
+{
+"programIdIndex": 17,
+"accounts": [],
+"data": "Fd5dBD"
+},
+{
+"programIdIndex": 17,
+"accounts": [],
+"data": "jpXD4XoMA23"
+},
+{
+"programIdIndex": 17,
+"accounts": [],
+"data": "3qHwdyYiv18s"
+},
+{
+"programIdIndex": 15,
+"accounts": [
+0,
+1,
+10,
+11,
+12,
+43
+],
+"data": "2"
+},
+{
+"programIdIndex": 15,
+"accounts": [
+0,
+2,
+13,
+56,
+12,
+43
+],
+"data": "2"
+},
+{
+"programIdIndex": 15,
+"accounts": [
+0,
+3,
+13,
+11,
+12,
+43
+],
+"data": "2"
+},
+{
+"programIdIndex": 12,
+"accounts": [
+0,
+4
+],
+"data": "3Bxs4ETVozHASjZZ"
+},
+{
+"programIdIndex": 14,
+"accounts": [
+0,
+19,
+4,
+52,
+45,
+12
+],
+"data": "2tDqDdUmhLW1s"
+},
+{
+"programIdIndex": 14,
+"accounts": [
+0,
+5,
+1,
+56,
+11,
+2,
+14,
+19,
+24,
+6,
+43,
+43,
+15,
+12,
+44,
+14,
+57,
+19,
+24,
+20,
+55,
+27,
+26,
+25,
+26,
+25,
+25,
+45,
+53,
+56,
+43,
+58,
+19,
+20,
+4,
+45,
+45,
+50,
+29,
+52,
+54,
+31,
+30,
+32,
+33,
+34,
+28,
+39,
+19,
+20,
+4,
+38,
+39,
+35,
+41,
+54,
+52,
+36,
+39,
+45,
+45,
+50,
+59,
+37,
+40,
+42,
+46,
+19,
+4,
+6,
+48,
+22,
+11,
+7,
+8,
+12,
+45,
+43,
+9,
+51,
+23,
+21,
+47,
+49,
+16,
+18,
+3
+],
+"data": "3J6YZPBFUKiqpdYbD84Zn8DwKCL5VDL92Xr6fYgJ8TP9rcBFY5g8Egjw9WyFjoxXu3c4sgaGNASJBzyegLbj"
+}
+]
+}
+},
+"meta": {
+"err": null,
+"loadedAddresses": {
+"writable": [
+"5eHhjP8JaYkz83CWwvGU2uMUXefd3AazWGx4gpcuEEYD",
+"ARu4n5mFdZogZAravu7CcizaojWnS6oqka37gdLT5SZn",
+"8XrtGP8RG33AnrN2yJ6H3gnXPNQ3dYXKqM72bpzhcsd6",
+"2DYcto5GSM9wp8v75QNPTSjkPZwvJyGBeebyBQAvNn9Z",
+"62qc2CNXwrYqQScmEdiZFFAnJR262PxWEuNQtxfafNgV",
+"Hq2wp8uJ9jCPsYgNHex8RtqdvMPfVGoYwjvF1ATiwn2Y",
+"6NYbrtDU9Mf4GzWkSNkybqhgwVbgXznzD7puCkZ7j4VJ",
+"F2KCaXcp7AoQtxTDvNEDCyMyWjSCAMWNzcyN9dsPfPs5",
+"2A5Cmp2mYwPzdxsQ5w6YTukYR2dNjCWVhnDTWUrifRxd",
+"aXQtJ9cGr1zgLyrppKJ5BR5jv1RMjyYL5Wetd2KZNtB",
+"GwRSc3EPw2fCLJN7zWwcApXgHSrfmj9m4H5sfk1W2SUJ",
+"83v8iPyZihDEjDdY8RdZddyZNyUtXngz69Lgo9Kt5d6d",
+"dwxR9YF7WwnJJu7bPC4UNcWFpcSsooH6fxbpoa3fTbJ",
+"D3CDPQLoa9jY1LXCkpUqd3JQDWz8DX1LDE1dhmJt9fq4",
+"FEu77KjLCjp29gsdBRVpwYZgvMXwYc8neQB6QrrmYm3Y",
+"CrdxFiEYgfHw62thD5q9E2c1Zeq5pnM7FPvECud4S7M1",
+"DH3zviArwCQcTwgcpBLmPG3ULESS3QhRquGCR4jfd2rQ",
+"ChE8pMhGyNwXXk6doue8smuDjbUR2ji8Nhb7i97chDSV",
+"6ScXCzzvzQnpJNQeM55cABJXjSxTd4F38RGRKXbsvR9c",
+"CGERi5G9os9aiEAau4CLkCuPb15x2eaKHzXSdXpcv8Yn",
+"F5Lb1Hamu7SBA3fPDwmajtACqaYNLrk4AQ8h8aL5936g",
+"LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",
+"54gH69QW2nAhTuisb9Fdw7GLKAzMqtM7xGfWyCnc5ssX",
+"CAcNzCBJN9uLPRyKsdAWqYExyZUd1bxovpXCtnmYHjLL",
+"B1iKTyofGs3fdhngPCzeJn3Src9afiLzLDKQN5UA9pfr"
+],
+"readonly": [
+"TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+"Ag3hiK9svNixH9Vu5sD2CmK5fyDWrx9a1iVSbZW22bUS",
+"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+"6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",
+"8Wf5TiAheLUqBrKXeYg2JtAFFMWtKdG2BSFgqUcPVwTt",
+"4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf",
+"pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ",
+"MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr",
+"Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1",
+"So11111111111111111111111111111111111111112",
+"Sysvar1nstructions1111111111111111111111111",
+"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+"2YR8bXXn4tTnq8nVjvpYnBiQ7ZKjN3G16wxE8ShL3KaB",
+"CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH",
+"ALPHAQmeA7bjrVuccPsYPiCvsi428SNwte66Srvs4pHA",
+"whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc",
+"D1ZN9Wj1fRSUQfCjhvnu1hqDMT7hzjzBBpi12nVniYD6"
+]
+},
+"innerInstructions": [
+{
+"index": 3,
+"instructions": [
+{
+"programIdIndex": 43,
+"accounts": [
+11
+],
+"data": "84eT"
+},
+{
+"programIdIndex": 12,
+"accounts": [
+0,
+1
+],
+"data": "11116xBqNGt2jRnNF93sBfXRMDRbjh466M9yeHqsaJtM3avCkbYd5cAUmmmeYjXJGnd4f"
+},
+{
+"programIdIndex": 43,
+"accounts": [
+1
+],
+"data": "P"
+},
+{
+"programIdIndex": 43,
+"accounts": [
+1,
+11
+],
+"data": "6UKTSyhtp9YR7zQkGvFTPoN7WAFK9zzZNNm1SaFf7bPrk"
+}
+]
+},
+{
+"index": 5,
+"instructions": [
+{
+"programIdIndex": 43,
+"accounts": [
+11
+],
+"data": "84eT"
+},
+{
+"programIdIndex": 12,
+"accounts": [
+0,
+3
+],
+"data": "11116xBqNGt2jRnNF93sBfXRMDRbjh466M9yeHqsaJtM3avCkbYd5cAUmmmeYjXJGnd4f"
+},
+{
+"programIdIndex": 43,
+"accounts": [
+3
+],
+"data": "P"
+},
+{
+"programIdIndex": 43,
+"accounts": [
+3,
+11
+],
+"data": "6Uxa3rhzevDjYkuUWFr59P8BcxQx8AmiEGtkBPtYPnaKd"
+}
+]
+},
+{
+"index": 7,
+"instructions": [
+{
+"programIdIndex": 12,
+"accounts": [
+4
+],
+"data": "9krTDU2LzCSUJuVZ"
+},
+{
+"programIdIndex": 12,
+"accounts": [
+4
+],
+"data": "SYXsBSQy3GeifSEQSGvTbrPNposbSAiSoh1YA85wcvGKSnYg"
+},
+{
+"programIdIndex": 45,
+"accounts": [
+4,
+52
+],
+"data": "6WZbjiHJ3vR5Wpex724JY6hRyJd6bqr5YTVCyBD2GNazk"
+}
+]
+},
+{
+"index": 8,
+"instructions": [
+{
+"programIdIndex": 43,
+"accounts": [
+5,
+56,
+24,
+0
+],
+"data": "jBpKuA16pHfRo"
+},
+{
+"programIdIndex": 43,
+"accounts": [
+24,
+56,
+2,
+19
+],
+"data": "jLwfV4Xp1cXXj"
+},
+{
+"programIdIndex": 57,
+"accounts": [
+19,
+55,
+27,
+24,
+20,
+26,
+25,
+26,
+25,
+25,
+45,
+53,
+56,
+43
+],
+"data": "VtQoCUchkAKUSgyArRjDAPP5"
+},
+{
+"programIdIndex": 43,
+"accounts": [
+24,
+56,
+26,
+19
+],
+"data": "jDZ21tuBHPoLH"
+},
+{
+"programIdIndex": 45,
+"accounts": [
+25,
+20,
+25
+],
+"data": "3oBjue7BFPzo"
+},
+{
+"programIdIndex": 14,
+"accounts": [
+44
+],
+"data": "2Ap35ipDGK3kmeQhjR9PbtNGBoV7yAREGqAPw2haTtdxJT"
+},
+{
+"programIdIndex": 58,
+"accounts": [
+45,
+45,
+50,
+19,
+29,
+52,
+54,
+4,
+31,
+20,
+30,
+32,
+33,
+34,
+28
+],
+"data": "4AoQRYXBdnCH2gDevfWmfM9YvbGTTVFu34PcKSbt7vBmNtHwAhNvQMXRazK"
+},
+{
+"programIdIndex": 45,
+"accounts": [
+20,
+54,
+30,
+19
+],
+"data": "hRVV4ugdwacdj"
+},
+{
+"programIdIndex": 45,
+"accounts": [
+31,
+52,
+4,
+29
+],
+"data": "j1Jb5kCVni3bN"
+},
+{
+"programIdIndex": 14,
+"accounts": [
+44
+],
+"data": "2Ap35ipDGK3kmeQhjR9PbtMge4ouduDeub5b36BzmiP1FM"
+},
+{
+"programIdIndex": 39,
+"accounts": [
+38,
+39,
+35,
+41,
+20,
+4,
+54,
+52,
+36,
+39,
+19,
+45,
+45,
+50,
+59,
+39,
+37,
+40,
+42
+],
+"data": "fx9RHbGFfZ8V4mdWQnTNZ1yPct3bHJW4MyvUp7"
+},
+{
+"programIdIndex": 39,
+"accounts": [
+59
+],
+"data": "yCGxBopjnVNQkNP5usq1PpDMsNc5rTJm1MzZsomuhvF99NkGgrHR2WndNNQU1Rg9BU5W5jp5Ps1HV4SB9w5hkxTQvavY1eTvXzQtD1T6dSzsg2eHNtLeXPXZaJHzwuXhYWEnUjMwaGXEf3VDunvM3UBeHMYmkLC1HqdAxWYB97m1Z5NitYzoWg5QwrVd5qEEAe4AGo"
+},
+{
+"programIdIndex": 45,
+"accounts": [
+20,
+54,
+35,
+19
+],
+"data": "hN1QyCNtJGFTb"
+},
+{
+"programIdIndex": 45,
+"accounts": [
+41,
+52,
+4,
+38
+],
+"data": "h3TPJ6dDTBwFN"
+},
+{
+"programIdIndex": 39,
+"accounts": [
+59
+],
+"data": "BHgNCLk8KLFLM9Rfkm9QH8xLzmcp6P8WPuuMnV6PimbdC8ni9WPv9GSJQgAx6G1ePLuWfa5wMo3zJCPrY9PLEu9VLNSZa56LpwiVYR9Pge8eAt6tqG5TVzx5M7wdqqJJyVydN1CgWFqRea8Rf9owpNKhXtV646hyxjh95jsdtBemC4XhpghcrVWgmjLMRmAtLXhaiYxrDesZUgvbY1JuHFgXhehkxXa"
+},
+{
+"programIdIndex": 14,
+"accounts": [
+44
+],
+"data": "2Ap35ipDGK3kmeQhjR9PbtMxyqqiqSDnJS7Zvn4hh9S8K9"
+},
+{
+"programIdIndex": 45,
+"accounts": [
+4,
+19,
+19
+],
+"data": "A"
+},
+{
+"programIdIndex": 46,
+"accounts": [
+48,
+22,
+11,
+7,
+8,
+6,
+19,
+12,
+43,
+9,
+51,
+46,
+23,
+21,
+47,
+49,
+16,
+18
+],
+"data": "6CKGW8fUnQ6LJzscNZPFfAFn3M8A9CyGb"
+},
+{
+"programIdIndex": 49,
+"accounts": [
+47,
+46
+],
+"data": "6E5CZKNB2G93JD7dEqAgUuPpoqQbUN94jwC4U71qvK9Gk87"
+},
+{
+"programIdIndex": 43,
+"accounts": [
+8,
+11,
+6,
+7
+],
+"data": "hyunxe6QJtHtH"
+},
+{
+"programIdIndex": 12,
+"accounts": [
+19,
+9
+],
+"data": "3Bxs4TeR1QAdBEzK"
+},
+{
+"programIdIndex": 12,
+"accounts": [
+19,
+7
+],
+"data": "3Bxs4JjMtFMASS3H"
+},
+{
+"programIdIndex": 12,
+"accounts": [
+19,
+18
+],
+"data": "3Bxs4RBSBtFfD1nF"
+},
+{
+"programIdIndex": 12,
+"accounts": [
+19,
+22
+],
+"data": "3Bxs4RM8ru4Uhd3m"
+},
+{
+"programIdIndex": 46,
+"accounts": [
+51
+],
+"data": "Aa2dSnituwvkDoueD1F3asQbifCHFpEEzkoCeSuJ1SqxauTqs1P74AcFDf9udU3V4BKJPdTyKfeP1aYZbKy3f8Z8sQP3Faz4Q2zCCUhWiwyjDozbQamqURzxd65ky8eLNUHvjLdMSR7r8u4mi7kKLLpKQSYzxaUY825AFqQLq7V9PybHQk3XDfhRK6tc1zVpgomubvFRvJyuB6fFeqLx8HnCDWUYR2eW1R9Nnc8tRe93vWtLmjfkHduxtnLpZxdcXFGtDJtnJQVJk7SwMv5VyfHeFo841BCBo7Cu2KgfDuy134JcBgUocZZcyjypZCPfq2iA3qtZfy6xddD9tTYRkY63W3Cn5xH8rQzaNwiK4EdaQGL6XXWt3MNTVvZiuBfxPYYGhBmqrpfnwLvjGBzC1WHecfEBi5vrWpBMqJ9WsGL1WUKteJht3u7peixSh16B12hutiXx2daMmGkNAd3UTpzsNYgXPxwvyBhzQ12yKFukBXNS87if4iDGnixq95VnwzzzxF"
+},
+{
+"programIdIndex": 12,
+"accounts": [
+19,
+0
+],
+"data": "3Bxs4ETVozHASjZZ"
+},
+{
+"programIdIndex": 14,
+"accounts": [
+44
+],
+"data": "2Ap35ipDGK3kmeQhjR9PbtNZkTGMpFqvLTyrqgg9YfmnxP"
+},
+{
+"programIdIndex": 43,
+"accounts": [
+6,
+11,
+1,
+19
+],
+"data": "hyunxe6QJtHtH"
+},
+{
+"programIdIndex": 14,
+"accounts": [
+44
+],
+"data": "2i5U4oDAL1TsPpnegHVhp7jcqMEQnTA3yKHU5wRdFQHUuehzqd8CoDeDEf68RjMiTgLXXoBa1iKuAQdt7S4Y7CRu4oo3KYfVsjaDg4C2myuPwCuxKe6iWZ8yUNH6P1ccyBVWHKhWRJ8HUL33rrSttd2TCDzCAW2ugu2C5f2Dj2yZxQofpgyEibEPQb82CffMtFDvVWSwQZbPXGHwVWryVLbjBwARU62eud3WHjheNfzX5ZrsbqPmXcJkcrK4BQXBNJddGrLVfcqFMiZ439uaRSrgYBCzFZyURv5ndN2SVg4YMjcPo1D1AP7Y6R1VX4sYeLeUYTrbptqSMcSudzVvqMpuMNhdMTpPUaFvFzupycqDYv1UKRFTm7QrWfHwxUDzxA1y4aPbcTFFkmn9psNd8XzGfX3bmhTC"
+}
+]
+}
+]
+}
+}
+},
+{
+"mint": "Ha7P76G7RYToLvcuBoaniyH2JR6gkdprN8YZ8PsaEjhe",
+"tx": {
+"slot": 445637912,
+"transactionIndex": 1431,
+"blockTime": null,
+"_fixture_note": "CONVERTED from 2026-09-09 LaserStream capture record (not a Helius response); blockTime unknown in capture",
+"transaction": {
+"signatures": [
+"5Fgs9Rvirr1Sk6ndzvzzPg1pcASYyU9yNcGYxBvvE88C6hxTUKNJaAmuZGZH1VjXxWBxXEBVjXJxwY8Yi2KSLBEk"
+],
+"message": {
+"accountKeys": [
+"EYyaV4RmDWxJmhSBhGVnd7VnYb1WpeNrDD45xhP16XfT",
+"GL1NNcZNNyvoDfUdtBpwGfAU4oAMCK1voNmDJe3jEGhi",
+"ASA4AAJHEkk9YAPEncWXhAFcdgT7uehc6K98g3WuSeJU",
+"9xvPqdKMxrourjA5sYAuSUgg7nkaKcUcHZ12i39MowPV",
+"7hN73B8QePFJQKDu3XvVyPWQXNSsfny6zBbMMzTdPxo8",
+"5Eqsf1uAijMpXUsufoPfr9X3PMuv9q4d2wFYzG9wEB8X",
+"444rvBBVRE88A1TvA87z7SxR5opYRwwiy3DeptU9D8eT",
+"23AHW6XAQpSwF3gWoUYTimpLarSQYtYSMhCb6NCwvsFD",
+"node1PqAa3BWWzUnTHVbw8NJHC874zn9ngAkXjgWEej",
+"SysvarRecentB1ockHashes11111111111111111111",
+"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+"11111111111111111111111111111111",
+"Ha7P76G7RYToLvcuBoaniyH2JR6gkdprN8YZ8PsaEjhe",
+"G7MVcM9YzGxrmLtmobUgyt8A6WhQ2dgQX3aSJcPejdEp",
+"4Z2XouBVpns8DLjNH4hQBsBvm62oGJqC5nVQ2v6yyf5S",
+"ComputeBudget111111111111111111111111111111"
+],
+"instructions": [
+{
+"programIdIndex": 11,
+"accounts": [
+2,
+9,
+1
+],
+"data": "6vx8P"
+},
+{
+"programIdIndex": 15,
+"accounts": [],
+"data": "JCheYw"
+},
+{
+"programIdIndex": 15,
+"accounts": [
+19
+],
+"data": "3F5YzGZm9HVh"
+},
+{
+"programIdIndex": 11,
+"accounts": [
+0,
+3
+],
+"data": "3Bxs4YRYmunosRyZ"
+},
+{
+"programIdIndex": 13,
+"accounts": [
+0,
+0,
+3,
+20,
+10,
+11
+],
+"data": "BUVPraiFm5Zga7T76D"
+},
+{
+"programIdIndex": 13,
+"accounts": [
+0,
+21,
+4,
+3,
+12,
+20,
+16,
+13,
+13,
+13,
+22,
+10,
+23,
+11,
+24,
+0,
+4,
+3,
+25,
+17,
+12,
+5,
+6,
+11,
+7,
+10,
+22,
+26,
+27,
+28,
+14,
+18
+],
+"data": "UAnyP8jW36RwUGGY2SE4z3R3wgxrcPWFWsVuN6e55PvCG3hg97cJgpwbAVtX5u9"
+},
+{
+"programIdIndex": 10,
+"accounts": [
+3,
+0,
+0
+],
+"data": "A"
+},
+{
+"programIdIndex": 11,
+"accounts": [
+0,
+8
+],
+"data": "3Bxs4BcPoFZBeRb5"
+}
+]
+}
+},
+"meta": {
+"err": null,
+"loadedAddresses": {
+"writable": [
+"6pUgoD3VRh6UWxSHFEBpHJQRiTfJeSEgozeB88eqR7N3",
+"7hTckgnGnLQR6sdH7YkqFTAA7VwTfYFaZ6EhEsU3saCX",
+"GXPFM2caqTtQYC2cJ5yJRi9VDkpsYZXzYdwYpGnLmtDL"
+],
+"readonly": [
+"jitodontfront1111111111111111TradeWithDebot",
+"So11111111111111111111111111111111111111112",
+"7qACKdVn1Pjqa7SKWNCvGfnHjFviSuefPDzpJTvar4TD",
+"TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+"ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL",
+"6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",
+"4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf",
+"Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1",
+"8Wf5TiAheLUqBrKXeYg2JtAFFMWtKdG2BSFgqUcPVwTt",
+"pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ"
+]
+},
+"innerInstructions": [
+{
+"index": 4,
+"instructions": [
+{
+"programIdIndex": 11,
+"accounts": [
+3
+],
+"data": "9krTDU2LzCSUJuVZ"
+},
+{
+"programIdIndex": 11,
+"accounts": [
+3
+],
+"data": "SYXsBSQy3GeifSEQSGvTbrPNposbSAiSoh1YA85wcvGKSnYg"
+},
+{
+"programIdIndex": 10,
+"accounts": [
+3,
+20
+],
+"data": "6aggFRFxZWNE93BXhnRh875wB3UbLEPeYv8DwTH4pPg6R"
+}
+]
+},
+{
+"index": 5,
+"instructions": [
+{
+"programIdIndex": 24,
+"accounts": [
+25,
+17,
+12,
+5,
+6,
+4,
+0,
+11,
+7,
+22,
+26,
+24,
+27,
+28,
+14,
+18
+],
+"data": "5jRcjdixRUDUeVP9Dz4ouyR96BbRdN1qR"
+},
+{
+"programIdIndex": 28,
+"accounts": [
+27,
+24
+],
+"data": "6E5CZKNB2G93JKgXC2horvt9pEbjcjmNVyazAepHkxj8asq"
+},
+{
+"programIdIndex": 22,
+"accounts": [
+4,
+12,
+6,
+0
+],
+"data": "hc72AvkaMduuo"
+},
+{
+"programIdIndex": 24,
+"accounts": [
+26
+],
+"data": "2ytdt8TmtejZES5wWFDuEAzW5CJHKntg4s6Xqif7gWpBdaLUDsX8Eu1JEQXgLQ2vprZCyN9wNXQVV6nyMUCVBgzNebALsM2rE6nca5XvXWbDGctWUFh8Ef6LpW1rhmiLEfYjVvYroNkL1mEWPGY9T5tk6ydpQpzM3KrnNTEp5SXbksPM5rhyP7896MmLKF4VaYu6rEo421T5CuuZVMs67ihMiqLKTbucuFYc1siD7ywWZXgA9brJyHGKGXLhWT93bbmptRGzmsBfjqth8iJcW9cQqqz6n3XYPPXqMf5eceE9CU9LZQzTYVfseM6XtrKUTZGbg7MFoiwnfYxsWNKR2fpBwsS4rcStiJc5iUcsu9DTbszHmZNybsPg9hUfpzxkcaJQJTrkANCoy9bppN5Jr1P4PULtFeYfNEqs7tkaY43AA2cvpzRswjxNQ1ExfEhZUL5fzEPN5QWBWi8vCsDoZ5fQryE1oCMFcWZ5BMQFs2YSLdExn9T1Jw"
+},
+{
+"programIdIndex": 11,
+"accounts": [
+0,
+3
+],
+"data": "3Bxs4LQHS7AVcG5d"
+},
+{
+"programIdIndex": 10,
+"accounts": [
+3
+],
+"data": "J"
+},
+{
+"programIdIndex": 10,
+"accounts": [
+3,
+20,
+16,
+0
+],
+"data": "iPxxqngoxGNKz"
+}
+]
+}
+]
+}
+}
+},
+{
+"mint": "Z7P76v8UURzwtMVe1kzqmVnAxJE4WBHHP5RsBcKpump",
+"tx": {
+"slot": 445638156,
+"transactionIndex": 1481,
+"blockTime": null,
+"_fixture_note": "CONVERTED from 2026-09-09 LaserStream capture record (not a Helius response); blockTime unknown in capture",
+"transaction": {
+"signatures": [
+"2fH8umYnm8BcbhPbrUzjQQDt7J4B98xLfdew1Uxnt26Hvok1eM7wy9APD6cWzTKAhR16aR9Ud94rZkrn6WgQnJEK"
+],
+"message": {
+"accountKeys": [
+"7i56ovtdx4oHK3h3Z35hpmSgGeXbjcEvEsypHEertq4P",
+"TSy4JQnq4L47he98BmgWMYrk9JCzxDiYty6odDQTRw4",
+"2BcrvuzmE4tq4HsRQtiMJX2RwTLbyKMwP9UsKAonEMgh",
+"9yj3zvLS3fDMqi1F8zhkaWfq8TZpZWHe6cz1Sgt7djXf",
+"BzyRYjeVWSehVFTWfUk6jVNLABov11iQXoovyJjzodAi",
+"CcTNKBhQKYu7nB4eRrRFQoXEvpd6H5QnGKh93pwniBtp",
+"D6WyCFtAAbT2MkkeHsrWLwvxQgm5nM2xRSxp1mKMFSAz",
+"EWvDGRtPzBXQKx3iowjDR1Y6E5VC9qDzY2ycumZQB2zR",
+"J7czzDePdkyei9ffRCZjcBX5orVH78HgPEfcd9jFKFQG",
+"11111111111111111111111111111111",
+"ComputeBudget111111111111111111111111111111",
+"Z7P76v8UURzwtMVe1kzqmVnAxJE4WBHHP5RsBcKpump",
+"jitonobundLe1111111111111111111111111111123",
+"proVF4pMXVaYqmy4NjniPh4pqKNfMmsihgd4wdkCX3u",
+"2JAR6ubPuv9AEU5QZKjCWD6EhUZ8kBqKwEEHoy2qT1tD"
+],
+"instructions": [
+{
+"programIdIndex": 10,
+"accounts": [
+12
+],
+"data": "FFV62K"
+},
+{
+"programIdIndex": 10,
+"accounts": [],
+"data": "3ZM2XM2NFzuM"
+},
+{
+"programIdIndex": 9,
+"accounts": [
+0,
+1
+],
+"data": "3Bxs4ETVozHASjZZ"
+},
+{
+"programIdIndex": 13,
+"accounts": [
+0,
+0,
+1,
+20,
+21,
+9
+],
+"data": "2tDqDdUmhLW1t"
+},
+{
+"programIdIndex": 13,
+"accounts": [
+0,
+8,
+1,
+11,
+20,
+3,
+13,
+17,
+6,
+18,
+22,
+21,
+26,
+9,
+27,
+13,
+19,
+17,
+6,
+18,
+24,
+16,
+11,
+4,
+7,
+9,
+2,
+21,
+22,
+28,
+25,
+23,
+14,
+15,
+3
+],
+"data": "UYwQwy5pgDfvdkKtF5MdTooi44zotZPqbGoeHAMSafTSpFk7apZobggYF9UdnX8392R"
+},
+{
+"programIdIndex": 9,
+"accounts": [
+0,
+5
+],
+"data": "3Bxs46EK7JF9TBJo"
+}
+]
+}
+},
+"meta": {
+"err": null,
+"loadedAddresses": {
+"writable": [
+"5eHhjP8JaYkz83CWwvGU2uMUXefd3AazWGx4gpcuEEYD",
+"62qc2CNXwrYqQScmEdiZFFAnJR262PxWEuNQtxfafNgV",
+"ARu4n5mFdZogZAravu7CcizaojWnS6oqka37gdLT5SZn",
+"DT2krA8vSP96D68nH86eAztZHVM18YB5i4gDXjLBDXm7"
+],
+"readonly": [
+"6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",
+"So11111111111111111111111111111111111111112",
+"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+"TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+"pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ",
+"4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf",
+"8Wf5TiAheLUqBrKXeYg2JtAFFMWtKdG2BSFgqUcPVwTt",
+"ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL",
+"Ag3hiK9svNixH9Vu5sD2CmK5fyDWrx9a1iVSbZW22bUS",
+"Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1"
+]
+},
+"innerInstructions": [
+{
+"index": 3,
+"instructions": [
+{
+"programIdIndex": 9,
+"accounts": [
+1
+],
+"data": "9krTDU2LzCSUJuVZ"
+},
+{
+"programIdIndex": 9,
+"accounts": [
+1
+],
+"data": "SYXsBSQy3GeifSEQSGvTbrPNposbSAiSoh1YA85wcvGKSnYg"
+},
+{
+"programIdIndex": 21,
+"accounts": [
+1,
+20
+],
+"data": "6Tqmmk8RSEv57aXnZeCH3Jjt4mY7R9MWcwo9fmpLgByVM"
+}
+]
+},
+{
+"index": 4,
+"instructions": [
+{
+"programIdIndex": 22,
+"accounts": [
+8,
+11,
+6,
+0
+],
+"data": "ijs22DJJvgaEh"
+},
+{
+"programIdIndex": 19,
+"accounts": [
+24,
+16,
+11,
+4,
+7,
+6,
+17,
+9,
+2,
+22,
+28,
+19,
+25,
+23,
+14,
+15
+],
+"data": "5jRcjdixRUDfeRwBmCepseVh27HeoA74K"
+},
+{
+"programIdIndex": 23,
+"accounts": [
+25,
+19
+],
+"data": "6E5CZKNB2G93HJgcuCMePdWEXSzd2oaTRkHtFqiqf7okqsM"
+},
+{
+"programIdIndex": 22,
+"accounts": [
+6,
+11,
+7,
+17
+],
+"data": "ijs22DJJvgaEh"
+},
+{
+"programIdIndex": 19,
+"accounts": [
+28
+],
+"data": "2ytdt8TmtejZES5wWFDuEAviJoG22jyXL43DBe7YxXCkC2GAQBprkhP8yonD5oEZRbBgdm4Q7avYU5eh4LpZfewnNnUyikCxti5ttatTRkjQmRXEFSyEj9XM8qDX7R6E9A2vDPmSmJYWzkeCDHvgMkbPPbiP5iXwgWELW3HpfRwbuaCoBe9imySpp12pkxujUXfL9PH89sx4948qUVNLKoXDANbSvVgdAZKjubVZ74sWmdgZEP1BiMMjgLfJjGeVckR4mD9FMitkVyvR2QmgyZmE1J84MzJNXvXL8NSp8cJqQjxFCLC3FKdnMMKRAn9TqoK4RgEHC2Ecpb3YaA9VRw5HzKZd7oGgv3hCmxX4ag5GNbkd2JfPoRQdVnuShCgsut6XxVZECRbL55r8g55WWSnzuWJQA17K6mfKaUKvNroog3cq71XR1pFYQrCHmG8iV8iisfULEaqSUKsjz8ZPNGLzfcydL1YXp6FniF7CzYGsYDtRjAiAcP"
+},
+{
+"programIdIndex": 9,
+"accounts": [
+17,
+18
+],
+"data": "3Bxs4CXQd2gYdmf5"
+},
+{
+"programIdIndex": 21,
+"accounts": [
+18
+],
+"data": "J"
+},
+{
+"programIdIndex": 13,
+"accounts": [
+27
+],
+"data": "2Ap35ipDGK3kmeQhjR9PbtNadyfkRLLf6pAVdk12Z8DhbV"
+},
+{
+"programIdIndex": 21,
+"accounts": [
+18,
+20,
+1,
+17
+],
+"data": "gzSyxa2Ybowgk"
+},
+{
+"programIdIndex": 21,
+"accounts": [
+1,
+17,
+0
+],
+"data": "A"
+},
+{
+"programIdIndex": 9,
+"accounts": [
+17,
+3
+],
+"data": "3Bxs49hxP9regWbq"
+},
+{
+"programIdIndex": 9,
+"accounts": [
+17,
+0
+],
+"data": "3Bxs4HGx3s74Pzco"
+},
+{
+"programIdIndex": 13,
+"accounts": [
+27
+],
+"data": "2i5U4oDAL1TsPpnegHVhp7jcqMEQnTA3yGMSKGYsURDg6jK3bXM48nnKvkCV9PQy3R34EwEAYfCqu8bgi9WJ6dUpaXrjyN1BWgGQEMy7w9sMiHFaFZ6wBc5b3yuxMPrcepF69FVp1bqxxsJdwwqbg3rCGSXtrF3wAgkxvmbRshd6XLzeNEdydfnwbD2uUuyUZrJhT2VTPiw3Mw7WLkcjYXBKWWafJbAufYiKfarUbm8Lrj2MJGN4L3BZ5SAKENGJ6aHx8exDqPecbbndqmUgv6eCaj3QjQoSMTM3JY47rKY1EgcGvQQ1VPSt3ShS8H1WjA2QSVV6jwFoNJdoqqYPVVzU1869a3aRvvcYYuVK7uBaYyX5HsAYxRvFv8YJacnvAwoAr9rNLPb4sMeH3q9p7mzKoAoDZKjo"
+}
+]
+}
+]
+}
+}
+}
+]
+}
