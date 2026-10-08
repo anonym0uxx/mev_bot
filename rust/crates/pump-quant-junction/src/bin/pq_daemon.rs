@@ -4492,6 +4492,9 @@ fn main() -> ExitCode {
                 if let Ok(j) = serde_json::to_string(&engine.model_lane_report()) {
                     let _ = std::fs::write("data/model_lane_report.json", j);
                 }
+                if let Ok(j) = serde_json::to_string(&engine.model_funnel()) {
+                    let _ = std::fs::write("data/model_funnel.json", j);
+                }
                 let watch_lines = engine.barrier_watch_drain();
                 if !watch_lines.is_empty() {
                     if let Ok(mut f) = std::fs::OpenOptions::new()

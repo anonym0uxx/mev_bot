@@ -360,3 +360,122 @@ fn more_than_the_examine_bound_of_ineligible_older_markets_cannot_starve_eligibl
     e.tick(AppEvent::Tick);
     assert_eq!(refused(&e), 70, "no re-inspection of the same old prefix");
 }
+
+const SKIP: &str = "DECISION: SKIP\nSIZE: NONE\nINVALIDATION: none\nEVIDENCE: x";
+
+struct SkipStub(Arc<AtomicUsize>);
+impl ModelSource for SkipStub {
+    fn complete(&self, _s: &str, _u: &str) -> Result<String, InferenceError> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Ok(SKIP.to_string())
+    }
+}
+
+fn armed_skip() -> (Engine, Arc<AtomicUsize>) {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut e = Engine::new(cfg(), RunMode::Paper);
+    e.enable_paper_model(SkipStub(Arc::clone(&calls)));
+    (e, calls)
+}
+
+fn curve_at(mint: [u8; 32], t: i64, slot: u64) -> AppEvent {
+    AppEvent::CurveObserved {
+        mint: dm(mint),
+        v_sol_lamports: VSOL,
+        v_tokens: VTOK,
+        real_sol_lamports: 7_900_000_000,
+        real_tokens: 569_000_000_000_000,
+        recv_unix_ms: Some(t),
+        slot,
+    }
+}
+
+fn a_print(mint: [u8; 32], t: i64, i: u32) -> AppEvent {
+    AppEvent::MarketTrade {
+        mint: dm(mint),
+        price_fp: 23_000,
+        quote_lamports: 500_000_000,
+        liquidity_lamports: VSOL,
+        signed_base: 30_000_000_000,
+        buyer_entity: 100 + u64::from(i),
+        age_slots: 30,
+        recv_unix_ms: Some(t),
+        trader_pubkey: Some(wallet(100 + i)),
+        slot: Some(9_000 + u64::from(i)),
+        fee_lamports: Some(60_000),
+        cu_consumed: Some(90_000),
+        venue: Some(TradeVenue::PumpFun),
+        event_id: None,
+        feature: None,
+    }
+}
+
+#[test]
+fn a_refused_market_becomes_schedulable_when_its_required_state_arrives() {
+    let (mut e, calls) = armed_skip();
+    // (1) Launch + prints but NO curve snapshot: refused by name, then out of the queue (no rescan).
+    let mut no_curve = feed(m(0x41), T0 + 1_000, 40, 12, 5_000);
+    no_curve.retain(|x| {
+        !matches!(
+            x,
+            AppEvent::CurveObserved { .. } | AppEvent::OnchainConfirm { .. }
+        )
+    });
+    drive(&mut e, &no_curve, 4);
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        0,
+        "not dispatched without reserves"
+    );
+    let refused_once = rep(&e, "refuse:join_curve_absent");
+    assert!(refused_once >= 1, "{:?}", e.model_lane_report());
+    drive(&mut e, &[], 6);
+    assert_eq!(
+        rep(&e, "refuse:join_curve_absent"),
+        refused_once,
+        "no repeated scanning of a refused market with no new observation"
+    );
+    // (2) The REQUIRED STATE arrives (a curve snapshot) with a new print: dirty again, now it reaches the model.
+    let t = T0 + 1_000 + 40 * 2_000;
+    e.tick(curve_at(m(0x41), t + 500, 9_050));
+    e.tick(AppEvent::OnchainConfirm {
+        mint: dm(m(0x41)),
+        virtual_sol_lamports: VSOL,
+        real_sol_lamports: 7_900_000_000,
+    });
+    e.tick(a_print(m(0x41), t + 600, 1));
+    drive(&mut e, &[], 6);
+    assert!(
+        calls.load(Ordering::SeqCst) >= 1,
+        "the previously refused market was never permanently lost: {:?}",
+        e.model_lane_report()
+    );
+}
+
+#[test]
+fn a_market_inside_the_reask_window_is_served_once_the_window_clears() {
+    let (mut e, calls) = armed_skip();
+    drive(&mut e, &feed(m(0x42), T0 + 1_000, 40, 12, 7_000), 4);
+    let first = calls.load(Ordering::SeqCst);
+    assert_eq!(first, 1, "{:?}", e.model_lane_report());
+    let t = T0 + 1_000 + 40 * 2_000;
+    for i in 0..3u32 {
+        e.tick(a_print(m(0x42), t + 1_000 * i64::from(i + 1), i));
+    }
+    drive(&mut e, &[], 4);
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        first,
+        "inside the window: no request"
+    );
+    assert!(rep(&e, "sched:reask_window_wait") >= 1);
+    // The window clears as the wire clock passes last_ask + 15 s. The SAME dirty market is served; nothing new
+    // about it is required beyond the clock (a fresh reserve keeps it ready).
+    e.tick(curve_at(m(0x42), t + 20_000, 9_100));
+    drive(&mut e, &[], 6);
+    assert!(
+        calls.load(Ordering::SeqCst) > first,
+        "served after the window cleared: {:?}",
+        e.model_lane_report()
+    );
+}

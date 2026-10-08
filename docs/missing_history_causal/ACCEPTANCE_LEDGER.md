@@ -83,3 +83,42 @@ Binary identity: `/training/mh_build/proc/BINARY_IDENTITY_fc37a768.json` (source
 * Open (NOT claimed closed): closed-order identity is not restored. Evidence-ingestion rejects `unknown_order` for a late report about an order closed before the crash; duplicate-fill prevention across restart for those ids is therefore not yet proven. Next item.
 * Scheduler progress: 70 ineligible older markets + 3 eligible behind them: tick 1 spends the 64 bound on the old prefix, tick 2 examines the remaining 6 once and dispatches the 3 eligible oldest-first; no re-inspection (mutation that re-queues refused markets fails the test).
 * Attribution: curve invocation-parent test established (b7080d8a). PumpSwap `ingest_amm_rows` has NO repeated-same-mint test and takes no invocation positions (identity = instruction index only). Not claimed equivalent.
+
+## Update: terminal identity, uncertain orders, foreign verdicts, scheduler coverage (tested head: see last commit)
+
+Evidence kept: the 86-barrier aligned restart agreement (prompts, dispatches, positions, extrema, pending orders,
+cash, committed capital) on `fc37a768` is completed acceptance evidence and is not re-opened.
+
+- **Held ledger schema 2** (was 1; old files refuse by name `schema`). It now carries settled-order identity
+  (id, mint, attempt, clip, filled clip, state, terminal evidence), unresolved reconciliation faults verbatim, and a
+  compaction floor. Restored AS RECORDS: balances/positions come only from the ledger totals and `held`, never from
+  replaying an order's financial effect. Validation refuses (by name) an order id beyond the issued sequence and a
+  fault naming no known order; unknown fault sources, non-settled states and duplicate ids make the file untrusted.
+- **Late reports after a restart** (tests, each mutation-checked): identical -> `Duplicate`, ledger unchanged;
+  conflicting -> `Fault`, first evidence kept verbatim, the mint's new exposure blocked, no second credit/debit;
+  never-issued id -> `Rejected(unknown_order)`, never applied. The fault and its block survive a second restart.
+- **Retention:** settled records are capped (4,096). Compaction drops only the oldest settled, un-faulted, non-position
+  records and raises `order_floor`; a later report for such an id is `Rejected(compacted_order)` (named, unresolved,
+  never applied). A faulted order is never compacted, so expiry cannot turn a conflict into a harmless "unknown".
+- **Uncertain entry order:** restored unbooked and not resubmitted; the simulator never auto-fills it; reconciled
+  Filled opens exactly one position and 3 repeated reports change nothing; reconciled NotFilled clears it once, a
+  later Filled report faults and is not applied.
+- **Foreign verdicts:** request ids restart at 1 per process, so id+mint alone could let an abandoned process's answer
+  satisfy a NEW request. Found by test (it created an order), fixed: every job/verdict carries a per-process session
+  id; a verdict of another session is discarded by name (`discard:foreign_session`) at the single verdict entry point
+  and in barrier staging. Mutation-checked. The session id is never persisted or digested.
+- **Equal-ms rule:** a print at exactly `fill_ms` is counted post-fill by CONVENTION. No ingest sequence is persisted,
+  so same-ms order cannot be resolved; the convention can raise MFE as well as lengthen MAE (test pins both). Not
+  "conservative". Protection and excursion features are separate paths; nothing in protection changed.
+- **Queue coverage (bF1, end of the uninterrupted run):** 859 registered = 317 pumpfun + 441 pumpswap + 101 unknown.
+  20 ready and dispatched. Never ready: 34 few_prior_trades, 7 join_curve_absent, 256 join_launch_unknown (pumpfun);
+  1 curve_absent, 440 launch_unknown (pumpswap); 101 join_no_mint. Waiting in the queue at the end: 8, all inside
+  the 15 s re-ask window (age 1.0-9.1 s); eligible-and-unserved = 0. The earlier "20 dirty" count was a different
+  quantity (queue plus re-asked) and is superseded.
+- **Scheduler:** refused market becomes schedulable when its required state (reserves) arrives, and a market inside
+  the re-ask window is served when the window clears; neither is rescanned in between (tests).
+
+Still open: PumpSwap repeated-same-mint attribution test (producer `ingest_amm_rows`; curve test does not cover it),
+equal-time replay boundary for `through_ms`, deleted-ledger / mixed-generation / interruption-between-publications
+tests, held emergency settlement and protection-gap alert through the daemon, dedup-retention replay, harness cleanup,
+restart comparison re-run on the final head.
