@@ -147,3 +147,36 @@ restart comparison re-run on the final head.
 - 017c2cdd: reader file identity (inode + consumed prefix); partial lines reported.
 - Daemon evidence (binary 8e87cf32, run dirs gA1_1, gA1_2, gN1): offline mode consumed a valid EXIT report for the restored unresolved order (Completed, gross 5e9, fees 5e7); normal mode logged "inbox disabled" and left ledger and file untouched; `--live` + model endpoint exits 98 at startup.
 - OPEN: daemon-level protective-trigger runs over restored REDUCE/EXIT reservations (SAFETY_OFF clear/tripped); alert through daemon; late report after protective sell; protection still books closes directly (no protective order -> fill -> settlement path); deleted-ledger, mixed-generation, interrupted-publication, equal-time identity, replay beyond retention; xA1 classification (operator-blocked).
+
+## M1 update (tested heads 9145b96a → 3e45a549 → a09653e8 → bc4cdfc2; normal-concurrency app+junction suite)
+Engine/unit scope only unless stated. Synthetic-protection evidence proves lifecycle behaviour, NOT AMM proceeds, landing or profit.
+- 9145b96a (and its predecessor commit): reservation callout onset/reminder/recovery; release with stale prices stays
+  degraded (2 mutations caught). ADD cumulative settlement: tokens, fee-EXCLUSIVE quote spent, all-in fees on top;
+  cost basis = spend + fees (3 mutations caught).
+- 3e45a549: ledger generation; flow history records `held_gen_seen`; `flow_ahead_of_books` refusal (deleted or rolled-back
+  books), 4 mutations caught. Equal-ms identity across restart (2 caught). Settlement totals agree with books at every
+  publication point; re-read from offset 0 is exact (2 caught).
+- a09653e8: ADD fee bound. FIXED_LAMPORTS_PER_LEG=10,000 is a p50 priority+tip per landed leg, NOT an upper bound.
+  Pre-submission estimates above the reservation still refuse. Executor evidence above the reservation for an ISSUED order
+  is booked as executed and gets the named fault `add_exceeds_reservation`, which blocks the mint and persists; no
+  automatic adjustment (2 caught). History-behind-books overlap replay: flow rebuilt equal to uninterrupted run, no fill
+  re-applied, reservation equal to the unfilled remainder, earlier decision read unchanged; missing interval stays
+  `feed_gap`; a pre-generation history next to restored books refuses `flow_generation_unbound` (3 caught). Invariant
+  restated: remaining = prior + reconciled acquisitions - reconciled disposals.
+  Binary 1770fb19...6441a43.
+- bc4cdfc2: ZERO-TOTAL FINDING FIXED. Before: paper (simulated) fills went through sell_tokens/realize and moved cash and
+  inventory, but left the order's cumulative gross/fees at 0 and the fill record at 0/0. Now the paper executor computes
+  (gross, all-in fee) with the SAME math (`simulate_sell_settlement`) and books it once through the cumulative-evidence path
+  (`model_mgmt_ingest_evidence_inner`); the order and record are labelled `simulated` (persisted, held schema 6). Modelled
+  fee = venue schedule + p50 leg, not executed; simulated fills stay outside assessable PnL. Test: two paper disposals at
+  different prices, restart, duplicate replay, contradictory replay, against independently computed values (4 caught).
+  1133 tests. Binary 95a8848c...71b95da86ee15ea598d091f971a5b1 (BINARY_IDENTITY_bc4cdfc2.json).
+- FIXTURE PREREQUISITE NOT MET (binary 1770fb19, head a09653e8): cA1_1 (REDUCE stub) and cB1_1 (EXIT stub), paused at
+  barrier 100 and killed, left NO pending management order. These are not recovery results. Barrier-number pausing is
+  retired; replaced by a bounded harness checkpoint on durable state.
+- Collapse fixture collapse_wire_v1 (source cont_wire05 sha 2bade7eb..., unchanged): 3 synthetic sells on 3ba1f2be 1 ms
+  apart. They can trigger protection but cannot satisfy the 400 ms / newer-slot fill rule by themselves; separately
+  labelled later landing observations are still TODO. Not yet run.
+- OPERATOR-BLOCKED: finalize/report() force-close (OPERATOR_RESOLUTION_PACKAGE.md item 2); reads of xA1 and cA1_1.
+- OPEN (M1): daemon matrix (SAFETY_OFF clear/tripped, Qwen unavailable, reserved/free, partial/full protective fill,
+  deferral alert, late report, restart with pending protection, revised reader in a daemon run, startup generation refusal).
