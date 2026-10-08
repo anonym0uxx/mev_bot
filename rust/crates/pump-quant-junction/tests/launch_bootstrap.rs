@@ -5,9 +5,10 @@
 use std::collections::BTreeMap;
 
 use pump_quant_junction::launch_bootstrap::{
-    b58, create_in_tx, creator_prior_launches, evidence_from_json, evidence_json, find_launch,
-    launch_cached, load_key, parse_full_tx, parse_page, request_body, Budget, CoverageWindow,
-    CredError, EvidenceCache, FetchError, LaunchOutcome, MockPages, Page, PriorLaunches,
+    b58, bootstrap_one, create_in_tx, creator_prior_launches, evidence_from_json, evidence_json,
+    find_launch, launch_cached, load_key, parse_full_tx, parse_page, request_body, Budget,
+    CoverageWindow, CredError, EvidenceCache, FetchError, LaunchOutcome, MockPages, Page,
+    PriorLaunches,
 };
 use serde_json::{json, Value};
 
@@ -327,4 +328,64 @@ fn audit_sample_decoder_matches_python_classification() {
         ));
     }
     assert_eq!(ok, 97);
+}
+
+/// Engine path: bootstrap evidence -> `AppEvent::LaunchFromChain` -> registration, launch-unknown
+/// cleared, named refusal (never a trained creator count), event-stream round-trip.
+#[test]
+fn bootstrap_reaches_the_engine_registry_and_readiness_refuses_by_name() {
+    use pump_quant_app::config::Config;
+    use pump_quant_app::engine::{Engine, RunMode};
+    let (mint, creator, tx) = create(1);
+    let src = mock(vec![((&mint, ""), page(vec![tx], None))]);
+    let dir = std::env::temp_dir().join(format!("lb_eng_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let cache = EvidenceCache::new(&dir);
+    let ev = bootstrap_one(&cache, &src, &mint, B, 1_791_000_000_000).expect("verified");
+    let pump_quant_app::event::AppEvent::LaunchFromChain {
+        creator: c,
+        retrieved_unix_ms,
+        ..
+    } = ev
+    else {
+        panic!("{ev:?}")
+    };
+    assert_eq!(b58(&c), creator);
+    assert_eq!(retrieved_unix_ms, 1_791_000_000_000);
+    // Persisted evidence restores on a second boot without the network.
+    assert!(cache.get(&mint).is_some());
+    let mut e = Engine::new(Config::dev_portable(), RunMode::Replay);
+    e.arm_model_mode_without_source_for_test();
+    e.tick(ev);
+    assert!(
+        e.model_launch_unknown(10).is_empty(),
+        "chain launch clears launch-unknown"
+    );
+    let rep = e.model_lane_report();
+    assert_eq!(rep.get("bootstrap:chain_launch_recorded"), Some(&1));
+    e.tick(ev);
+    assert_eq!(
+        e.model_lane_report()
+            .get("bootstrap:chain_launch_duplicate_or_cap"),
+        Some(&1)
+    );
+}
+
+#[test]
+fn chain_launch_survives_the_event_stream_round_trip() {
+    let (mint, _, tx) = create(0);
+    let src = mock(vec![((&mint, ""), page(vec![tx], None))]);
+    let dir = std::env::temp_dir().join(format!("lb_es_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let ev = bootstrap_one(&EvidenceCache::new(&dir), &src, &mint, B, 5).unwrap();
+    let path = dir.join("es.jsonl");
+    {
+        let mut w = pump_quant_junction::event_stream::EventStreamWriter::open(&path).unwrap();
+        w.write_event(&ev, 0).unwrap();
+        w.flush().unwrap();
+    }
+    let (back, skipped) = pump_quant_junction::event_stream::read_event_stream(&path).unwrap();
+    assert_eq!(skipped, 0);
+    assert_eq!(back, vec![ev]);
 }

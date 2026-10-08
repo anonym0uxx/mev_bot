@@ -801,3 +801,31 @@ impl PageSource for MockPages {
         "MOCK"
     }
 }
+
+/// Convert verified evidence into the engine event. Pure; the only bridge from RPC to the engine.
+#[must_use]
+pub fn to_event(e: &LaunchEvidence) -> pump_quant_app::event::AppEvent {
+    pump_quant_app::event::AppEvent::LaunchFromChain {
+        mint: pump_quant_domain::ids::Mint::from_bytes(e.mint),
+        creator: e.creator,
+        slot: e.slot,
+        block_time_s: e.block_time_s,
+        retrieved_unix_ms: e.retrieved_unix_ms,
+    }
+}
+
+/// `Err` is boxed: `LaunchOutcome` carries full evidence in its largest variant.
+/// Bootstrap step for ONE mint: cache-first, then the source. Returns the engine event for a verified
+/// launch, or the named outcome. Callers run this OFF the engine thread (it does network I/O).
+pub fn bootstrap_one(
+    cache: &EvidenceCache,
+    src: &dyn PageSource,
+    mint_b58: &str,
+    budget: Budget,
+    now_ms: i64,
+) -> Result<pump_quant_app::event::AppEvent, Box<LaunchOutcome>> {
+    match launch_cached(cache, src, mint_b58, budget, now_ms) {
+        LaunchOutcome::Verified(e) => Ok(to_event(&e)),
+        other => Err(Box::new(other)),
+    }
+}

@@ -203,6 +203,20 @@ fn parse_event_line(line: &str) -> Result<AppEvent, String> {
             };
             Ok(AppEvent::CreatorAction { mint, kind, slot })
         }
+        "LaunchFromChain" => {
+            let mint = parse_mint(&extract_string_field(line, "mint").ok_or("missing mint")?)?;
+            let creator = parse_mint(
+                &extract_string_field(line, "chain_creator").ok_or("missing chain_creator")?,
+            )?;
+            Ok(AppEvent::LaunchFromChain {
+                mint,
+                creator: *creator.as_bytes(),
+                slot: u64_field(extract_int_field(line, "chain_slot"), "chain_slot")?,
+                block_time_s: extract_int_field(line, "chain_block_time_s"),
+                retrieved_unix_ms: extract_int_field(line, "retrieved_unix_ms")
+                    .ok_or("missing retrieved_unix_ms")?,
+            })
+        }
         "Migration" => {
             let mint_str = extract_string_field(line, "mint").ok_or("missing mint")?;
             let mint = parse_mint(&mint_str)?;
@@ -473,6 +487,7 @@ fn event_kind(event: &AppEvent) -> &'static str {
         AppEvent::TokenMetadata { .. } => "TokenMetadata",
         AppEvent::CreatorAction { .. } => "CreatorAction",
         AppEvent::Migration { .. } => "Migration",
+        AppEvent::LaunchFromChain { .. } => "LaunchFromChain",
         // Rev-14 wangr intelligence: new event variants.
         AppEvent::MarketAuxiliary { .. } => "MarketAuxiliary",
         AppEvent::TimeSignal { .. } => "TimeSignal",
@@ -640,6 +655,21 @@ fn event_fields_json(event: &AppEvent) -> String {
         }
         AppEvent::Migration { slot, .. } => {
             parts.push(format!(r#""migration_slot":{}"#, slot));
+        }
+        AppEvent::LaunchFromChain {
+            creator,
+            slot,
+            block_time_s,
+            retrieved_unix_ms,
+            ..
+        } => {
+            let c = solana_program::pubkey::Pubkey::new_from_array(*creator);
+            parts.push(format!(r#""chain_creator":"{c}""#));
+            parts.push(format!(r#""chain_slot":{slot}"#));
+            if let Some(b) = block_time_s {
+                parts.push(format!(r#""chain_block_time_s":{b}"#));
+            }
+            parts.push(format!(r#""retrieved_unix_ms":{retrieved_unix_ms}"#));
         }
         // Rev-14 wangr intelligence: serialize auxiliary + time signals.
         AppEvent::MarketAuxiliary {

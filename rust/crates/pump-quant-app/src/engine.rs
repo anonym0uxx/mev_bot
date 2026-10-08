@@ -2721,6 +2721,34 @@ impl Engine {
                     self.model_register(*mint.as_bytes());
                 }
             }
+            AppEvent::LaunchFromChain {
+                mint,
+                creator,
+                slot,
+                block_time_s,
+                retrieved_unix_ms,
+            } => {
+                // Bootstrap fact: registers the market (so it is tracked, subscribed and its readiness
+                // is reported by name) but never touches the trained creator registry or the
+                // first-observed-trade clock.
+                if self.paper_model_mode {
+                    let fresh = self.model_cache.observe_chain_launch(
+                        *mint.as_bytes(),
+                        crate::decision_join::ChainLaunch {
+                            creator,
+                            slot,
+                            block_time_s,
+                            retrieved_unix_ms,
+                        },
+                    );
+                    self.mrep(if fresh {
+                        "bootstrap:chain_launch_recorded"
+                    } else {
+                        "bootstrap:chain_launch_duplicate_or_cap"
+                    });
+                    self.model_register(*mint.as_bytes());
+                }
+            }
             AppEvent::AmmSwap {
                 mint,
                 pool,

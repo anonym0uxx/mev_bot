@@ -2115,6 +2115,20 @@ impl Engine {
         out
     }
 
+    /// Registered markets with neither an observed launch nor a chain-bootstrapped one: the set the
+    /// bootstrap worker should resolve. Deterministic (registry order), bounded by `max`.
+    #[must_use]
+    pub fn model_launch_unknown(&self, max: usize) -> Vec<[u8; 32]> {
+        self.model_registry
+            .iter()
+            .filter(|m| {
+                !self.model_cache.launch_known(m) && self.model_cache.chain_launch(m).is_none()
+            })
+            .take(max)
+            .copied()
+            .collect()
+    }
+
     /// The opportunity funnel by venue, in UNIQUE markets, including those that never became
     /// ready (with the last named reason each was refused). Computed from the registry, so a
     /// market that was observed but never dispatched is counted, not silently absent.

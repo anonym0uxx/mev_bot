@@ -108,12 +108,29 @@ pub enum Ingest {
     Duplicate,
 }
 
+/// A launch established from chain history. Every clock is separate: chain time (`slot`,
+/// `block_time_s`) is when the launch happened; `retrieved_unix_ms` is when we learned it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChainLaunch {
+    pub creator: [u8; 32],
+    pub slot: u64,
+    pub block_time_s: Option<i64>,
+    pub retrieved_unix_ms: i64,
+}
+
+/// Bound on chain-launch facts held (§99), same order as the creator registry.
+pub const CHAIN_LAUNCH_CAP: usize = 262_144;
+
 /// Why no prompt was produced. Stable labels via [`JoinRefusal::as_str`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum JoinRefusal {
     NoMint,
     /// No launch/creator record: `creator_known` would be 0, a state the corpus never trained on.
     LaunchUnknown,
+    /// The launch is VERIFIED from chain history, but the trained `creator_past_launches` (an
+    /// observed capture-window, receive-order count) is not defined for it: the launch was not
+    /// observed by our own feed. Named, never served as 0 or as an RPC-derived lifetime count.
+    CreatorCountUndefinedChainOnly,
     /// The cache holds a print newer than the decision clock.
     FutureStateInCache {
         newest_ms: i64,
@@ -180,6 +197,9 @@ impl JoinRefusal {
         match self {
             JoinRefusal::NoMint => "join_no_mint",
             JoinRefusal::LaunchUnknown => "join_launch_unknown",
+            JoinRefusal::CreatorCountUndefinedChainOnly => {
+                "join_creator_count_undefined_chain_only"
+            }
             JoinRefusal::FutureStateInCache { .. } => "join_future_state_in_cache",
             JoinRefusal::State(c) => c.as_str(),
             JoinRefusal::EnrichmentIdentityMissing { .. } => "join_enrichment_identity_missing",
@@ -519,6 +539,8 @@ pub struct DecisionCache {
     annotation: AnnotationState,
     creators: CreatorHistory,
     launch_ms: BTreeMap<[u8; 32], i64>,
+    /// Chain-derived launch facts (bootstrap RPC). Separate from `creators` / `launch_ms`.
+    chain_launch: BTreeMap<[u8; 32], ChainLaunch>,
     mints: BTreeMap<[u8; 32], MintCache>,
     pools: BTreeMap<[u8; 32], PoolBinding>,
     policy: BundlePolicy,
@@ -582,6 +604,7 @@ impl DecisionCache {
             annotation: AnnotationState::new(),
             creators: CreatorHistory::new(),
             launch_ms: BTreeMap::new(),
+            chain_launch: BTreeMap::new(),
             mints: BTreeMap::new(),
             pools: BTreeMap::new(),
             policy: BundlePolicy::trained_only(),
@@ -638,6 +661,29 @@ impl DecisionCache {
         let creator_id =
             pump_quant_wallet_graph::tracked_wallet_matcher::wallet_entity_id(&creator);
         self.creators.observe(mint, creator_id, launch_unix_ms)
+    }
+
+    /// Record a launch established from CHAIN HISTORY (verified create; see `AppEvent::LaunchFromChain`).
+    /// Stored apart from the trained creator registry: it never changes `creator_past_launches`,
+    /// `creator_known`, or the first-observed-trade clock. Returns false for an already-known mint.
+    pub fn observe_chain_launch(&mut self, mint: [u8; 32], fact: ChainLaunch) -> bool {
+        if self.chain_launch.contains_key(&mint) || self.chain_launch.len() >= CHAIN_LAUNCH_CAP {
+            return false;
+        }
+        self.chain_launch.insert(mint, fact);
+        true
+    }
+
+    /// Whether a launch was OBSERVED on our own feed (the trained registry's input).
+    #[must_use]
+    pub fn launch_known(&self, mint: &[u8; 32]) -> bool {
+        self.launch_ms.contains_key(mint)
+    }
+
+    /// The chain-derived launch fact for `mint`, if one was bootstrapped.
+    #[must_use]
+    pub fn chain_launch(&self, mint: &[u8; 32]) -> Option<ChainLaunch> {
+        self.chain_launch.get(mint).copied()
     }
 
     pub fn observe_curve(&mut self, mint: [u8; 32], obs: CurveObservation) -> bool {
@@ -1231,6 +1277,7 @@ impl DecisionCache {
         self.mints.remove(mint);
         self.pools.remove(mint);
         self.launch_ms.remove(mint);
+        self.chain_launch.remove(mint);
     }
 
     /// Cut an immutable prompt snapshot for `mint` as of `t_dec_ms`, or name why not.
@@ -1248,7 +1295,11 @@ impl DecisionCache {
             return Err(JoinRefusal::NoMint);
         };
         let Some(&launch) = self.launch_ms.get(mint) else {
-            return Err(JoinRefusal::LaunchUnknown);
+            return Err(if self.chain_launch.contains_key(mint) {
+                JoinRefusal::CreatorCountUndefinedChainOnly
+            } else {
+                JoinRefusal::LaunchUnknown
+            });
         };
         let dev = self.creators.dev_history(mint);
         if dev.creator_known == 0 {
@@ -1679,6 +1730,51 @@ mod tests {
             c.snapshot(&MINT, t_dec(40)).unwrap_err(),
             JoinRefusal::LaunchUnknown
         );
+    }
+
+    /// M2 bootstrap: a launch VERIFIED from chain history is recorded separately. It is never served as the
+    /// trained `creator_past_launches` (an observed capture-window count): the prompt refuses by its own
+    /// name, the creator registry and observation clock are untouched, and an observed launch still wins.
+    #[test]
+    fn a_chain_only_launch_is_named_and_never_becomes_a_trained_creator_count() {
+        let mut c = DecisionCache::new();
+        for i in 0..40 {
+            c.observe_trade(&trade(i));
+        }
+        c.observe_curve(MINT, curve());
+        let fact = ChainLaunch {
+            creator: CREATOR,
+            slot: 445_000_000,
+            block_time_s: Some(1_788_000_000),
+            retrieved_unix_ms: 1_791_000_000_000,
+        };
+        assert!(c.observe_chain_launch(MINT, fact));
+        assert!(!c.observe_chain_launch(MINT, fact), "first fact wins");
+        assert_eq!(c.chain_launch(&MINT), Some(fact));
+        assert!(!c.launch_known(&MINT));
+        assert_eq!(
+            c.snapshot(&MINT, t_dec(40)).unwrap_err(),
+            JoinRefusal::CreatorCountUndefinedChainOnly
+        );
+        assert_eq!(
+            JoinRefusal::CreatorCountUndefinedChainOnly.as_str(),
+            "join_creator_count_undefined_chain_only"
+        );
+        // An observed launch (the trained input) wins over a chain fact for the same mint.
+        let mut o = DecisionCache::new();
+        o.observe_launch(MINT, CREATOR, T0 - 3_600_000);
+        assert!(o.observe_chain_launch(MINT, fact));
+        for i in 0..40 {
+            o.observe_trade(&trade(i));
+        }
+        o.observe_curve(MINT, curve());
+        let s = o
+            .snapshot(&MINT, t_dec(40))
+            .expect("observed launch -> eligible");
+        assert!(s.user_prompt.contains("age_s=81.0 "), "{}", s.user_prompt);
+        // forget() drops both.
+        c.forget(&MINT);
+        assert_eq!(c.chain_launch(&MINT), None);
     }
 
     /// Trained observation-history contract (c12 / sft-013; corpus builder `build_states_v2._episode`):

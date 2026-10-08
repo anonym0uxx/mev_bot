@@ -299,6 +299,44 @@ const EVENT_STREAM_PATH: &str = "data/event_stream.jsonl";
 /// wipes the creator track record to "Unknown", starving the classifier.
 const LEDGER_PATH: &str = "data/creator_ledger.bin";
 
+/// M2 launch bootstrap worker (opt-in: `--launch-bootstrap`). Network I/O runs on THIS thread, never
+/// the engine's. Requests are mints; results are verified `LaunchFromChain` events or named outcomes.
+type BootstrapChannels = (
+    std::sync::mpsc::Sender<String>,
+    std::sync::mpsc::Receiver<Result<pump_quant_app::event::AppEvent, String>>,
+);
+fn spawn_launch_bootstrap(data_dir: &str) -> Option<BootstrapChannels> {
+    use pump_quant_junction::launch_bootstrap as lb;
+    let home = std::env::var("HOME").ok()?;
+    let key_path = std::path::PathBuf::from(home).join(".config/pump-quant/helius.env");
+    let key = match lb::load_key(&key_path) {
+        Ok(k) => k,
+        Err(e) => {
+            // CredError's Debug never carries the value.
+            eprintln!("[pq-daemon] launch bootstrap DISABLED: credential {e:?}");
+            return None;
+        }
+    };
+    let cache = lb::EvidenceCache::new(&std::path::Path::new(data_dir).join("launch_evidence"));
+    let (req_tx, req_rx) = std::sync::mpsc::channel::<String>();
+    let (res_tx, res_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let src = lb::HeliusHttp::new(key, std::time::Duration::from_secs(20));
+        for mint in req_rx {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
+            let out = lb::bootstrap_one(&cache, &src, &mint, lb::Budget { max_pages: 20 }, now)
+                .map_err(|o| format!("{mint} {o}"));
+            if res_tx.send(out).is_err() {
+                break;
+            }
+        }
+    });
+    eprintln!("[pq-daemon] launch bootstrap worker started (read-only RPC)");
+    Some((req_tx, res_rx))
+}
+
 // ─── Args ──────────────────────────────────────────────────────────────────
 
 struct DaemonArgs {
@@ -323,6 +361,8 @@ struct DaemonArgs {
     /// Wallet address (base58) for live mode. Required if live_mode=true.
     /// Used to bind the keypair and reconcile the on-chain balance.
     wallet_address: String,
+    /// M2: resolve launch-unknown markets from chain history (read-only RPC). Off by default.
+    launch_bootstrap: bool,
 }
 
 /// OFFLINE PAPER REPLAY BARRIERS ONLY. Next LaserStream update, except that an update whose wire receive time is at or
@@ -374,6 +414,7 @@ fn parse_args() -> Result<DaemonArgs, u8> {
         strategy_label: String::from("unlabeled"),
         live_mode: false,
         wallet_address: String::new(),
+        launch_bootstrap: false,
     };
     let mut i = 1;
     while i < args.len() {
@@ -392,6 +433,10 @@ fn parse_args() -> Result<DaemonArgs, u8> {
                     return Err(2);
                 }
                 i += 2;
+            }
+            "--launch-bootstrap" => {
+                a.launch_bootstrap = true;
+                i += 1;
             }
             "--status-every-ticks" if i + 1 < args.len() => {
                 a.status_every_ticks = args[i + 1].parse().unwrap_or(500);
@@ -1804,6 +1849,13 @@ fn main() -> ExitCode {
 
     // ─── Engine + queue ──────────────────────────────────────────────────
     let queue = BoundedJunctionQueue::with_capacity(args.junction_cap);
+    let launch_bootstrap = if args.launch_bootstrap {
+        spawn_launch_bootstrap("data")
+    } else {
+        None
+    };
+    let mut bootstrap_requested: std::collections::BTreeSet<[u8; 32]> =
+        std::collections::BTreeSet::new();
     let mut dwell_samples: Vec<u64> = Vec::new();
 
     // ─── Live mode wiring ────────────────────────────────────────────────
@@ -4287,6 +4339,22 @@ fn main() -> ExitCode {
                 // Don't break — keep the daemon alive. Reset stale timer
                 // to avoid spam. The next loop iteration will retry.
                 last_slot_time = Instant::now();
+            }
+        }
+
+        // ── M2 launch bootstrap: request unknown launches, apply verified facts ──
+        if let Some((req_tx, res_rx)) = &launch_bootstrap {
+            while let Ok(r) = res_rx.try_recv() {
+                match r {
+                    Ok(ev) => engine.tick(ev),
+                    Err(why) => eprintln!("[pq-daemon] launch bootstrap refused: {why}"),
+                }
+            }
+            for m in engine.model_launch_unknown(8) {
+                if bootstrap_requested.insert(m) {
+                    let b58 = solana_program::pubkey::Pubkey::new_from_array(m).to_string();
+                    let _ = req_tx.send(b58);
+                }
             }
         }
 

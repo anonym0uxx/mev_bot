@@ -344,6 +344,24 @@ pub enum AppEvent {
         launch_unix_ms: i64,
     },
 
+    /// A launch established from CHAIN HISTORY (bootstrap RPC), not observed on the live feed.
+    /// Kept apart from [`AppEvent::LaunchObserved`]: it does NOT feed the trained
+    /// `creator_past_launches` registry (a capture-window receive-order count), and it never
+    /// stands in for a first observed trade. `retrieved_unix_ms` is when WE learned it; a decision
+    /// earlier than that cannot use it.
+    LaunchFromChain {
+        /// The launched mint (verified create of this mint by the pump.fun program).
+        mint: Mint,
+        /// Creator per the trained definition (tx account 0, verified equal to the create `user`).
+        creator: [u8; 32],
+        /// Slot of the create transaction.
+        slot: u64,
+        /// Chain block time, unix seconds; `None` when the source omitted it.
+        block_time_s: Option<i64>,
+        /// When the evidence was retrieved, unix ms.
+        retrieved_unix_ms: i64,
+    },
+
     /// A deterministic, **on-chain-led** category assignment for a market. The
     /// category classifier ran UPSTREAM on the token's decoded name/symbol (an
     /// `[S]`-boundary concern in `token_ingest`); the engine sees only the resolved
@@ -548,6 +566,7 @@ impl AppEvent {
             | AppEvent::AmmSwap { mint, .. }
             | AppEvent::CorpusFlowRow { mint, .. }
             | AppEvent::LaunchObserved { mint, .. }
+            | AppEvent::LaunchFromChain { mint, .. }
             | AppEvent::TokenMetadata { mint, .. }
             | AppEvent::CreatorAction { mint, .. }
             | AppEvent::Migration { mint, .. }
