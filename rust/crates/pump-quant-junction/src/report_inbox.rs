@@ -79,7 +79,16 @@ pub struct InboxReader {
     pub accepted: u64,
     /// Lines refused, by reason.
     pub refused: std::collections::BTreeMap<&'static str, u64>,
+    /// Identity of the file the offset belongs to: (inode, first bytes already consumed). A file whose identity
+    /// changed (replaced, rotated, rewritten) is re-read from the START, so no unapplied report is skipped.
+    ident: Option<(u64, Vec<u8>)>,
+    /// How many times a changed file identity forced a re-read from the start.
+    pub replaced: u64,
+    /// Bytes of an incomplete trailing line currently held back (reported, never dropped).
+    pub partial_bytes: u64,
 }
+
+const IDENT_PREFIX: usize = 256;
 
 impl InboxReader {
     /// Lines refused so far, all reasons.
@@ -94,19 +103,54 @@ impl InboxReader {
         let Ok(mut f) = std::fs::File::open(path) else {
             return Vec::new();
         };
-        let len = f.metadata().map_or(0, |m| m.len());
-        if len < self.offset {
+        let Ok(meta) = f.metadata() else {
+            return Vec::new();
+        };
+        let len = meta.len();
+        #[cfg(unix)]
+        let ino = std::os::unix::fs::MetadataExt::ino(&meta);
+        #[cfg(not(unix))]
+        let ino = 0u64;
+        // Is this still the file the offset belongs to? Same inode, not shorter, and the bytes already consumed
+        // (first IDENT_PREFIX of them) unchanged. Anything else: start over (reports are idempotent, so re-reading
+        // is safe; skipping would lose an unapplied report).
+        let mut head =
+            vec![0u8; usize::try_from(self.offset.min(IDENT_PREFIX as u64)).unwrap_or(0)];
+        let same = match &self.ident {
+            None => self.offset == 0,
+            Some((i, h)) => {
+                *i == ino && len >= self.offset && f.read_exact(&mut head).is_ok() && head == *h
+            }
+        };
+        if !same {
+            if self.offset > 0 {
+                self.replaced += 1;
+            }
             self.offset = 0;
+            self.ident = None;
         }
         if len == self.offset || f.seek(SeekFrom::Start(self.offset)).is_err() {
+            self.partial_bytes = 0;
             return Vec::new();
         }
-        let mut buf = String::new();
-        if f.read_to_string(&mut buf).is_err() {
+        let mut raw = Vec::new();
+        if f.read_to_end(&mut raw).is_err() {
             return Vec::new();
         }
+        let buf = String::from_utf8_lossy(&raw).into_owned();
         let complete = buf.rfind('\n').map_or(0, |i| i + 1);
+        self.partial_bytes = (buf.len() - complete) as u64;
         self.offset += complete as u64;
+        if self.offset > 0 {
+            // Remember the identity prefix of what has been consumed (read the file's own first bytes).
+            if let Ok(mut g) = std::fs::File::open(path) {
+                let mut h =
+                    vec![0u8; usize::try_from(self.offset.min(IDENT_PREFIX as u64)).unwrap_or(0)];
+                if g.read_exact(&mut h).is_ok() {
+                    self.ident = Some((ino, h));
+                }
+            }
+        }
         let mut out = Vec::new();
         for line in buf[..complete].lines().filter(|l| !l.trim().is_empty()) {
             match parse_line(line) {
@@ -132,6 +176,68 @@ impl InboxReader {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn rl(order: u64, cum: u64) -> String {
+        format!(
+            r#"{{"mint":"{}","order_id":{order},"action":"exit","intended":900,"cumulative_tokens":{cum},"cumulative_gross":{cum}000,"cumulative_fees":{cum}}}"#,
+            "ab".repeat(32)
+        )
+    }
+
+    #[test]
+    fn a_replaced_longer_file_is_reread_from_the_start_not_skipped_from_the_old_offset() {
+        let d = std::env::temp_dir().join(format!("inbox_repl_{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let p = d.join("in.ndjson");
+        std::fs::write(&p, format!("{}\n", rl(1, 100))).unwrap();
+        let mut r = InboxReader::default();
+        assert_eq!(r.poll(&p).len(), 1);
+        // Replaced by DIFFERENT, LONGER content: the old byte offset points into the middle of the new first line.
+        std::fs::write(
+            &p,
+            format!("{}\n{}\n{}\n", rl(2, 200), rl(2, 300), rl(2, 400)),
+        )
+        .unwrap();
+        let evs = r.poll(&p);
+        assert_eq!(
+            evs.len(),
+            3,
+            "every line of the replacement is offered, none skipped"
+        );
+        assert_eq!(r.replaced, 1);
+        // Appending after a replacement works as usual; an unchanged file offers nothing.
+        assert_eq!(r.poll(&p).len(), 0);
+        let mut f = std::fs::OpenOptions::new().append(true).open(&p).unwrap();
+        use std::io::Write;
+        writeln!(f, "{}", rl(2, 500)).unwrap();
+        assert_eq!(r.poll(&p).len(), 1);
+    }
+
+    #[test]
+    fn a_partial_trailing_line_is_held_visibly_until_it_completes() {
+        let d = std::env::temp_dir().join(format!("inbox_part_{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let p = d.join("in.ndjson");
+        let full = rl(1, 100);
+        let (a, b) = full.split_at(full.len() / 2);
+        std::fs::write(&p, format!("{}\n{a}", rl(1, 50))).unwrap();
+        let mut r = InboxReader::default();
+        assert_eq!(r.poll(&p).len(), 1, "only the complete line is offered");
+        assert_eq!(
+            r.partial_bytes,
+            a.len() as u64,
+            "the unapplied tail is reported, not silently dropped"
+        );
+        let mut f = std::fs::OpenOptions::new().append(true).open(&p).unwrap();
+        use std::io::Write;
+        writeln!(f, "{b}").unwrap();
+        assert_eq!(
+            r.poll(&p).len(),
+            1,
+            "completing the line offers it exactly once"
+        );
+        assert_eq!(r.partial_bytes, 0);
+    }
 
     #[test]
     fn the_inbox_gate_opens_only_for_offline_replay_without_live() {
