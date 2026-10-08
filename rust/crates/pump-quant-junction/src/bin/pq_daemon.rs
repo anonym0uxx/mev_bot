@@ -2483,6 +2483,7 @@ fn main() -> ExitCode {
     let mut barrier_idx: usize = 0;
     let mut barrier_ready = false;
     let mut barrier_hold: Option<LaserStreamUpdate> = None;
+    let mut harness_post_poll = Instant::now();
     let mut barrier_seen_count: u64 = 0;
     let mut barrier_last_input = Instant::now();
     if barrier_mode {
@@ -5124,6 +5125,50 @@ fn main() -> ExitCode {
             }
         }
 
+        // OFFLINE PAPER REPLAY HARNESS ONLY: after the LAST barrier has fired the source clock never advances again, so
+        // the tick block (and with it the inbox poll and harness checkpoint) would never run. Keep serving the external
+        // executor's reports and the harness checkpoint/hold on a 200 ms wall timer, at the frozen source clock. No
+        // engine Tick is injected and no clock moves; only validated reports reach the engine. Inert outside replay.
+        if model_armed
+            && replay_harness
+            && barrier_mode
+            && barrier_idx >= barrier_clocks.len()
+            && harness_post_poll.elapsed() >= Duration::from_millis(200)
+        {
+            harness_post_poll = Instant::now();
+            let evs = report_inbox.poll(std::path::Path::new(&report_inbox_path));
+            if !evs.is_empty() {
+                eprintln!(
+                    "[pq-daemon] INBOX(post-barrier) offered={} accepted_total={} refused_total={} {:?}",
+                    evs.len(),
+                    report_inbox.accepted,
+                    report_inbox.refused_total(),
+                    report_inbox.refused
+                );
+            }
+            for ev in evs {
+                engine.tick(ev);
+            }
+            if std::env::var("PQ_HARNESS_CKPT").as_deref() == Ok("1") {
+                let ck = engine.model_harness_checkpoint();
+                let _ = std::fs::write("data/HARNESS_CKPT.json.tmp", ck.to_string());
+                let _ = std::fs::rename("data/HARNESS_CKPT.json.tmp", "data/HARNESS_CKPT.json");
+                if std::path::Path::new("data/HARNESS_HOLD").exists() {
+                    let f = engine.model_flow_flush(Duration::from_secs(20));
+                    let h = engine.model_held_persist_now();
+                    let ck = engine.model_harness_checkpoint();
+                    let _ = std::fs::write(
+                        "data/HARNESS_HELD",
+                        serde_json::json!({"flow_durable": f, "held_persisted": h, "state": ck})
+                            .to_string(),
+                    );
+                    eprintln!("[pq-daemon] harness hold (post-barrier): flow durable={f} held persisted={h}");
+                    while std::path::Path::new("data/HARNESS_HOLD").exists() {
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                }
+            }
+        }
         if !did_work {
             std::thread::sleep(Duration::from_millis(10));
         }
