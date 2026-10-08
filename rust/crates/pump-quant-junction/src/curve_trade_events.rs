@@ -1390,4 +1390,124 @@ mod tests {
         assert_eq!(dd2.outside_corpus.get("parent_not_pump_fun"), Some(&1));
         assert_eq!(dd2.corpus_basis_resolved, 0);
     }
+
+    // ---- PumpSwap repeated same-mint / same-side attribution (the AMM producer `ingest_amm_rows`) ----------------
+
+    fn amm_buy_data() -> Vec<u8> {
+        let mut d = vec![102u8, 6, 61, 18, 1, 218, 235, 234];
+        d.extend_from_slice(&[0u8; 16]);
+        d
+    }
+
+    fn amm_ix(accounts: Vec<u8>) -> LaserStreamInstruction {
+        LaserStreamInstruction {
+            program_id: crate::laserstream::PUMP_SWAP_PROGRAM,
+            data: amm_buy_data(),
+            accounts,
+            outer: None,
+            depth: None,
+        }
+    }
+
+    const AMM_MINT: [u8; 32] = [0x77; 32];
+
+    /// keys: 0 payer, 1 traderA, 2 traderB, 3 pool. Trader A spends 1.0 SOL for 100 tokens; B spends 2.0 SOL for 200.
+    fn amm_two_trader_tx(sig: u8, ix_a: Vec<u8>, ix_b: Vec<u8>) -> LaserStreamTx {
+        let key = |b: u8| [b; 32];
+        let tb = |owner: u8, amount: u128| crate::corpus_rows::TokBal {
+            mint: AMM_MINT,
+            owner: key(owner),
+            amount,
+        };
+        let mut t = tx(sig, Some(true), vec![amm_ix(ix_a), amm_ix(ix_b)]);
+        t.account_keys = vec![key(10), key(11), key(12), key(13)];
+        t.balances = Some(crate::corpus_rows::BalanceMeta {
+            pre_sol: vec![9_000_000_000, 5_000_000_000, 5_000_000_000, 1_000_000_000],
+            post_sol: vec![9_000_000_000, 4_000_000_000, 3_000_000_000, 4_000_000_000],
+            pre_tok: vec![tb(11, 0), tb(12, 0), tb(13, 1_000)],
+            post_tok: vec![tb(11, 100), tb(12, 200), tb(13, 700)],
+        });
+        t
+    }
+
+    fn amm_rows(t: &LaserStreamTx) -> Vec<(u128, [u8; 32], i64, i64)> {
+        let mut dd = EventDedup::new(64);
+        let mut st = AmmRowStats::default();
+        let mut out = Vec::new();
+        ingest_amm_rows(t, &mut dd, &mut st, &mut out);
+        out.iter()
+            .map(|p| match &p.event {
+                AppEvent::CorpusFlowRow {
+                    event_id, feature, ..
+                } => (
+                    *event_id,
+                    feature.trader,
+                    feature.sol_lamports,
+                    feature.tokens_raw,
+                ),
+                _ => panic!("only corpus rows expected"),
+            })
+            .collect()
+    }
+
+    /// Two PumpSwap buys of the SAME mint and side in ONE transaction, different traders. Each row belongs to the
+    /// instruction that names its trader's accounts, with that trader's own amounts -- not to whichever came first,
+    /// not by output order. Swapping the instruction order swaps the rows' ordinals and nothing else.
+    #[test]
+    fn pumpswap_repeated_same_mint_same_side_rows_follow_instruction_account_ownership() {
+        // Independently computed: A = 1.0 SOL -> 100 tokens; B = 2.0 SOL -> 200 tokens.
+        let a = (-1_000_000_000i64, 100i64); // a BUY: the trader's own SOL delta is negative
+        let b = (-2_000_000_000i64, 200i64);
+        let t = amm_two_trader_tx(60, vec![1, 3], vec![2, 3]);
+        let rows = amm_rows(&t);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].1, [11u8; 32]);
+        assert_eq!((rows[0].2, rows[0].3), a);
+        assert_eq!(rows[1].1, [12u8; 32]);
+        assert_eq!((rows[1].2, rows[1].3), b);
+        assert_eq!(rows[0].0, corpus_row_id(&t.signature, 0));
+        assert_eq!(rows[1].0, corpus_row_id(&t.signature, 1));
+        assert_ne!(rows[0].0, rows[1].0);
+
+        // REVERSED instruction order, same balances: ownership follows the accounts, ordinals follow position.
+        let r = amm_two_trader_tx(61, vec![2, 3], vec![1, 3]);
+        let rr = amm_rows(&r);
+        assert_eq!(rr.len(), 2);
+        assert_eq!(rr[0].1, [12u8; 32], "ix0 now names trader B");
+        assert_eq!((rr[0].2, rr[0].3), b);
+        assert_eq!(rr[1].1, [11u8; 32], "ix1 now names trader A");
+        assert_eq!((rr[1].2, rr[1].3), a);
+        assert_eq!(rr[0].0, corpus_row_id(&r.signature, 0));
+        assert_eq!(rr[1].0, corpus_row_id(&r.signature, 1));
+
+        // A redelivery adds nothing; each ordinal is its own identity (row domain).
+        let mut dd = EventDedup::new(64);
+        let mut st = AmmRowStats::default();
+        let mut out = Vec::new();
+        ingest_amm_rows(&t, &mut dd, &mut st, &mut out);
+        ingest_amm_rows(&t, &mut dd, &mut st, &mut out);
+        assert_eq!((out.len(), st.emitted, st.duplicates), (2, 2, 2));
+    }
+
+    /// The LIMIT, pinned so it is not mistaken for instruction-level attribution: when TWO instructions of one
+    /// transaction name the SAME trader, each row carries that trader's WHOLE-transaction net delta (this is exactly
+    /// what the frozen builder does, so it is corpus parity), not a per-instruction split.
+    #[test]
+    fn pumpswap_two_instructions_naming_one_trader_each_carry_the_whole_transaction_net() {
+        let t = amm_two_trader_tx(62, vec![1, 3], vec![1, 3]);
+        let rows = amm_rows(&t);
+        assert_eq!(rows.len(), 2);
+        for r in &rows {
+            assert_eq!(r.1, [11u8; 32]);
+            assert_eq!(
+                (r.2, r.3),
+                (-1_000_000_000, 100),
+                "net delta of the trader's account, repeated per instruction (not split)"
+            );
+        }
+        assert_ne!(
+            rows[0].0, rows[1].0,
+            "distinct ordinals keep them distinct rows"
+        );
+    }
 }
