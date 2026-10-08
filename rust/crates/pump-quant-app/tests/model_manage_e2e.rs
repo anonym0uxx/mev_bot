@@ -1401,7 +1401,9 @@ fn an_equal_time_print_is_counted_as_after_the_fill_and_a_one_ms_earlier_print_i
         entry,
         "recv = fill_ms - 1 is before the fill"
     );
-    // Exactly AT the fill millisecond: counted (documented conservative boundary).
+    // Exactly AT the fill millisecond: counted. This is a CONVENTION, not proof of order: `fill_ms` is the only
+    // recorded boundary (no ingest sequence is persisted), so a same-ms print cannot be placed before or after the
+    // fill. It can move EITHER extremum (see the favourable case below), so it is not "conservative" in general.
     print_at(&mut e, 7_002, fill_ms, 9_102, i128::from(low));
     assert_eq!(
         held_extrema(&e).2,
@@ -1940,4 +1942,22 @@ fn a_verdict_from_an_abandoned_process_creates_no_order_and_cannot_answer_a_new_
         e.model_lane_report()
     );
     open.store(true, Ordering::SeqCst);
+}
+
+#[test]
+fn the_equal_millisecond_convention_can_inflate_the_favourable_excursion_as_well() {
+    let r = rig(|_| HOLD);
+    let mut e = r.e;
+    let (entry, _, _, fill_ms) = held_extrema(&e);
+    let high = entry + entry / 10; // +10 %, independently computed
+    print_at(&mut e, 7_101, fill_ms - 1, 9_301, i128::from(high));
+    assert_eq!(held_extrema(&e).1, entry, "one ms earlier: not counted");
+    print_at(&mut e, 7_102, fill_ms, 9_302, i128::from(high));
+    assert_eq!(
+        held_extrema(&e).1,
+        high,
+        "a same-ms FAVOURABLE print is counted too: the convention can raise MFE, not only MAE"
+    );
+    // Entry price and fill record are untouched by the excursion feature; protection is a separate path.
+    assert_eq!(held_extrema(&e).0, entry);
 }

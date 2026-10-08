@@ -135,6 +135,51 @@ impl Engine {
         self.barrier.settled.insert(v.id.0, v);
     }
 
+    /// READ-ONLY queue classification (never in any digest): every market still waiting in the entry queue, with
+    /// its dirty age, the last named refusal the scheduler saw for it, venue, accepted-observation count, and
+    /// whether the re-ask window is the only thing holding it. `eligible_now` is true only when NOTHING named
+    /// currently prevents a dispatch (it has no refusal on record and is outside the re-ask window).
+    #[must_use]
+    pub fn barrier_waiting_report(&self) -> Vec<String> {
+        let clock = self.model_clock_ms;
+        let mut rows: Vec<(i64, [u8; 32])> = self
+            .model_dirty
+            .iter()
+            .map(|m| (self.model_dirty_since.get(m).copied().unwrap_or(0), *m))
+            .collect();
+        rows.sort_unstable();
+        rows.iter()
+            .enumerate()
+            .map(|(pos, (since, m))| {
+                let (venue, _, n) = self.model_cache.describe(m, clock);
+                let last_ask = self.model_last_ask.get(m).copied();
+                let in_reask = last_ask.is_some_and(|t| clock - t < 15_000);
+                let refusal = self.model_last_refusal.get(m).map_or("none", String::as_str);
+                let held = self.open_lane.contains_key(m)
+                    || self.model_orders.contains_key(m)
+                    || self.model_table.has_live_for(m);
+                let blocked = self.model_mint_blocked(m);
+                let why = if blocked {
+                    "recon_fault_blocks_exposure"
+                } else if held {
+                    "held_or_pending"
+                } else if in_reask {
+                    "reask_window"
+                } else if refusal != "none" {
+                    refusal
+                } else {
+                    "none_named"
+                };
+                format!(
+                    "pos={pos} mint={} since={since} age_ms={} venue={venue} n_accepted={n} last_ask={last_ask:?} why={why} eligible_now={}",
+                    m.iter().take(6).map(|b| format!("{b:02x}")).collect::<String>(),
+                    (clock - since).max(0),
+                    why == "none_named",
+                )
+            })
+            .collect()
+    }
+
     /// Verdicts staged for the next tick.
     #[must_use]
     pub fn barrier_staged(&self) -> usize {

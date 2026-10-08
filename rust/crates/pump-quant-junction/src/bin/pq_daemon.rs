@@ -4505,6 +4505,10 @@ fn main() -> ExitCode {
                         }
                     }
                 }
+                let waiting = engine.barrier_waiting_report();
+                let _ = std::fs::write("data/barrier_waiting.json", serde_json::json!({
+                    "barrier": barrier_idx, "clock": barrier_clocks[barrier_idx], "waiting": waiting,
+                }).to_string());
                 let lines = engine.barrier_state_lines();
                 let digest = engine.barrier_state_digest();
                 let log = engine.barrier_take_log();
