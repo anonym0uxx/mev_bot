@@ -138,3 +138,12 @@ restart comparison re-run on the final head.
   (reversed instruction order swaps rows, not owners); ordinals are row identities. LIMIT pinned: two instructions
   naming ONE trader each carry the trader's whole-tx net delta (corpus parity, not a per-instruction split), so
   per-instruction amounts are NOT established for that case. Curve and AMM attribution claims stay path-specific.
+
+## Management-sell recovery and report inbox (tested head 017c2cdd)
+- ed9041e8: ledger schema 3 persists management sell identity, cumulative fills, terminal state, faults. 10 engine tests.
+- 158e82f2: inbox boundary; reservation guard in position.rs (protective close sells only inventory minus tokens reserved by an unresolved sell). 5/5 mutations caught.
+- be24b128: settlement evidence is cumulative tokens + gross + fees (no per-fill price); increments booked exactly; schema 4 persists totals and per-order checkpoints. 4/4 valid mutations caught (one earlier mutation only failed to compile and was redone).
+- 420f6289: inbox gate as tested function; reservation-gap status and named operator alert (`PROTECTION DEFERRED`) in StaleCallout.
+- 017c2cdd: reader file identity (inode + consumed prefix); partial lines reported.
+- Daemon evidence (binary 8e87cf32, run dirs gA1_1, gA1_2, gN1): offline mode consumed a valid EXIT report for the restored unresolved order (Completed, gross 5e9, fees 5e7); normal mode logged "inbox disabled" and left ledger and file untouched; `--live` + model endpoint exits 98 at startup.
+- OPEN: daemon-level protective-trigger runs over restored REDUCE/EXIT reservations (SAFETY_OFF clear/tripped); alert through daemon; late report after protective sell; protection still books closes directly (no protective order -> fill -> settlement path); deleted-ledger, mixed-generation, interrupted-publication, equal-time identity, replay beyond retention; xA1 classification (operator-blocked).
