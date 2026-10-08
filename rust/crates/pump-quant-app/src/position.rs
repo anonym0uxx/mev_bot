@@ -613,6 +613,23 @@ impl HeldPosition {
         if frac_bps == 0 {
             return 0;
         }
+        let (gross, fee_all_in) = self.sim_settlement(frac_bps, mult_bps, p);
+        let cost = u128::from(self.cost_lamports) * u128::from(frac_bps) / 10_000;
+        self.remaining_bps -= frac_bps;
+        (gross as i128)
+            .saturating_sub(fee_all_in as i128)
+            .saturating_sub(cost as i128)
+    }
+
+    /// The SIMULATED settlement of selling `frac_bps` of this position at `mult_bps`: (gross proceeds after the
+    /// configured impairment and own curve impact, ALL-IN fee = venue fee + one landed leg). Pure; the single
+    /// source of the paper executor's proceeds. Its fee is MODELLED (venue schedule + measured p50 leg), not
+    /// executed evidence: fills priced by it stay outside assessable PnL.
+    fn sim_settlement(&self, frac_bps: u32, mult_bps: u32, p: &LifecycleParams) -> (u128, u128) {
+        let frac_bps = frac_bps.min(self.remaining_bps);
+        if frac_bps == 0 {
+            return (0, 0);
+        }
         let notional = u128::from(self.size_lamports) * u128::from(frac_bps) / 10_000;
         let mut gross = notional * u128::from(mult_bps) / 10_000;
         // §38 adversarial impairment: every sell pays the configured extra slippage
@@ -639,14 +656,8 @@ impl HeldPosition {
             p.fee_bps
         };
         let fee = gross * u128::from(venue_fee_bps) / 10_000;
-        let cost = u128::from(self.cost_lamports) * u128::from(frac_bps) / 10_000;
-        self.remaining_bps -= frac_bps;
-        // proceeds − venue fee − this tranche's landed-transaction cost − pro-rata
-        // entry cost (which already carries the ENTRY leg's fee and fixed cost).
-        let proceeds = gross.saturating_sub(fee);
-        (proceeds as i128)
-            .saturating_sub(cost as i128)
-            .saturating_sub(i128::from(p.fixed_lamports_per_leg))
+        // net = gross − venue fee − this tranche's landed-transaction cost − pro-rata entry cost (the caller).
+        (gross, fee + u128::from(p.fixed_lamports_per_leg))
     }
 
     /// Book a sell from AUTHORITATIVE settlement totals (gross proceeds and all-in fees, lamports, for exactly this
@@ -940,6 +951,54 @@ impl ScalpLifecycle {
         self.sell_tokens_inner(mint, tokens, price_fp, reason, None)
     }
 
+    /// The paper executor's SIMULATED settlement for selling `tokens` at `price_fp`: `(gross, all-in fee)` in
+    /// lamports, computed by exactly the math a price-based sell books (no state change). The caller books it
+    /// through the cumulative-settlement path, so the recorded totals ARE what moved cash.
+    pub fn simulate_sell_settlement(
+        &self,
+        mint: &[u8; 32],
+        tokens: u64,
+        price_fp: u64,
+    ) -> Result<(u64, u64), SellRefusal> {
+        let Some(pos) = self.open.get(mint) else {
+            return Err(SellRefusal::NotHeld);
+        };
+        if !pos.inventory_from_fill {
+            return Err(SellRefusal::InventoryUnknown);
+        }
+        if tokens == 0 {
+            return Err(SellRefusal::ZeroQuantity);
+        }
+        if tokens > pos.inventory_tokens {
+            return Err(SellRefusal::ExceedsInventory {
+                held: pos.inventory_tokens,
+            });
+        }
+        if pos.entry_price_fp == 0 || price_fp == 0 {
+            return Err(SellRefusal::NoPrice);
+        }
+        let frac_bps = Self::sell_frac_bps(pos, tokens);
+        let (g, f) = pos.sim_settlement(frac_bps, pos.mult_bps(price_fp), &self.params);
+        Ok((
+            u64::try_from(g).unwrap_or(u64::MAX),
+            u64::try_from(f).unwrap_or(u64::MAX),
+        ))
+    }
+
+    /// Share of the remaining position `tokens` represents (floor: the unsold remainder carries the rounding).
+    fn sell_frac_bps(pos: &HeldPosition, tokens: u64) -> u32 {
+        if tokens == pos.inventory_tokens {
+            pos.remaining_bps
+        } else {
+            u32::try_from(
+                u128::from(tokens) * u128::from(pos.remaining_bps)
+                    / u128::from(pos.inventory_tokens),
+            )
+            .unwrap_or(pos.remaining_bps)
+            .min(pos.remaining_bps)
+        }
+    }
+
     /// As [`Self::sell_tokens`], but the proceeds are the executor's authoritative `(gross, fee)` for this tranche.
     pub fn sell_tokens_settled(
         &mut self,
@@ -981,17 +1040,7 @@ impl ScalpLifecycle {
         let (mfe_bps, mae_bps) = pos.excursions_bps();
         let mult = pos.mult_bps(price_fp);
         let full = tokens == pos.inventory_tokens;
-        let frac_bps = if full {
-            pos.remaining_bps
-        } else {
-            // Floor: the unsold remainder carries the rounding, never a phantom sale.
-            u32::try_from(
-                u128::from(tokens) * u128::from(pos.remaining_bps)
-                    / u128::from(pos.inventory_tokens),
-            )
-            .unwrap_or(pos.remaining_bps)
-            .min(pos.remaining_bps)
-        };
+        let frac_bps = Self::sell_frac_bps(pos, tokens);
         let net = match settled {
             Some((g, f)) => pos.realize_settled(frac_bps, g, f),
             None => pos.realize(frac_bps, mult, &params),

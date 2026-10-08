@@ -1094,6 +1094,16 @@ fn protection_over_an_uncertain_reduce_sells_only_the_free_part_settles_once_and
     );
     let after = books(&e);
     assert!(after.0 != b0.0, "realized moved once");
+    // The protective record carries the settlement that moved realized PnL (not zero totals), labelled simulated.
+    assert!(rec.simulated && rec.gross > 0 && rec.fees > 0, "{rec:?}");
+    let pf = e
+        .model_mgmt_fills()
+        .iter()
+        .rev()
+        .find(|x| x.order_id == pid)
+        .copied()
+        .unwrap();
+    assert_eq!((pf.gross_lamports, pf.fee_lamports), (rec.gross, rec.fees));
     // The still-reserved management order is untouched and still attributable: its late report settles it.
     assert_eq!(e.model_mgmt_pending(&MINT).map(|p| p.0), Some(rid));
     assert_eq!(
@@ -1858,5 +1868,187 @@ fn a_history_file_with_no_generation_field_cannot_be_tied_to_restored_books_and_
             pump_quant_app::engine::model_admit::FlowAttach::Untrusted("flow_generation_unbound")
         ),
         "{a2:?}"
+    );
+}
+
+// ===================== PAPER EXECUTOR SETTLEMENT =====================
+/// Independent model of one simulated sell, from the DURABLE pre-fill position (test config: OptimisticCeiling,
+/// so no impairment; curve_exact_fill off, so the fill price is the reserve-walk average and no extra impact).
+/// Returns (fill price, gross, all-in fee, pro-rata cost, frac_bps).
+fn expected_sim_sell(
+    h: &pump_quant_app::held_state::HeldEntry,
+    vsol: u64,
+    vtok: u64,
+    tokens: u64,
+) -> (u64, u64, u64, u64, u32) {
+    let inv = h.inventory_tokens.unwrap();
+    let px =
+        u64::try_from(u128::from(vsol) * 1_000_000_000 / (u128::from(vtok) + u128::from(tokens)))
+            .unwrap();
+    let frac = if tokens == inv {
+        h.remaining_bps
+    } else {
+        u32::try_from(u128::from(tokens) * u128::from(h.remaining_bps) / u128::from(inv)).unwrap()
+    };
+    let mult = u128::from(px) * 10_000 / u128::from(h.entry_price_fp);
+    let notional = u128::from(h.size_lamports) * u128::from(frac) / 10_000;
+    let gross = notional * mult / 10_000;
+    // Curve venue fee (95 bp below graduation) + one measured p50 landed leg.
+    let fee = gross * 95 / 10_000 + 10_000;
+    let cost = u128::from(h.cost_lamports) * u128::from(frac) / 10_000;
+    (px, gross as u64, fee as u64, cost as u64, frac)
+}
+
+/// Drive one REDUCE order to its paper fill at a landing observation with `dsol`, from a persisted pre-fill
+/// state. Returns (order id, tokens, expected (px, gross, fee, cost, frac)).
+fn sim_reduce_fill(
+    r: &mut Rig,
+    hp: &std::path::Path,
+    dsol: u64,
+) -> (u64, u64, (u64, u64, u64, u64, u32)) {
+    r.advance_to_order(120_000);
+    let (id, k, intended, filled) = r.e.model_mgmt_pending(&MINT).expect("REDUCE pending");
+    assert_eq!((k, filled), (MgmtKind::Reduce, 0));
+    assert!(r.e.model_held_persist_now());
+    let led = pump_quant_app::held_state::HeldLedger::read(hp).unwrap();
+    let h = led.held.iter().find(|h| h.mint == MINT).unwrap().clone();
+    let (vsol, vtok) = (VSOL + dsol, VTOK - 4_000_000_000_000);
+    let exp = expected_sim_sell(&h, vsol, vtok, intended);
+    // The landing observation: 1 s after creation, a newer slot (meets the existing 400 ms / newer-slot rule).
+    r.clock += 1_000;
+    r.slot += 1;
+    curve_obs(&mut r.e, r.clock, r.slot, dsol);
+    ticks(&mut r.e, 3);
+    assert!(
+        r.e.model_mgmt_pending(&MINT).is_none(),
+        "paper fill completed the order: {:?}",
+        r.e.model_lane_report()
+    );
+    (id, intended, exp)
+}
+
+/// The PAPER EXECUTOR books through the cumulative-settlement path. Two simulated disposals at DIFFERENT prices
+/// (two REDUCE orders, each filled whole by the paper executor: the position is partially sold each time), then a
+/// restart and duplicate replay. Every number is computed here from the durable pre-fill position.
+#[test]
+fn paper_fills_record_the_cumulative_settlement_that_moved_cash_and_replay_settles_nothing_twice() {
+    let hp = held_path("s_sim");
+    let mut r = rig(|s| if s <= 1 { REDUCE } else { HOLD }, &hp);
+    let mut prev = r.e.model_accounting_view(&MINT);
+    let mut fills = Vec::new();
+    for dsol in [200_000_000u64, 900_000_000] {
+        let inv_before = r.e.model_inventory_tokens(&MINT).unwrap();
+        let prev_bps = {
+            assert!(r.e.model_held_persist_now());
+            pump_quant_app::held_state::HeldLedger::read(&hp)
+                .unwrap()
+                .held
+                .iter()
+                .find(|h| h.mint == MINT)
+                .unwrap()
+                .remaining_bps
+        };
+        let entry_spend_before = prev.attribution_entry_spend.unwrap();
+        let (id, tokens, (px, g, f, cost, _frac)) = sim_reduce_fill(&mut r, &hp, dsol);
+        let v = r.e.model_accounting_view(&MINT);
+        let rel = u64::try_from(
+            u128::from(entry_spend_before) * u128::from(tokens) / u128::from(inv_before),
+        )
+        .unwrap();
+        assert_eq!(
+            v.realized - prev.realized,
+            i128::from(g) - i128::from(f) - i128::from(cost),
+            "realized = gross - fees - pro-rata cost"
+        );
+        assert_eq!(
+            v.balance,
+            prev.balance
+                .wrapping_add_signed(i64::try_from(v.realized - prev.realized).unwrap()),
+            "cash moves by exactly the booked net"
+        );
+        assert_eq!(
+            prev.committed - v.committed,
+            rel,
+            "committed entry spend released pro rata"
+        );
+        assert_eq!(
+            v.inventory_tokens,
+            Some(inv_before - tokens),
+            "remaining = prior - reconciled disposal"
+        );
+        // The view is floor(cost * remaining_bps / 1e4) of the DURABLE position after the fill (its own rounding);
+        // the tranche cost charged to realized PnL is checked exactly above.
+        let led_after = {
+            assert!(r.e.model_held_persist_now());
+            pump_quant_app::held_state::HeldLedger::read(&hp).unwrap()
+        };
+        let ha = led_after.held.iter().find(|h| h.mint == MINT).unwrap();
+        assert_eq!(
+            v.remaining_cost_basis.unwrap(),
+            u64::try_from(u128::from(ha.cost_lamports) * u128::from(ha.remaining_bps) / 10_000)
+                .unwrap()
+        );
+        assert_eq!(
+            ha.remaining_bps,
+            prev_bps - _frac,
+            "remaining fraction falls by exactly the sold share"
+        );
+        // The RECORD is the evidence that moved cash: cumulative totals equal the booked amounts, labelled simulated.
+        let rec = r.e.model_sell_rec(id).expect("terminal record");
+        assert_eq!(
+            (rec.filled, rec.gross, rec.fees, rec.simulated, rec.state),
+            (tokens, g, f, true, SellState::Completed)
+        );
+        let fill =
+            r.e.model_mgmt_fills()
+                .iter()
+                .rev()
+                .find(|x| x.order_id == id)
+                .copied()
+                .unwrap();
+        assert_eq!(
+            (fill.tokens, fill.gross_lamports, fill.fee_lamports),
+            (tokens, g, f)
+        );
+        assert!(f > 0, "modelled fee is never silently zero");
+        fills.push((id, tokens, g, f, px));
+        prev = v;
+    }
+    assert_ne!(fills[0].4, fills[1].4, "two different fill prices");
+    assert!(
+        r.e.model_assessable_fills().is_empty(),
+        "simulated economics stay outside assessable PnL"
+    );
+    // Restart: the durable totals and books come back exactly; replaying each order's totals settles nothing.
+    let end = books(&r.e);
+    assert!(r.e.model_held_persist_now());
+    drop(r);
+    let mut e2 = fresh(&hp);
+    e2.model_held_restore().unwrap().unwrap();
+    assert_eq!(books(&e2), end);
+    for &(id, tokens, g, f, _) in &fills {
+        let rec = e2.model_sell_rec(id).unwrap();
+        assert_eq!(
+            (rec.filled, rec.gross, rec.fees, rec.simulated),
+            (tokens, g, f, true),
+            "persisted verbatim"
+        );
+        for _ in 0..2 {
+            assert_eq!(
+                e2.model_mgmt_ingest_evidence(MINT, id, MgmtKind::Reduce, tokens, tokens, g, f),
+                SellReportResult::Duplicate
+            );
+        }
+        // Same quantity, different amounts: contradictory evidence, named.
+        assert_eq!(
+            e2.model_mgmt_ingest_evidence(MINT, id, MgmtKind::Reduce, tokens, tokens, g + 1, f),
+            SellReportResult::Fault
+        );
+    }
+    let after = books(&e2);
+    assert_eq!(
+        (after.0, after.1, after.2, after.3, after.4),
+        (end.0, end.1, end.2, end.3, end.4),
+        "no replay moved money or inventory"
     );
 }

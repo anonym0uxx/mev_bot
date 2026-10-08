@@ -99,6 +99,7 @@ impl Engine {
                 fee_bps: 0,
                 gross: 0,
                 protect: 0,
+                simulated: false,
                 fees: 0,
                 amm: o.amm,
                 created_ms: o.created_ms,
@@ -136,6 +137,7 @@ impl Engine {
                 gross: o.gross,
                 fees: o.fees,
                 protect: o.protect,
+                simulated: o.simulated,
                 amm: o.amm,
                 created_ms: o.created_ms,
                 created_slot: o.created_slot,
@@ -194,6 +196,7 @@ impl Engine {
                 last_price_fp: r.last_price_fp,
                 gross: r.gross,
                 fees: r.fees,
+                simulated: r.simulated,
             })
             .collect();
         let sell_faults: Vec<crate::held_state::HeldSellFault> = self
@@ -657,6 +660,7 @@ impl Engine {
                         gross: p.gross,
                         fees: p.fees,
                         protect: p.protect,
+                        simulated: p.simulated,
                     };
                     if kind == "protect" {
                         self.model_mgmt.protect.insert(p.mint, order);
@@ -767,6 +771,7 @@ impl Engine {
                     last_price_fp: o.last_price_fp,
                     gross: o.gross,
                     fees: o.fees,
+                    simulated: o.simulated,
                 },
             );
         }

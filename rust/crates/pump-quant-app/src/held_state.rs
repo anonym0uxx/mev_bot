@@ -15,7 +15,7 @@ use std::path::Path;
 use serde_json::{json, Value};
 
 /// Schema of this file.
-pub const HELD_SCHEMA: u64 = 5;
+pub const HELD_SCHEMA: u64 = 6;
 
 /// One held position, everything needed to rebuild the store entry, its attribution and its management
 /// state. Fixed-point / integer, no floats.
@@ -83,6 +83,8 @@ pub struct HeldPending {
     pub fees: u64,
     /// Protective orders: `ExitReason::code()` of the safeguard that created the order (0 otherwise).
     pub protect: u8,
+    /// Some fill came from the PAPER EXECUTOR (modelled price/fees): economics unvalidated.
+    pub simulated: bool,
     /// Whether the venue was the AMM.
     pub amm: bool,
     /// Wire-clock ms the order was created.
@@ -149,6 +151,8 @@ pub struct HeldSell {
     /// Cumulative gross proceeds / all-in fees applied (REDUCE/EXIT).
     pub gross: u64,
     pub fees: u64,
+    /// Some fill came from the PAPER EXECUTOR (modelled price/fees): economics unvalidated.
+    pub simulated: bool,
 }
 
 /// An unresolved management-order conflict, preserved verbatim; blocks new exposure on its mint.
@@ -346,7 +350,7 @@ impl HeldLedger {
                 "filled": p.filled,
                 "max_spend": p.max_spend,
                 "spent": p.spent,
-                "fee_bps": p.fee_bps, "gross": p.gross, "fees": p.fees, "protect": p.protect,
+                "fee_bps": p.fee_bps, "gross": p.gross, "fees": p.fees, "protect": p.protect, "simulated": p.simulated,
                 "amm": p.amm,
                 "created_ms": p.created_ms,
                 "created_slot": p.created_slot,
@@ -364,7 +368,7 @@ impl HeldLedger {
             "sells": self.sells.iter().map(|o| json!({
                 "id": o.id, "mint": hex(&o.mint), "kind": o.kind, "intended": o.intended,
                 "filled": o.filled, "spent": o.spent, "state": o.state, "px": o.last_price_fp,
-                "gross": o.gross, "fees": o.fees,
+                "gross": o.gross, "fees": o.fees, "simulated": o.simulated,
             })).collect::<Vec<_>>(),
             "sell_faults": self.sell_faults.iter().map(|f| json!({
                 "order_id": f.order_id, "mint": hex(&f.mint), "source": f.source,
@@ -449,6 +453,7 @@ impl HeldLedger {
                 fee_bps: u32::try_from(u(p, "fee_bps")?).map_err(|_| bad("fee_bps"))?,
                 gross: u(p, "gross")?,
                 protect: u8::try_from(u(p, "protect")?).map_err(|_| bad("protect"))?,
+                simulated: p["simulated"].as_bool().ok_or(bad("pending.simulated"))?,
                 fees: u(p, "fees")?,
                 amm: p["amm"].as_bool().ok_or(bad("pending.amm"))?,
                 created_ms: i(p, "created_ms")?,
@@ -561,6 +566,7 @@ impl HeldLedger {
                 last_price_fp: u(o, "px")?,
                 gross: u(o, "gross")?,
                 fees: u(o, "fees")?,
+                simulated: o["simulated"].as_bool().ok_or(bad("sells.simulated"))?,
             };
             if rec.kind > 3
                 || !(1..=4).contains(&rec.state)
@@ -783,6 +789,7 @@ mod tests {
                 last_price_fp: 22_000,
                 gross: 220_000,
                 fees: 220,
+                simulated: true,
             }],
             sell_faults: vec![HeldSellFault {
                 order_id: 3,
@@ -823,6 +830,7 @@ mod tests {
                 fee_bps: 0,
                 gross: 0,
                 protect: 0,
+                simulated: false,
                 fees: 0,
                 amm: false,
                 created_ms: 1_700_000_001_000,

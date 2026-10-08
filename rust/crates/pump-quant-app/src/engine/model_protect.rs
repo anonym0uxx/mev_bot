@@ -182,6 +182,7 @@ impl Engine {
                 gross: 0,
                 fees: 0,
                 protect: reason.code(),
+                simulated: false,
             },
         );
         self.model_protect_pending.remove(&mint);

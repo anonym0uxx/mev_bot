@@ -94,6 +94,8 @@ pub struct MgmtOrder {
     pub fees: u64,
     /// Protective orders only: `ExitReason::code()` of the safeguard that created it (0 = not protective).
     pub protect: u8,
+    /// Some fill of this order came from the PAPER EXECUTOR (modelled price and fees, not executed evidence).
+    pub simulated: bool,
 }
 
 /// How a management order ended. A live order is not in the log (it is in `MgmtLane::orders`).
@@ -126,6 +128,8 @@ pub struct SellRec {
     /// Cumulative gross proceeds / all-in fees (lamports) applied (REDUCE/EXIT).
     pub gross: u64,
     pub fees: u64,
+    /// Some fill came from the PAPER EXECUTOR (modelled price/fees): economics unvalidated.
+    pub simulated: bool,
 }
 
 /// An unresolved management-order conflict. Blocks new exposure on its mint until released.
@@ -572,6 +576,7 @@ impl Engine {
                 gross: 0,
                 fees: 0,
                 protect: 0,
+                simulated: false,
             },
         );
         self.mrep(match kind {
@@ -654,13 +659,40 @@ impl Engine {
             };
             match priced {
                 Some((px, label)) => {
-                    // Protective fills are counted apart from the model's own management fills.
+                    // PAPER EXECUTOR. It produces the SAME cumulative settlement evidence a real executor reports
+                    // (tokens, gross, all-in fees) and books it through the one settlement path, so the recorded
+                    // totals are exactly what moved cash. ASSUMPTIONS (explicit): price = the landing observation
+                    // (>= 400 ms after creation, newer slot); gross = the simulated walk incl. configured impairment
+                    // and own curve impact; fees = MODELLED (venue fee schedule + measured p50 landed leg), not
+                    // executed. The order is marked `simulated`: its economics stay outside assessable PnL.
+                    let (g, f) = match self.positions.simulate_sell_settlement(&mint, tokens, px) {
+                        Ok(gf) => gf,
+                        Err(_) => {
+                            // Same named refusals as before, through the booking path.
+                            self.model_mgmt_book(mint, order, tokens, px, None);
+                            continue;
+                        }
+                    };
                     if order.kind == MgmtKind::Protect {
                         self.mrep(label.replacen("mgmt:", "protect:", 1));
                     } else {
                         self.mrep(label);
                     }
-                    self.model_mgmt_book(mint, order, tokens, px, None);
+                    if let Some(o) = self.model_mgmt.orders.get_mut(&mint) {
+                        o.simulated = true;
+                    }
+                    let r = self.model_mgmt_ingest_evidence_inner(
+                        mint,
+                        order.id,
+                        order.kind,
+                        order.intended,
+                        order.filled + tokens,
+                        order.gross + g,
+                        order.fees + f,
+                    );
+                    if !matches!(r, SellReportResult::Applied { .. }) {
+                        self.mrep("mgmt:paper_fill:not_applied");
+                    }
                 }
                 None => {
                     if clock - order.created_ms > MODEL_ORDER_TTL_MS {
@@ -1606,6 +1638,7 @@ impl Engine {
                 last_price_fp,
                 gross: o.gross,
                 fees: o.fees,
+                simulated: o.simulated,
             },
         );
         if o.uncertain && preempted && state != SellState::Completed {
@@ -2033,6 +2066,7 @@ mod add_planner_tests {
                 gross: 0,
                 fees: 0,
                 protect: 0,
+                simulated: false,
             },
         );
         assert!(
