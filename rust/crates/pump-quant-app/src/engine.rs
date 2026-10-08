@@ -870,6 +870,10 @@ pub struct Engine {
     model_order_seq: u64,
     /// Settled-order records at or below this id may have been compacted away (never silently "unknown").
     model_order_floor: u64,
+    /// Management (REDUCE/EXIT/ADD) order log, own id namespace: identity, cumulative fills, terminal state.
+    model_sell_log: BTreeMap<u64, model_manage::SellRec>,
+    model_sell_faults: BTreeMap<u64, model_manage::SellFault>,
+    model_sell_floor: u64,
     /// Process-session id stamped on every inference job (see `model_worker::Job::session`).
     model_session: u64,
     model_settled_order_cap: Option<usize>,
@@ -1520,6 +1524,9 @@ impl Engine {
             model_uniq_seen: BTreeSet::new(),
             model_amm_fee: BTreeMap::new(),
             model_order_seq: 0,
+            model_sell_log: BTreeMap::new(),
+            model_sell_faults: BTreeMap::new(),
+            model_sell_floor: 0,
             model_order_floor: 0,
             model_session: new_session_id(),
             model_settled_order_cap: None,

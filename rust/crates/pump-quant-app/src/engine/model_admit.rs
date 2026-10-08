@@ -2014,7 +2014,7 @@ impl Engine {
     }
 
     pub(super) fn model_mint_blocked(&self, mint: &[u8; 32]) -> bool {
-        self.model_recon_faults.values().any(|f| f.mint == *mint)
+        self.model_recon_faults.values().any(|f| f.mint == *mint) || self.model_sell_blocked(mint)
     }
 
     /// OLD-vs-NEW admission, measured on whatever stream the engine has seen: unique markets reaching

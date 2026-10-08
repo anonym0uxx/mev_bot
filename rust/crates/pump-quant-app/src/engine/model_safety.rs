@@ -154,7 +154,7 @@ impl Engine {
         if operator.trim().is_empty() {
             return Err(RearmRefusal::NoOperator);
         }
-        if !self.model_recon_faults.is_empty() {
+        if !self.model_recon_faults.is_empty() || !self.model_sell_faults.is_empty() {
             return Err(RearmRefusal::UnresolvedReconFault);
         }
         if self

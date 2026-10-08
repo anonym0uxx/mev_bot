@@ -87,6 +87,64 @@ pub struct MgmtOrder {
     pub uncertain: bool,
 }
 
+/// How a management order ended. A live order is not in the log (it is in `MgmtLane::orders`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SellState {
+    /// Filled to its intended quantity.
+    Completed,
+    /// Ended (TTL / refusal / trip) with a partial fill; the remainder never executed.
+    EndedPartial,
+    /// Ended with nothing filled.
+    EndedUnfilled,
+    /// The position was closed by another path (a protective exit) while the order was unfinished.
+    Preempted,
+}
+
+/// A settled management order: identity, cumulative fills and terminal state. Never carries financial effects
+/// (cash, inventory and realized results live in the books); it exists so a late or duplicate report is
+/// recognised and cannot act twice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SellRec {
+    pub id: u64,
+    pub mint: [u8; 32],
+    pub kind: MgmtKind,
+    pub intended: u64,
+    pub filled: u64,
+    /// ADD: cumulative notional spent.
+    pub spent: u64,
+    pub state: SellState,
+    pub last_price_fp: u64,
+}
+
+/// An unresolved management-order conflict. Blocks new exposure on its mint until released.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SellFault {
+    pub order_id: u64,
+    pub mint: [u8; 32],
+    /// `report_exceeds_order`, `report_contradicts_settled` or `uncertain_sell_preempted`.
+    pub source: &'static str,
+    /// Cumulative filled according to the books when the conflict arose.
+    pub books_filled: u64,
+    /// The contradicting cumulative reports, verbatim.
+    pub reported: Vec<u64>,
+}
+
+/// What ingesting one management report did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SellReportResult {
+    /// New fill applied (the delta over the books' cumulative).
+    Applied { delta: u64 },
+    /// Already reflected (equal or older cumulative): nothing changed.
+    Duplicate,
+    /// Contradicts the books: evidence preserved, fault raised, nothing applied, mint blocked.
+    Fault,
+    /// Refused without touching state, with the named reason (`unknown_order`, `compacted_order`, ...).
+    Rejected(&'static str),
+}
+
+/// Settled management-order records kept before the oldest are compacted (a floor then names them).
+pub const SELL_LOG_CAP: usize = 4_096;
+
 /// Management ADD target: half of the reconciled inventory.
 pub const MGMT_ADD_INVENTORY_BPS: u32 = 5_000;
 
@@ -194,7 +252,8 @@ impl Engine {
     /// The position closed: drop every management trace of it (a late verdict is then discarded).
     pub(super) fn model_mgmt_forget(&mut self, mint: &[u8; 32]) {
         self.model_mgmt.pos.remove(mint);
-        self.model_mgmt.orders.remove(mint);
+        // The position is gone: an unfinished order on it is PREEMPTED (a protective or other close ended it).
+        self.model_mgmt_end(mint, true);
     }
 
     /// Causal MFE/MAE tracker: every priced print on a held mint since the fill.
@@ -565,7 +624,7 @@ impl Engine {
                 }
                 None => {
                     if clock - order.created_ms > MODEL_ORDER_TTL_MS {
-                        self.model_mgmt.orders.remove(&mint);
+                        self.model_mgmt_end(&mint, false);
                         self.mrep("mgmt:order_expired_unfilled");
                     }
                 }
@@ -620,7 +679,7 @@ impl Engine {
                     SellRefusal::NoPrice => "mgmt:refuse:no_price",
                     SellRefusal::NotHeld => "mgmt:refuse:not_held",
                 });
-                self.model_mgmt.orders.remove(&mint);
+                self.model_mgmt_end(&mint, false);
                 return;
             }
         };
@@ -638,6 +697,10 @@ impl Engine {
         }
         let net = exit.net_lamports;
         let closed = exit.closed;
+        if let Some(o) = self.model_mgmt.orders.get_mut(&mint) {
+            o.filled += tokens;
+            o.version += 1;
+        }
         self.book_exit(exit);
         self.model_mgmt.fills.push(MgmtFill {
             order_id: order.id,
@@ -658,14 +721,13 @@ impl Engine {
         if let Some(mp) = self.model_mgmt.pos.get_mut(&mint) {
             mp.version += 1;
         }
-        let mut done = false;
-        if let Some(o) = self.model_mgmt.orders.get_mut(&mint) {
-            o.filled += tokens;
-            o.version += 1;
-            done = o.filled >= o.intended;
-        }
+        let done = self
+            .model_mgmt
+            .orders
+            .get(&mint)
+            .is_some_and(|o| o.filled >= o.intended);
         if done {
-            self.model_mgmt.orders.remove(&mint);
+            self.model_mgmt_end(&mint, false);
             self.mrep("mgmt:fill:complete");
         } else {
             // Partial: the remainder stays pending and monitored (TTL applies to the remainder).
@@ -1101,7 +1163,7 @@ impl Engine {
         let need = order.intended - order.filled;
         if self.model_safety_blocked() {
             // Defence in depth: the trip already removes unfilled ADDs.
-            self.model_mgmt.orders.remove(&mint);
+            self.model_mgmt_end(&mint, false);
             self.mrep("mgmt:add_cancelled_safety_off");
             return;
         }
@@ -1113,10 +1175,10 @@ impl Engine {
             Ok(s) => s,
             Err(r) => {
                 if r == "mgmt:refuse:add_amm_economics_missing" {
-                    self.model_mgmt.orders.remove(&mint);
+                    self.model_mgmt_end(&mint, false);
                     self.mrep(r);
                 } else if clock - order.created_ms > MODEL_ORDER_TTL_MS {
-                    self.model_mgmt.orders.remove(&mint);
+                    self.model_mgmt_end(&mint, false);
                     self.mrep("mgmt:order_expired_unfilled");
                 }
                 return;
@@ -1136,7 +1198,7 @@ impl Engine {
                 self.model_mgmt_book_add(mint, order, plan.tokens, plan.n, px, plan.fee_bps);
             }
             Err(r) => {
-                self.model_mgmt.orders.remove(&mint);
+                self.model_mgmt_end(&mint, false);
                 self.mrep(r);
             }
         }
@@ -1166,7 +1228,7 @@ impl Engine {
                 crate::position::AddRefusal::NoPrice => "mgmt:refuse:no_price",
                 crate::position::AddRefusal::Overflow => "mgmt:refuse:add_overflow",
             });
-            self.model_mgmt.orders.remove(&mint);
+            self.model_mgmt_end(&mint, false);
             return;
         }
         // Cash: the all-in cost joins the committed capital and the attribution, so a later close releases
@@ -1197,7 +1259,7 @@ impl Engine {
             done = o.filled >= o.intended;
         }
         if done {
-            self.model_mgmt.orders.remove(&mint);
+            self.model_mgmt_end(&mint, false);
             self.mrep("mgmt:fill:add_complete");
         } else {
             self.mrep("mgmt:fill:add_partial_remainder_pending");
@@ -1268,12 +1330,189 @@ impl Engine {
             .get(mint)
             .is_some_and(|o| o.id == order_id && o.uncertain)
         {
-            self.model_mgmt.orders.remove(mint);
+            self.model_mgmt_end(mint, false);
             self.mrep("mgmt:uncertain_resolved_not_executed");
             true
         } else {
             false
         }
+    }
+
+    /// THE single place a live management order leaves `MgmtLane::orders`. Records its terminal state so a late or
+    /// duplicate report is recognised. `preempted` = the position closed under it. An order whose acknowledgement
+    /// was UNKNOWN and that is ended by anything other than evidence raises a fault: it may have executed.
+    pub(super) fn model_mgmt_end(&mut self, mint: &[u8; 32], preempted: bool) {
+        let Some(o) = self.model_mgmt.orders.remove(mint) else {
+            return;
+        };
+        let state = if o.filled >= o.intended {
+            SellState::Completed
+        } else if preempted {
+            SellState::Preempted
+        } else if o.filled > 0 {
+            SellState::EndedPartial
+        } else {
+            SellState::EndedUnfilled
+        };
+        let last_price_fp = self
+            .model_mgmt
+            .fills
+            .iter()
+            .rev()
+            .find(|f| f.order_id == o.id)
+            .map_or(0, |f| f.price_fp);
+        self.model_sell_log.insert(
+            o.id,
+            SellRec {
+                id: o.id,
+                mint: *mint,
+                kind: o.kind,
+                intended: o.intended,
+                filled: o.filled,
+                spent: o.spent,
+                state,
+                last_price_fp,
+            },
+        );
+        if o.uncertain && preempted && state != SellState::Completed {
+            self.model_sell_fault(
+                o.id,
+                *mint,
+                "uncertain_sell_preempted",
+                o.filled,
+                Vec::new(),
+            );
+        }
+        self.model_compact_sell_log();
+    }
+
+    fn model_sell_fault(
+        &mut self,
+        order_id: u64,
+        mint: [u8; 32],
+        source: &'static str,
+        books_filled: u64,
+        reported: Vec<u64>,
+    ) {
+        let f = self
+            .model_sell_faults
+            .entry(order_id)
+            .or_insert_with(|| SellFault {
+                order_id,
+                mint,
+                source,
+                books_filled,
+                reported: Vec::new(),
+            });
+        for r in reported {
+            f.reported.push(r);
+        }
+        self.mrep(format!("mgmt:FAULT:{source}"));
+    }
+
+    fn model_compact_sell_log(&mut self) {
+        let cap = self.model_settled_order_cap.unwrap_or(SELL_LOG_CAP);
+        let settled: Vec<u64> = self
+            .model_sell_log
+            .keys()
+            .copied()
+            .filter(|id| !self.model_sell_faults.contains_key(id))
+            .collect();
+        if settled.len() <= cap {
+            return;
+        }
+        for id in settled.into_iter().take(self.model_sell_log.len() - cap) {
+            self.model_sell_log.remove(&id);
+            self.model_sell_floor = self.model_sell_floor.max(id);
+            self.mrep("held_state:sell_record_compacted");
+        }
+    }
+
+    /// Whether `mint` has an unresolved management-order conflict (blocks new exposure, like an entry fault).
+    pub(super) fn model_sell_blocked(&self, mint: &[u8; 32]) -> bool {
+        self.model_sell_faults.values().any(|f| f.mint == *mint)
+    }
+
+    /// Unresolved management-order conflicts.
+    #[must_use]
+    pub fn model_sell_faults(&self) -> &BTreeMap<u64, SellFault> {
+        &self.model_sell_faults
+    }
+
+    /// One settled management order's record.
+    #[must_use]
+    pub fn model_sell_rec(&self, id: u64) -> Option<SellRec> {
+        self.model_sell_log.get(&id).copied()
+    }
+
+    /// Ingest one execution report for a management order, by CUMULATIVE quantity: `cumulative_tokens` is the
+    /// total this order has filled according to the reporter, and `value` is the fill price (REDUCE/EXIT) or the
+    /// cumulative notional spent (ADD). Idempotent: a repeat or an older partial changes nothing. Bound to the
+    /// order id and mint; never matched by mint alone.
+    pub fn model_mgmt_ingest_report(
+        &mut self,
+        mint: [u8; 32],
+        order_id: u64,
+        cumulative_tokens: u64,
+        value: u64,
+    ) -> SellReportResult {
+        // A live order on this mint?
+        if let Some(o) = self.model_mgmt.orders.get(&mint).copied() {
+            if o.id == order_id {
+                if cumulative_tokens > o.intended {
+                    self.model_sell_fault(
+                        order_id,
+                        mint,
+                        "report_exceeds_order",
+                        o.filled,
+                        vec![cumulative_tokens],
+                    );
+                    return SellReportResult::Fault;
+                }
+                if cumulative_tokens <= o.filled {
+                    self.mrep("mgmt:report:duplicate");
+                    return SellReportResult::Duplicate;
+                }
+                let delta = cumulative_tokens - o.filled;
+                let r = if o.kind == MgmtKind::Add {
+                    let spent_delta = value.saturating_sub(o.spent);
+                    self.model_mgmt_apply_reconciled_add_fill(mint, order_id, delta, spent_delta)
+                } else {
+                    self.model_mgmt_apply_reconciled_fill(mint, order_id, delta, value)
+                };
+                return match r {
+                    Ok(()) => SellReportResult::Applied { delta },
+                    Err(why) => SellReportResult::Rejected(why),
+                };
+            }
+        }
+        let Some(rec) = self.model_sell_log.get(&order_id).copied() else {
+            self.mrep("mgmt:report:rejected");
+            return SellReportResult::Rejected(
+                if order_id != 0 && order_id <= self.model_sell_floor {
+                    "compacted_order"
+                } else {
+                    "unknown_order"
+                },
+            );
+        };
+        if rec.mint != mint {
+            self.mrep("mgmt:report:rejected");
+            return SellReportResult::Rejected("mint_mismatch");
+        }
+        if cumulative_tokens <= rec.filled {
+            self.mrep("mgmt:report:duplicate");
+            return SellReportResult::Duplicate;
+        }
+        // The books say this order ended at `rec.filled`; the report says more executed. Not applied, not dropped.
+        self.model_sell_fault(
+            order_id,
+            mint,
+            "report_contradicts_settled",
+            rec.filled,
+            vec![cumulative_tokens],
+        );
+        SellReportResult::Fault
     }
 
     /// A reconciled report (fill) resolves uncertainty for the order it names.
@@ -1294,7 +1533,7 @@ impl Engine {
             .map(|(m, _)| *m)
             .collect();
         for m in &victims {
-            self.model_mgmt.orders.remove(m);
+            self.model_mgmt_end(m, false);
             self.mrep("safety:add_order_invalidated");
         }
         victims.len()

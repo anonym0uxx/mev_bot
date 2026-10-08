@@ -154,6 +154,40 @@ impl Engine {
                 })
             })
             .collect();
+        let sells: Vec<crate::held_state::HeldSell> = self
+            .model_sell_log
+            .values()
+            .map(|r| crate::held_state::HeldSell {
+                id: r.id,
+                mint: r.mint,
+                kind: match r.kind {
+                    MgmtKind::Reduce => 0,
+                    MgmtKind::Exit => 1,
+                    MgmtKind::Add => 2,
+                },
+                intended: r.intended,
+                filled: r.filled,
+                spent: r.spent,
+                state: match r.state {
+                    super::model_manage::SellState::Completed => 1,
+                    super::model_manage::SellState::EndedPartial => 2,
+                    super::model_manage::SellState::EndedUnfilled => 3,
+                    super::model_manage::SellState::Preempted => 4,
+                },
+                last_price_fp: r.last_price_fp,
+            })
+            .collect();
+        let sell_faults: Vec<crate::held_state::HeldSellFault> = self
+            .model_sell_faults
+            .values()
+            .map(|f| crate::held_state::HeldSellFault {
+                order_id: f.order_id,
+                mint: f.mint,
+                source: f.source.to_string(),
+                books_filled: f.books_filled,
+                reported: f.reported.clone(),
+            })
+            .collect();
         let faults: Vec<HeldFault> = self
             .model_recon_faults
             .values()
@@ -171,6 +205,9 @@ impl Engine {
             })
             .collect();
         HeldLedger {
+            sells,
+            sell_faults,
+            sell_floor: self.model_sell_floor,
             orders,
             faults,
             order_floor: self.model_order_floor,
@@ -410,6 +447,29 @@ impl Engine {
                 return Err(RestoreRefusal::FaultWithoutOrder);
             }
         }
+        for f in &l.sell_faults {
+            let known = l.sells.iter().any(|o| o.id == f.order_id)
+                || l.pending
+                    .iter()
+                    .any(|p| p.kind != "entry" && p.id == f.order_id);
+            if !known {
+                return Err(RestoreRefusal::FaultWithoutOrder);
+            }
+        }
+        for o in &l.sells {
+            if o.id > l.mgmt_seq {
+                return Err(RestoreRefusal::OrderIdBeyondSequence);
+            }
+        }
+        let pending_mgmt: std::collections::BTreeSet<u64> = l
+            .pending
+            .iter()
+            .filter(|p| p.kind != "entry")
+            .map(|p| p.id)
+            .collect();
+        if l.sells.iter().any(|x| pending_mgmt.contains(&x.id)) {
+            return Err(RestoreRefusal::SettledAndPendingSameOrder);
+        }
         for p in &l.pending {
             match p.kind.as_str() {
                 "entry" => {
@@ -631,6 +691,54 @@ impl Engine {
                 },
             );
         }
+        // Management orders: settled identity + cumulative fills + terminal state; restored AS RECORDS only.
+        self.model_sell_floor = l.sell_floor;
+        for o in &l.sells {
+            self.model_sell_log.insert(
+                o.id,
+                super::model_manage::SellRec {
+                    id: o.id,
+                    mint: o.mint,
+                    kind: match o.kind {
+                        0 => MgmtKind::Reduce,
+                        1 => MgmtKind::Exit,
+                        _ => MgmtKind::Add,
+                    },
+                    intended: o.intended,
+                    filled: o.filled,
+                    spent: o.spent,
+                    state: match o.state {
+                        1 => super::model_manage::SellState::Completed,
+                        2 => super::model_manage::SellState::EndedPartial,
+                        3 => super::model_manage::SellState::EndedUnfilled,
+                        _ => super::model_manage::SellState::Preempted,
+                    },
+                    last_price_fp: o.last_price_fp,
+                },
+            );
+        }
+        for f in &l.sell_faults {
+            let source: &'static str = crate::held_state::SELL_FAULT_SOURCES
+                .iter()
+                .copied()
+                .find(|s| *s == f.source)
+                .unwrap_or("report_contradicts_settled");
+            self.model_sell_faults.insert(
+                f.order_id,
+                super::model_manage::SellFault {
+                    order_id: f.order_id,
+                    mint: f.mint,
+                    source,
+                    books_filled: f.books_filled,
+                    reported: f.reported.clone(),
+                },
+            );
+        }
+        self.mrep_add("held_state:restored_settled_sells", l.sells.len() as u64);
+        self.mrep_add(
+            "held_state:restored_sell_faults",
+            l.sell_faults.len() as u64,
+        );
         self.mrep_add("held_state:restored_settled_orders", l.orders.len() as u64);
         self.mrep_add("held_state:restored_faults", l.faults.len() as u64);
         self.model_held.last_digest = Self::model_held_digest(l);

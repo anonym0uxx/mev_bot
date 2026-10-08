@@ -15,7 +15,7 @@ use std::path::Path;
 use serde_json::{json, Value};
 
 /// Schema of this file.
-pub const HELD_SCHEMA: u64 = 2;
+pub const HELD_SCHEMA: u64 = 3;
 
 /// One held position, everything needed to rebuild the store entry, its attribution and its management
 /// state. Fixed-point / integer, no floats.
@@ -125,6 +125,44 @@ pub struct HeldOrder {
     pub terminal: Option<HeldOutcome>,
 }
 
+/// One management (REDUCE / EXIT / ADD) order's durable identity and terminal evidence. Its own id namespace (the
+/// management sequence), separate from entry orders. `state`: 1 completed, 2 ended partially filled, 3 ended
+/// unfilled, 4 preempted (the position was closed by a protective path while the order was unfinished).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeldSell {
+    pub id: u64,
+    pub mint: [u8; 32],
+    /// 0 reduce, 1 exit, 2 add.
+    pub kind: u8,
+    pub intended: u64,
+    /// Cumulative tokens filled (the idempotent report key).
+    pub filled: u64,
+    /// ADD only: cumulative notional spent (the idempotent report key for buys).
+    pub spent: u64,
+    pub state: u8,
+    pub last_price_fp: u64,
+}
+
+/// An unresolved management-order conflict, preserved verbatim; blocks new exposure on its mint.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeldSellFault {
+    pub order_id: u64,
+    pub mint: [u8; 32],
+    /// One of [`SELL_FAULT_SOURCES`].
+    pub source: String,
+    /// Cumulative filled the books held when the conflict arose.
+    pub books_filled: u64,
+    /// Contradicting cumulative reports, verbatim.
+    pub reported: Vec<u64>,
+}
+
+/// The management-conflict sources the engine can write; anything else makes the file untrusted.
+pub const SELL_FAULT_SOURCES: [&str; 3] = [
+    "report_exceeds_order",
+    "report_contradicts_settled",
+    "uncertain_sell_preempted",
+];
+
 /// An unresolved reconciliation fault, preserved verbatim. It blocks new exposure on its mint until resolved.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeldFault {
@@ -175,6 +213,12 @@ pub struct HeldLedger {
     pub orders: Vec<HeldOrder>,
     /// Unresolved reconciliation faults.
     pub faults: Vec<HeldFault>,
+    /// Settled management orders (identity + cumulative filled), pending ones live in `pending`.
+    pub sells: Vec<HeldSell>,
+    /// Unresolved management-order conflicts.
+    pub sell_faults: Vec<HeldSellFault>,
+    /// Management compaction floor (like `order_floor`, own namespace).
+    pub sell_floor: u64,
     /// Compaction floor: an order id at or below it that is absent from `orders` was COMPACTED (named, never
     /// "unknown"). Zero when nothing was ever compacted.
     pub order_floor: u64,
@@ -297,6 +341,15 @@ impl HeldLedger {
                 "discovery_lane_index": p.discovery_lane_index,
             })).collect::<Vec<_>>(),
             "order_floor": self.order_floor,
+            "sell_floor": self.sell_floor,
+            "sells": self.sells.iter().map(|o| json!({
+                "id": o.id, "mint": hex(&o.mint), "kind": o.kind, "intended": o.intended,
+                "filled": o.filled, "spent": o.spent, "state": o.state, "px": o.last_price_fp,
+            })).collect::<Vec<_>>(),
+            "sell_faults": self.sell_faults.iter().map(|f| json!({
+                "order_id": f.order_id, "mint": hex(&f.mint), "source": f.source,
+                "books_filled": f.books_filled, "reported": f.reported,
+            })).collect::<Vec<_>>(),
             "orders": self.orders.iter().map(|o| json!({
                 "id": o.id, "mint": hex(&o.mint), "attempt": o.attempt,
                 "clip": o.clip_lamports, "filled_clip": o.filled_clip_lamports,
@@ -468,7 +521,63 @@ impl HeldLedger {
                 contradicting,
             });
         }
+        let mut sells = Vec::new();
+        let mut sell_ids = std::collections::BTreeSet::new();
+        for o in v["sells"].as_array().ok_or(bad("sells"))? {
+            let rec = HeldSell {
+                id: u(o, "id")?,
+                mint: o["mint"]
+                    .as_str()
+                    .and_then(unhex)
+                    .ok_or(bad("sells.mint"))?,
+                kind: u8::try_from(u(o, "kind")?).map_err(|_| bad("sells.kind"))?,
+                intended: u(o, "intended")?,
+                filled: u(o, "filled")?,
+                spent: u(o, "spent")?,
+                state: u8::try_from(u(o, "state")?).map_err(|_| bad("sells.state"))?,
+                last_price_fp: u(o, "px")?,
+            };
+            if rec.kind > 2
+                || !(1..=4).contains(&rec.state)
+                || rec.filled > rec.intended
+                || rec.id == 0
+                || !sell_ids.insert(rec.id)
+            {
+                return Err(bad("sells.shape_or_duplicate"));
+            }
+            sells.push(rec);
+        }
+        let mut sell_faults = Vec::new();
+        for f in v["sell_faults"].as_array().ok_or(bad("sell_faults"))? {
+            let src = f["source"].as_str().ok_or(bad("sell_faults.source"))?;
+            if !SELL_FAULT_SOURCES.contains(&src) {
+                return Err(bad("sell_faults.source"));
+            }
+            let reported = f["reported"]
+                .as_array()
+                .ok_or(bad("sell_faults.reported"))?
+                .iter()
+                .map(|x| x.as_u64().ok_or(bad("sell_faults.reported")))
+                .collect::<Result<Vec<_>, _>>()?;
+            sell_faults.push(HeldSellFault {
+                order_id: u(f, "order_id")?,
+                mint: f["mint"]
+                    .as_str()
+                    .and_then(unhex)
+                    .ok_or(bad("sell_faults.mint"))?,
+                source: src.to_string(),
+                books_filled: u(f, "books_filled")?,
+                reported,
+            });
+        }
+        let mgmt_seq = u(v, "mgmt_seq")?;
+        if sells.iter().any(|x| x.id > mgmt_seq) {
+            return Err(bad("sells.id_above_mgmt_seq"));
+        }
         Ok(Self {
+            sells,
+            sell_faults,
+            sell_floor: u(v, "sell_floor")?,
             orders,
             faults,
             order_floor: u(v, "order_floor")?,
@@ -553,6 +662,8 @@ pub enum RestoreRefusal {
     NotModelManaged,
     /// A pending order has an unknown kind.
     UnknownOrderKind,
+    /// One management order id is both settled and pending (the file describes two incompatible states).
+    SettledAndPendingSameOrder,
     /// A settled order carries an id the order sequence never issued (the files do not describe one history).
     OrderIdBeyondSequence,
     /// A fault names an order that is in neither the settled records nor the pending list.
@@ -583,7 +694,7 @@ mod tests {
             seed_lamports: 1_000,
             realized_lamports: -7,
             model_order_seq: 4,
-            mgmt_seq: 2,
+            mgmt_seq: 3,
             written_wall_ms: 0,
             decision: DecisionState::default(),
             orders: vec![HeldOrder {
@@ -606,6 +717,24 @@ mod tests {
                 contradicting: vec![HeldOutcome::NotFilled],
             }],
             order_floor: 2,
+            sells: vec![HeldSell {
+                id: 3,
+                mint: [7; 32],
+                kind: 1,
+                intended: 500,
+                filled: 500,
+                spent: 0,
+                state: 1,
+                last_price_fp: 22_000,
+            }],
+            sell_faults: vec![HeldSellFault {
+                order_id: 3,
+                mint: [7; 32],
+                source: "report_contradicts_settled".into(),
+                books_filled: 500,
+                reported: vec![400],
+            }],
+            sell_floor: 1,
             held: vec![HeldEntry {
                 mint: [9; 32],
                 entry_price_fp: 45_085,
@@ -691,6 +820,9 @@ mod tests {
             ("orders", "orders"),
             ("faults", "faults"),
             ("order_floor", "order_floor"),
+            ("sells", "sells"),
+            ("sell_faults", "sell_faults"),
+            ("sell_floor", "sell_floor"),
         ] {
             let mut v = sample().to_json();
             v.as_object_mut().unwrap().remove(field);
