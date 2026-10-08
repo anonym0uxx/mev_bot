@@ -23,6 +23,7 @@ const BUY: &str =
 const HOLD: &str = "DECISION: HOLD\nINVALIDATION: none\nEVIDENCE: x";
 const REDUCE: &str = "DECISION: REDUCE\nINVALIDATION: none\nEVIDENCE: x";
 const EXIT: &str = "DECISION: EXIT\nINVALIDATION: none\nEVIDENCE: x";
+const ADD: &str = "DECISION: ADD\nINVALIDATION: none\nEVIDENCE: x";
 
 struct Script {
     calls: Arc<AtomicUsize>,
@@ -1212,4 +1213,156 @@ fn a_restart_with_a_pending_or_partly_filled_protective_order_neither_resubmits_
         SellReportResult::Duplicate
     );
     assert_eq!(books(&e3), done);
+}
+
+// ===================== ADD ACCOUNTING =====================
+// CONVENTION: an ADD report states CUMULATIVE tokens acquired, cumulative quote SPENT (fee-EXCLUSIVE notional) and
+// cumulative all-in FEES paid ON TOP. All-in cash cost = spent + fees. Cost basis rises by exactly that.
+
+/// A world stopped with an ADD pending (acknowledgement unknown): returns (ledger path, id, intended, max_spend, fee_bps).
+fn add_pending_world(tag: &str) -> (std::path::PathBuf, u64, u64, u64, u32) {
+    let hp = held_path(tag);
+    let mut r = rig(|step| if step == 0 { ADD } else { HOLD }, &hp);
+    r.advance_to_order(120_000);
+    let (id, k, intended, _) = r.e.model_mgmt_pending(&MINT).expect("ADD pending");
+    assert_eq!(k, MgmtKind::Add);
+    let (max_spend, fee_bps, ..) = r.e.model_mgmt_add_reservation(&MINT).unwrap();
+    assert!(r.e.model_mgmt_mark_ack_uncertain(&MINT, id));
+    assert!(r.e.model_held_persist_now());
+    (hp, id, intended, max_spend, fee_bps)
+}
+
+#[test]
+fn a_partial_add_restart_reconcile_books_exact_cash_basis_fees_and_releases_its_reservation() {
+    let (hp, id, intended, max_spend, fee_bps) = add_pending_world("a_p");
+    let mut e2 = fresh(&hp);
+    e2.model_held_restore().unwrap().unwrap();
+    let inv0 = e2.model_inventory_tokens(&MINT).unwrap();
+    let v0 = e2.model_accounting_view(&MINT);
+    let (c0, committed0) = (v0.remaining_cost_basis.unwrap(), v0.committed);
+    // Restored uncertain: reserved, unbooked, never resubmitted.
+    let (_, _, spent0, fees0, held_back0) = e2.model_mgmt_add_reservation(&MINT).unwrap();
+    assert_eq!((spent0, fees0), (0, 0));
+    assert!(
+        held_back0 > max_spend,
+        "reservation = remaining spend + fee + one fixed leg"
+    );
+    ticks(&mut e2, 4);
+    assert_eq!(e2.model_inventory_tokens(&MINT), Some(inv0));
+    // Fill 1: a third of the tokens for a third of the reserved notional; fee 1_234 all-in.
+    let t1 = intended / 3;
+    let s1 = max_spend / 3;
+    let f1 = 1_234u64;
+    assert!(matches!(
+        e2.model_mgmt_ingest_evidence(MINT, id, MgmtKind::Add, intended, t1, s1, f1),
+        SellReportResult::Applied { delta } if delta == t1
+    ));
+    let v1 = e2.model_accounting_view(&MINT);
+    // Independent expectations: tokens add exactly; cost basis and committed capital rise by spent + fees.
+    assert_eq!(e2.model_inventory_tokens(&MINT), Some(inv0 + t1));
+    assert_eq!(v1.remaining_cost_basis.unwrap(), c0 + s1 + f1);
+    assert_eq!(v1.committed, committed0 + s1 + f1);
+    assert_eq!(v1.realized, v0.realized, "a buy realizes nothing");
+    let (_, _, sp1, fe1, held_back1) = e2.model_mgmt_add_reservation(&MINT).unwrap();
+    assert_eq!((sp1, fe1), (s1, f1));
+    assert!(
+        held_back1 < held_back0,
+        "the reservation shrinks by what was spent"
+    );
+    // Restart between the fill and the next report (publication done): books restore exactly.
+    assert!(e2.model_held_persist_now());
+    let mut e3 = fresh(&hp);
+    e3.model_held_restore().unwrap().unwrap();
+    assert_eq!(e3.model_inventory_tokens(&MINT), Some(inv0 + t1));
+    assert_eq!(
+        e3.model_accounting_view(&MINT).remaining_cost_basis,
+        v1.remaining_cost_basis
+    );
+    let (_, _, sp3, fe3, _) = e3.model_mgmt_add_reservation(&MINT).unwrap();
+    assert_eq!(
+        (sp3, fe3),
+        (s1, f1),
+        "settlement totals restore with the books"
+    );
+    // Duplicate and older reports change nothing.
+    for (tk, sp, fe) in [(t1, s1, f1), (t1, s1, f1)] {
+        assert_eq!(
+            e3.model_mgmt_ingest_evidence(MINT, id, MgmtKind::Add, intended, tk, sp, fe),
+            SellReportResult::Duplicate
+        );
+    }
+    // Same quantity with different spend or fees is contradictory evidence, named and blocking.
+    assert_eq!(
+        e3.model_mgmt_ingest_evidence(MINT, id, MgmtKind::Add, intended, t1, s1, f1 + 1),
+        SellReportResult::Fault
+    );
+    assert!(e3.model_mint_is_blocked(&MINT));
+    assert_eq!(e3.model_inventory_tokens(&MINT), Some(inv0 + t1));
+}
+
+#[test]
+fn an_add_fill_beyond_its_reservation_is_refused_and_the_remainder_completion_releases_it() {
+    let (hp, id, intended, max_spend, fee_bps) = add_pending_world("a_q");
+    let mut e2 = fresh(&hp);
+    e2.model_held_restore().unwrap().unwrap();
+    let inv0 = e2.model_inventory_tokens(&MINT).unwrap();
+    let b0 = e2.model_accounting_view(&MINT);
+    // Spend above the order's own bound, and fees above its reserved fee bound: refused, nothing booked.
+    assert_eq!(
+        e2.model_mgmt_ingest_evidence(
+            MINT,
+            id,
+            MgmtKind::Add,
+            intended,
+            intended / 2,
+            max_spend + 1,
+            10
+        ),
+        SellReportResult::Rejected("spend_bound")
+    );
+    let fee_cap = u64::try_from((u128::from(max_spend) * u128::from(fee_bps)).div_ceil(10_000))
+        .unwrap()
+        + pump_quant_app::cost_model::FIXED_LAMPORTS_PER_LEG;
+    assert_eq!(
+        e2.model_mgmt_ingest_evidence(
+            MINT,
+            id,
+            MgmtKind::Add,
+            intended,
+            intended / 2,
+            max_spend / 2,
+            fee_cap + 1
+        ),
+        SellReportResult::Rejected("fees_exceed_reservation"),
+        "one lamport above the reserved fee bound"
+    );
+    assert_eq!(e2.model_accounting_view(&MINT), b0);
+    assert_eq!(e2.model_inventory_tokens(&MINT), Some(inv0));
+    // The full fill, within bounds, completes it: the order ends, its reservation is gone, the record is terminal.
+    let spent = max_spend / 2;
+    let fee = 777u64;
+    assert!(matches!(
+        e2.model_mgmt_ingest_evidence(MINT, id, MgmtKind::Add, intended, intended, spent, fee),
+        SellReportResult::Applied { .. }
+    ));
+    assert!(e2.model_mgmt_pending(&MINT).is_none(), "completed");
+    assert_eq!(e2.model_inventory_tokens(&MINT), Some(inv0 + intended));
+    let rec = e2.model_sell_rec(id).expect("terminal record");
+    assert_eq!(
+        (rec.state, rec.filled, rec.spent, rec.fees),
+        (SellState::Completed, intended, spent, fee)
+    );
+    let b1 = e2.model_accounting_view(&MINT);
+    assert_eq!(b1.committed, b0.committed + spent + fee);
+    // A late duplicate of the completed order changes nothing; a larger one is a named fault.
+    assert_eq!(
+        e2.model_mgmt_ingest_evidence(MINT, id, MgmtKind::Add, intended, intended, spent, fee),
+        SellReportResult::Duplicate
+    );
+    assert_eq!(e2.model_accounting_view(&MINT), b1);
+    assert_eq!(
+        e2.model_mgmt_ingest_evidence(MINT, id, MgmtKind::Add, intended, intended, spent + 10, fee),
+        SellReportResult::Fault
+    );
+    assert_eq!(e2.model_accounting_view(&MINT), b1);
 }

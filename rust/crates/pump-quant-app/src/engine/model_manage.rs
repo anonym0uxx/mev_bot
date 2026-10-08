@@ -828,6 +828,25 @@ impl Engine {
         }
     }
 
+    /// The pending ADD order's reservation on `mint`: `(max_spend, fee_bps, spent, fees, free_cash_held_back)`.
+    /// `free_cash_held_back` is what the order still reserves out of free cash (remaining spend + its fee + one fixed leg).
+    #[must_use]
+    pub fn model_mgmt_add_reservation(&self, mint: &[u8; 32]) -> Option<(u64, u32, u64, u64, u64)> {
+        self.model_mgmt
+            .orders
+            .get(mint)
+            .filter(|o| o.kind == MgmtKind::Add)
+            .map(|o| {
+                (
+                    o.max_spend,
+                    o.fee_bps,
+                    o.spent,
+                    o.fees,
+                    self.model_mgmt_reserved(None),
+                )
+            })
+    }
+
     /// The pending management order on `mint`: (id, kind, intended, filled).
     #[must_use]
     pub fn model_mgmt_pending(&self, mint: &[u8; 32]) -> Option<(u64, MgmtKind, u64, u64)> {
@@ -1313,7 +1332,7 @@ impl Engine {
                 let px =
                     (u128::from(plan.n) * 1_000_000_000).div_ceil(u128::from(plan.tokens.max(1)));
                 let px = u64::try_from(px).unwrap_or(u64::MAX);
-                self.model_mgmt_book_add(mint, order, plan.tokens, plan.n, px, plan.fee_bps);
+                self.model_mgmt_book_add(mint, order, plan.tokens, plan.n, px, plan.fee_bps, None);
             }
             Err(r) => {
                 self.model_mgmt_end(&mint, false);
@@ -1330,11 +1349,18 @@ impl Engine {
         spent: u64,
         price_fp: u64,
         fee_bps: u32,
+        settled_fee: Option<u64>,
     ) {
-        let fee = u64::try_from(u128::from(spent) * u128::from(fee_bps) / 10_000).unwrap_or(0);
-        let cost = spent
-            .saturating_add(fee)
-            .saturating_add(crate::cost_model::FIXED_LAMPORTS_PER_LEG);
+        // CONVENTION (explicit): `spent` is the quote notional that bought the tokens and EXCLUDES fees; fees are
+        // paid ON TOP. The all-in cash cost is `spent + fees`. A reported fee is authoritative and ALL-IN (it
+        // already carries any per-transaction cost); the simulator derives `rate * spent + fixed leg cost`.
+        let fee = match settled_fee {
+            Some(f) => f,
+            None => u64::try_from(u128::from(spent) * u128::from(fee_bps) / 10_000)
+                .unwrap_or(0)
+                .saturating_add(crate::cost_model::FIXED_LAMPORTS_PER_LEG),
+        };
+        let cost = spent.saturating_add(fee);
         if let Err(r) = self
             .positions
             .add_filled(&mint, tokens, spent, cost, price_fp)
@@ -1422,7 +1448,53 @@ impl Engine {
         let px = u64::try_from((u128::from(spent) * 1_000_000_000).div_ceil(u128::from(tokens)))
             .map_err(|_| "price_overflow")?;
         self.model_mgmt_clear_uncertain(&mint);
-        self.model_mgmt_book_add(mint, order, tokens, spent, px, order.fee_bps);
+        self.model_mgmt_book_add(mint, order, tokens, spent, px, order.fee_bps, None);
+        Ok(())
+    }
+
+    /// Apply the INCREMENT of an authoritative cumulative ADD settlement: `tokens` acquired for `spent` quote
+    /// lamports (fee-exclusive) with `fee` all-in fee lamports paid on top. Bounded by the order's own reservation:
+    /// spend by `max_spend`, cumulative fees by `ceil(max_spend * fee_bps) + one fixed leg`.
+    fn model_mgmt_apply_settled_add_increment(
+        &mut self,
+        mint: [u8; 32],
+        order_id: u64,
+        tokens: u64,
+        spent: u64,
+        fee: u64,
+    ) -> Result<(), &'static str> {
+        let Some(order) = self.model_mgmt.orders.get(&mint).copied() else {
+            return Err("no_pending_order");
+        };
+        if order.id != order_id || order.kind != MgmtKind::Add {
+            return Err("order_id_mismatch");
+        }
+        if tokens == 0 || spent == 0 || tokens > order.intended - order.filled {
+            self.mrep("mgmt:recon:rejected:quantity");
+            return Err("quantity");
+        }
+        if spent > order.max_spend.saturating_sub(order.spent) {
+            self.mrep("mgmt:recon:rejected:spend_bound");
+            return Err("spend_bound");
+        }
+        let fee_cap = u64::try_from(
+            (u128::from(order.max_spend) * u128::from(order.fee_bps)).div_ceil(10_000),
+        )
+        .unwrap_or(u64::MAX)
+        .saturating_add(crate::cost_model::FIXED_LAMPORTS_PER_LEG);
+        if order.fees.saturating_add(fee) > fee_cap {
+            self.mrep("mgmt:recon:rejected:fees_exceed_reservation");
+            return Err("fees_exceed_reservation");
+        }
+        let px = u64::try_from((u128::from(spent) * 1_000_000_000).div_ceil(u128::from(tokens)))
+            .map_err(|_| "price_overflow")?;
+        self.model_mgmt_clear_uncertain(&mint);
+        self.model_mgmt_book_add(mint, order, tokens, spent, px, order.fee_bps, Some(fee));
+        if let Some(o) = self.model_mgmt.orders.get_mut(&mint) {
+            o.fees += fee;
+        } else if let Some(r) = self.model_sell_log.get_mut(&order_id) {
+            r.fees += fee;
+        }
         Ok(())
     }
 
@@ -1669,9 +1741,6 @@ impl Engine {
         if cum_fees > cum_gross || (cum_tokens > 0 && cum_gross == 0) {
             return reject(self, "amounts_invalid");
         }
-        if kind == MgmtKind::Add && cum_fees != 0 {
-            return reject(self, "add_fees_not_reportable");
-        }
         if cum_tokens > iss {
             self.model_sell_fault(
                 order_id,
@@ -1683,7 +1752,7 @@ impl Engine {
             return SellReportResult::Fault;
         }
         let (cur_g, cur_f) = if kind == MgmtKind::Add {
-            (spent, 0)
+            (spent, fees)
         } else {
             (gross, fees)
         };
@@ -1744,7 +1813,8 @@ impl Engine {
         }
         let delta = cum_tokens - filled;
         let r = if kind == MgmtKind::Add {
-            self.model_mgmt_apply_reconciled_add_fill(mint, order_id, delta, cum_gross - cur_g)
+            let (ds, df) = (cum_gross - cur_g, cum_fees - cur_f);
+            self.model_mgmt_apply_settled_add_increment(mint, order_id, delta, ds, df)
         } else {
             let (dg, df) = (cum_gross - cur_g, cum_fees - cur_f);
             if dg == 0 || df > dg {
