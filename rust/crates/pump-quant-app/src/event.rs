@@ -474,6 +474,10 @@ pub enum AppEvent {
         cumulative_gross: u64,
         /// Cumulative all-in fees (lamports); must be 0 for an ADD.
         cumulative_fees: u64,
+        /// AUTHORITATIVE TERMINAL evidence from the executor: the order is FINAL at these totals and nothing more
+        /// can execute (definitively no execution when the totals are 0; a definitively cancelled remainder
+        /// otherwise). `false` = execution of any remainder is still unknown. A timeout or a model verdict never sets it.
+        terminal: bool,
     },
     OurBuyConfirmed {
         /// The mint that was bought.

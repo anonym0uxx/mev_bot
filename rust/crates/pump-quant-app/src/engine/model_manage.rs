@@ -1744,6 +1744,131 @@ impl Engine {
         self.model_sell_log.get(&id).copied()
     }
 
+    /// AUTHORITATIVE TERMINAL execution evidence for an issued sell (REDUCE / EXIT / protective): the executor states
+    /// the order is FINAL at these cumulative totals. Distinguishes three cases the plain report cannot:
+    /// * totals 0 + terminal          -> definitively NO execution: the order ends `EndedUnfilled`, its reservation is
+    ///   released and protection re-evaluates on the next drain (immediately after this event);
+    /// * totals > 0 (< intended) + terminal -> the increment settles through the normal path FIRST (prior partial
+    ///   settlement preserved), then the remainder is definitively cancelled: `EndedPartial`, remainder released;
+    /// * no terminal flag            -> [`Self::model_mgmt_ingest_evidence`]: the remainder stays working/unknown.
+    /// Identity checks are the existing ones. A repeat of the same terminal evidence is a duplicate no-op; terminal
+    /// evidence that disagrees with a settled record, or ANY later evidence that adds execution after a terminal
+    /// statement, is a durable `report_contradicts_settled` fault (mint blocked, nothing applied). Timeouts, TTL and
+    /// model verdicts never reach here. HARNESS-ONLY channel (see report_inbox).
+    #[allow(clippy::too_many_arguments)]
+    pub fn model_mgmt_ingest_terminal(
+        &mut self,
+        mint: [u8; 32],
+        order_id: u64,
+        action: MgmtKind,
+        intended: u64,
+        cum_tokens: u64,
+        cum_gross: u64,
+        cum_fees: u64,
+    ) -> SellReportResult {
+        if action == MgmtKind::Add {
+            self.mrep("mgmt:terminal:rejected:add_unsupported");
+            return SellReportResult::Rejected("terminal_add_unsupported");
+        }
+        let is_live = |e: &Self| {
+            e.model_mgmt
+                .orders
+                .get(&mint)
+                .is_some_and(|o| o.id == order_id)
+                || e.model_mgmt
+                    .protect
+                    .get(&mint)
+                    .is_some_and(|o| o.id == order_id)
+        };
+        if !is_live(self) {
+            // Already settled (or never issued). Same totals as the record = duplicate; anything else contradicts.
+            let rec = self
+                .model_sell_log
+                .get(&order_id)
+                .filter(|r| r.mint == mint)
+                .copied();
+            let Some(r) = rec else {
+                return self.model_mgmt_ingest_evidence(
+                    mint, order_id, action, intended, cum_tokens, cum_gross, cum_fees,
+                );
+            };
+            if r.kind != action || r.intended != intended {
+                return self.model_mgmt_ingest_evidence(
+                    mint, order_id, action, intended, cum_tokens, cum_gross, cum_fees,
+                );
+            }
+            if (r.filled, r.gross, r.fees) == (cum_tokens, cum_gross, cum_fees) {
+                self.mrep("mgmt:terminal:duplicate");
+                return SellReportResult::Duplicate;
+            }
+            self.model_sell_fault(
+                order_id,
+                mint,
+                "report_contradicts_settled",
+                r.filled,
+                vec![cum_tokens],
+            );
+            return SellReportResult::Fault;
+        }
+        // Live: settle the stated totals through the one evidence path first (no-op if already reflected).
+        let r = if cum_tokens == 0 && cum_gross == 0 && cum_fees == 0 {
+            // Nothing executed: the books must agree that nothing has.
+            let filled = self
+                .model_mgmt
+                .orders
+                .get(&mint)
+                .filter(|o| o.id == order_id)
+                .or_else(|| {
+                    self.model_mgmt
+                        .protect
+                        .get(&mint)
+                        .filter(|o| o.id == order_id)
+                })
+                .map_or(0, |o| o.filled);
+            if filled > 0 {
+                self.model_sell_fault(
+                    order_id,
+                    mint,
+                    "report_contradicts_settled",
+                    filled,
+                    vec![0],
+                );
+                return SellReportResult::Fault;
+            }
+            // Identity (kind / intended) still checked by the evidence path: an all-zero report is a duplicate there.
+            self.model_mgmt_ingest_evidence(mint, order_id, action, intended, 0, 0, 0)
+        } else {
+            self.model_mgmt_ingest_evidence(
+                mint, order_id, action, intended, cum_tokens, cum_gross, cum_fees,
+            )
+        };
+        match r {
+            SellReportResult::Applied { .. } | SellReportResult::Duplicate => {}
+            other => return other,
+        }
+        if !is_live(self) {
+            return r; // the totals completed it: the normal path already ended it Completed.
+        }
+        // Books now equal the terminal totals: the remainder is definitively not executing. End it (not preempted:
+        // no fault), releasing the reservation; the protective drain after this event re-evaluates the position.
+        let ended =
+            match self.model_with_protect_id(&mint, order_id, |e| e.model_mgmt_end(&mint, false)) {
+                Some(()) => true,
+                None => {
+                    self.model_mgmt_end(&mint, false);
+                    true
+                }
+            };
+        if ended {
+            self.mrep(if cum_tokens == 0 {
+                "mgmt:terminal:no_execution"
+            } else {
+                "mgmt:terminal:remainder_cancelled"
+            });
+        }
+        SellReportResult::Applied { delta: 0 }
+    }
+
     /// Execution-evidence boundary for a management order (the harness report format). The report states the
     /// order's CUMULATIVE settlement: tokens filled, gross proceeds (REDUCE/EXIT; notional spent for an ADD) and
     /// all-in fees, all in lamports/raw tokens and all totals since the order began, never a per-fill price. The

@@ -2581,6 +2581,7 @@ impl Engine {
                 cumulative_tokens,
                 cumulative_gross,
                 cumulative_fees,
+                terminal,
             } => {
                 if self.paper_model_mode {
                     let kind = match action {
@@ -2591,15 +2592,27 @@ impl Engine {
                         _ => None,
                     };
                     if let Some(kind) = kind {
-                        let _ = self.model_mgmt_ingest_evidence(
-                            *mint.as_bytes(),
-                            order_id,
-                            kind,
-                            intended,
-                            cumulative_tokens,
-                            cumulative_gross,
-                            cumulative_fees,
-                        );
+                        let _ = if terminal {
+                            self.model_mgmt_ingest_terminal(
+                                *mint.as_bytes(),
+                                order_id,
+                                kind,
+                                intended,
+                                cumulative_tokens,
+                                cumulative_gross,
+                                cumulative_fees,
+                            )
+                        } else {
+                            self.model_mgmt_ingest_evidence(
+                                *mint.as_bytes(),
+                                order_id,
+                                kind,
+                                intended,
+                                cumulative_tokens,
+                                cumulative_gross,
+                                cumulative_fees,
+                            )
+                        };
                     } else {
                         self.mrep("mgmt:evidence:rejected:bad_action");
                     }

@@ -40,6 +40,8 @@ pub(super) struct HeldPersist {
     pub generation: u64,
     /// A ledger FILE was read and applied (as opposed to a clean start with no file).
     pub restored_from_file: bool,
+    /// Lineage of the durable ledger ("" until the first write of a fresh engine creates one).
+    pub lineage: String,
 }
 
 fn wl_lane(i: u8) -> Option<WlLane> {
@@ -244,6 +246,7 @@ impl Engine {
             mgmt_seq: self.model_mgmt.seq,
             written_wall_ms: 0,
             generation: 0,
+            lineage: String::new(),
             held,
             pending,
             decision: self.model_decision_state(),
@@ -274,6 +277,7 @@ impl Engine {
         let mut c = l.clone();
         c.written_wall_ms = 0;
         c.generation = 0;
+        c.lineage = String::new();
         c.decision = crate::held_state::DecisionState::default();
         let s = c.to_json().to_string();
         pump_quant_protocol::sha256::to_hex(&pump_quant_protocol::sha256::sha256(s.as_bytes()))
@@ -302,6 +306,7 @@ impl Engine {
         }
         let mut ledger = ledger;
         ledger.generation = self.model_held.generation + 1;
+        ledger.lineage = self.model_held_lineage_or_new();
         match ledger.write(&path) {
             Ok(()) => {
                 self.model_held.generation = ledger.generation;
@@ -366,6 +371,30 @@ impl Engine {
         self.model_held.generation
     }
 
+    /// Lineage of the durable ledger ("" = none yet, or a pre-lineage file).
+    #[must_use]
+    pub fn model_held_lineage(&self) -> &str {
+        &self.model_held.lineage
+    }
+
+    /// The lineage to stamp on the next write: inherited, or created once (fresh engine, first write).
+    fn model_held_lineage_or_new(&mut self) -> String {
+        if self.model_held.lineage.is_empty() {
+            let ns = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos());
+            let seed = format!(
+                "{ns}:{}:{}:{:p}",
+                std::process::id(),
+                self.bankroll_origin.seed_lamports(),
+                self as *const Self
+            );
+            let h = pump_quant_protocol::sha256::sha256(seed.as_bytes());
+            self.model_held.lineage = pump_quant_protocol::sha256::to_hex(&h)[..32].to_string();
+        }
+        self.model_held.lineage.clone()
+    }
+
     /// Persist failures so far.
     #[must_use]
     pub fn model_held_persist_failures(&self) -> u64 {
@@ -380,6 +409,7 @@ impl Engine {
         let mut ledger = self.model_held_ledger();
         let digest = Self::model_held_digest(&ledger);
         ledger.generation = self.model_held.generation + 1;
+        ledger.lineage = self.model_held_lineage_or_new();
         if ledger.write(&path).is_ok() {
             self.model_held.generation = ledger.generation;
             self.model_held.last_digest = digest;
@@ -538,6 +568,7 @@ impl Engine {
         self.model_mgmt.seq = self.model_mgmt.seq.max(l.mgmt_seq);
         self.model_replay_through_ms = l.decision.through_ms;
         self.model_held.generation = l.generation;
+        self.model_held.lineage = l.lineage.clone();
         self.model_held.restored_from_file = true;
         for (m, t) in &l.decision.last_ask {
             self.model_last_ask.insert(*m, *t);

@@ -157,3 +157,92 @@ fn a_ledger_written_before_generations_existed_reads_as_generation_zero_and_cann
         _ => panic!("loads"),
     }
 }
+
+/// LINEAGE: generations are counters. A history from an UNRELATED ledger lineage whose counter happens to be lower
+/// must NOT be taken as compatible with the restored books.
+#[test]
+fn a_history_from_an_unrelated_ledger_lineage_is_refused_even_when_its_generation_is_lower() {
+    // Lineage A: history snapshot after 1 book write.
+    let da = dir("lin_a");
+    let (ha, fa) = (da.join("held.json"), da.join("flow.ckpt"));
+    let mut a = engine(&ha);
+    a.model_flow_attach(&fa, FlowParams::default(), prov(), 0);
+    assert!(a.model_held_persist_now());
+    assert!(a.model_flow_flush(Duration::from_secs(5)));
+    drop(a);
+    // Lineage B: an independent ledger with 3 generations.
+    let (_db, hb, _fb, gb) = run_and_publish("lin_b");
+    assert_eq!(gb, 3);
+    // B's books next to A's history (held_gen_seen 1 <= 3): unrelated, must refuse by name, file untouched.
+    let before = std::fs::read(&fa).unwrap();
+    let mut e = engine(&hb);
+    assert!(matches!(e.model_held_restore(), Ok(Some(_))));
+    let r = e.model_flow_attach(&fa, FlowParams::default(), prov(), 0);
+    assert!(
+        matches!(r, FlowAttach::Untrusted("flow_lineage_mismatch")),
+        "{r:?}"
+    );
+    assert_eq!(std::fs::read(&fa).unwrap(), before, "untouched");
+}
+
+/// Same lineage, history behind the books: still attaches (the accepted overlap-replay case).
+#[test]
+fn the_same_lineage_with_a_lagging_history_still_attaches() {
+    let (_d, held, flow, _g) = run_and_publish("lin_same");
+    let mut e = engine(&held);
+    assert!(matches!(e.model_held_restore(), Ok(Some(_))));
+    for _ in 0..2 {
+        assert!(e.model_held_persist_now());
+    }
+    drop(e);
+    let mut e2 = engine(&held);
+    assert!(matches!(e2.model_held_restore(), Ok(Some(_))));
+    assert!(matches!(
+        e2.model_flow_attach(&flow, FlowParams::default(), prov(), 0),
+        FlowAttach::Restored { .. }
+    ));
+}
+
+/// A history that saw books but names no lineage (written before lineages existed) is UNBOUND next to restored books.
+#[test]
+fn a_history_that_saw_books_without_a_lineage_is_refused_as_unbound() {
+    let (_d, held, flow, _g) = run_and_publish("lin_unbound");
+    let raw = std::fs::read(&flow).unwrap();
+    let nl = raw.iter().position(|b| *b == b'\n').unwrap();
+    let mut hdr: serde_json::Value = serde_json::from_slice(&raw[..nl]).unwrap();
+    assert!(hdr["held_gen_seen"].as_u64().unwrap() > 0);
+    assert!(hdr
+        .as_object_mut()
+        .unwrap()
+        .remove("held_lineage_seen")
+        .is_some());
+    let mut out = serde_json::to_vec(&hdr).unwrap();
+    out.push(b'\n');
+    out.extend_from_slice(&raw[nl + 1..]);
+    std::fs::write(&flow, &out).unwrap();
+    let mut e = engine(&held);
+    assert!(matches!(e.model_held_restore(), Ok(Some(_))));
+    let r = e.model_flow_attach(&flow, FlowParams::default(), prov(), 0);
+    assert!(
+        matches!(r, FlowAttach::Untrusted("flow_lineage_unbound")),
+        "{r:?}"
+    );
+    assert_eq!(std::fs::read(&flow).unwrap(), out);
+}
+
+/// The lineage is created once and inherited across restarts (never re-created by a restored engine).
+#[test]
+fn the_lineage_is_created_once_and_inherited_across_restarts() {
+    let (_d, held, _flow, _g) = run_and_publish("lin_inh");
+    let l0 = pump_quant_app::held_state::HeldLedger::read(&held)
+        .unwrap()
+        .lineage;
+    assert_eq!(l0.len(), 32);
+    let mut e = engine(&held);
+    assert!(matches!(e.model_held_restore(), Ok(Some(_))));
+    assert!(e.model_held_persist_now());
+    let l1 = pump_quant_app::held_state::HeldLedger::read(&held)
+        .unwrap()
+        .lineage;
+    assert_eq!(l0, l1);
+}

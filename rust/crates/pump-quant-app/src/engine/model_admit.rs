@@ -342,6 +342,29 @@ impl Engine {
                 self.mrep("flow_history:untrusted:flow_generation_unbound");
                 FlowAttach::Untrusted("flow_generation_unbound")
             }
+            Load::Loaded(h)
+                if self.model_held.restored_from_file
+                    && h.meta.held_gen_seen.unwrap_or(0) > 0
+                    && h.meta.held_lineage_seen.is_empty() =>
+            {
+                // It saw books but names no lineage: nothing ties its generation counter to THESE books.
+                self.model_cache
+                    .flow_state_untrusted("flow_lineage_unbound");
+                self.mrep("flow_history:untrusted:flow_lineage_unbound");
+                FlowAttach::Untrusted("flow_lineage_unbound")
+            }
+            Load::Loaded(h)
+                if self.model_held.restored_from_file
+                    && h.meta.held_gen_seen.unwrap_or(0) > 0
+                    && h.meta.held_lineage_seen != self.model_held.lineage =>
+            {
+                // Generations are counters: they are only comparable within ONE ledger lineage. A history that saw
+                // books of a different lineage (or carries no lineage while it saw books) is not bound to these.
+                self.model_cache
+                    .flow_state_untrusted("flow_lineage_mismatch");
+                self.mrep("flow_history:untrusted:flow_lineage_mismatch");
+                FlowAttach::Untrusted("flow_lineage_mismatch")
+            }
             Load::Loaded(h) if h.meta.held_gen_seen.unwrap_or(0) > self.model_held.generation => {
                 // The history has seen books NEWER than the durable ledger now attached: the ledger was deleted,
                 // replaced by an older copy or rolled back. Financial effects between the two are unaccounted for.
@@ -415,6 +438,7 @@ impl Engine {
         };
         // Bind this snapshot to the durable financial generation current right now.
         m.held_gen_seen = Some(self.model_held.generation);
+        m.held_lineage_seen = self.model_held.lineage.clone();
         let us = t0.elapsed().as_micros() as u64;
         self.flow_store.last_clone_us = us;
         self.flow_store.max_clone_us = self.flow_store.max_clone_us.max(us);

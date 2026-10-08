@@ -136,6 +136,8 @@ pub struct FlowMeta {
     /// `None` = the file carries NO generation field (written before generations existed): UNBOUND, which proves
     /// nothing about its relation to any ledger. `Some(0)` = bound, and it saw no durable books.
     pub held_gen_seen: Option<u64>,
+    /// Lineage of that ledger ("" = saw no ledger, or a pre-lineage file).
+    pub held_lineage_seen: String,
 }
 
 /// Delivery attempts and unique evidence are different quantities: redelivery inflates the first and never the second.
@@ -258,6 +260,7 @@ impl FlowMeta {
             acknowledged: Vec::new(),
             counters: Counters::default(),
             held_gen_seen: Some(0),
+            held_lineage_seen: String::new(),
         }
     }
 
@@ -457,6 +460,7 @@ impl FlowMeta {
             "late_overflow": self.late_overflow,
             "acknowledged": self.acknowledged.iter().map(|w| json!([w.0, w.1, w.2])).collect::<Vec<_>>(),
             "held_gen_seen": self.held_gen_seen.unwrap_or(0),
+            "held_lineage_seen": self.held_lineage_seen,
             "counters": [self.counters.attempts, self.counters.applied, self.counters.duplicates, self.counters.late_unique],
         });
         let mut out = serde_json::to_vec(&hdr).unwrap_or_default();
@@ -786,6 +790,7 @@ pub fn decode(params: FlowParams, body: &[u8]) -> Load {
             late,
             late_overflow: h["late_overflow"].as_u64().unwrap_or(0),
             held_gen_seen: h["held_gen_seen"].as_u64(),
+            held_lineage_seen: h["held_lineage_seen"].as_str().unwrap_or("").to_string(),
             acknowledged,
             counters,
         },

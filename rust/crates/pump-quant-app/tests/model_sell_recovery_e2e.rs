@@ -746,6 +746,7 @@ fn report(id: u64, action: u8, intended: u64, cum: u64, px: u64) -> AppEvent {
         cumulative_tokens: cum,
         cumulative_gross: totals(cum, px).0,
         cumulative_fees: totals(cum, px).1,
+        terminal: false,
     }
 }
 
@@ -2223,4 +2224,184 @@ fn the_reservation_reflects_a_settling_report_in_the_same_tick() {
         pint - pfill,
         "only the protective remainder is reserved, immediately"
     );
+}
+
+// ===================== TERMINAL EXECUTION EVIDENCE =====================
+fn term(id: u64, action: u8, intended: u64, cum: u64, px: u64) -> AppEvent {
+    let (g, f) = if cum == 0 { (0, 0) } else { totals(cum, px) };
+    AppEvent::ModelMgmtReport {
+        mint: DomainMint::from_bytes(MINT),
+        order_id: id,
+        action,
+        intended,
+        cumulative_tokens: cum,
+        cumulative_gross: g,
+        cumulative_fees: f,
+        terminal: true,
+    }
+}
+fn reserved(e: &Engine) -> u64 {
+    e.model_held_data_status()
+        .into_iter()
+        .find(|s| s.mint == MINT)
+        .map_or(0, |s| s.sell_reserved_tokens)
+}
+
+/// DEFINITIVELY NO EXECUTION: a fully reserved EXIT with a deferred protective trigger. Only terminal evidence with
+/// zero totals releases the reservation; protection re-evaluates in that same event and sells the now-free inventory.
+/// A duplicate terminal report is a no-op; later evidence claiming execution is a durable fault; all survive restart.
+#[test]
+fn terminal_no_execution_releases_the_reservation_and_protection_re_evaluates_immediately() {
+    let (mut e, rid, intended, inv0, clock) = restored_with_uncertain("exit", "t_none");
+    hard_collapse(&mut e, clock, 9_000);
+    assert!(e.model_protect_pending_order(&MINT).is_none(), "deferred");
+    let b0 = books(&e);
+    // A NON-terminal zero report proves nothing: still reserved, still deferred.
+    e.tick(report(rid, 1, intended, 0, 22_000));
+    assert_eq!(reserved(&e), intended);
+    assert!(e.model_protect_pending_order(&MINT).is_none());
+    // Wrong identity terminal evidence is refused by the existing checks; nothing released.
+    e.tick(term(rid, 0, intended, 0, 22_000)); // action mismatch (reduce vs exit)
+    e.tick(term(rid, 1, intended + 1, 0, 22_000)); // intended mismatch
+    assert_eq!(reserved(&e), intended);
+    assert_eq!(e.model_mgmt_pending(&MINT).map(|p| p.0), Some(rid));
+    // Authoritative terminal: nothing executed.
+    e.tick(term(rid, 1, intended, 0, 22_000));
+    assert!(e.model_mgmt_pending(&MINT).is_none(), "EXIT ended");
+    let rec = e.model_sell_rec(rid).expect("terminal record");
+    assert_eq!(rec.state, SellState::EndedUnfilled);
+    assert_eq!((rec.filled, rec.gross, rec.fees), (0, 0, 0));
+    assert!(
+        e.model_sell_faults().is_empty(),
+        "definitive non-execution is not a fault"
+    );
+    assert_eq!(books(&e), b0, "no execution moves nothing");
+    // Protection re-evaluated in the SAME event: a protective order for the whole (now free) inventory.
+    let (pid, pq, pf, _) = e.model_protect_pending_order(&MINT).expect("re-evaluated");
+    assert_ne!(pid, rid);
+    assert_eq!((pq, pf), (inv0, 0));
+    // EXIT reservation released. This paper rig holds the protective order in the simulator (not externally
+    // submitted), so it reserves nothing; the externally-submitted case is exercised through the daemon.
+    assert_eq!(reserved(&e), 0, "the EXIT reservation is released");
+    // Duplicate terminal: no-op.
+    let snap = (
+        books(&e),
+        reserved(&e),
+        e.model_protect_pending_order(&MINT),
+    );
+    e.tick(term(rid, 1, intended, 0, 22_000));
+    assert_eq!(
+        (
+            books(&e),
+            reserved(&e),
+            e.model_protect_pending_order(&MINT)
+        ),
+        snap
+    );
+    assert!(e.model_sell_faults().is_empty());
+    // Contradictory later evidence (it DID execute): durable fault, nothing applied.
+    e.tick(report(rid, 1, intended, intended / 2, 22_000));
+    assert_eq!(books(&e), snap.0, "contradiction applies nothing");
+    let f = e.model_sell_faults().get(&rid).expect("fault");
+    assert_eq!(f.source, "report_contradicts_settled");
+    // Restart: the terminal record, the fault and the protective order all restore.
+    assert!(e.model_held_persist_now());
+    // The SAME file (held_path would wipe the directory).
+    let hp = std::env::temp_dir()
+        .join(format!("pq_sell_t_none_{}", std::process::id()))
+        .join("held.json");
+    drop(e);
+    let mut e2 = fresh(&hp);
+    e2.model_held_restore().unwrap().unwrap();
+    assert_eq!(
+        e2.model_sell_rec(rid).map(|r| r.state),
+        Some(SellState::EndedUnfilled)
+    );
+    assert!(e2.model_sell_faults().contains_key(&rid), "fault persists");
+    assert_eq!(
+        e2.model_protect_pending_order(&MINT).map(|p| (p.0, p.1)),
+        Some((pid, pq))
+    );
+    assert_eq!(books(&e2), snap.0);
+    // Duplicate terminal after restart: still a no-op.
+    e2.tick(term(rid, 1, intended, 0, 22_000));
+    assert_eq!(books(&e2), snap.0);
+}
+
+/// PARTIAL EXECUTION + DEFINITIVELY CANCELLED REMAINDER, and EXECUTION STILL UNKNOWN, kept apart. A partial
+/// non-terminal report keeps the remainder working (reserved). The terminal report at the SAME totals preserves the
+/// prior partial settlement exactly and releases only the remainder; protection then sells the free part.
+#[test]
+fn terminal_partial_preserves_prior_settlement_and_releases_only_the_cancelled_remainder() {
+    let (mut e, rid, intended, inv0, clock) = restored_with_uncertain("exit", "t_part");
+    hard_collapse(&mut e, clock, 9_000);
+    assert!(e.model_protect_pending_order(&MINT).is_none(), "deferred");
+    let part = intended / 3;
+    // Execution still unknown for the remainder: partial non-terminal report.
+    e.tick(report(rid, 1, intended, part, 22_000));
+    let after_partial = books(&e);
+    assert_eq!(after_partial.4, Some(inv0 - part), "partial settled");
+    assert_eq!(
+        reserved(&e),
+        intended - part,
+        "remainder still reserved (unknown)"
+    );
+    assert!(
+        e.model_protect_pending_order(&MINT).is_none(),
+        "still fully reserved"
+    );
+    // Terminal at a DIFFERENT (larger) total is new execution: settles the increment, then ends. Use the same
+    // totals here: the remainder is definitively cancelled; nothing else moves.
+    e.tick(term(rid, 1, intended, part, 22_000));
+    assert_eq!(
+        books(&e),
+        after_partial,
+        "prior partial settlement preserved, nothing re-applied"
+    );
+    let rec = e.model_sell_rec(rid).expect("record");
+    assert_eq!(rec.state, SellState::EndedPartial);
+    assert_eq!(
+        (rec.filled, rec.gross, rec.fees),
+        (part, totals(part, 22_000).0, totals(part, 22_000).1)
+    );
+    assert!(e.model_sell_faults().is_empty());
+    let (_, pq, _, _) = e.model_protect_pending_order(&MINT).expect("re-evaluated");
+    assert_eq!(pq, inv0 - part, "protection sells the released inventory");
+    // Duplicate terminal: no-op. Terminal with different totals after the end: fault.
+    let snap = books(&e);
+    e.tick(term(rid, 1, intended, part, 22_000));
+    assert!(e.model_sell_faults().is_empty());
+    e.tick(term(rid, 1, intended, part + 1, 22_000));
+    assert_eq!(books(&e), snap);
+    assert_eq!(
+        e.model_sell_faults().get(&rid).map(|f| f.source),
+        Some("report_contradicts_settled")
+    );
+}
+
+/// A terminal report that ALSO carries new execution settles the increment through the normal path first, then
+/// cancels the rest; terminal zero over an order the books already partly filled is a contradiction (fault).
+#[test]
+fn terminal_with_new_execution_settles_it_first_and_terminal_zero_over_a_fill_is_a_fault() {
+    let (mut e, rid, intended, inv0, clock) = restored_with_uncertain("exit", "t_new");
+    let _ = clock;
+    let q = intended / 4;
+    e.tick(term(rid, 1, intended, q, 22_000));
+    assert_eq!(e.model_inventory_tokens(&MINT), Some(inv0 - q));
+    assert_eq!(
+        e.model_sell_rec(rid).map(|r| (r.state, r.filled)),
+        Some((SellState::EndedPartial, q))
+    );
+    assert_eq!(reserved(&e), 0, "nothing reserved after the definitive end");
+    // Second world: books filled q, then terminal ZERO -> contradiction.
+    let (mut e2, rid2, int2, _inv, _c) = restored_with_uncertain("exit", "t_zero");
+    e2.tick(report(rid2, 1, int2, q, 22_000));
+    let b = books(&e2);
+    e2.tick(term(rid2, 1, int2, 0, 22_000));
+    assert_eq!(books(&e2), b);
+    assert_eq!(
+        e2.model_sell_faults().get(&rid2).map(|f| f.source),
+        Some("report_contradicts_settled")
+    );
+    assert_eq!(reserved(&e2), int2 - q, "a fault releases nothing");
 }

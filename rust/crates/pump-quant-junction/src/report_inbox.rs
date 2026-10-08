@@ -27,6 +27,7 @@ pub enum LineRefusal {
     BadMint,
     MissingField(&'static str),
     BadAction,
+    BadTerminal,
 }
 
 fn unhex(s: &str) -> Option<[u8; 32]> {
@@ -67,6 +68,13 @@ pub fn parse_line(line: &str) -> Result<AppEvent, LineRefusal> {
         cumulative_tokens: u("cumulative_tokens")?,
         cumulative_gross: u("cumulative_gross")?,
         cumulative_fees: u("cumulative_fees")?,
+        // `terminal` is OPTIONAL and must be exactly "final" when present: absent = execution of any remainder
+        // still unknown. Any other value is refused by name (never read as either outcome).
+        terminal: match v.get("terminal") {
+            None => false,
+            Some(t) if t.as_str() == Some("final") => true,
+            Some(_) => return Err(LineRefusal::BadTerminal),
+        },
     })
 }
 
@@ -165,6 +173,7 @@ impl InboxReader {
                         LineRefusal::BadMint => "bad_mint",
                         LineRefusal::MissingField(_) => "missing_field",
                         LineRefusal::BadAction => "bad_action",
+                        LineRefusal::BadTerminal => "bad_terminal",
                     };
                     *self.refused.entry(k).or_insert(0) += 1;
                 }
@@ -263,6 +272,33 @@ mod tests {
     }
 
     #[test]
+    fn terminal_is_explicit_final_only_absent_means_unknown_and_anything_else_is_refused() {
+        let base = line(3, 5);
+        assert!(matches!(
+            parse_line(&base),
+            Ok(AppEvent::ModelMgmtReport {
+                terminal: false,
+                ..
+            })
+        ));
+
+        let fin = format!("{}{}", &base[..base.len() - 1], r#","terminal":"final"}"#);
+        assert!(matches!(
+            parse_line(&fin),
+            Ok(AppEvent::ModelMgmtReport { terminal: true, .. })
+        ));
+        for bad in [
+            r#""terminal":true"#,
+            r#""terminal":"timeout""#,
+            r#""terminal":"cancelled""#,
+            r#""terminal":1"#,
+        ] {
+            let l = format!("{},{bad}}}", &base[..base.len() - 1]);
+            assert_eq!(parse_line(&l), Err(LineRefusal::BadTerminal), "{l}");
+        }
+    }
+
+    #[test]
     fn a_report_line_parses_to_one_event_and_bad_lines_are_named() {
         assert!(matches!(
             parse_line(&line(3, 500)),
@@ -273,6 +309,7 @@ mod tests {
                 cumulative_tokens: 500,
                 cumulative_gross: 500_000,
                 cumulative_fees: 500,
+                terminal: false,
                 ..
             })
         ));

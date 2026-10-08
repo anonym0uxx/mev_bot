@@ -220,6 +220,9 @@ pub struct HeldLedger {
     /// Monotonic write generation (0 = written before generations existed). Binds this durable record to the flow
     /// history snapshots taken while it was current.
     pub generation: u64,
+    /// LINEAGE of this ledger: created once by the first write of a fresh engine and inherited by every later write
+    /// of a restored one. Generations are only comparable within one lineage. "" = written before lineages existed.
+    pub lineage: String,
     /// Held positions.
     pub held: Vec<HeldEntry>,
     /// Pending orders.
@@ -322,6 +325,7 @@ impl HeldLedger {
             "mgmt_seq": self.mgmt_seq,
             "written_wall_ms": self.written_wall_ms,
             "generation": self.generation,
+            "lineage": self.lineage,
             "held": self.held.iter().map(|h| json!({
                 "mint": hex(&h.mint),
                 "entry_price_fp": h.entry_price_fp,
@@ -646,6 +650,7 @@ impl HeldLedger {
             mgmt_seq: u(v, "mgmt_seq")?,
             written_wall_ms: u(v, "written_wall_ms")?,
             generation: v["generation"].as_u64().unwrap_or(0),
+            lineage: v["lineage"].as_str().unwrap_or("").to_string(),
             held,
             pending,
         })
@@ -756,6 +761,7 @@ mod tests {
             mgmt_seq: 3,
             written_wall_ms: 0,
             generation: 0,
+            lineage: String::new(),
             decision: DecisionState::default(),
             orders: vec![HeldOrder {
                 id: 3,
