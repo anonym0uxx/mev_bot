@@ -1,6 +1,6 @@
 //! Management-sell report inbox: the channel through which a REDUCE / EXIT / ADD fill report reaches the engine.
 //! One JSON object per line, appended to a file the daemon polls. Fields: `mint` (64 hex), `order_id`, `action`
-//! (`reduce`|`exit`|`add`), `intended` (the issued quantity, restated), `cumulative_tokens` (the TOTAL the order has
+//! (`reduce`|`exit`|`add`|`protect`), `intended` (the issued quantity, restated), `cumulative_tokens` (the TOTAL the order has
 //! filled), `cumulative_gross` (TOTAL gross proceeds in lamports; for an ADD the TOTAL notional spent) and
 //! `cumulative_fees` (TOTAL all-in fees in lamports; 0 for an ADD). There is NO per-fill price field: price is
 //! derived by the engine from the increment of the totals, so it can never be ambiguous.
@@ -56,6 +56,7 @@ pub fn parse_line(line: &str) -> Result<AppEvent, LineRefusal> {
         Some("reduce") => 0u8,
         Some("exit") => 1,
         Some("add") => 2,
+        Some("protect") => 3,
         _ => return Err(LineRefusal::BadAction),
     };
     Ok(AppEvent::ModelMgmtReport {

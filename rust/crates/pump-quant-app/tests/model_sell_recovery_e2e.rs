@@ -167,8 +167,17 @@ fn rig(answer: fn(i64) -> &'static str, held: &std::path::Path) -> Rig {
     ticks(&mut e, 8);
     let t_last = T0 + 1_000 + 40 * 2_000;
     curve_obs(&mut e, t_last + 1_500, 2_100, 200_000_000);
-    ticks(&mut e, 6);
-    assert!(e.model_position_open(&MINT), "setup: entry filled");
+    for _ in 0..200 {
+        if e.model_position_open(&MINT) {
+            break;
+        }
+        ticks(&mut e, 1);
+    }
+    assert!(
+        e.model_position_open(&MINT),
+        "setup: entry filled: {:?}",
+        e.model_lane_report()
+    );
     Rig {
         e,
         calls,
@@ -885,7 +894,7 @@ fn execution_evidence_for_an_order_restored_from_an_earlier_process_is_accepted_
 #[test]
 fn two_partial_fills_at_different_prices_and_fees_book_their_own_increments_then_restart_and_replay(
 ) {
-    let hp = held_path("s_x");
+    let hp = held_path("s_x2");
     let mut r = rig(|step| if step == 0 { EXIT } else { HOLD }, &hp);
     r.advance_to_order(120_000);
     let (id, _, intended, _) = r.e.model_mgmt_pending(&MINT).expect("EXIT pending");
@@ -973,4 +982,234 @@ fn two_partial_fills_at_different_prices_and_fees_book_their_own_increments_then
         SellReportResult::Fault
     );
     assert_eq!(books(&e2), b);
+}
+
+// ===================== PROTECTIVE ORDER LIFECYCLE =====================
+// A protective trigger creates an identifiable order (kind `Protect`) in its own slot; only reconciled fills move
+// inventory, cash, cost basis and realized PnL; a management sell on the same mint keeps its own identity.
+
+fn land(e: &mut Engine, from_clock: i64, slot0: u64, n: u64) -> i64 {
+    let mut c = from_clock;
+    for k in 0..n {
+        c += 1_000;
+        curve_obs(e, c, slot0 + k, 200_000_000);
+        ticks(e, 2);
+    }
+    c
+}
+
+/// A restored world: an UNCERTAIN management sell of `intended` tokens on a held position, ready for a collapse.
+fn restored_with_uncertain(kind: &'static str, tag: &str) -> (Engine, u64, u64, u64, i64) {
+    let hp = held_path(tag);
+    let mut r = rig(
+        if kind == "reduce" {
+            |s| if s == 0 { REDUCE } else { HOLD }
+        } else {
+            |s| if s == 0 { EXIT } else { HOLD }
+        },
+        &hp,
+    );
+    r.advance_to_order(120_000);
+    let (id, _, intended, _) = r.e.model_mgmt_pending(&MINT).expect("order pending");
+    assert!(r.e.model_mgmt_mark_ack_uncertain(&MINT, id));
+    assert!(r.e.model_held_persist_now());
+    drop(r);
+    let mut e2 = fresh(&hp);
+    e2.model_held_restore().unwrap().unwrap();
+    let inv0 = e2.model_inventory_tokens(&MINT).unwrap();
+    (e2, id, intended, inv0, T0 + 1_000 + 40 * 2_000 + 400_000)
+}
+
+#[test]
+fn protection_over_an_uncertain_reduce_sells_only_the_free_part_settles_once_and_a_late_reduce_report_stays_attributable(
+) {
+    let (mut e, rid, intended, inv0, clock) = restored_with_uncertain("reduce", "p_a");
+    let b0 = books(&e);
+    hard_collapse(&mut e, clock, 9_000);
+    // Trigger -> ONE protective order for exactly the free inventory; an intent moves nothing.
+    let (pid, pq, pf, code) = e
+        .model_protect_pending_order(&MINT)
+        .expect("protective order");
+    assert_ne!(pid, rid, "the protective order has its own identity");
+    assert_eq!((pq, pf, code), (inv0 - intended, 0, 1));
+    assert_eq!(books(&e), b0, "an intent moves no inventory, cash or basis");
+    // Repeated triggers while it works: no second order.
+    hard_collapse(&mut e, clock + 500, 9_001);
+    assert_eq!(e.model_protect_pending_order(&MINT).map(|p| p.0), Some(pid));
+    // The paper executor lands it: the free part leaves, the reserved part stays, once.
+    land(&mut e, clock + 500, 9_100, 3);
+    assert!(
+        e.model_protect_pending_order(&MINT).is_none(),
+        "protective order completed"
+    );
+    assert_eq!(e.model_inventory_tokens(&MINT), Some(intended));
+    let rec = e.model_sell_rec(pid).expect("settled record");
+    assert_eq!(
+        (rec.filled, rec.state),
+        (inv0 - intended, SellState::Completed)
+    );
+    let after = books(&e);
+    assert!(after.0 != b0.0, "realized moved once");
+    // The still-reserved management order is untouched and still attributable: its late report settles it.
+    assert_eq!(e.model_mgmt_pending(&MINT).map(|p| p.0), Some(rid));
+    assert_eq!(
+        e.ev_px(MINT, rid, MgmtKind::Reduce, intended, intended, 22_000),
+        SellReportResult::Applied { delta: intended }
+    );
+    assert_eq!(
+        e.model_inventory_tokens(&MINT),
+        None,
+        "ends at exactly zero"
+    );
+    // Duplicate delivery of that report changes nothing.
+    let done = books(&e);
+    assert_eq!(
+        e.ev_px(MINT, rid, MgmtKind::Reduce, intended, intended, 22_000),
+        SellReportResult::Duplicate
+    );
+    assert_eq!(books(&e), done);
+}
+
+#[test]
+fn a_fully_reserved_position_defers_protection_by_name_without_selling_and_a_definitive_report_re_evaluates(
+) {
+    let (mut e, rid, intended, inv0, clock) = restored_with_uncertain("exit", "p_b");
+    assert_eq!(intended, inv0, "the EXIT reserves everything");
+    let b0 = books(&e);
+    hard_collapse(&mut e, clock, 9_000);
+    // No overlapping sell: no protective order exists, nothing moved, the deferral is named and measured.
+    assert!(e.model_protect_pending_order(&MINT).is_none());
+    assert_eq!(books(&e), b0);
+    assert!(
+        e.model_protect_trigger_pending(&MINT),
+        "the trigger is remembered, not dropped"
+    );
+    assert!(e.model_protection_deferred() >= 1);
+    let st = e.model_held_data_status();
+    let s = st.iter().find(|s| s.mint == MINT).unwrap();
+    assert_eq!(
+        (s.sell_reserved_tokens, s.inventory_tokens),
+        (inv0, Some(inv0))
+    );
+    assert!(
+        pump_quant_app::engine::model_manage::sell_reservation_gap(s).is_some(),
+        "the degraded state is measured from the books"
+    );
+    // Monitoring continues: more ticks keep it deferred, still no sell, still unresolved (never treated as cancelled).
+    land(&mut e, clock, 9_100, 3);
+    assert_eq!(books(&e), b0);
+    assert_eq!(e.model_mgmt_pending(&MINT).map(|p| p.0), Some(rid));
+    // The DEFINITIVE report consumes the reservation (the EXIT filled) -> nothing left to protect.
+    assert_eq!(
+        e.ev_px(MINT, rid, MgmtKind::Exit, intended, intended, 22_000),
+        SellReportResult::Applied { delta: intended }
+    );
+    assert_eq!(e.model_inventory_tokens(&MINT), None);
+    assert!(!e.model_position_open(&MINT));
+    assert!(
+        !e.model_protect_trigger_pending(&MINT),
+        "no exposure, no pending trigger"
+    );
+    assert!(e.model_protect_pending_order(&MINT).is_none());
+}
+
+#[test]
+fn releasing_a_reservation_re_evaluates_protection_and_a_still_breached_stop_then_sells() {
+    let (mut e, rid, intended, inv0, clock) = restored_with_uncertain("exit", "p_c");
+    hard_collapse(&mut e, clock, 9_000);
+    assert!(e.model_protect_pending_order(&MINT).is_none());
+    // Definitive evidence that the EXIT did NOT execute releases the reservation (it is not guessed or timed out).
+    assert!(e.model_mgmt_resolve_uncertain_not_executed(&MINT, rid));
+    // Protection is re-evaluated on the next event; the remembered trigger is served for the full free inventory.
+    land(&mut e, clock, 9_100, 1);
+    let (pid, pq, pf, _) = e.model_protect_pending_order(&MINT).expect("re-evaluated");
+    assert_eq!((pq, pf), (inv0, 0));
+    assert_ne!(pid, rid);
+    assert_eq!(
+        e.model_inventory_tokens(&MINT),
+        Some(inv0),
+        "still no inventory moved by the intent"
+    );
+    land(&mut e, clock + 1_000, 9_200, 3);
+    assert_eq!(e.model_inventory_tokens(&MINT), None);
+    let _ = intended;
+}
+
+#[test]
+fn a_restart_with_a_pending_or_partly_filled_protective_order_neither_resubmits_nor_settles_twice()
+{
+    // A live (not uncertain) EXIT is the management order; the collapse then creates a protective order while the
+    // EXIT is unsubmitted -> the EXIT is ended, the protective order is the only sell.
+    let hp = held_path("p_d");
+    let mut r = rig(|_| HOLD, &hp);
+    for _ in 0..100 {
+        r.clock += 1_000;
+        r.slot += 1;
+        r.n += 1;
+        curve_obs(&mut r.e, r.clock, r.slot, 200_000_000);
+        print(&mut r.e, r.n, r.clock, r.slot, 45_300 + i128::from(r.n % 7));
+        ticks(&mut r.e, 2);
+    }
+    let inv0 = r.e.model_inventory_tokens(&MINT).unwrap();
+    hard_collapse(&mut r.e, r.clock + 1_000, r.slot + 5);
+    let (pid, pq, _, code) =
+        r.e.model_protect_pending_order(&MINT)
+            .expect("protective order");
+    assert_eq!((pq, code), (inv0, 1));
+    assert!(r.e.model_held_persist_now());
+    drop(r);
+    // CRASH after intent / before any fill: restored UNRESOLVED, same identity and quantity, not resubmitted.
+    let mut e2 = fresh(&hp);
+    e2.model_held_restore().unwrap().unwrap();
+    assert_eq!(e2.model_inventory_tokens(&MINT), Some(inv0));
+    let (rid, rq, rf, rcode) = e2.model_protect_pending_order(&MINT).expect("restored");
+    assert_eq!((rid, rq, rf, rcode), (pid, inv0, 0, 1));
+    let b0 = books(&e2);
+    // The restored order is uncertain: the paper executor does NOT fill it, and a repeated trigger makes no 2nd order.
+    land(&mut e2, T0 + 1_000 + 40 * 2_000 + 400_000, 9_100, 3);
+    hard_collapse(&mut e2, T0 + 1_000 + 40 * 2_000 + 410_000, 9_050);
+    assert_eq!(books(&e2), b0, "nothing simulated-filled, nothing invented");
+    assert_eq!(
+        e2.model_protect_pending_order(&MINT).map(|p| p.0),
+        Some(pid)
+    );
+    // Partial fill reported by the executor (cumulative totals): its increment books once.
+    let part = inv0 / 3;
+    let (g1, f1) = (2_000_000_u64, 20_000_u64);
+    assert!(matches!(
+        e2.model_mgmt_ingest_evidence(MINT, pid, MgmtKind::Protect, inv0, part, g1, f1),
+        SellReportResult::Applied { delta } if delta == part
+    ));
+    assert_eq!(e2.model_inventory_tokens(&MINT), Some(inv0 - part));
+    let mid = books(&e2);
+    assert!(e2.model_held_persist_now());
+    // CRASH after a partial fill: the remainder stays pending/monitored, the filled part is not re-applied.
+    let mut e3 = fresh(&hp);
+    e3.model_held_restore().unwrap().unwrap();
+    assert_eq!(books(&e3), mid);
+    assert_eq!(
+        e3.model_protect_pending_order(&MINT)
+            .map(|p| (p.0, p.1, p.2)),
+        Some((pid, inv0, part))
+    );
+    // The same cumulative report again: a duplicate, no second credit.
+    assert_eq!(
+        e3.model_mgmt_ingest_evidence(MINT, pid, MgmtKind::Protect, inv0, part, g1, f1),
+        SellReportResult::Duplicate
+    );
+    assert_eq!(books(&e3), mid);
+    // Completion: the rest is reported; exposure ends at exactly zero and nothing resurrects.
+    let (g2, f2) = (g1 + 5_000_000, f1 + 50_000);
+    assert!(matches!(
+        e3.model_mgmt_ingest_evidence(MINT, pid, MgmtKind::Protect, inv0, inv0, g2, f2),
+        SellReportResult::Applied { delta } if delta == inv0 - part
+    ));
+    assert_eq!(e3.model_inventory_tokens(&MINT), None);
+    assert!(!e3.model_position_open(&MINT));
+    let done = books(&e3);
+    assert_eq!(
+        e3.model_mgmt_ingest_evidence(MINT, pid, MgmtKind::Protect, inv0, inv0, g2, f2),
+        SellReportResult::Duplicate
+    );
+    assert_eq!(books(&e3), done);
 }

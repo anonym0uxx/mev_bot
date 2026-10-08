@@ -2580,6 +2580,7 @@ impl Engine {
                         0 => Some(model_manage::MgmtKind::Reduce),
                         1 => Some(model_manage::MgmtKind::Exit),
                         2 => Some(model_manage::MgmtKind::Add),
+                        3 => Some(model_manage::MgmtKind::Protect),
                         _ => None,
                     };
                     if let Some(kind) = kind {
