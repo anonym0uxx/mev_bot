@@ -320,6 +320,7 @@ impl Engine {
                 mint,
                 system: snap.system_prompt.clone(),
                 user: snap.user_prompt.clone(),
+                session: self.model_session,
             };
             self.barrier_log_dispatch("mgmt", &mint, &job.user);
             let dispatched = self

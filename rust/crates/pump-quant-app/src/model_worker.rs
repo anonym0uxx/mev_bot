@@ -41,6 +41,9 @@ pub struct Job {
     pub system: String,
     /// User prompt (byte-parity renderer output).
     pub user: String,
+    /// The engine process-session that issued this job. Request ids restart at 1 in every process, so the id alone
+    /// cannot tell an answer to THIS process's request from a late answer to an abandoned process's request.
+    pub session: u64,
 }
 
 /// A worker's answer. Raw: nothing here has been parsed or vetted.
@@ -50,6 +53,8 @@ pub struct Verdict {
     pub id: RequestId,
     /// The mint echoed from the job.
     pub mint: [u8; 32],
+    /// The session echoed from the job (see [`Job::session`]).
+    pub session: u64,
     /// The completion, or the transport/inference failure.
     pub result: Result<Completion, InferenceError>,
 }
@@ -106,6 +111,7 @@ impl InferencePool {
                         .send(Verdict {
                             id: job.id,
                             mint: job.mint,
+                            session: job.session,
                             result,
                         })
                         .is_err()
@@ -206,6 +212,7 @@ mod tests {
             mint,
             system: "S".into(),
             user: "U".into(),
+            session: 0,
         }
     }
 

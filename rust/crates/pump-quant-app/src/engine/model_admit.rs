@@ -1148,6 +1148,7 @@ impl Engine {
             mint,
             system: snap.system_prompt.clone(),
             user: snap.user_prompt.clone(),
+            session: self.model_session,
         };
         self.barrier_log_dispatch("entry", &mint, &job.user);
         let dispatched = self
@@ -1232,11 +1233,7 @@ impl Engine {
             }
         }
         for v in done {
-            if v.id.0 >= super::model_manage::MGMT_ID_BASE {
-                self.model_mgmt_accept(v, clock);
-            } else {
-                self.model_accept(v, clock);
-            }
+            self.model_route_verdict(v, clock);
         }
         for _id in self.model_table.expire(clock) {
             self.mrep("request_abandoned_deadline");
@@ -1249,6 +1246,51 @@ impl Engine {
         self.model_safety_note_endpoint(ok_n, bad_n);
         self.model_try_fills(clock);
         self.model_mgmt_try_fills(clock);
+    }
+
+    /// Offer a verdict that did NOT come out of this process's own pool (a late or replayed response). It goes through
+    /// exactly the production accept path: an id this process's request table never issued, or one issued for another
+    /// market, is discarded by name and creates no order. Test control for the abandoned-process case.
+    pub fn model_offer_external_verdict(
+        &mut self,
+        session: u64,
+        id: u64,
+        mint: [u8; 32],
+        text: &str,
+    ) {
+        let clock = self.model_clock_ms;
+        let v = crate::model_worker::Verdict {
+            id: crate::model_lane::RequestId(id),
+            mint,
+            session,
+            result: Ok(pump_quant_inference::Completion {
+                text: text.to_string(),
+                finish_reason: Some("stop".to_string()),
+            }),
+        };
+        self.model_route_verdict(v, clock);
+    }
+
+    /// The ONE place a finished verdict enters the engine (the tick poll and the external-offer test control both
+    /// call it). PROCESS-SESSION BINDING: a verdict answering a request issued by another process (ids restart at 1
+    /// per process) is discarded by name BEFORE it can touch either request table, so it can neither create an
+    /// order nor consume or answer this process's own request that has the same number.
+    fn model_route_verdict(&mut self, v: crate::model_worker::Verdict, clock: i64) {
+        if v.session != self.model_session {
+            self.mrep("discard:foreign_session");
+            return;
+        }
+        if v.id.0 >= super::model_manage::MGMT_ID_BASE {
+            self.model_mgmt_accept(v, clock);
+        } else {
+            self.model_accept(v, clock);
+        }
+    }
+
+    /// This process's session id (never persisted: a restarted process always has a different one).
+    #[must_use]
+    pub fn model_session_id(&self) -> u64 {
+        self.model_session
     }
 
     fn model_accept(&mut self, v: crate::model_worker::Verdict, clock: i64) {
@@ -2072,4 +2114,12 @@ fn amm_swap_identity(a: &AmmSwapIn, ts_ms: i64) -> u128 {
     )
         .hash(&mut h2);
     (u128::from(h1.finish()) << 64) | u128::from(h2.finish())
+}
+
+impl Engine {
+    /// The id of the entry request most recently issued by THIS process (0 before any). Test/barrier bookkeeping.
+    #[must_use]
+    pub fn model_table_last_issued_for_test(&self) -> u64 {
+        self.model_table.last_issued_id()
+    }
 }

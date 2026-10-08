@@ -98,32 +98,41 @@ impl Engine {
 
     /// Wait (bounded) for every outstanding dispatched request, then stage the verdicts for the next tick, ordered by
     /// logical id. Returns the number still missing (0 = settled). A verdict for an id this process did not dispatch is
-    /// counted as `foreign` and still handed to the production path, which refuses it by name.
+    /// counted as `foreign`; a verdict of another session is dropped, one for an unknown id of this session is handed to the production path, which refuses it by name.
     pub fn barrier_settle(&mut self, wait: Duration) -> usize {
-        let Some(pool) = self.model_pool.as_ref() else {
+        if self.model_pool.is_none() {
             return 0;
-        };
+        }
         let t0 = Instant::now();
         while !self.barrier.outstanding.is_empty() && t0.elapsed() < wait {
             let left = wait.saturating_sub(t0.elapsed());
-            match pool.recv_timeout(left.min(Duration::from_millis(50))) {
-                Some(v) => {
-                    if !self.barrier.outstanding.remove(&v.id.0) {
-                        self.barrier.foreign += 1;
-                    }
-                    self.barrier.settled.insert(v.id.0, v);
-                }
-                None => {}
+            let got = self
+                .model_pool
+                .as_ref()
+                .and_then(|p| p.recv_timeout(left.min(Duration::from_millis(50))));
+            if let Some(v) = got {
+                self.barrier_stage(v);
             }
         }
         // anything else already queued (e.g. a foreign verdict)
-        while let Some(v) = pool.try_recv() {
-            if !self.barrier.outstanding.remove(&v.id.0) {
-                self.barrier.foreign += 1;
-            }
-            self.barrier.settled.insert(v.id.0, v);
+        while let Some(v) = self.model_pool.as_ref().and_then(|p| p.try_recv()) {
+            self.barrier_stage(v);
         }
         self.barrier.outstanding.len()
+    }
+
+    /// Stage one verdict. A verdict from another process-session is counted `foreign` and DROPPED here: staged by id it
+    /// could overwrite this process's own verdict that has the same (restarted) request number.
+    fn barrier_stage(&mut self, v: Verdict) {
+        if v.session != self.model_session {
+            self.barrier.foreign += 1;
+            self.mrep("discard:foreign_session");
+            return;
+        }
+        if !self.barrier.outstanding.remove(&v.id.0) {
+            self.barrier.foreign += 1;
+        }
+        self.barrier.settled.insert(v.id.0, v);
     }
 
     /// Verdicts staged for the next tick.

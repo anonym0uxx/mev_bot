@@ -1858,3 +1858,86 @@ fn an_uncertain_entry_order_reconciled_not_filled_is_cleared_once_and_never_fill
     assert!(e2.model_mint_is_blocked(&MINT));
     assert_eq!(e2.model_accounting_view(&MINT).committed, 0);
 }
+
+/// A source that answers only once released: the request stays in flight, so an old answer can race it.
+struct Gated {
+    open: Arc<std::sync::atomic::AtomicBool>,
+    calls: Arc<AtomicUsize>,
+}
+impl ModelSource for Gated {
+    fn complete(&self, _s: &str, _u: &str) -> Result<String, InferenceError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        while !self.open.load(Ordering::SeqCst) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        Ok(HOLD.to_string())
+    }
+}
+
+fn gated_engine(
+    open: &Arc<std::sync::atomic::AtomicBool>,
+    calls: &Arc<AtomicUsize>,
+    held: Option<&std::path::Path>,
+) -> Engine {
+    let mut c = cfg();
+    c.bankroll_initial_lamports = 2_000_000_000;
+    c.floor_fraction_bps = 2_500;
+    let mut e = Engine::new(c, RunMode::Paper);
+    e.enable_paper_model(Gated {
+        open: Arc::clone(open),
+        calls: Arc::clone(calls),
+    });
+    if let Some(h) = held {
+        e.model_held_attach(h);
+    }
+    e
+}
+
+#[test]
+fn a_verdict_from_an_abandoned_process_creates_no_order_and_cannot_answer_a_new_request() {
+    let (hp, id, q) = pending_entry_world("fv_a");
+    let before_orders;
+    {
+        let mut e2 = fresh_engine(2_000_000_000, &hp);
+        e2.model_held_restore().unwrap().unwrap();
+        before_orders = e2.model_held_ledger().model_order_seq;
+        // (1) No request of THIS process exists: any old id is unknown and creates nothing.
+        for old_id in [1u64, 2, 7, (1u64 << 40) + 1] {
+            e2.model_offer_external_verdict(e2.model_session_id() ^ 1, old_id, MINT, BUY);
+        }
+        assert_eq!(
+            e2.model_held_ledger().model_order_seq,
+            before_orders,
+            "no order created"
+        );
+        assert_eq!(
+            e2.model_pending_orders(),
+            1,
+            "only the restored uncertain order"
+        );
+        assert_eq!(e2.model_pending_order(&MINT).map(|p| p.0), Some(id));
+        assert!(!e2.model_position_open(&MINT));
+    }
+    // (2) The id-collision case: the new process has its OWN request in flight (ids restart at 1, so the abandoned
+    // process's id 1 is the same number). The old answer must not be accepted as the answer to the new request.
+    let open = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut e = gated_engine(&open, &calls, None);
+    for ev in &events(40) {
+        e.tick(*ev);
+    }
+    ticks(&mut e, 8);
+    assert!(calls.load(Ordering::SeqCst) >= 1, "the new process asked");
+    assert_eq!(e.model_pending_orders(), 0);
+    let new_req = e.model_table_last_issued_for_test();
+    // The abandoned process answers with the same numeric id, for the same market, with BUY.
+    e.model_offer_external_verdict(e.model_session_id() ^ 1, new_req, MINT, BUY);
+    ticks(&mut e, 4);
+    assert_eq!(
+        e.model_pending_orders(),
+        0,
+        "a verdict that did not come from this process's own worker must create no order: {:?}",
+        e.model_lane_report()
+    );
+    open.store(true, Ordering::SeqCst);
+}

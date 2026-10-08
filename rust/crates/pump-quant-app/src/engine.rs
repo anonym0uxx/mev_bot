@@ -870,6 +870,8 @@ pub struct Engine {
     model_order_seq: u64,
     /// Settled-order records at or below this id may have been compacted away (never silently "unknown").
     model_order_floor: u64,
+    /// Process-session id stamped on every inference job (see `model_worker::Job::session`).
+    model_session: u64,
     model_settled_order_cap: Option<usize>,
     model_held: model_restore::HeldPersist,
     /// Durable missing-history ledger (writer + bookkeeping); `None` until attached.
@@ -1519,6 +1521,7 @@ impl Engine {
             model_amm_fee: BTreeMap::new(),
             model_order_seq: 0,
             model_order_floor: 0,
+            model_session: new_session_id(),
             model_settled_order_cap: None,
             model_held: model_restore::HeldPersist::default(),
             missing_store: model_admit::MissingStore::default(),
@@ -7021,4 +7024,12 @@ mod reject_code_pins {
             "reject_counts has 32 slots"
         );
     }
+}
+
+/// A per-process session id: wall-clock nanoseconds mixed with the pid. Not persisted, never in any digest.
+fn new_session_id() -> u64 {
+    let n = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos() as u64);
+    (n ^ (u64::from(std::process::id()) << 40) ^ 0x9E37_79B9_7F4A_7C15) | 1
 }
