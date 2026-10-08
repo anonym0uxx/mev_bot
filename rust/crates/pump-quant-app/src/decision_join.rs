@@ -7,8 +7,13 @@
 //!
 //! WHAT IT WILL NOT DO (each is a named [`JoinRefusal`], counted, never defaulted):
 //! * invent a clock, a trader, a fee, a compute-unit figure or a launch time;
-//! * treat first observation as launch time (the history must START at the launch, within
-//!   [`LAUNCH_TOLERANCE_MS`], or the mint is refused as `HistoryStartsAfterLaunch`);
+//! * treat first observation as launch time. Launch time (from the launch record) and the first
+//!   OBSERVED trade are different facts and are kept apart: `age_s` is measured from the first
+//!   observed trade, exactly as the trained corpus measures it (`build_states_v2._episode`:
+//!   `age_s = (t_dec - tt[0]) / 1000`, `tt[0]` = the mint's first CAPTURED trade). A market first
+//!   seen mid-life is therefore eligible on the trained observation-history contract (sufficient
+//!   prior observations, continuity, completeness, freshness, creator inputs), and is never
+//!   refused merely because its history starts after its launch;
 //! * let a partial history read as a quiet market (any print that could not feed the flow reducer
 //!   poisons that mint's flow block -> `FlowMetaMissing`);
 //! * serve state from after the decision clock (`FutureStateInCache`).
@@ -33,10 +38,6 @@ use crate::enrichment::{enrich, EnrichmentGap, EnrichmentTrade};
 use crate::flow_feed::{flow_event_from_market_trade, flow_state_from_aggregates, zero_flow_state};
 use crate::state_ledger::{ClockRefusal, StateLedger, StateTrade, VenueLabel};
 
-/// How far after a mint's launch its first observed print may be and still count as "the history
-/// starts at the launch". Measured on the corpus tape: launch -> first trade is p10/p50/p90 =
-/// 0/0/3 ms (n=2530). A mint first seen later was already trading: its windows are partial.
-pub const LAUNCH_TOLERANCE_MS: i64 = 5_000;
 /// Per-mint enrichment ring bound (§99). `enrich` reads the WHOLE prefix, so a mint that
 /// overflows this is refused rather than silently truncated.
 pub const MAX_ENRICH_TRADES_PER_MINT: usize = 50_000;
@@ -113,10 +114,6 @@ pub enum JoinRefusal {
     NoMint,
     /// No launch/creator record: `creator_known` would be 0, a state the corpus never trained on.
     LaunchUnknown,
-    /// The first observed print is later than the launch by more than the tolerance.
-    HistoryStartsAfterLaunch {
-        gap_ms: i64,
-    },
     /// The cache holds a print newer than the decision clock.
     FutureStateInCache {
         newest_ms: i64,
@@ -183,7 +180,6 @@ impl JoinRefusal {
         match self {
             JoinRefusal::NoMint => "join_no_mint",
             JoinRefusal::LaunchUnknown => "join_launch_unknown",
-            JoinRefusal::HistoryStartsAfterLaunch { .. } => "join_history_starts_after_launch",
             JoinRefusal::FutureStateInCache { .. } => "join_future_state_in_cache",
             JoinRefusal::State(c) => c.as_str(),
             JoinRefusal::EnrichmentIdentityMissing { .. } => "join_enrichment_identity_missing",
@@ -1258,11 +1254,11 @@ impl DecisionCache {
         if dev.creator_known == 0 {
             return Err(JoinRefusal::LaunchUnknown);
         }
-        // First observation is NOT launch time: the history must begin at the launch.
-        let gap = mc.first_seen_ms - launch;
-        if gap > LAUNCH_TOLERANCE_MS {
-            return Err(JoinRefusal::HistoryStartsAfterLaunch { gap_ms: gap });
-        }
+        // Launch time and first observation are different facts. The trained contract measures
+        // `age_s` from the first OBSERVED trade (the StateLedger does the same), so a history that
+        // starts after the launch is not, by itself, a refusal. Sufficient prior observations,
+        // continuity, completeness and freshness are enforced below by their own gates.
+        let _ = launch;
         if mc.last_recv_ms > t_dec_ms {
             return Err(JoinRefusal::FutureStateInCache {
                 newest_ms: mc.last_recv_ms,
@@ -1685,19 +1681,96 @@ mod tests {
         );
     }
 
+    /// Trained observation-history contract (c12 / sft-013; corpus builder `build_states_v2._episode`):
+    /// `age_s` is measured from the first OBSERVED trade, not from the launch. A market first seen an
+    /// hour after its launch is eligible and its prompt carries the observation-based age; the launch
+    /// record is kept as-is (it still drives the creator inputs).
     #[test]
-    fn first_observation_is_not_launch_time() {
+    fn a_mid_life_market_is_eligible_and_age_is_measured_from_first_observation() {
         let mut c = DecisionCache::new();
-        // Launched an hour before the bot first saw it trade.
         c.observe_launch(MINT, CREATOR, T0 - 3_600_000);
         for i in 0..40 {
             c.observe_trade(&trade(i));
         }
         c.observe_curve(MINT, curve());
-        match c.snapshot(&MINT, t_dec(40)).unwrap_err() {
-            JoinRefusal::HistoryStartsAfterLaunch { gap_ms } => assert!(gap_ms >= 3_600_000),
-            other => panic!("wrong refusal: {other:?}"),
+        let s = c
+            .snapshot(&MINT, t_dec(40))
+            .expect("mid-life market eligible");
+        // first observed trade = T0 + 1_000; t_dec(40) = T0 + 82_000 => age_s = 81.0 (NOT 3681.0).
+        assert!(s.user_prompt.contains("age_s=81.0 "), "{}", s.user_prompt);
+        assert!(s
+            .user_prompt
+            .contains("DEV HISTORY: creator_past_launches=0 creator_known=1"));
+        // The launch record itself is not rewritten: coverage still reports age from the launch.
+        let (_, launch_age, _) = c.describe(&MINT, t_dec(40));
+        assert_eq!(launch_age, Some(3_682.0));
+    }
+
+    /// The other trained-contract gates still refuse a mid-life market independently.
+    #[test]
+    fn a_mid_life_market_with_missing_or_corrupt_history_still_refuses() {
+        // (a) no launch record => creator inputs unknown.
+        let mut c = DecisionCache::new();
+        for i in 0..40 {
+            c.observe_trade(&trade(i));
         }
+        c.observe_curve(MINT, curve());
+        assert_eq!(
+            c.snapshot(&MINT, t_dec(40)).unwrap_err(),
+            JoinRefusal::LaunchUnknown
+        );
+        // (b) too few prior observations.
+        let mut c = DecisionCache::new();
+        c.observe_launch(MINT, CREATOR, T0 - 3_600_000);
+        for i in 0..10 {
+            c.observe_trade(&trade(i));
+        }
+        c.observe_curve(MINT, curve());
+        assert!(matches!(
+            c.snapshot(&MINT, t_dec(10)).unwrap_err(),
+            JoinRefusal::State(ClockRefusal::FewPriorTrades { have: 10, .. })
+        ));
+        // (c) a print missing its flow metadata (corrupt history) poisons the flow block.
+        let mut c = DecisionCache::new();
+        c.observe_launch(MINT, CREATOR, T0 - 3_600_000);
+        for i in 0..40 {
+            let mut t = trade(i);
+            if i == 20 {
+                t.fee_lamports = None;
+            }
+            c.observe_trade(&t);
+        }
+        c.observe_curve(MINT, curve());
+        assert!(matches!(
+            c.snapshot(&MINT, t_dec(40)),
+            Err(JoinRefusal::FlowMetaMissing { prints: 1 })
+        ));
+        // (d) a print with no trader identity.
+        let mut c = DecisionCache::new();
+        c.observe_launch(MINT, CREATOR, T0 - 3_600_000);
+        for i in 0..40 {
+            let mut t = trade(i);
+            if i == 10 {
+                t.trader = None;
+            }
+            c.observe_trade(&t);
+        }
+        c.observe_curve(MINT, curve());
+        assert!(matches!(
+            c.snapshot(&MINT, t_dec(40)),
+            Err(JoinRefusal::EnrichmentIdentityMissing { prints: 1 })
+        ));
+        // (e) stale: idle beyond the corpus freshness bound.
+        let mut c = DecisionCache::new();
+        c.observe_launch(MINT, CREATOR, T0 - 3_600_000);
+        for i in 0..40 {
+            c.observe_trade(&trade(i));
+        }
+        c.observe_curve(MINT, curve());
+        assert!(matches!(
+            c.snapshot(&MINT, t_dec(40) + 120_000).unwrap_err(),
+            JoinRefusal::State(ClockRefusal::IdleTooLong { .. })
+        ));
     }
 
     #[test]
@@ -2090,7 +2163,6 @@ mod tests {
         let all = [
             JoinRefusal::NoMint,
             JoinRefusal::LaunchUnknown,
-            JoinRefusal::HistoryStartsAfterLaunch { gap_ms: 1 },
             JoinRefusal::FutureStateInCache { newest_ms: 1 },
             JoinRefusal::EnrichmentIdentityMissing { prints: 1 },
             JoinRefusal::EnrichmentOverflow,
