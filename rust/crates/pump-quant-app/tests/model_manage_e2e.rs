@@ -1987,3 +1987,62 @@ fn the_equal_millisecond_convention_can_inflate_the_favourable_excursion_as_well
     // Entry price and fill record are untouched by the excursion feature; protection is a separate path.
     assert_eq!(held_extrema(&e).0, entry);
 }
+
+#[test]
+fn a_quiet_window_refuses_the_due_ask_by_staleness_and_the_consult_recovers_when_prints_resume() {
+    // bF1/bF2 finding, as a law. The cadence anchor is position-local (fill + 60 s hold, then
+    // last_ask + 30 s): there is no global phase to lose a consult to. Construction mirrors the
+    // measured boundary: the tape stops ~35 s before the FIRST consult comes due, so that consult
+    // runs at idle ~35-40 s (legal), and the SECOND due falls at idle > MAX_IDLE_MS (60 s). That
+    // due ask must be refused BY ITS FRESHNESS NAME, retried, and served as soon as a print
+    // returns. The recovered consult answers REDUCE, so a silently-swallowed ask would cost a
+    // real order, not just a counter.
+    let mut r = rig(|step| if step == 0 { HOLD } else { REDUCE });
+    let fill_ms = held_extrema(&r.e).3;
+    // Prints continue until ~25 s after the fill, then the tape goes quiet.
+    while r.clock < fill_ms + 25_000 {
+        r.clock += 5_000;
+        r.slot += 1;
+        r.n += 1;
+        curve_quiet(&mut r.e, r.clock, r.slot);
+        print(&mut r.e, r.n, r.clock, r.slot);
+        ticks(&mut r.e, 2);
+    }
+    // Quiet: reserves stay fresh (account subscription) and the lane clock moves, but no trade
+    // prints. The first consult (fill + 60 s) runs INSIDE this window at idle ~35-40 s -- legal,
+    // answered HOLD. Its follow-up (last_ask + 30 s) falls due at idle ~65-70 s.
+    while r.clock < fill_ms + 100_000 {
+        r.clock += 5_000;
+        r.slot += 1;
+        curve_quiet(&mut r.e, r.clock, r.slot);
+        ticks(&mut r.e, 2);
+    }
+    assert_eq!(
+        r.rep("mgmt:dispatched"),
+        1,
+        "exactly the legal consult ran; the due ask at idle > 60 s built nothing: {:?}",
+        r.e.model_lane_report()
+    );
+    assert!(
+        r.rep("mgmt:refuse:idle_too_long") >= 1,
+        "the due ask was refused by its freshness name, not silently skipped: {:?}",
+        r.e.model_lane_report()
+    );
+    assert!(
+        r.e.model_mgmt_pending(&MINT).is_none(),
+        "a refused consult creates no order"
+    );
+    assert!(
+        r.e.model_position_open(&MINT),
+        "a refused consult changes nothing about the position"
+    );
+    // Prints resume: the deferred ask is served on the retry cadence and its REDUCE verdict
+    // becomes a real order intent -- deferred by staleness, never lost.
+    r.advance_to_order(30_000);
+    assert_eq!(r.rep("mgmt:dispatched"), 2, "{:?}", r.e.model_lane_report());
+    let (_id, kind, _intended, filled) =
+        r.e.model_mgmt_pending(&MINT)
+            .expect("the recovered consult's REDUCE became an order");
+    assert_eq!(format!("{kind:?}"), "Reduce");
+    assert_eq!(filled, 0, "an intent is not a fill");
+}
