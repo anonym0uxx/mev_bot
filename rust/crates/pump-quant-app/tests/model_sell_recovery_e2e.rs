@@ -190,13 +190,23 @@ fn rig_with(
     held: &std::path::Path,
     flow: Option<&std::path::Path>,
 ) -> Rig {
-    FEED_LOG.with(|l| l.borrow_mut().clear());
     let calls = Arc::new(AtomicUsize::new(0));
-    let mut e = Engine::new(cfg(), RunMode::Paper);
-    e.enable_paper_model(Script {
+    let src = Script {
         calls: Arc::clone(&calls),
         answer,
-    });
+    };
+    rig_with_source(src, calls, held, flow)
+}
+
+fn rig_with_source<S: ModelSource + Send + Sync + 'static>(
+    src: S,
+    calls: Arc<AtomicUsize>,
+    held: &std::path::Path,
+    flow: Option<&std::path::Path>,
+) -> Rig {
+    FEED_LOG.with(|l| l.borrow_mut().clear());
+    let mut e = Engine::new(cfg(), RunMode::Paper);
+    e.enable_paper_model(src);
     e.model_held_attach(held);
     if let Some(f) = flow {
         e.model_flow_attach(
@@ -2976,4 +2986,98 @@ fn stop_ram_headroom_from_meminfo() {
     assert_eq!(sp::ram_ok(tot, av, sp::RAM_FLOOR_BPS), Some(true), "12.0% exactly is ok");
     assert_eq!(sp::ram_ok(tot, Some(31_559_999), sp::RAM_FLOOR_BPS), Some(false));
     assert_eq!(sp::ram_ok(None, av, sp::RAM_FLOOR_BPS), None, "unmeasurable is not fine");
+}
+
+/// A model endpoint that answers entry prompts at once but HANGS on every management prompt until released; a
+/// released call then answers REDUCE (a late verdict that must be rejected, never executed).
+struct HangMgmt {
+    calls: Arc<AtomicUsize>,
+    mgmt_calls: Arc<AtomicUsize>,
+    release: Arc<std::sync::atomic::AtomicBool>,
+}
+impl ModelSource for HangMgmt {
+    fn complete(&self, _s: &str, user: &str) -> Result<String, InferenceError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        if user.starts_with("Decide the next action for a position you already hold") {
+            self.mgmt_calls.fetch_add(1, Ordering::SeqCst);
+            while !self.release.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            return Ok(REDUCE.to_string());
+        }
+        Ok(BUY.to_string())
+    }
+}
+
+/// A hung model endpoint must not build an unlimited retry queue for a held position. Over N >> bound held-position
+/// ticks: outstanding management requests (live + abandoned, total and per mint) never exceed the table bound,
+/// request bindings never outgrow it, further asks are refused by name, protection still creates its order
+/// independently of the endpoint, and the late answers of the abandoned asks are discarded by name (no order).
+#[test]
+fn stop_hung_endpoint_management_asks_stay_bounded_and_protection_still_orders() {
+    use pump_quant_app::engine::model_manage::MGMT_MAX_OUTSTANDING;
+    assert_eq!(MGMT_MAX_OUTSTANDING, pump_quant_app::model_lane::DEFAULT_MAX_OUTSTANDING);
+    assert_eq!(MGMT_MAX_OUTSTANDING, 4);
+    let hp = held_path("st_hung_bound");
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mgmt_calls = Arc::new(AtomicUsize::new(0));
+    let release = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let src = HangMgmt {
+        calls: Arc::clone(&calls),
+        mgmt_calls: Arc::clone(&mgmt_calls),
+        release: Arc::clone(&release),
+    };
+    let mut r = rig_with_source(src, calls, &hp, None);
+    let cap = r.e.model_mgmt_request_load(&MINT).capacity;
+    assert_eq!(cap, MGMT_MAX_OUTSTANDING);
+    // N held-position ticks (1 s of feed time each): ~20 management cadence slots, >> the bound of 4.
+    const N: usize = 600;
+    let mut max_out = 0;
+    for _ in 0..N {
+        r.clock += 1_000;
+        r.slot += 1;
+        r.n += 1;
+        curve_obs(&mut r.e, r.clock, r.slot, 200_000_000);
+        print(&mut r.e, r.n, r.clock, r.slot, 45_300 + i128::from(r.n % 7));
+        r.e.tick(AppEvent::Tick);
+        let l = r.e.model_mgmt_request_load(&MINT);
+        assert!(l.outstanding <= cap, "total outstanding {l:?}");
+        assert!(l.outstanding_for_mint <= cap, "per-mint outstanding {l:?}");
+        assert!(l.live_for_mint <= 1, "at most one live ask per mint {l:?}");
+        assert!(l.bindings <= cap, "request bindings never outgrow the table {l:?}");
+        assert!(l.counters.submitted <= cap as u64, "no slot is ever re-used while hung {l:?}");
+        assert!(r.e.model_mgmt_pending(&MINT).is_none(), "nothing executes from a hung endpoint");
+        max_out = max_out.max(l.outstanding);
+    }
+    let l = r.e.model_mgmt_request_load(&MINT);
+    assert_eq!(max_out, cap, "the bound is reached (the test exercises it): {l:?}");
+    assert_eq!(l.live, 0, "every hung ask was abandoned at its deadline: {l:?}");
+    assert_eq!(l.counters.abandoned, cap as u64);
+    assert!(l.counters.refused_capacity >= 10, "further asks refused, not queued: {l:?}");
+    assert!(rep_sum(&r.e, "mgmt:refuse:submit:AtCapacity") >= 10);
+    assert!(rep_sum(&r.e, "mgmt:request_abandoned_deadline") >= cap as u64);
+    assert!(mgmt_calls.load(Ordering::SeqCst) <= cap, "the endpoint never saw more than the bound");
+    // Protection is independent of the endpoint: a collapse print still creates the protective order.
+    let inv0 = r.e.model_inventory_tokens(&MINT).unwrap();
+    hard_collapse(&mut r.e, r.clock + 1_000, r.slot + 5);
+    let (_, q, _, _) = r
+        .e
+        .model_protect_pending_order(&MINT)
+        .expect("protection orders while the endpoint is hung");
+    assert_eq!(q, inv0);
+    // The endpoint comes back: every late answer (REDUCE) is for an abandoned ask -> discarded by name, no order.
+    release.store(true, Ordering::SeqCst);
+    for _ in 0..500 {
+        if r.e.model_mgmt_request_load(&MINT).outstanding == 0 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+        r.e.tick(AppEvent::Tick);
+    }
+    let l = r.e.model_mgmt_request_load(&MINT);
+    assert_eq!((l.outstanding, l.bindings), (0, 0), "slots and bindings freed: {l:?}");
+    assert_eq!(l.counters.discarded_abandoned, cap as u64, "{l:?}");
+    assert_eq!(rep_sum(&r.e, "mgmt:discard:abandoned"), cap as u64);
+    assert_eq!(l.counters.accepted, 0, "no late verdict accepted");
+    assert!(r.e.model_mgmt_pending(&MINT).is_none(), "no management order from a late verdict");
 }

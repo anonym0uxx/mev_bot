@@ -46,6 +46,10 @@ pub const MGMT_MIN_HOLD_MS: i64 = 60_000;
 pub const MGMT_CADENCE_MS: i64 = 30_000;
 /// The corpus's per-episode step cap (a training-data boundary, not a deployment limit).
 pub const MGMT_CORPUS_STEP_CAP: i64 = 16;
+/// Ceiling on outstanding MANAGEMENT model requests (live + abandoned), across all held positions. A hung endpoint
+/// cannot grow a retry queue past this: once it is reached, further asks are refused by name
+/// (`mgmt:refuse:submit:AtCapacity`) until a worker returns; per mint at most one request is live (dedupe).
+pub const MGMT_MAX_OUTSTANDING: usize = crate::model_lane::DEFAULT_MAX_OUTSTANDING;
 /// Retry spacing after a refused snapshot (does not consume the 30 s grid).
 const MGMT_RETRY_MS: i64 = 2_000;
 const LAMPORTS: f64 = 1e9;
@@ -215,6 +219,25 @@ pub(super) struct MgmtMeta {
     pub step: i64,
 }
 
+/// Snapshot of the management request table (see [`Engine::model_mgmt_request_load`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MgmtRequestLoad {
+    /// Outstanding requests, live + abandoned (bounded by `capacity`).
+    pub outstanding: usize,
+    /// Live (non-abandoned) requests.
+    pub live: usize,
+    /// The table's ceiling.
+    pub capacity: usize,
+    /// Outstanding requests about the queried mint.
+    pub outstanding_for_mint: usize,
+    /// Live requests about the queried mint (0 or 1).
+    pub live_for_mint: usize,
+    /// Request->snapshot bindings held (must not outgrow the table).
+    pub bindings: usize,
+    /// Table counters.
+    pub counters: crate::model_lane::LaneCounters,
+}
+
 /// All lane state in one field of the engine.
 #[derive(Debug)]
 pub(super) struct MgmtLane {
@@ -231,7 +254,7 @@ pub(super) struct MgmtLane {
 impl MgmtLane {
     pub fn new() -> Self {
         Self {
-            table: RequestTable::with_id_base(4, MGMT_ID_BASE),
+            table: RequestTable::with_id_base(MGMT_MAX_OUTSTANDING, MGMT_ID_BASE),
             meta: BTreeMap::new(),
             pos: BTreeMap::new(),
             orders: BTreeMap::new(),
@@ -947,6 +970,21 @@ impl Engine {
                     self.model_mgmt_reserved(None),
                 )
             })
+    }
+
+    /// Management request-table load (read-only): the bound a hung endpoint must never exceed.
+    #[must_use]
+    pub fn model_mgmt_request_load(&self, mint: &[u8; 32]) -> MgmtRequestLoad {
+        let t = &self.model_mgmt.table;
+        MgmtRequestLoad {
+            outstanding: t.outstanding(),
+            live: t.live(),
+            capacity: t.capacity(),
+            outstanding_for_mint: t.outstanding_for(mint),
+            live_for_mint: usize::from(t.has_live_for(mint)),
+            bindings: self.model_mgmt.meta.len(),
+            counters: t.counters(),
+        }
     }
 
     /// The pending management order on `mint`: (id, kind, intended, filled).
