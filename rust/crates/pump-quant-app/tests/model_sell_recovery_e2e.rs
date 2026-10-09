@@ -3035,8 +3035,8 @@ fn stop_hung_endpoint_management_asks_stay_bounded_and_protection_still_orders()
         release: Arc::clone(&release),
     };
     let mut r = rig_with_source(src, calls, &hp, None);
-    let cap = r.e.model_mgmt_request_load(&MINT).capacity;
-    assert_eq!(cap, MGMT_MAX_OUTSTANDING);
+    let cap = MGMT_MAX_OUTSTANDING;
+    assert_eq!(r.e.model_mgmt_request_load(&MINT).capacity, cap);
     // N held-position ticks (1 s of feed time each): ~20 management cadence slots, >> the bound of 4.
     const N: usize = 600;
     let mut max_out = 0;

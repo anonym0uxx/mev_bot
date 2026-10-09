@@ -120,6 +120,18 @@ fn disk_floors_take_the_least_free_path_and_unmeasurable_never_latches() {
     assert_eq!(disk_floors_ok(&[&a, &b], u64::MAX, u64::MAX), (Some(false), Some(false)));
     // Both below: healthy.
     assert_eq!(disk_floors_ok(&[&a, &b], 1, 1), (Some(true), Some(true)));
+    // Two filesystems with different free space: the LEAST free decides.
+    let cands = [std::env::temp_dir(), "/dev/shm".into(), "/".into(), std::env::current_dir().unwrap()];
+    let fs: Vec<(std::path::PathBuf, u64)> = cands
+        .iter()
+        .filter_map(|p| pump_quant_junction::model_lifecycle::free_bytes(p).map(|f| (p.clone(), f)))
+        .collect();
+    let lo = fs.iter().min_by_key(|x| x.1).unwrap();
+    let hi = fs.iter().max_by_key(|x| x.1).unwrap();
+    assert!(hi.1 > lo.1, "this host offers two filesystems with different free space: {fs:?}");
+    let floor = lo.1 + (hi.1 - lo.1) / 2; // between the two
+    assert_eq!(disk_floors_ok(&[&hi.0, &lo.0], floor, floor), (Some(false), Some(false)), "least free decides");
+    assert_eq!(disk_floors_ok(&[&hi.0], floor, floor), (Some(true), Some(true)));
     // One unmeasurable path: soft unknown (restricts), hard unknown (does NOT latch).
     let bad = std::path::Path::new("/proc/pq_no_such_dir/x/held.json");
     assert_eq!(disk_floors_ok(&[&a, bad], 1, 1), (None, None));
