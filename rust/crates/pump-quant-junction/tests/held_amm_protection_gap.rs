@@ -133,6 +133,8 @@ fn feed_line(e: &mut Engine, v: &serde_json::Value, m: DomainMint, t: i64) {
                     v["cr"].as_u64().unwrap() as u32,
                 )),
                 virtual_quote: v["vq"].as_u64(),
+                // Pre-cashback-field stream semantics (the legacy pricing rule), unchanged.
+                cashback: pump_quant_protocol::pumpswap_event::CashbackField::NotRecorded,
                 is_buy: v["buy"].as_bool().unwrap(),
                 token_amount: v["tok"].as_u64().unwrap(),
                 quote_lamports: v["sol"].as_u64().unwrap(),
@@ -281,6 +283,8 @@ fn swap_at(
         fee_bps: Some(125),
         fee_parts: Some((2, 93, 30)),
         virtual_quote: Some(17_584_505_661),
+        // Pre-cashback-field stream semantics (the legacy pricing rule), unchanged.
+        cashback: pump_quant_protocol::pumpswap_event::CashbackField::NotRecorded,
         is_buy: buy,
         token_amount: tok,
         quote_lamports: sol,

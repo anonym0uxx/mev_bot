@@ -6,6 +6,7 @@ use pump_quant_junction::event_codec::{decode, encode, is_critical, KINDS};
 use pump_quant_junction::event_stream::{
     read_event_stream, read_event_stream_checked, EventStreamWriter,
 };
+use pump_quant_protocol::pumpswap_event::CashbackField;
 
 const M: Mint = Mint([7; 32]);
 const K: [u8; 32] = [9; 32];
@@ -104,6 +105,11 @@ fn all_events() -> Vec<AppEvent> {
             fee_bps: Some(125),
             fee_parts: Some((2, 93, 30)),
             virtual_quote: Some(17_584_505_661),
+            cashback: CashbackField::Known {
+                bps: 30,
+                lamports: 2_831,
+                layout_len: 433,
+            },
             is_buy: true,
             token_amount: 3,
             quote_lamports: 4,
@@ -123,6 +129,7 @@ fn all_events() -> Vec<AppEvent> {
             fee_bps: None,
             fee_parts: None,
             virtual_quote: None,
+            cashback: CashbackField::Missing { layout_len: 352 },
             is_buy: false,
             token_amount: 3,
             quote_lamports: 4,
@@ -371,6 +378,140 @@ fn wide_integers_are_lossless_and_bad_values_are_rejected_by_field() {
     )
     .replace(r#""dow":1"#, r#""dow":300"#);
     assert!(decode(&big).unwrap_err().contains("dow"));
-    let badver = l.replacen(r#""v":2"#, r#""v":3"#, 1);
-    assert!(decode(&badver).unwrap_err().contains("version 3"));
+    // Schema v3 is current (cashback); a FUTURE version is still rejected by name.
+    let badver = l.replacen(r#""v":3"#, r#""v":4"#, 1);
+    assert!(decode(&badver).unwrap_err().contains("version 4"));
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// Schema v3: AmmSwap carries the cashback pair with its layout provenance. Old (v2) data still reads, with the
+// gap NAMED; every cashback state survives the round trip distinctly.
+// ---------------------------------------------------------------------------------------------------------
+
+fn amm(cashback: CashbackField) -> AppEvent {
+    let mut e = all_events()
+        .into_iter()
+        .find(|e| matches!(e, AppEvent::AmmSwap { .. }))
+        .unwrap();
+    if let AppEvent::AmmSwap { cashback: c, .. } = &mut e {
+        *c = cashback;
+    }
+    e
+}
+
+const STATES: [CashbackField; 5] = [
+    CashbackField::Known {
+        bps: 30,
+        lamports: 2_831,
+        layout_len: 433,
+    },
+    CashbackField::Known {
+        bps: 0,
+        lamports: 0,
+        layout_len: 481,
+    },
+    CashbackField::Missing { layout_len: 352 },
+    CashbackField::Unsupported { layout_len: 440 },
+    CashbackField::NotRecorded,
+];
+
+#[test]
+fn v3_round_trips_every_cashback_state_distinctly_with_provenance() {
+    let mut lines = Vec::new();
+    for c in STATES {
+        let e = amm(c);
+        let l = encode(&e, 0);
+        assert!(l.contains(r#""v":3"#), "{l}");
+        assert!(l.contains(&format!(r#""state":"{}""#, c.state())), "{l}");
+        let back = decode(&l).unwrap().1;
+        assert_eq!(back, e);
+        lines.push(l);
+    }
+    assert!(lines[0]
+        .contains(r#""cashback":{"bps":30,"lamports":2831,"layout_len":433,"state":"known"}"#));
+    assert!(
+        lines[1].contains(r#""cashback":{"bps":0,"lamports":0,"layout_len":481,"state":"known"}"#)
+    );
+    assert!(lines[2].contains(r#""cashback":{"layout_len":352,"state":"missing"}"#));
+    let uniq: std::collections::BTreeSet<&String> = lines.iter().collect();
+    assert_eq!(uniq.len(), STATES.len(), "five states, five encodings");
+    let p = tmp("v3cb");
+    std::fs::write(&p, lines.join("\n")).unwrap();
+    let c = read_event_stream_checked(&p).unwrap();
+    assert!(c.is_complete(), "{:?}", c.incomplete());
+    assert!(c.schema_gaps().is_empty());
+    assert_eq!(c.versions.get(&3), Some(&5));
+}
+
+#[test]
+fn v3_amm_swap_without_the_cashback_object_is_rejected_by_name() {
+    let l = encode(&amm(STATES[0]), 0);
+    let v: serde_json::Value = serde_json::from_str(&l).unwrap();
+    let mut v2 = v.clone();
+    v2["fields"].as_object_mut().unwrap().remove("cashback");
+    let err = decode(&v2.to_string()).unwrap_err();
+    assert!(err.contains("field cashback"), "{err}");
+    for (k, bad) in [
+        ("state", serde_json::json!("guessed")),
+        ("bps", serde_json::json!(-1)),
+        ("layout_len", serde_json::json!(70_000)),
+    ] {
+        let mut b = v.clone();
+        b["fields"]["cashback"][k] = bad;
+        let err = decode(&b.to_string()).unwrap_err();
+        assert!(err.contains("cashback"), "{k}: {err}");
+    }
+}
+
+/// OLD DATA: a real v2 line shape (exactly what a566cb0d's writer emitted: no `cashback` key) still decodes with
+/// every v2 field intact; its cashback is NOT_RECORDED (not zero, not missing-layout), and the checked reader
+/// names the gap. The legacy `skipped` count does not move (the event is delivered).
+#[test]
+fn v2_amm_lines_still_read_and_name_the_cashback_gap() {
+    let e3 = amm(STATES[0]);
+    let mut v: serde_json::Value = serde_json::from_str(&encode(&e3, 0)).unwrap();
+    v["v"] = serde_json::json!(2);
+    v["fields"].as_object_mut().unwrap().remove("cashback");
+    let v2_line = v.to_string();
+    let back = decode(&v2_line).unwrap().1;
+    assert_eq!(back, amm(CashbackField::NotRecorded));
+    // A v2 line may not smuggle a v3 field.
+    let mut smuggle = v.clone();
+    smuggle["fields"]["cashback"] =
+        serde_json::json!({"state": "known", "bps": 0, "lamports": 0, "layout_len": 433});
+    assert!(decode(&smuggle.to_string())
+        .unwrap_err()
+        .contains("not part of schema v2"));
+    // A v2 non-AMM line is unchanged by the bump.
+    let mig2 =
+        encode(&AppEvent::Migration { mint: M, slot: 1 }, 0).replacen(r#""v":3"#, r#""v":2"#, 1);
+    assert_eq!(
+        decode(&mig2).unwrap().1,
+        AppEvent::Migration { mint: M, slot: 1 }
+    );
+    let p = tmp("v2cb");
+    std::fs::write(&p, [v2_line.as_str(), &mig2, &encode(&e3, 0)].join("\n")).unwrap();
+    let c = read_event_stream_checked(&p).unwrap();
+    assert_eq!(c.events.len(), 3);
+    assert_eq!(c.by_kind["AmmSwap"].schema_gap, 1);
+    assert_eq!(c.by_kind["Migration"].schema_gap, 0);
+    assert_eq!(
+        c.schema_gaps(),
+        vec!["AmmSwap:cashback_not_recorded(schema<3)=1".to_string()]
+    );
+    assert!(!c.is_complete());
+    assert!(c
+        .incomplete()
+        .iter()
+        .any(|s| s.starts_with("AmmSwap:cashback_not_recorded")));
+    assert_eq!(
+        (c.versions.get(&2), c.versions.get(&3)),
+        (Some(&2), Some(&1))
+    );
+    let (evs, skipped) = read_event_stream(&p).unwrap();
+    assert_eq!(
+        (evs.len(), skipped),
+        (3, 0),
+        "legacy replay input unchanged"
+    );
 }

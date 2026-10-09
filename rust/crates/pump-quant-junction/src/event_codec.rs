@@ -6,7 +6,7 @@
 //! silently skipped most market data. v2 writes every field; the checked reader classifies every line and a
 //! replay with any rejected or lossy critical line is INCOMPLETE by name, never a quiet success.
 //!
-//! Encoding: `{"v":2,"slot":N,"kind":"<Kind>","mint":"<b58>"?,"fields":{...}}`. u128/i128 are decimal or hex
+//! Encoding: `{"v":3,"slot":N,"kind":"<Kind>","mint":"<b58>"?,"fields":{...}}`. u128/i128 are decimal or hex
 //! strings (JSON numbers cannot carry them losslessly); pubkeys base58; signatures hex; `None` = key absent.
 #![allow(clippy::too_many_lines)]
 
@@ -14,10 +14,77 @@ use std::collections::BTreeMap;
 
 use pump_quant_app::event::{AppEvent, CreatorActionKind, FeatureBasis, TradeVenue};
 use pump_quant_domain::ids::Mint;
+use pump_quant_protocol::pumpswap_event::CashbackField;
 use serde_json::{json, Map, Value};
 
 /// Schema version written by [`encode`].
-pub const SCHEMA_VERSION: u64 = 2;
+///
+/// SCHEMA HISTORY (provenance; every line states the version it was written under in `"v"`):
+/// * v1 — unversioned, lossy (see module docs).
+/// * v2 (a566cb0d) — full fidelity for every field `AppEvent` had then.
+/// * v3 — adds the REQUIRED `AmmSwap.fields.cashback` object: the event's cashback pair with its layout
+///   provenance, `{"state":"known","bps":B,"lamports":L,"layout_len":N}` | `{"state":"missing","layout_len":N}`
+///   | `{"state":"unsupported","layout_len":N}` | `{"state":"not_recorded"}`. Every other kind is byte-identical
+///   to v2.
+///
+/// A v2 line still decodes (same fields); its `AmmSwap` carries `CashbackField::NotRecorded` and the checked
+/// reader counts it under [`KindCount::schema_gap`], so the gap is NAMED, never read as a zero.
+pub const SCHEMA_VERSION: u64 = 3;
+/// Oldest versioned schema [`decode`] still reads.
+pub const MIN_READ_SCHEMA_VERSION: u64 = 2;
+/// First schema version whose `AmmSwap` lines carry the cashback field.
+pub const CASHBACK_SCHEMA_VERSION: u64 = 3;
+
+fn cashback_j(c: CashbackField) -> Value {
+    match c {
+        CashbackField::Known {
+            bps,
+            lamports,
+            layout_len,
+        } => json!({"state": "known", "bps": bps, "lamports": lamports, "layout_len": layout_len}),
+        CashbackField::Missing { layout_len } => {
+            json!({"state": "missing", "layout_len": layout_len})
+        }
+        CashbackField::Unsupported { layout_len } => {
+            json!({"state": "unsupported", "layout_len": layout_len})
+        }
+        CashbackField::NotRecorded => json!({"state": "not_recorded"}),
+    }
+}
+
+fn cashback_p(f: &F<'_>, ver: u64) -> Result<CashbackField, String> {
+    if ver < CASHBACK_SCHEMA_VERSION {
+        // The writer's schema had no such field: whatever the chain carried was never recorded.
+        if f.raw("cashback").is_some() {
+            return Err(format!("field cashback: not part of schema v{ver}"));
+        }
+        return Ok(CashbackField::NotRecorded);
+    }
+    let m = f
+        .raw("cashback")
+        .and_then(Value::as_object)
+        .ok_or("field cashback: missing or not object")?;
+    let c = F(m);
+    let len = || -> Result<u16, String> {
+        c.small("layout_len")
+            .map_err(|e| format!("field cashback.{e}"))
+    };
+    Ok(
+        match c.str("state").map_err(|e| format!("field cashback.{e}"))? {
+            "known" => CashbackField::Known {
+                bps: c.u64("bps").map_err(|e| format!("field cashback.{e}"))?,
+                lamports: c
+                    .u64("lamports")
+                    .map_err(|e| format!("field cashback.{e}"))?,
+                layout_len: len()?,
+            },
+            "missing" => CashbackField::Missing { layout_len: len()? },
+            "unsupported" => CashbackField::Unsupported { layout_len: len()? },
+            "not_recorded" => CashbackField::NotRecorded,
+            o => return Err(format!("field cashback.state: unknown {o}")),
+        },
+    )
+}
 
 fn b58(k: &[u8; 32]) -> String {
     solana_program::pubkey::Pubkey::new_from_array(*k).to_string()
@@ -298,6 +365,7 @@ fn fields2(e: &AppEvent, m: &mut Map<String, Value>) {
             fee_bps,
             fee_parts,
             virtual_quote,
+            cashback,
             is_buy,
             token_amount,
             quote_lamports,
@@ -308,6 +376,7 @@ fn fields2(e: &AppEvent, m: &mut Map<String, Value>) {
             slot,
             ..
         } => {
+            m.insert("cashback".into(), cashback_j(cashback));
             m.insert("pool".into(), json!(b58(&pool)));
             m.insert("pool_is_canonical".into(), json!(pool_is_canonical));
             m.insert("quote_is_wsol".into(), json!(quote_is_wsol));
@@ -505,7 +574,7 @@ fn fields3(e: &AppEvent, m: &mut Map<String, Value>) {
     }
 }
 
-/// Encode one event as a v2 line (no trailing newline).
+/// Encode one event as a current-schema ([`SCHEMA_VERSION`]) line (no trailing newline).
 #[must_use]
 pub fn encode(e: &AppEvent, slot: u64) -> String {
     let mut o = Map::new();
@@ -522,7 +591,7 @@ pub fn encode(e: &AppEvent, slot: u64) -> String {
     Value::Object(o).to_string()
 }
 
-/// Decode one v2 line. `Err` names the reason (unknown kind, missing/invalid field, wrong version).
+/// Decode one versioned line (schema [`MIN_READ_SCHEMA_VERSION`]..=[`SCHEMA_VERSION`]). `Err` names the reason (unknown kind, missing/invalid field, wrong version).
 pub fn decode(line: &str) -> Result<(String, AppEvent), String> {
     let v: Value = serde_json::from_str(line).map_err(|_| "not json".to_string())?;
     let o = v.as_object().ok_or("not an object")?;
@@ -530,7 +599,7 @@ pub fn decode(line: &str) -> Result<(String, AppEvent), String> {
         .get("v")
         .and_then(Value::as_u64)
         .ok_or("no schema version (v1 line)")?;
-    if ver != SCHEMA_VERSION {
+    if !(MIN_READ_SCHEMA_VERSION..=SCHEMA_VERSION).contains(&ver) {
         return Err(format!("unsupported schema version {ver}"));
     }
     let kind = o
@@ -588,7 +657,7 @@ pub fn decode(line: &str) -> Result<(String, AppEvent), String> {
             recv_unix_ms: f.oi64("recv_unix_ms")?,
             slot: f.u64("slot")?,
         },
-        _ => decode2(&kind, &f, mint)?,
+        _ => decode2(&kind, &f, mint, ver)?,
     };
     Ok((kind, e))
 }
@@ -613,6 +682,7 @@ fn decode2(
     kind: &str,
     f: &F<'_>,
     mint: impl Fn() -> Result<Mint, String>,
+    ver: u64,
 ) -> Result<AppEvent, String> {
     Ok(match kind {
         "AmmSwap" => AppEvent::AmmSwap {
@@ -629,6 +699,7 @@ fn decode2(
                 .map_err(|_| "fee_bps range")?,
             fee_parts: fee_parts(f)?,
             virtual_quote: f.ou64("virtual_quote")?,
+            cashback: cashback_p(f, ver)?,
             is_buy: f.bool("is_buy")?,
             token_amount: f.u64("token_amount")?,
             quote_lamports: f.u64("quote_lamports")?,
@@ -798,6 +869,10 @@ pub struct KindCount {
     pub parsed: u64,
     pub rejected: u64,
     pub lossy_v1: u64,
+    /// Lines that decoded under an OLDER versioned schema lacking a field the current schema carries
+    /// (today: a v2 `AmmSwap`, whose cashback is `NotRecorded`). Full fidelity for what that schema had;
+    /// incomplete for what it lacked. Named by [`CheckedStream::schema_gaps`], never a zero.
+    pub schema_gap: u64,
 }
 
 /// The result of a checked read: events in file order plus a reconciliation the caller must honour.
@@ -808,21 +883,44 @@ pub struct CheckedStream {
     /// First few rejection reasons per kind (bounded), for the report.
     pub reasons: BTreeMap<String, BTreeMap<String, u64>>,
     pub blank_lines: u64,
+    /// Lines per declared schema version (`"v"`), including rejected ones. v1 lines are counted under 1.
+    pub versions: BTreeMap<u64, u64>,
 }
 
 impl CheckedStream {
-    /// Named incompleteness: every critical kind with a rejected or lossy line. Empty = complete.
+    /// Named incompleteness: every critical kind with a rejected or lossy line, then every schema gap
+    /// ([`Self::schema_gaps`]). Empty = complete.
     #[must_use]
     pub fn incomplete(&self) -> Vec<String> {
-        self.by_kind
+        let mut v: Vec<String> = self
+            .by_kind
             .iter()
             .filter(|(k, c)| is_critical(k) && (c.rejected > 0 || c.lossy_v1 > 0))
             .map(|(k, c)| format!("{k}:rejected={},lossy_v1={}", c.rejected, c.lossy_v1))
-            .collect()
+            .collect();
+        v.extend(self.schema_gaps());
+        v
     }
     #[must_use]
     pub fn is_complete(&self) -> bool {
         self.incomplete().is_empty()
+    }
+    /// Named schema gaps: every kind with lines written under a schema that predates one of its current
+    /// fields, e.g. `AmmSwap:cashback_not_recorded(schema<3)=N`. Empty = every line carried every field.
+    /// Included in [`Self::incomplete`]; NOT counted in `read_event_stream`'s `skipped` (every event of such a
+    /// line is delivered, so the legacy replay input and its outputs do not move).
+    #[must_use]
+    pub fn schema_gaps(&self) -> Vec<String> {
+        self.by_kind
+            .iter()
+            .filter(|(_, c)| c.schema_gap > 0)
+            .map(|(k, c)| {
+                format!(
+                    "{k}:cashback_not_recorded(schema<{CASHBACK_SCHEMA_VERSION})={}",
+                    c.schema_gap
+                )
+            })
+            .collect()
     }
 }
 
@@ -854,6 +952,8 @@ pub fn read_checked(
         // Version is read from the parsed object (serde_json orders keys, so never sniff a prefix).
         // Any versioned line goes to the v2 decoder, which rejects an unsupported version by name.
         let is_v2 = version.is_some();
+        let vc = s.versions.entry(version.unwrap_or(1)).or_insert(0);
+        *vc = vc.saturating_add(1);
         let c = s.by_kind.entry(kind.clone()).or_default();
         c.written = c.written.saturating_add(1);
         let res = if is_v2 {
@@ -866,6 +966,16 @@ pub fn read_checked(
                 c.parsed = c.parsed.saturating_add(1);
                 if !is_v2 {
                     c.lossy_v1 = c.lossy_v1.saturating_add(1);
+                }
+                if matches!(
+                    e,
+                    AppEvent::AmmSwap {
+                        cashback: CashbackField::NotRecorded,
+                        ..
+                    }
+                ) && version.is_some_and(|v| v < CASHBACK_SCHEMA_VERSION)
+                {
+                    c.schema_gap = c.schema_gap.saturating_add(1);
                 }
                 s.events.push(e);
             }

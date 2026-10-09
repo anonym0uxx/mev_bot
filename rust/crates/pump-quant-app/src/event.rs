@@ -315,6 +315,10 @@ pub enum AppEvent {
         /// `Pool::virtual_quote_reserves` from the event (verified layouts only); `None` => the
         /// executable quote is unsupported. Never defaulted to 0.
         virtual_quote: Option<u64>,
+        /// The event's `(cashback_fee_basis_points, cashback)` with its layout provenance: KNOWN (the layout
+        /// carries it; zero is a known zero), MISSING (older layout), UNSUPPORTED (unknown layout) or
+        /// NOT_RECORDED (an older event-stream schema never wrote it). Never an `Option` of zero.
+        cashback: pump_quant_protocol::pumpswap_event::CashbackField,
         /// `true` when the trader BOUGHT the token.
         is_buy: bool,
         /// Token amount the trader received (buy) or gave (sell), raw units.

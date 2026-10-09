@@ -937,7 +937,8 @@ mod tests {
         assert!(lines[0].contains(r#""slot":12345"#));
         // v2 carries i128 as a decimal string (JSON numbers cannot hold every i128).
         assert!(lines[0].contains(r#""price_fp":"1000000000""#));
-        assert!(lines[0].contains(r#""v":2"#));
+        // Schema v3 (cashback field on AmmSwap); every other kind is byte-identical to v2.
+        assert!(lines[0].contains(r#""v":3"#));
         assert!(lines[0].contains(r#""buyer_entity":42"#));
         assert!(lines[0].contains(r#""age_slots":100"#));
         assert!(lines[0].contains(r#""mint":"#));

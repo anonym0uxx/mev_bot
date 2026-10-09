@@ -661,13 +661,16 @@ impl Engine {
                             && self.model_swap_ctx == Some((o.ts_ms, o.slot))
                     })
                     .map(|o| match self.model_amm_econ.get(&mint).copied() {
-                        Some((parts, vq, t)) if t == o.ts_ms => crate::exec_quote::amm_sell(
-                            o.base_reserves_raw,
-                            o.quote_reserves_lamports,
-                            vq,
-                            parts,
-                            tokens,
-                        ),
+                        Some((parts, vq, t, cashback)) if t == o.ts_ms => {
+                            crate::exec_quote::amm_sell(
+                                o.base_reserves_raw,
+                                o.quote_reserves_lamports,
+                                vq,
+                                parts,
+                                cashback,
+                                tokens,
+                            )
+                        }
                         _ => Err(crate::exec_quote::QuoteRefusal::AmmEconomicsMissing),
                     })
             } else {
@@ -737,6 +740,15 @@ impl Engine {
                     }
                     self.mrep_add("econ:exit_gross_lamports", q.gross);
                     self.mrep_add("econ:exit_venue_fees_lamports", q.venue_fees);
+                    // Of those venue fees, the cashback credited to our claimable account: an ENTITLEMENT,
+                    // reported apart and never added to proceeds (settlement books `q.gross` and `q.venue_fees`,
+                    // which already include it as a cost, once).
+                    if q.cashback_withheld > 0 {
+                        self.mrep_add(
+                            "econ:exit_cashback_entitlement_lamports",
+                            q.cashback_withheld,
+                        );
+                    }
                     self.mrep_add(
                         "econ:exit_network_lamports",
                         crate::exec_quote::NETWORK_FEE_P50_LAMPORTS,
@@ -1274,6 +1286,8 @@ enum AddState {
         lp: u32,
         pr: u32,
         cr: u32,
+        /// Cashback bps from the landing event's layout (known; 0 = known zero).
+        cb: u64,
     },
 }
 
@@ -1316,15 +1330,15 @@ impl AddState {
                 lp,
                 pr,
                 cr,
+                cb,
             } => {
-                let f = pump_quant_protocol::pumpswap_event::buy_exact_quote_in(
+                let f = pump_quant_protocol::pumpswap_event::buy_exact_quote_in_cb(
                     u128::from(base),
                     u128::from(quote),
                     u128::from(vq),
                     u128::from(n),
-                    u128::from(lp),
-                    u128::from(pr),
-                    u128::from(cr),
+                    (u128::from(lp), u128::from(pr), u128::from(cr)),
+                    u128::from(cb),
                 )?;
                 u64::try_from(f.base_out).ok()
             }
@@ -1384,17 +1398,21 @@ impl Engine {
             let Some(o) = obs else {
                 return Err("mgmt:refuse:add_no_executable_state");
             };
-            let Some((Some((lp, pr, cr)), Some(vq), t)) = self.model_amm_econ.get(mint).copied()
+            let Some((Some((lp, pr, cr)), Some(vq), t, cashback)) =
+                self.model_amm_econ.get(mint).copied()
             else {
                 return Err("mgmt:refuse:add_amm_economics_missing");
             };
             if landing.is_some() && t != o.ts_ms {
                 return Err("mgmt:refuse:add_amm_economics_missing");
             }
-            if cr == 0 {
-                // Possibly a cashback coin whose cashback rate the engine does not receive (exec_quote).
-                return Err("mgmt:refuse:add_amm_cashback_unknown");
-            }
+            // Same rule as `exec_quote::amm_parts`: a known cashback rate (layout carries it) is priced; an
+            // unknown one with no creator fee may be a cashback coin and is refused by name.
+            let cb = match cashback.known() {
+                Some((bps, _)) => bps,
+                None if cr == 0 => return Err("mgmt:refuse:add_amm_cashback_unknown"),
+                None => 0,
+            };
             Ok(AddState::Amm {
                 base: o.base_reserves_raw,
                 quote: o.quote_reserves_lamports,
@@ -1402,6 +1420,7 @@ impl Engine {
                 lp,
                 pr,
                 cr,
+                cb,
             })
         } else {
             let obs = self.model_cache.curve_obs(mint).filter(|o| match landing {

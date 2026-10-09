@@ -387,6 +387,26 @@ const POOL2: [u8; 32] = [0x5B; 32];
 const VQ: u64 = 17_584_505_661;
 
 fn pool_swap(e: &mut Engine, pool: [u8; 32], ts: i64, slot: u64, bres: u64, qres: u64, cr: u32) {
+    pool_swap_cb(
+        e,
+        pool,
+        ts,
+        slot,
+        (bres, qres),
+        cr,
+        pump_quant_protocol::pumpswap_event::CashbackField::NotRecorded,
+    );
+}
+
+fn pool_swap_cb(
+    e: &mut Engine,
+    pool: [u8; 32],
+    ts: i64,
+    slot: u64,
+    (bres, qres): (u64, u64),
+    cr: u32,
+    cashback: pump_quant_protocol::pumpswap_event::CashbackField,
+) {
     e.tick(AppEvent::AmmSwap {
         mint: mint(),
         pool,
@@ -397,6 +417,7 @@ fn pool_swap(e: &mut Engine, pool: [u8; 32], ts: i64, slot: u64, bres: u64, qres
         fee_bps: Some(2 + 93 + cr),
         fee_parts: Some((2, 93, cr)),
         virtual_quote: Some(VQ),
+        cashback,
         is_buy: true,
         token_amount: 1_000_000_000,
         quote_lamports: 50_000,
@@ -529,4 +550,93 @@ fn a_graduated_position_without_verified_pool_state_is_degraded_not_settled() {
     assert_eq!(r.e.model_inventory_tokens(&MINT), Some(inv));
     assert_eq!(r.e.model_accounting_view(&MINT).realized, realized0);
     assert!(r.rep("mgmt:quote_unavailable:curve_complete") >= 1);
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// CASHBACK COIN through the real engine. Fee parts / cashback rate / virtual quote are the captured cashback
+// pool's (5h8Qu5Z2..: lp 2, protocol 93, creator 0, cashback 30 bp, layout 433, `m3_amm_event_fixtures.json`);
+// pool reserves are SYNTHETIC. Expected values computed here from the program arithmetic.
+// ---------------------------------------------------------------------------------------------------------
+use pump_quant_protocol::pumpswap_event::CashbackField;
+
+fn exit_on_cashback_pool(cashback: CashbackField) -> (Rig, u64) {
+    let mut r = rig(|s| if s == 0 { EXIT } else { HOLD });
+    r.to_order(VSOL + 200_000_000, VTOK - 4_000_000_000_000, 8_100_000_000);
+    let (_, _, intended, _) = r.e.model_mgmt_pending(&MINT).unwrap();
+    graduate(&mut r);
+    ticks(&mut r.e, 4);
+    r.clock += 1_000;
+    r.slot += 5;
+    pool_swap_cb(
+        &mut r.e,
+        POOL,
+        r.clock,
+        r.slot,
+        (200_000_000_000_000, 85_000_000_000),
+        0,
+        cashback,
+    );
+    (r, intended)
+}
+
+/// KNOWN cashback (layout carries it): the exit that was blanket-refused before now settles. Settlement books
+/// gross and ALL venue fees incl. the cashback ONCE; the cashback is reported as a separate entitlement and is
+/// never added to proceeds (realized = gross - fees - leg, exactly).
+#[test]
+fn a_known_cashback_pool_exit_settles_and_the_entitlement_is_counted_once() {
+    let known = CashbackField::Known {
+        bps: 30,
+        lamports: 2_831,
+        layout_len: 433,
+    };
+    let (r, intended) = exit_on_cashback_pool(known);
+    let f =
+        r.e.model_mgmt_fills()
+            .last()
+            .copied()
+            .unwrap_or_else(|| panic!("exit filled: {:?}", r.e.model_lane_report()));
+    assert_eq!(f.tokens, intended);
+    let (bres, qres) = (200_000_000_000_000u128, 85_000_000_000u128);
+    let g = (qres + u128::from(VQ)) * u128::from(intended) / (bres + u128::from(intended));
+    let c = |bps: u128| (g * bps).div_ceil(10_000);
+    let cb = c(30);
+    let venue = c(2) + c(93) + c(0) + cb;
+    let leg = 10_000 + u128::from(Config::dev_portable().exit_tip_lamports);
+    assert_eq!(u128::from(f.gross_lamports), g);
+    assert_eq!(
+        u128::from(f.fee_lamports),
+        venue + leg,
+        "cashback inside fees, once"
+    );
+    assert_eq!(
+        u128::from(r.rep("econ:exit_cashback_entitlement_lamports")),
+        cb
+    );
+    assert_eq!(u128::from(r.rep("econ:exit_venue_fees_lamports")), venue);
+    assert_eq!(r.rep("mgmt:quote_unavailable:amm_cashback_unknown"), 0);
+    assert!(!r.e.model_position_open(&MINT));
+}
+
+/// The SAME swap whose cashback state is not known (stream schema predates the field / older / unknown
+/// layout) and whose creator fee is 0: still the named refusal; nothing settles.
+#[test]
+fn an_unknown_cashback_pool_exit_stays_refused_by_name() {
+    for c in [
+        CashbackField::NotRecorded,
+        CashbackField::Missing { layout_len: 352 },
+        CashbackField::Unsupported { layout_len: 440 },
+    ] {
+        let (r, _) = exit_on_cashback_pool(c);
+        assert!(
+            r.e.model_mgmt_fills().is_empty(),
+            "{c:?}: {:?}",
+            r.e.model_lane_report()
+        );
+        assert!(
+            r.rep("mgmt:quote_unavailable:amm_cashback_unknown") >= 1,
+            "{c:?}"
+        );
+        assert_eq!(r.rep("econ:exit_cashback_entitlement_lamports"), 0);
+        assert!(r.e.model_position_open(&MINT));
+    }
 }

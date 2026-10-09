@@ -85,6 +85,7 @@ pub struct AmmSwapIn {
     pub fee_bps: Option<u32>,
     pub fee_parts: Option<(u32, u32, u32)>,
     pub virtual_quote: Option<u64>,
+    pub cashback: pump_quant_protocol::pumpswap_event::CashbackField,
     pub is_buy: bool,
     pub token_amount: u64,
     pub quote_lamports: u64,
@@ -972,7 +973,7 @@ impl Engine {
         // last observed rate (and is never defaulted): the fill uses the LAST OBSERVED rate, labelled.
         self.model_amm_fee.insert(mint, (a.fee_bps, ts_ms));
         self.model_amm_econ
-            .insert(mint, (a.fee_parts, a.virtual_quote, ts_ms));
+            .insert(mint, (a.fee_parts, a.virtual_quote, ts_ms, a.cashback));
         if !applied {
             self.mrep("amm_swap_dropped_out_of_order");
         }
@@ -1532,11 +1533,11 @@ impl Engine {
                 // Executable economics come from the LANDING-STATE swap's own event: the fee parts and
                 // the pool's virtual quote reserve at that instant. Either missing => the quote is
                 // unsupported and the order is refused (never a carried-forward or defaulted value).
-                let Some((parts, vq, _)) = self
+                let Some((parts, vq, _, cashback)) = self
                     .model_amm_econ
                     .get(&mint)
                     .copied()
-                    .filter(|(_, _, t)| *t == obs.ts_ms)
+                    .filter(|(_, _, t, _)| *t == obs.ts_ms)
                 else {
                     self.mrep("fill_none:amm_economics_not_on_landing_event");
                     continue;
@@ -1549,6 +1550,7 @@ impl Engine {
                     obs.quote_reserves_lamports,
                     vq,
                     parts,
+                    cashback,
                     size,
                 ) {
                     Ok(q) => q,
@@ -1564,7 +1566,12 @@ impl Engine {
                     self.mrep("fill_none:unpriceable");
                     continue;
                 };
-                (obs.quote_reserves_lamports, out, px, q.venue_fees)
+                (
+                    obs.quote_reserves_lamports,
+                    out,
+                    px,
+                    (q.venue_fees, q.cashback_entitlement),
+                )
             } else {
                 let obs = self.model_cache.curve_obs(&mint).filter(|o| {
                     o.ts_ms >= landing && o.ts_ms <= clock && o.slot > order.created_slot
@@ -1599,7 +1606,12 @@ impl Engine {
                     self.mrep("fill_none:unpriceable");
                     continue;
                 };
-                (obs.v_sol_lamports, q.tokens, px, q.venue_fees)
+                (
+                    obs.v_sol_lamports,
+                    q.tokens,
+                    px,
+                    (q.venue_fees, q.cashback_entitlement),
+                )
             };
             // THE MODEL'S OWN BOUND, converted by the same authority the live sink uses.
             if let Some(limit) = order.price_limit {
@@ -1634,9 +1646,9 @@ impl Engine {
         order: ModelOrder,
         reserve_sol: u64,
         entry_price: u64,
-        // Paper fill: (tokens delivered, venue fees inside the clip). `None` = a reconciled executor fill,
-        // whose inventory is derived from its own reported price.
-        quoted: Option<(u64, u64)>,
+        // Paper fill: (tokens delivered, (venue fees inside the clip, of which cashback entitlement)). `None` =
+        // a reconciled executor fill, whose inventory is derived from its own reported price.
+        quoted: Option<(u64, (u64, u64))>,
     ) {
         let size = order.clip_lamports;
         let Some(rt_bps) = self.unified_rt_bps(&mint, size, reserve_sol) else {
@@ -1720,8 +1732,13 @@ impl Engine {
             // The fill is the ONLY source of inventory: tokens delivered at the fill price.
             // A paper fill books the tokens the quote delivered (never re-derived from a rounded price).
             let tokens = match quoted {
-                Some((t, fees)) => {
+                Some((t, (fees, cashback))) => {
                     self.mrep_add("econ:entry_venue_fees_lamports", fees);
+                    // Of those fees, the cashback credited to our claimable account: an ENTITLEMENT, reported
+                    // apart. It stays a cost inside the clip (counted once) and is never cash or proceeds.
+                    if cashback > 0 {
+                        self.mrep_add("econ:entry_cashback_entitlement_lamports", cashback);
+                    }
                     Some(t).filter(|t| *t > 0)
                 }
                 None => {
