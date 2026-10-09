@@ -182,6 +182,15 @@ impl Engine {
         self.books_commit(site, amt);
     }
 
+    /// TEST HOOK: the RAW v1 engine fields `(bankroll_realized, bankroll_committed)`, whatever the books source.
+    /// Under v2 they must stay exactly as they were before arming (the previous booking path never books a fill);
+    /// `tests/paper_fill_v2_wiring.rs::v2_previous_booking_path_never_books_a_fill_no_double_booking` pins it.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn books_v1_fields_raw_probe(&self) -> (i128, u128) {
+        (self.bankroll_realized, self.bankroll_committed)
+    }
+
     #[cfg(test)]
     pub(super) fn books_set_committed_for_test(&mut self, v: u128) {
         self.bankroll_committed = v;

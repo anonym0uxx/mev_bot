@@ -609,3 +609,75 @@ fn v2_an_unscoped_booking_is_a_named_bypass_fault_and_never_moves_the_books() {
     assert_eq!(v1.e.model_books_bypasses(), 0);
     assert_eq!(v1.e.model_books_source(), "engine_fields_v1");
 }
+
+/// DOUBLE-BOOK PROOF. Under v2 the PREVIOUS booking path (the engine's own `bankroll_realized/committed`) must never
+/// book a fill: through entry, ADD, REDUCE and EXIT the raw v1 fields stay exactly (0, 0) and every fill is booked
+/// ONCE, in the ledger. If both paths ran, either the raw fields move (assert 1) or the ledger's books stop equalling
+/// the independent sum of its own applied records (assert 2). Mutant m5_double_book (proc/wire_v4_mut_books.py)
+/// makes the old path write too; this test must go red.
+#[test]
+fn v2_previous_booking_path_never_books_a_fill_no_double_booking() {
+    let mut r = rig(
+        Some(PaperFillVersion::V2Shadow),
+        |s| match s {
+            0 => ADD,
+            1 => REDUCE,
+            _ => EXIT,
+        },
+        None,
+    );
+    let once = |r: &Rig, when: &str| {
+        assert_eq!(
+            r.e.books_v1_fields_raw_probe(),
+            (0, 0),
+            "{when}: the previous (v1) booking path booked a fill under v2 -> double booking"
+        );
+        // Independent recomputation from the ledger's own durable fill records (each fill counted once).
+        let l = r.e.model_settlement().unwrap();
+        let j = l.to_json();
+        let (mut bought, mut sold_net) = (0i128, 0i128);
+        for a in j["applied"].as_array().unwrap() {
+            let n = |i: usize| i128::from(a[i].as_u64().unwrap());
+            if a[1] == "sell" {
+                sold_net += n(4) - n(5) - n(6);
+            } else {
+                bought += n(4) + n(5) + n(6);
+            }
+        }
+        assert_eq!(
+            l.cash,
+            l.seed - bought + sold_net,
+            "{when}: cash == seed - Σbuys + Σsell nets (each fill booked once)"
+        );
+        let a = r.e.model_accounting_view(&MINT);
+        assert_eq!(
+            i128::from(a.balance) - i128::from(a.committed),
+            l.cash,
+            "{when}: engine free cash == ledger cash"
+        );
+    };
+    once(&r, "after entry");
+    for _ in 0..2 {
+        r.advance_to_order(120_000);
+        r.landing();
+        once(&r, "after mgmt fill");
+    }
+    r.advance_to_order(200_000);
+    r.landing();
+    assert!(!r.e.model_position_open(&MINT));
+    once(&r, "after EXIT");
+}
+
+/// Under v1 (unarmed) the previous path IS the book and nothing else books: there is no ledger to double into.
+#[test]
+fn v1_books_are_the_engine_fields_and_no_ledger_exists() {
+    let r = rig(None, |_| HOLD, None);
+    assert!(r.e.model_settlement().is_none());
+    assert_eq!(r.e.model_books_source(), "engine_fields_v1");
+    let (_, committed) = r.e.books_v1_fields_raw_probe();
+    assert!(committed > 0, "v1 entry committed into the engine field");
+    assert_eq!(
+        u128::from(r.e.model_accounting_view(&MINT).committed),
+        committed
+    );
+}
