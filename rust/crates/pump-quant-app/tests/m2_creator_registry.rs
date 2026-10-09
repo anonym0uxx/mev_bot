@@ -581,3 +581,35 @@ fn an_untrusted_registry_refuses_entry_by_name() {
     }
     assert_eq!(calls.load(Ordering::SeqCst), 0);
 }
+
+#[test]
+fn a_late_arriving_earlier_launch_never_rewrites_a_count_already_read() {
+    // Count-before-insert is a FREEZE: once a launch's count exists (a decision may have read it),
+    // a launch of the same creator delivered LATER with an EARLIER timestamp does not rewrite it.
+    let d = dir("freeze");
+    let (mut e, _) = armed();
+    e.model_creator_registry_attach(None, &d.join("log.jsonl"), 0, "s")
+        .expect("attach");
+    let c = key(6, 0xC6);
+    let a = key(1, 0xA6);
+    e.tick(launch(a, c, 2_000));
+    let read = e.model_creator_dev_history(&a).creator_past_launches;
+    assert_eq!(read, Some(0));
+    e.tick(launch(key(2, 0xA6), c, 1_000)); // late delivery, earlier timestamp
+    assert_eq!(
+        e.model_creator_dev_history(&a).creator_past_launches,
+        read,
+        "a count a decision already read was rewritten by a later-arriving launch"
+    );
+    assert_eq!(
+        e.model_creator_dev_history(&key(2, 0xA6))
+            .creator_past_launches,
+        Some(0)
+    );
+    // ... and the frozen count survives a restart (log replay in file order).
+    drop(e);
+    let (mut e2, _) = armed();
+    e2.model_creator_registry_attach(None, &d.join("log.jsonl"), 0, "s2")
+        .expect("reattach");
+    assert_eq!(e2.model_creator_dev_history(&a).creator_past_launches, read);
+}
