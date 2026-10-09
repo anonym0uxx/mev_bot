@@ -30,6 +30,31 @@ use pump_quant_domain::ids::Mint;
 /// event sequence itself; the stream is strictly append-ordered).
 /// Malformed lines are skipped (fail-soft) but counted in the return.
 pub fn read_event_stream<P: AsRef<Path>>(path: P) -> io::Result<(Vec<AppEvent>, usize)> {
+    let c = read_event_stream_checked(path)?;
+    // `skipped` counts every line that is not a full-fidelity event: rejected lines AND legacy v1 lines
+    // of critical kinds (lossy). A caller that sees skipped > 0 has an incomplete replay.
+    let lossy: u64 = c
+        .by_kind
+        .iter()
+        .filter(|(k, _)| crate::event_codec::is_critical(k))
+        .map(|(_, v)| v.lossy_v1)
+        .sum();
+    let rejected: u64 = c.by_kind.values().map(|v| v.rejected).sum();
+    let skipped = usize::try_from(rejected.saturating_add(lossy)).unwrap_or(usize::MAX);
+    Ok((c.events, skipped))
+}
+
+/// Checked read with per-kind written/parsed/rejected/lossy reconciliation (see `event_codec`).
+pub fn read_event_stream_checked<P: AsRef<Path>>(
+    path: P,
+) -> io::Result<crate::event_codec::CheckedStream> {
+    let text = fs::read_to_string(path)?;
+    Ok(crate::event_codec::read_checked(&text, parse_event_line))
+}
+
+/// Legacy (v1, fail-soft) reader, kept for tests of the old format only.
+#[allow(dead_code)]
+fn read_event_stream_v1<P: AsRef<Path>>(path: P) -> io::Result<(Vec<AppEvent>, usize)> {
     let text = fs::read_to_string(path)?;
     let mut events = Vec::new();
     let mut skipped = 0usize;
@@ -428,7 +453,9 @@ impl EventStreamWriter {
     /// Format: `{"slot":N,"kind":"MarketTrade","mint":"<base58>","fields":{...}}\n`
     /// All values are integers or quoted strings. No floats (§22).
     pub fn write_event(&mut self, event: &AppEvent, slot: u64) -> io::Result<()> {
-        let json = event_to_json(event, slot);
+        // v2: full-fidelity, versioned (see `event_codec`). The v1 encoder below is kept only for
+        // its legacy tests; it is not on the production write path.
+        let json = crate::event_codec::encode(event, slot);
         self.writer.write_all(json.as_bytes())?;
         self.writer.write_all(b"\n")?;
         #[allow(clippy::arithmetic_side_effects)] // LINT-ALLOW(hot_arith): u64 events counter
@@ -450,6 +477,7 @@ impl EventStreamWriter {
     }
 }
 
+#[cfg(test)]
 /// Encode an AppEvent into a compact JSON string (no trailing newline).
 /// All numeric values are integers. Mint addresses are base58-encoded.
 fn event_to_json(event: &AppEvent, slot: u64) -> String {
@@ -472,6 +500,7 @@ fn event_to_json(event: &AppEvent, slot: u64) -> String {
     out
 }
 
+#[cfg(test)]
 /// Get the kind name for an AppEvent.
 fn event_kind(event: &AppEvent) -> &'static str {
     match event {
@@ -503,11 +532,13 @@ fn event_kind(event: &AppEvent) -> &'static str {
     }
 }
 
+#[cfg(test)]
 /// Extract the mint from an event (if it has one).
 fn event_mint(event: &AppEvent) -> Option<Mint> {
     event.mint()
 }
 
+#[cfg(test)]
 /// Extract key fields as JSON key-value pairs (without surrounding braces).
 /// Only the most important fields for replay are captured — the replay
 /// engine re-derives the rest from the engine's internal state.
@@ -772,6 +803,7 @@ fn event_fields_json(event: &AppEvent) -> String {
     parts.join(",")
 }
 
+#[cfg(test)]
 /// Encode a CreatorActionKind as a JSON key-value pair.
 fn creator_action_kind_json(kind: &CreatorActionKind) -> String {
     match kind {
@@ -811,12 +843,14 @@ fn creator_action_kind_json(kind: &CreatorActionKind) -> String {
     }
 }
 
+#[cfg(test)]
 /// Encode a Mint as a base58 string (Solana canonical format).
 fn mint_to_base58(mint: &Mint) -> String {
     use solana_program::pubkey::Pubkey;
     Pubkey::from(*mint.as_bytes()).to_string()
 }
 
+#[cfg(test)]
 /// **Rev-19**: Encode a 64-byte signature as a hex string (128 chars).
 fn sig_to_hex(sig: &[u8; 64]) -> String {
     sig.iter().map(|b| format!("{:02x}", b)).collect()
@@ -901,7 +935,9 @@ mod tests {
         assert_eq!(lines.len(), 1);
         assert!(lines[0].contains(r#""kind":"MarketTrade""#));
         assert!(lines[0].contains(r#""slot":12345"#));
-        assert!(lines[0].contains(r#""price_fp":1000000000"#));
+        // v2 carries i128 as a decimal string (JSON numbers cannot hold every i128).
+        assert!(lines[0].contains(r#""price_fp":"1000000000""#));
+        assert!(lines[0].contains(r#""v":2"#));
         assert!(lines[0].contains(r#""buyer_entity":42"#));
         assert!(lines[0].contains(r#""age_slots":100"#));
         assert!(lines[0].contains(r#""mint":"#));

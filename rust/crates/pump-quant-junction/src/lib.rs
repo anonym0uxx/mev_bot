@@ -120,6 +120,7 @@ pub mod corpus_rows;
 pub mod curve_trade_events;
 pub mod decode;
 pub mod engine_replay; // Phase 3: config-driven engine re-simulation
+pub mod event_codec;
 pub mod event_stream;
 pub mod laserstream;
 pub mod launch_bootstrap;
