@@ -628,9 +628,30 @@ impl Engine {
             // (curve: incl. REAL SOL; pool: the landing swap's own fee parts + virtual quote). Requoted on every
             // landing state at the SAME size: the model's quantity is never resized. A refusal leaves the order
             // pending until TTL (state may change) and is counted by name; it never fabricates a settlement.
+            // GRADUATION ROUTING: the sell route is re-resolved at every fill attempt from the CURRENT verified
+            // binding, not frozen at order creation. A held curve position whose curve has completed sells on its
+            // canonical WSOL pool once a verified pool swap is the landing state; inventory, basis and the pending
+            // order (id, intended, filled) are unchanged by the switch. A completed curve with no verified pool
+            // state, or a conflicting pool binding, is a NAMED unavailable route: never priced, never settled.
+            let route_amm = order.amm || self.model_cache.snapshot_venue_is_amm(&mint);
+            if route_amm && self.model_cache.pool_conflicting(&mint) {
+                self.mrep(if order.kind == MgmtKind::Protect {
+                    "protect:quote_unavailable:pool_binding_conflict"
+                } else {
+                    "mgmt:quote_unavailable:pool_binding_conflict"
+                });
+                if clock - order.created_ms > MODEL_ORDER_TTL_MS {
+                    self.model_mgmt_end(&mint, false);
+                    self.mrep("mgmt:order_expired_unfilled");
+                }
+                continue;
+            }
+            if route_amm && !order.amm {
+                self.mrep("mgmt:route:curve_to_pool");
+            }
             let quoted: Option<
                 Result<crate::exec_quote::SellQuote, crate::exec_quote::QuoteRefusal>,
-            > = if order.amm {
+            > = if route_amm {
                 self.model_cache
                     .amm_obs(&mint)
                     .filter(|o| {
@@ -664,7 +685,7 @@ impl Engine {
                         )
                     })
             };
-            let label = if order.amm {
+            let label = if route_amm {
                 "mgmt:fill_amm_sell"
             } else {
                 "mgmt:fill_curve"

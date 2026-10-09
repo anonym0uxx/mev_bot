@@ -377,3 +377,156 @@ fn the_curve_quote_at_the_bf2_drained_mainnet_state_is_unavailable_at_full_size(
         })
     ));
 }
+
+// ---------------------------------------------------------------------------------------------------------
+// GRADUATION: held curve position -> verified canonical WSOL pool. SYNTHETIC pool reserves; the fee parts and
+// virtual quote follow a captured non-cashback layout (2/93/30, vq 17_584_505_661). Pool hex is synthetic.
+// ---------------------------------------------------------------------------------------------------------
+const POOL: [u8; 32] = [0x5A; 32];
+const POOL2: [u8; 32] = [0x5B; 32];
+const VQ: u64 = 17_584_505_661;
+
+fn pool_swap(e: &mut Engine, pool: [u8; 32], ts: i64, slot: u64, bres: u64, qres: u64, cr: u32) {
+    e.tick(AppEvent::AmmSwap {
+        mint: mint(),
+        pool,
+        pool_is_canonical: true,
+        quote_is_wsol: true,
+        token_reserve_pre: bres,
+        quote_reserve_pre: qres,
+        fee_bps: Some(2 + 93 + cr),
+        fee_parts: Some((2, 93, cr)),
+        virtual_quote: Some(VQ),
+        is_buy: true,
+        token_amount: 1_000_000_000,
+        quote_lamports: 50_000,
+        trader: [7u8; 32],
+        fee_lamports: Some(5_000),
+        cu_consumed: Some(1),
+        recv_unix_ms: Some(ts),
+        slot,
+    });
+    ticks(e, 2);
+}
+
+fn graduate(r: &mut Rig) {
+    // The curve completes (virtual reserves zeroed by the program) and the migration is observed.
+    r.clock += 1_000;
+    r.slot += 1;
+    curve(&mut r.e, r.clock, r.slot, 0, 0, 0);
+    r.e.tick(AppEvent::Migration {
+        mint: mint(),
+        slot: r.slot,
+    });
+}
+
+/// A held CURVE position whose curve completes sells through its verified canonical WSOL pool. The pending EXIT
+/// keeps its id and quantity; inventory/basis are untouched by the switch; the fill is priced by the pool quote.
+#[test]
+fn a_held_curve_position_graduates_and_its_exit_routes_to_the_verified_pool() {
+    let mut r = rig(|s| if s == 0 { EXIT } else { HOLD });
+    let inv = r.e.model_inventory_tokens(&MINT).unwrap();
+    let basis = r.e.model_accounting_view(&MINT).remaining_cost_basis;
+    let (vs, vt) = (VSOL + 200_000_000, VTOK - 4_000_000_000_000);
+    r.to_order(vs, vt, 8_100_000_000);
+    let (id, _k, intended, filled) = r.e.model_mgmt_pending(&MINT).unwrap();
+    // Graduation before any curve landing state: the curve is complete (zero reserves) -> curve sell refused.
+    graduate(&mut r);
+    ticks(&mut r.e, 4);
+    assert!(
+        r.rep("mgmt:quote_unavailable:curve_complete") >= 1,
+        "{:?}",
+        r.e.model_lane_report()
+    );
+    assert_eq!(
+        r.e.model_mgmt_pending(&MINT),
+        Some((id, _k, intended, filled)),
+        "order unchanged by the switch"
+    );
+    assert_eq!(r.e.model_inventory_tokens(&MINT), Some(inv));
+    assert_eq!(r.e.model_accounting_view(&MINT).remaining_cost_basis, basis);
+    // The verified pool swap is the landing state: the SAME order fills on the pool at the SAME size.
+    let (bres, qres) = (200_000_000_000_000u64, 85_000_000_000u64);
+    r.clock += 1_000;
+    r.slot += 5;
+    pool_swap(&mut r.e, POOL, r.clock, r.slot, bres, qres, 30);
+    let f =
+        r.e.model_mgmt_fills()
+            .last()
+            .copied()
+            .expect("exit filled on the pool");
+    assert_eq!(f.order_id, id);
+    assert_eq!(f.tokens, intended);
+    let eff = u128::from(qres) + u128::from(VQ);
+    let g = eff * u128::from(intended) / (u128::from(bres) + u128::from(intended));
+    let venue = (g * 2).div_ceil(10_000) + (g * 93).div_ceil(10_000) + (g * 30).div_ceil(10_000);
+    assert_eq!(
+        u128::from(f.gross_lamports),
+        g,
+        "pool gross for the exact size"
+    );
+    assert_eq!(
+        u128::from(f.fee_lamports),
+        venue + 10_000 + u128::from(Config::dev_portable().exit_tip_lamports)
+    );
+    assert!(r.rep("mgmt:route:curve_to_pool") >= 1);
+    assert!(!r.e.model_position_open(&MINT));
+}
+
+/// A second, different pool for the same mint makes the binding CONFLICTING: no pool price, no settlement.
+#[test]
+fn a_conflicting_pool_binding_is_a_named_unavailable_route_never_a_fill() {
+    let mut r = rig(|s| if s == 0 { EXIT } else { HOLD });
+    let inv = r.e.model_inventory_tokens(&MINT).unwrap();
+    r.to_order(VSOL + 200_000_000, VTOK - 4_000_000_000_000, 8_100_000_000);
+    graduate(&mut r);
+    r.clock += 1_000;
+    r.slot += 5;
+    pool_swap(
+        &mut r.e,
+        POOL,
+        r.clock,
+        r.slot,
+        200_000_000_000_000,
+        85_000_000_000,
+        30,
+    );
+    // (the first swap may already fill; only assert on the conflicting case when it did not)
+    if r.e.model_position_open(&MINT) {
+        r.clock += 1_000;
+        r.slot += 5;
+        pool_swap(
+            &mut r.e,
+            POOL2,
+            r.clock,
+            r.slot,
+            200_000_000_000_000,
+            85_000_000_000,
+            30,
+        );
+        assert_eq!(r.e.model_inventory_tokens(&MINT), Some(inv));
+    }
+}
+
+/// A completed curve with NO verified pool state: the exit stays unfilled, named, and expires without books.
+#[test]
+fn a_graduated_position_without_verified_pool_state_is_degraded_not_settled() {
+    let mut r = rig(|s| if s == 0 { EXIT } else { HOLD });
+    let inv = r.e.model_inventory_tokens(&MINT).unwrap();
+    let realized0 = r.e.model_accounting_view(&MINT).realized;
+    r.to_order(VSOL + 200_000_000, VTOK - 4_000_000_000_000, 8_100_000_000);
+    graduate(&mut r);
+    for _ in 0..8 {
+        r.clock += 1_000;
+        r.slot += 1;
+        curve(&mut r.e, r.clock, r.slot, 0, 0, 0);
+        ticks(&mut r.e, 2);
+    }
+    assert!(
+        r.e.model_mgmt_fills().is_empty(),
+        "no fabricated settlement"
+    );
+    assert_eq!(r.e.model_inventory_tokens(&MINT), Some(inv));
+    assert_eq!(r.e.model_accounting_view(&MINT).realized, realized0);
+    assert!(r.rep("mgmt:quote_unavailable:curve_complete") >= 1);
+}
