@@ -17,6 +17,7 @@ use std::time::Instant;
 
 pub mod model_admit;
 pub mod model_barrier;
+pub mod model_creator;
 pub mod model_manage;
 pub mod model_protect;
 pub mod model_restore;
@@ -838,6 +839,10 @@ pub struct Engine {
     agg_seen_set: std::collections::HashSet<u128>,
     /// The model lane's decision-time cache (see `decision_join`). Fed only when armed.
     model_cache: crate::decision_join::DecisionCache,
+    /// M2: the durable append-only log of our own `LaunchObserved` (None until attached).
+    creator_log: Option<crate::creator_registry::LaunchLog>,
+    /// M2: session label written with each appended launch.
+    creator_log_session: String,
     /// Model-lane request discipline, worker pool, per-request bindings, pending paper orders and
     /// the coverage report. All inert unless the lane is armed (see `engine/model_admit.rs`).
     model_table: crate::model_lane::RequestTable,
@@ -1528,6 +1533,8 @@ impl Engine {
             agg_seen_ids: std::collections::VecDeque::new(),
             agg_seen_set: std::collections::HashSet::new(),
             model_cache: crate::decision_join::DecisionCache::new(),
+            creator_log: None,
+            creator_log_session: String::new(),
             model_table: crate::model_lane::RequestTable::default(),
             model_pool: None,
             model_meta: BTreeMap::new(),
@@ -2729,8 +2736,7 @@ impl Engine {
                 launch_unix_ms,
             } => {
                 if self.paper_model_mode {
-                    self.model_cache
-                        .observe_launch(*mint.as_bytes(), creator, launch_unix_ms);
+                    self.model_observe_launch(*mint.as_bytes(), creator, launch_unix_ms);
                     self.model_register(*mint.as_bytes());
                 }
             }

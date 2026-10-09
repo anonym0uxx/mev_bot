@@ -57,6 +57,11 @@ pub struct CreatorHistory {
     by_mint: BTreeMap<[u8; 32], Launch>,
     /// Per creator, the launch times SORTED — the bisect the corpus's `prior_launches` performs.
     by_creator: BTreeMap<u64, Vec<i64>>,
+    /// M2 COUNT-BEFORE-INSERT: each mint's `creator_past_launches`, computed from the creator's
+    /// launches already held at the moment THIS launch is inserted (strict-before on recv time),
+    /// then frozen. A later-arriving launch can never rewrite a count a decision already read.
+    /// Fed in receive order this equals the corpus's bisect over the whole table.
+    prior_at_insert: BTreeMap<[u8; 32], i64>,
     refused: u64,
 }
 
@@ -104,6 +109,9 @@ impl CreatorHistory {
             return false;
         }
         let times = self.by_creator.entry(creator).or_default();
+        // Count BEFORE inserting the target launch: the mint never counts itself.
+        let prior_before = times.partition_point(|&x| x < launch_unix_ms) as i64;
+        self.prior_at_insert.insert(mint, prior_before);
         // ALWAYS insert: two of a creator's mints can share a millisecond, and the corpus's bisect
         // counts every launch, not every distinct timestamp. De-duplicating by time would drop one
         // of them and undercount the next launch's `creator_past_launches`. A re-observed MINT is
@@ -120,6 +128,12 @@ impl CreatorHistory {
         true
     }
 
+    /// The held launch record for `mint`, if any (dedup identity is the mint).
+    #[must_use]
+    pub fn get(&self, mint: &[u8; 32]) -> Option<Launch> {
+        self.by_mint.get(mint).copied()
+    }
+
     /// The `DEV HISTORY:` inputs for a mint, exactly as the corpus derives them.
     ///
     /// `creator_past_launches` is the number of the creator's launches STRICTLY before this mint's
@@ -133,10 +147,11 @@ impl CreatorHistory {
                 creator_known: 0,
             };
         };
-        let times = self.by_creator.get(&launch.creator);
-        let prior = times.map_or(0, |t| {
-            // `partition_point`: the count of entries `< launch_unix_ms` in the sorted vector.
-            t.partition_point(|&x| x < launch.launch_unix_ms) as i64
+        // The count frozen at insert time (see `prior_at_insert`); present for every held mint.
+        let prior = self.prior_at_insert.get(mint).copied().unwrap_or_else(|| {
+            self.by_creator.get(&launch.creator).map_or(0, |t| {
+                t.partition_point(|&x| x < launch.launch_unix_ms) as i64
+            })
         });
         DevHistoryDecision {
             creator_past_launches: Some(prior),
