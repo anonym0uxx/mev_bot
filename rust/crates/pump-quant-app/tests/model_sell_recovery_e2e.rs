@@ -2406,3 +2406,155 @@ fn terminal_with_new_execution_settles_it_first_and_terminal_zero_over_a_fill_is
     );
     assert_eq!(reserved(&e2), int2 - q, "a fault releases nothing");
 }
+
+// ---- M1: end-of-run report() preserves model-owned exposure (ownership, not arming, decides) ----
+
+/// Everything a report() must leave unchanged for a model-owned position.
+type M1State = (
+    bool,
+    (i128, u64, u64, Option<u64>, Option<u64>),
+    u64,
+    usize,
+    usize,
+);
+
+fn m1_state(e: &Engine) -> M1State {
+    (
+        e.model_position_open(&MINT),
+        books(e),
+        reserved(e),
+        e.model_assessable_fills().len(),
+        e.model_excluded_exits().len(),
+    )
+}
+
+fn held_doc(p: &std::path::Path) -> serde_json::Value {
+    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap();
+    serde_json::json!({"held": v["held"], "pending": v["pending"], "orders": v["orders"],
+        "sells": v["sells"], "realized": v["realized_lamports"]})
+}
+
+#[test]
+fn m1_report_twice_with_an_unresolved_sell_changes_no_books_and_the_ledger_restores_unchanged() {
+    let (mut e, id, intended, inv0, _clock) = restored_with_uncertain("reduce", "m1_a");
+    let hp = held_path("m1_a_out");
+    e.model_held_attach(&hp);
+    assert!(e.model_held_persist_now());
+    let s0 = m1_state(&e);
+    let doc0 = held_doc(&hp);
+    let r1 = e.report();
+    let r2 = e.report();
+    assert_eq!(
+        m1_state(&e),
+        s0,
+        "report() twice: no inventory/cash/basis/reservation/terminal change"
+    );
+    assert_eq!(
+        (r1.net_lamports, r2.net_lamports),
+        (0, 0),
+        "no realized result for unsold exposure"
+    );
+    assert_eq!(
+        e.model_mgmt_pending(&MINT).map(|p| (p.0, p.2)),
+        Some((id, intended)),
+        "sell stays unresolved"
+    );
+    assert!(e.model_held_persist_now());
+    assert_eq!(
+        held_doc(&hp),
+        doc0,
+        "durable exposure unchanged by report()"
+    );
+    let mut e2 = fresh(&hp);
+    e2.model_held_restore().unwrap().unwrap();
+    assert_eq!(e2.model_inventory_tokens(&MINT), Some(inv0));
+    assert_eq!(books(&e2), s0.1, "restart restores the same books");
+    let x = e.model_open_exposure();
+    assert_eq!(x.len(), 1);
+    assert_eq!(
+        (x[0].inventory_tokens, x[0].sell_reserved_tokens),
+        (Some(inv0), reserved(&e)),
+        "the exposure view states the same reservation the held-data status does"
+    );
+}
+
+#[test]
+fn m1_safety_off_tripped_then_report_preserves_exposure() {
+    let (mut e, _id, _intended, inv0, _clock) = restored_with_uncertain("exit", "m1_b");
+    e.model_safety_trip("m1_test");
+    assert!(e.model_safety_blocked());
+    let s0 = m1_state(&e);
+    let _ = e.report();
+    let _ = e.report();
+    assert_eq!(m1_state(&e), s0);
+    assert_eq!(e.model_inventory_tokens(&MINT), Some(inv0));
+}
+
+#[test]
+fn m1_inference_disarmed_engine_restoring_model_exposure_never_force_closes_it() {
+    let hp = held_path("m1_c");
+    let mut r = rig(|_| HOLD, &hp);
+    let inv0 = r.e.model_inventory_tokens(&MINT).unwrap();
+    assert!(r.e.model_held_persist_now());
+    let b0 = books(&r.e);
+    drop(r);
+    // A restart WITHOUT the model lane armed: ownership travels with the record, not with arming.
+    let mut e = Engine::new(cfg(), RunMode::Paper);
+    e.model_held_attach(&hp);
+    e.model_held_restore().unwrap().unwrap();
+    assert!(!e.paper_model_enabled());
+    assert_eq!(books(&e), b0);
+    let _ = e.report();
+    let _ = e.report();
+    assert_eq!(
+        e.model_inventory_tokens(&MINT),
+        Some(inv0),
+        "disarming restores no legacy force-close authority"
+    );
+    assert_eq!(books(&e), b0);
+    assert!(e.model_excluded_exits().is_empty());
+}
+
+#[test]
+fn m1_unknown_or_stale_mark_is_unavailable_valuation_not_zero_and_not_a_loss() {
+    let hp = held_path("m1_d");
+    let mut r = rig(|_| HOLD, &hp);
+    let fresh_x = r.e.model_open_exposure();
+    assert_eq!(fresh_x.len(), 1);
+    assert!(
+        fresh_x[0].spot_estimate_lamports.is_some(),
+        "fresh curve mark gives an estimate: {fresh_x:?}"
+    );
+    let b0 = books(&r.e);
+    // Advance the lane clock with prints only (no reserve observation) past the pricing budget.
+    let t = r.clock + pump_quant_app::curve_annotation::PRICING_BUDGET_MS + 5_000;
+    print(&mut r.e, 999, t, r.slot + 50, 45_300);
+    ticks(&mut r.e, 1);
+    let x = r.e.model_open_exposure();
+    assert_eq!(x[0].spot_estimate_lamports, None);
+    assert_eq!(x[0].valuation_unavailable, Some("mark_stale"));
+    let _ = r.e.report();
+    assert_eq!(books(&r.e).4, b0.4, "stale mark manufactures no settlement");
+    assert_eq!(books(&r.e).0, b0.0);
+    // Restored with no reserve observation at all: unknown, not zero.
+    assert!(r.e.model_held_persist_now());
+    drop(r);
+    let mut e2 = fresh(&hp);
+    e2.model_held_restore().unwrap().unwrap();
+    let y = e2.model_open_exposure();
+    assert_eq!(
+        (y[0].spot_estimate_lamports, y[0].valuation_unavailable),
+        (None, Some("no_reserve_observation"))
+    );
+}
+
+#[test]
+fn m1_a_genuine_reconciled_fill_still_settles_normally_after_report() {
+    let (mut e, id, intended, inv0, _clock) = restored_with_uncertain("reduce", "m1_e");
+    let _ = e.report();
+    assert_eq!(
+        e.model_mgmt_ingest_report(MINT, id, intended, 22_000),
+        SellReportResult::Applied { delta: intended }
+    );
+    assert_eq!(e.model_inventory_tokens(&MINT), Some(inv0 - intended));
+}

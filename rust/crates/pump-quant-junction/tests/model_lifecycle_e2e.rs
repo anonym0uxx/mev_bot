@@ -1119,3 +1119,56 @@ fn the_reservation_callout_has_onset_reminder_recovery_and_release_is_not_protec
     );
     assert_eq!(c.degraded_count(), 0);
 }
+
+/// M1: the daemon's final sequence AFTER an accepted protective handoff (stop gate -> report()) leaves the
+/// handed-off exposure exactly as acknowledged: same exposure digest, same inventory, same durable ledger.
+#[test]
+fn m1_final_report_after_an_accepted_handoff_preserves_the_acknowledged_exposure() {
+    let ep = Endpoint::start(|_| HOLD);
+    let mut r = rig(&ep, "m1_handoff");
+    let held = r.dir.join("held.json");
+    r.e.model_held_attach(&held);
+    let (ack, req) = (r.dir.join("ACK.json"), r.dir.join("REQ.json"));
+    let mut st = StopSession::new();
+    let _ = handle_stop_request(&mut r.e, &mut st, &req, &ack);
+    write_ack(&ack, &req, |_| {});
+    match handle_stop_request(&mut r.e, &mut st, &req, &ack) {
+        StopGate::CompleteHandedOff { .. } => {}
+        other => panic!("valid ack must complete: {other:?}"),
+    }
+    let acked: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&req).unwrap()).unwrap();
+    let inv0 = r.e.model_inventory_tokens(&MINT);
+    let led = |p: &std::path::Path| {
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap();
+        (
+            v["held"].clone(),
+            v["pending"].clone(),
+            v["realized_lamports"].clone(),
+        )
+    };
+    let l0 = led(&held);
+    // The daemon's post-loop path: snapshot, report(), exposure view.
+    let _snap = r.e.open_positions_snapshot();
+    let rep = r.e.report();
+    let x = r.e.model_open_exposure();
+    assert_eq!(rep.net_lamports, 0);
+    assert!(
+        r.e.model_position_open(&MINT),
+        "handed-off exposure is not closed by the final report"
+    );
+    assert_eq!(r.e.model_inventory_tokens(&MINT), inv0);
+    assert_eq!(x.len(), 1);
+    assert_eq!(
+        r.e.model_exposure_digest().0,
+        acked["exposure_digest"].as_str().unwrap(),
+        "exposure after report() is exactly what the recipient acknowledged"
+    );
+    assert!(r.e.model_held_persist_now());
+    assert_eq!(
+        led(&held),
+        l0,
+        "durable ledger unchanged by the final report"
+    );
+}

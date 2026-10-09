@@ -631,16 +631,22 @@ fn lifecycle_i_older_report_paths_cannot_see_an_unvalidated_routing_fill() {
     assert!(e.model_position_open(&MINT));
     let cash_before = e.bankroll_balance();
     let r = e.report();
+    // M1: report() never removes exposure the model owns. The routing position stays held, nothing is
+    // closed (so nothing is excluded), and no cash is settled; it is reported as unresolved exposure.
     assert!(
-        !e.model_position_open(&MINT),
-        "report() closed the held position"
+        e.model_position_open(&MINT),
+        "report() must not close a model-owned position"
     );
-    // Visible, labelled, counted — and NOT a zero-return observation.
-    assert_eq!(e.model_excluded_exits().len(), 1);
+    assert!(
+        e.model_excluded_exits().is_empty(),
+        "nothing closed, nothing excluded"
+    );
     assert_eq!(
-        e.model_excluded_exits()[0].reason,
-        "routing_fill:landing_unvalidated"
+        e.bankroll_balance(),
+        cash_before,
+        "no settlement by report()"
     );
+    assert_eq!(e.model_open_exposure().len(), 1);
     assert!(e.model_assessable_fills().is_empty());
     // Every assessment feed saw nothing.
     assert!(
@@ -661,7 +667,7 @@ fn lifecycle_i_older_report_paths_cannot_see_an_unvalidated_routing_fill() {
         !e.promotion_stat_verdict().fdr_blocks,
         "no candidate trades"
     );
-    // Cash is real simulator state, so it is settled (and distinct from the assessment feeds).
+    // Cash is untouched: report() settles nothing for model-owned exposure.
     let _ = cash_before;
 }
 

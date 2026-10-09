@@ -4667,14 +4667,14 @@ impl Engine {
             return;
         }
         let numeric = &self.numeric;
-        // Rev-31: In live mode, force-close only confirmed positions.
-        let exits = if self.mode == RunMode::Live {
-            self.positions
-                .force_close_all_filtered(&|m| numeric.latest_price_fp(DomainMint::from_bytes(*m)))
-        } else {
-            self.positions
-                .force_close_all(&|m| numeric.latest_price_fp(DomainMint::from_bytes(*m)))
-        };
+        // Ownership decides, not whether inference is armed: a model-managed position (including one
+        // restored into an engine whose model lane is disarmed or SAFETY_OFF-latched) is real exposure
+        // that only a reconciled sell may remove. It is reported by `model_open_exposure`, never closed
+        // here. Unmanaged positions keep the legacy end-of-run rule (Rev-31: live = confirmed only).
+        let exits = self.positions.force_close_unmanaged(
+            &|m| numeric.latest_price_fp(DomainMint::from_bytes(*m)),
+            self.mode == RunMode::Live,
+        );
         for e in exits {
             self.book_exit(e);
         }

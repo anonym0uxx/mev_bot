@@ -5471,9 +5471,11 @@ fn main() -> ExitCode {
         );
     }
 
-    // Pin open positions BEFORE report() force-closes them
+    // Pin open positions BEFORE report(). report() force-closes only positions the model does NOT own;
+    // model-managed exposure survives it and is listed below from the engine's read-only exposure view.
     let open_positions = engine.open_positions_snapshot();
     let report = engine.report();
+    let model_exposure = engine.model_open_exposure();
     stats.junction_overflow_dropped = queue.overflow_stats().dropped;
 
     // ─── Final report ────────────────────────────────────────────────────
@@ -5552,6 +5554,25 @@ fn main() -> ExitCode {
         }
     }
     println!();
+    if !model_exposure.is_empty() {
+        // Unresolved model-managed exposure: NOT closed, NOT booked, NOT assessable. The estimate is a spot
+        // bound, never proceeds; `unavailable` names why none is given (unknown is not zero).
+        println!("-- Unresolved model-managed exposure (preserved; not settled) --");
+        for x in &model_exposure {
+            println!(
+                "  mint={} inventory={:?} remaining_cost_basis={:?} sell_reserved={} amm={} mark_ts_ms={:?} spot_estimate_lamports={:?} unavailable={:?}",
+                Pubkey::from(x.mint),
+                x.inventory_tokens,
+                x.remaining_cost_basis,
+                x.sell_reserved_tokens,
+                x.amm,
+                x.mark_ts_ms,
+                x.spot_estimate_lamports,
+                x.valuation_unavailable
+            );
+        }
+        println!();
+    }
     println!("-- Errors --");
     println!("  ws_errors:             {}", stats.ws_errors);
     println!();

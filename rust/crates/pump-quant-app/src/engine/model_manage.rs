@@ -1043,6 +1043,67 @@ impl Engine {
         }
     }
 
+    /// Unresolved model-managed exposure at this instant. READ-ONLY and never booked: an end-of-run
+    /// view, not a settlement. Valuation is a spot ESTIMATE (zero-size bound, not an executable sell
+    /// quote) and is `None` with a named reason whenever the mark is unknown, stale (older than the
+    /// existing `PRICING_BUDGET_MS` on the lane clock) or not yet validated for the venue.
+    #[must_use]
+    pub fn model_open_exposure(&self) -> Vec<ModelOpenExposure> {
+        let clock = self.model_clock_ms;
+        let budget = crate::curve_annotation::PRICING_BUDGET_MS;
+        self.positions
+            .held_records()
+            .iter()
+            .filter(|h| h.model_managed)
+            .map(|h| {
+                let inv = self.positions.inventory_tokens(&h.mint);
+                let amm = self.model_cache.snapshot_venue_is_amm(&h.mint);
+                let (mark, mark_ts_ms, why) = if amm {
+                    (
+                        None,
+                        self.model_cache.amm_obs(&h.mint).map(|o| o.ts_ms),
+                        Some("amm_offline_value_unvalidated"),
+                    )
+                } else {
+                    match self.model_cache.curve_obs(&h.mint) {
+                        None => (None, None, Some("no_reserve_observation")),
+                        Some(o) if clock.saturating_sub(o.ts_ms) > budget => {
+                            (None, Some(o.ts_ms), Some("mark_stale"))
+                        }
+                        Some(o) => {
+                            match crate::curve_fill::spot_price_fp(o.v_sol_lamports, o.v_tokens) {
+                                None => (None, Some(o.ts_ms), Some("degenerate_reserves")),
+                                Some(px) => (Some(px), Some(o.ts_ms), None),
+                            }
+                        }
+                    }
+                };
+                let (estimate, why) = match (inv, mark) {
+                    (None, _) => (None, why.or(Some("inventory_unknown"))),
+                    (Some(_), None) => (None, why),
+                    (Some(t), Some(px)) => (
+                        u64::try_from(
+                            u128::from(t) * u128::from(px) / crate::curve_fill::PRICE_SCALE,
+                        )
+                        .ok(),
+                        None,
+                    ),
+                };
+                ModelOpenExposure {
+                    mint: h.mint,
+                    inventory_tokens: inv,
+                    remaining_cost_basis: self.positions.remaining_cost_basis(&h.mint),
+                    sell_reserved_tokens: self.positions.sell_reserved(&h.mint),
+                    amm,
+                    mark_price_fp: mark,
+                    mark_ts_ms,
+                    spot_estimate_lamports: estimate,
+                    valuation_unavailable: why,
+                }
+            })
+            .collect()
+    }
+
     /// Whether the management ACTION SET is implemented (HOLD/REDUCE/EXIT/ADD). It says nothing about
     /// profitability, AMM sell-economics validation, or held-state restoration.
     #[must_use]
@@ -1092,6 +1153,30 @@ pub fn sell_reservation_gap(s: &HeldDataStatus) -> Option<String> {
         )),
         Some(_) => None,
     }
+}
+
+/// One unresolved model-managed position as the end-of-run report states it. Never booked, never
+/// assessable; `spot_estimate_lamports` is an OFFLINE spot estimate, not proceeds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelOpenExposure {
+    /// Market.
+    pub mint: [u8; 32],
+    /// Reconciled inventory (`None` = never established by a fill; unknown is not zero).
+    pub inventory_tokens: Option<u64>,
+    /// Cost basis still attached to the remaining inventory.
+    pub remaining_cost_basis: Option<u64>,
+    /// Tokens reserved by an unresolved sell.
+    pub sell_reserved_tokens: u64,
+    /// Whether the position's venue is the AMM.
+    pub amm: bool,
+    /// The mark used, fixed point (`PRICE_SCALE`), when valid.
+    pub mark_price_fp: Option<u64>,
+    /// When that mark (or the rejected one) was observed, lane clock ms.
+    pub mark_ts_ms: Option<i64>,
+    /// `inventory * mark / PRICE_SCALE` when both are valid.
+    pub spot_estimate_lamports: Option<u64>,
+    /// Why no estimate is given (`None` when one is).
+    pub valuation_unavailable: Option<&'static str>,
 }
 
 /// Money-side snapshot for reconciliation (lamports).

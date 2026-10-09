@@ -1725,6 +1725,33 @@ impl ScalpLifecycle {
         out
     }
 
+    /// End-of-run accounting for every position the model does NOT own. Ownership, not whether
+    /// inference is armed, decides: a model-managed position's exposure is real until a reconciled
+    /// sell removes it, so end-of-run valuation never deletes its inventory or books a result for
+    /// it (see [`Self::model_managed_valuation`]). Unmanaged positions keep the legacy rule,
+    /// including the live-mode confirmed-only filter.
+    pub fn force_close_unmanaged(
+        &mut self,
+        latest_price_fp: &dyn Fn(&[u8; 32]) -> Option<u64>,
+        live_mode: bool,
+    ) -> Vec<Exit> {
+        let mints: Vec<[u8; 32]> = self
+            .open
+            .iter()
+            .filter(|(_, p)| !p.model_managed && (!live_mode || p.onchain_confirmed))
+            .map(|(m, _)| *m)
+            .collect();
+        let sl = self.params.hard_sl_bps;
+        let mut out = Vec::with_capacity(mints.len());
+        for mint in mints {
+            let mult = latest_price_fp(&mint)
+                .map(|pr| self.open[&mint].mult_bps(pr))
+                .unwrap_or(10_000_u32.saturating_sub(sl));
+            out.extend(self.close_guarded(&mint, mult, ExitReason::ForceClose));
+        }
+        out
+    }
+
     /// **Rev-19**: Mark a position's buy as confirmed on-chain. Called when the
     /// daemon's `getSignaturesForAddress` poller confirms our buy tx landed.
     /// No-op if no position is held on `mint`.
