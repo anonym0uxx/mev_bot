@@ -11,8 +11,8 @@
 use super::*;
 use crate::stop_policy::{
     action_for, run_phase, valuation_trigger, value_book, Latch, LiquidationEstimate, OpsInputs,
-    RiskValuation, RunPhase, StopAction, StopTrigger, DRAIN_BOUND_MS, ESTIMATOR_EXEC_QUOTE, ESTIMATOR_SHADOW,
-    RUN_DEADLINE_MS,
+    RiskValuation, RunPhase, StopAction, StopTrigger, DRAIN_BOUND_MS, ESTIMATOR_EXEC_QUOTE,
+    ESTIMATOR_SHADOW, RUN_DEADLINE_MS,
 };
 
 /// Stop-table state carried by the engine.

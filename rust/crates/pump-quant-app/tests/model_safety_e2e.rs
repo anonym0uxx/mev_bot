@@ -492,7 +492,10 @@ impl ModelSource for Gate {
 #[test]
 fn two_abandoned_asks_whose_late_errors_arrive_do_not_trip_three_distinct_asks_do() {
     use pump_quant_app::safety_off::CONSECUTIVE_ABANDONED_TRIP;
-    assert_eq!(CONSECUTIVE_ABANDONED_TRIP, 3, "the threshold this test reasons from");
+    assert_eq!(
+        CONSECUTIVE_ABANDONED_TRIP, 3,
+        "the threshold this test reasons from"
+    );
     let p = tmp("once_per_id");
     let open = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let mut e = Engine::new(cfg(), RunMode::Paper);
@@ -519,8 +522,17 @@ fn two_abandoned_asks_whose_late_errors_arrive_do_not_trip_three_distinct_asks_d
         }
         step(&mut e);
     }
-    assert_eq!(rep(&e, "request_abandoned_deadline"), 2, "{:?}", e.model_lane_report());
-    assert_eq!(e.model_table_last_issued_for_test(), 2, "request ids 1 and 2");
+    assert_eq!(
+        rep(&e, "request_abandoned_deadline"),
+        2,
+        "{:?}",
+        e.model_lane_report()
+    );
+    assert_eq!(
+        e.model_table_last_issued_for_test(),
+        2,
+        "request ids 1 and 2"
+    );
     assert_eq!(e.model_safety_consecutive_failures(), 2);
     assert!(!e.model_safety_blocked());
     // Their late transport errors arrive (no clock movement, so no new ask): labelled, NOT charged again.
@@ -532,16 +544,32 @@ fn two_abandoned_asks_whose_late_errors_arrive_do_not_trip_three_distinct_asks_d
         ticks(&mut e, 1);
     }
     open.store(false, Ordering::SeqCst);
-    assert_eq!(rep(&e, "health:late_arrival_already_charged"), 2, "{:?}", e.model_lane_report());
-    assert_eq!(rep(&e, "endpoint:transport_error"), 2, "the socket-timeout label is kept separately");
-    assert_eq!(rep(&e, "discard:abandoned"), 2, "late answers are discarded, never executed");
+    assert_eq!(
+        rep(&e, "health:late_arrival_already_charged"),
+        2,
+        "{:?}",
+        e.model_lane_report()
+    );
+    assert_eq!(
+        rep(&e, "endpoint:transport_error"),
+        2,
+        "the socket-timeout label is kept separately"
+    );
+    assert_eq!(
+        rep(&e, "discard:abandoned"),
+        2,
+        "late answers are discarded, never executed"
+    );
     assert_eq!(
         e.model_safety_consecutive_failures(),
         2,
         "2 asks = 2 failures, not 4: {:?}",
         e.model_lane_report()
     );
-    assert!(!e.model_safety_blocked(), "two asks must not trip a threshold of three");
+    assert!(
+        !e.model_safety_blocked(),
+        "two asks must not trip a threshold of three"
+    );
     // Phase B: a third distinct ask is abandoned -> 3 -> trip.
     for _ in 0..40 {
         if e.model_safety_blocked() {
@@ -549,9 +577,16 @@ fn two_abandoned_asks_whose_late_errors_arrive_do_not_trip_three_distinct_asks_d
         }
         step(&mut e);
     }
-    assert_eq!(e.model_table_last_issued_for_test(), 3, "a third request id");
+    assert_eq!(
+        e.model_table_last_issued_for_test(),
+        3,
+        "a third request id"
+    );
     assert_eq!(rep(&e, "request_abandoned_deadline"), 3);
     assert!(e.model_safety_blocked(), "{:?}", e.model_lane_report());
-    assert_eq!(e.model_safety_reason(), pump_quant_app::safety_off::REASON_ENDPOINT_HUNG);
+    assert_eq!(
+        e.model_safety_reason(),
+        pump_quant_app::safety_off::REASON_ENDPOINT_HUNG
+    );
     open.store(true, Ordering::SeqCst);
 }

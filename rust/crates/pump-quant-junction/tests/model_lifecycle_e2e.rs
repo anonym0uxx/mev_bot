@@ -1178,7 +1178,8 @@ fn m1_final_report_after_an_accepted_handoff_preserves_the_acknowledged_exposure
 /// During the drain a valid REDUCE executes. The next valid ADD is refused BY THE DEADLINE ROW'S NAME and creates no
 /// order. When the drain bound elapses the handoff sentinel is raised, and the position is not force-closed.
 #[test]
-fn daemon_path_run_deadline_drain_refuses_add_by_name_executes_reduce_and_hands_off_without_closing() {
+fn daemon_path_run_deadline_drain_refuses_add_by_name_executes_reduce_and_hands_off_without_closing(
+) {
     use pump_quant_app::stop_policy::{action_for, OpsInputs, RunPhase, StopTrigger};
     use pump_quant_junction::model_lifecycle::{request_deadline_handoff, run_deadline_from};
     let ep = Endpoint::start(|step| match step {
@@ -1195,29 +1196,52 @@ fn daemon_path_run_deadline_drain_refuses_add_by_name_executes_reduce_and_hands_
     assert!(r.e.model_entries_blocked() && !r.e.model_safety_blocked());
     // Step 0: REDUCE over the wire -> order intent -> reconciled fill.
     r.advance_to_order(120_000);
-    let (id, k, intended, _) = r.e.model_mgmt_pending(&MINT).expect("REDUCE pending in the drain");
+    let (id, k, intended, _) =
+        r.e.model_mgmt_pending(&MINT)
+            .expect("REDUCE pending in the drain");
     assert_eq!(format!("{k:?}"), "Reduce");
     let inv0 = r.e.model_inventory_tokens(&MINT).unwrap();
-    r.e.model_mgmt_apply_reconciled_fill(MINT, id, intended, 22_000).unwrap();
+    r.e.model_mgmt_apply_reconciled_fill(MINT, id, intended, 22_000)
+        .unwrap();
     assert_eq!(r.e.model_inventory_tokens(&MINT), Some(inv0 - intended));
     // Step 1: ADD over the wire -> refused by the deadline row's name, no order.
-    let label = format!("mgmt:refuse:add_blocked_stop:{}", action_for(StopTrigger::RunDeadline).name);
+    let label = format!(
+        "mgmt:refuse:add_blocked_stop:{}",
+        action_for(StopTrigger::RunDeadline).name
+    );
     for _ in 0..60 {
         if r.rep(&label) >= 1 {
             break;
         }
         r.advance(5_000);
     }
-    assert!(r.rep(&label) >= 1, "ADD refused by name: {:?}", r.e.model_lane_report());
-    assert!(r.e.model_mgmt_pending(&MINT).is_none(), "no ADD order in the drain");
-    assert_eq!(r.e.model_inventory_tokens(&MINT), Some(inv0 - intended), "refused ADD moved nothing");
+    assert!(
+        r.rep(&label) >= 1,
+        "ADD refused by name: {:?}",
+        r.e.model_lane_report()
+    );
+    assert!(
+        r.e.model_mgmt_pending(&MINT).is_none(),
+        "no ADD order in the drain"
+    );
+    assert_eq!(
+        r.e.model_inventory_tokens(&MINT),
+        Some(inv0 - intended),
+        "refused ADD moved nothing"
+    );
     // Drain bound elapsed: the daemon's handoff sentinel, never a force close.
     let ev = r.e.model_stop_evaluate(15_000, OpsInputs::healthy());
     assert!(ev.handoff_due);
     let stop = r.dir.join("STOP");
     assert!(request_deadline_handoff(&stop) && stop.exists());
-    assert!(!request_deadline_handoff(&stop), "raised once, never overwritten");
-    assert!(r.e.model_position_open(&MINT), "the drain hands off; it does not close");
+    assert!(
+        !request_deadline_handoff(&stop),
+        "raised once, never overwritten"
+    );
+    assert!(
+        r.e.model_position_open(&MINT),
+        "the drain hands off; it does not close"
+    );
 }
 
 /// Item 4 through the PRODUCTION client (the serve_term runA shape): the endpoint hangs (12 s). The engine abandons
@@ -1237,7 +1261,12 @@ fn daemon_path_two_hung_asks_with_socket_timeouts_do_not_trip_a_third_ask_does()
         }
         r.advance(5_000);
     }
-    assert_eq!(r.rep("mgmt:request_abandoned_deadline"), 2, "{:?}", r.e.model_lane_report());
+    assert_eq!(
+        r.rep("mgmt:request_abandoned_deadline"),
+        2,
+        "{:?}",
+        r.e.model_lane_report()
+    );
     assert_eq!(r.e.model_safety_consecutive_failures(), 2);
     assert!(!r.e.model_safety_blocked());
     // Hold the feed clock still (no new ask) while the 8 s socket timeouts fire on both workers.
@@ -1248,10 +1277,22 @@ fn daemon_path_two_hung_asks_with_socket_timeouts_do_not_trip_a_third_ask_does()
         std::thread::sleep(Duration::from_millis(100));
         ticks(&mut r.e, 1);
     }
-    assert_eq!(r.rep("endpoint:transport_error"), 2, "{:?}", r.e.model_lane_report());
+    assert_eq!(
+        r.rep("endpoint:transport_error"),
+        2,
+        "{:?}",
+        r.e.model_lane_report()
+    );
     assert_eq!(r.rep("health:late_arrival_already_charged"), 2);
-    assert_eq!(r.e.model_safety_consecutive_failures(), 2, "2 asks count 2, not 4");
-    assert!(!r.e.model_safety_blocked(), "two asks must not trip a threshold of three");
+    assert_eq!(
+        r.e.model_safety_consecutive_failures(),
+        2,
+        "2 asks count 2, not 4"
+    );
+    assert!(
+        !r.e.model_safety_blocked(),
+        "two asks must not trip a threshold of three"
+    );
     // A third distinct ask is abandoned -> 3 -> trip.
     for _ in 0..80 {
         if r.e.model_safety_blocked() {
@@ -1261,5 +1302,8 @@ fn daemon_path_two_hung_asks_with_socket_timeouts_do_not_trip_a_third_ask_does()
     }
     assert!(r.e.model_safety_blocked(), "{:?}", r.e.model_lane_report());
     assert_eq!(r.rep("mgmt:request_abandoned_deadline"), 3);
-    assert!(r.e.model_position_open(&MINT), "tripping never closes the position");
+    assert!(
+        r.e.model_position_open(&MINT),
+        "tripping never closes the position"
+    );
 }
