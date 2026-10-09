@@ -318,6 +318,100 @@ pub fn decode_pump_curve_mode(account: &[u8]) -> Option<PumpCurveMode> {
     })
 }
 
+/// The only BondingCurve account length observed in any capture (cont_wire05, sd1_wire012, collapse_wire_v2:
+/// every curve account is 151 bytes). Classification is bound to this layout; any other length is
+/// [`CurveClassRefusal::UnsupportedLayout`] until it is separately validated.
+pub const SUPPORTED_CURVE_LAYOUT_LEN: usize = 151;
+
+/// Why an account is not classified as a supported mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CurveClassRefusal {
+    /// Discriminator / prefix decode failed: not a pump.fun BondingCurve.
+    NotPumpCurve,
+    /// Decodes as a curve, but its length is not [`SUPPORTED_CURVE_LAYOUT_LEN`] (0 observations of any other).
+    UnsupportedLayout,
+    /// Byte 81 or 82 is not a canonical bool.
+    NoncanonicalFlag,
+    /// A non-Mayhem curve whose quote mint (bytes 83..115) is not the all-zero SOL quote: 0 observations, so the
+    /// constant-offset rule is NOT known to hold for it.
+    QuoteNotObservedSol,
+}
+
+impl CurveClassRefusal {
+    /// Stable name for refusals / reports.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            CurveClassRefusal::NotPumpCurve => "curve_class_not_pump_curve",
+            CurveClassRefusal::UnsupportedLayout => "curve_class_unsupported_layout",
+            CurveClassRefusal::NoncanonicalFlag => "curve_class_noncanonical_flag",
+            CurveClassRefusal::QuoteNotObservedSol => "curve_class_quote_not_observed_sol",
+        }
+    }
+}
+
+/// The curve classification every reserve-equation consumer must hold before applying it.
+///
+/// `real_sol = virtual_sol - 30 SOL` (and the constant-product quote formulas built on it) is an OBSERVED
+/// property of the tested population only: non-Mayhem, SOL-quoted, 151-byte accounts (3,163 / 3,163 accounts,
+/// 0 / 2,943 account pairs and 0 / 6,483 TradeEvent pairs changed the offset; proc/OFFSET_v4_REPORT.md §1). It
+/// is not asserted as a protocol law. Only [`PumpCurveClass::Ordinary`] may use it; Mayhem and Unsupported are
+/// unsupported for trading.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PumpCurveClass {
+    /// `is_mayhem_mode = 0`, all-zero (SOL) quote, supported layout. `cashback` = byte 82.
+    Ordinary {
+        /// `is_cashback_coin`.
+        cashback: bool,
+    },
+    /// `is_mayhem_mode = 1` on a supported layout: the virtual SOL offset is program-managed (it moved on 803 /
+    /// 1,091 captured pairs). Unsupported for trading; raw reserves are still evidence.
+    Mayhem {
+        /// `is_cashback_coin`.
+        cashback: bool,
+        /// Quote mint is the all-zero SOL quote.
+        sol_quote: bool,
+    },
+    /// Not classifiable from verified fields; never read as Ordinary.
+    Unsupported(CurveClassRefusal),
+}
+
+impl PumpCurveClass {
+    /// Only the tested population may use the constant-offset equation and the curve quote formulas.
+    #[must_use]
+    pub const fn is_ordinary(self) -> bool {
+        matches!(self, PumpCurveClass::Ordinary { .. })
+    }
+}
+
+/// Classify a raw BondingCurve account from verified fields on the supported layout only.
+#[must_use]
+pub fn classify_pump_curve(account: &[u8]) -> PumpCurveClass {
+    if decode_pump_curve(account).is_none() {
+        return PumpCurveClass::Unsupported(CurveClassRefusal::NotPumpCurve);
+    }
+    if account.len() != SUPPORTED_CURVE_LAYOUT_LEN {
+        return PumpCurveClass::Unsupported(CurveClassRefusal::UnsupportedLayout);
+    }
+    let (Some(mayhem), Some(cashback)) = (read_bool(account, 81), read_bool(account, 82)) else {
+        return PumpCurveClass::Unsupported(CurveClassRefusal::NoncanonicalFlag);
+    };
+    let sol_quote = match read_pubkey(account, 83) {
+        Some(q) => q == [0u8; 32],
+        None => return PumpCurveClass::Unsupported(CurveClassRefusal::UnsupportedLayout),
+    };
+    if mayhem {
+        PumpCurveClass::Mayhem {
+            cashback,
+            sol_quote,
+        }
+    } else if sol_quote {
+        PumpCurveClass::Ordinary { cashback }
+    } else {
+        PumpCurveClass::Unsupported(CurveClassRefusal::QuoteNotObservedSol)
+    }
+}
+
 /// Read a little-endian `u16` at `offset`, returning `None` if out of bounds.
 fn read_u16_le(buf: &[u8], offset: usize) -> Option<u16> {
     let end = offset.checked_add(2)?;
