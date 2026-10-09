@@ -2895,6 +2895,36 @@ fn stop_run_deadline_stops_entries_drains_with_management_and_protection_then_re
     assert!(r.e.model_protect_pending_order(&MINT).is_some(), "protection after the deadline");
 }
 
+/// The 6 h cutoff blocks ADD as well as new entries: during the DRAIN a valid REDUCE verdict executes, then an ADD
+/// verdict for the same held position is refused BY THE DEADLINE ROW'S NAME and creates no order.
+#[test]
+fn stop_run_deadline_drain_refuses_add_by_name_while_reduce_executes() {
+    let hp = held_path("st_deadline_add");
+    let mut r = rig(|s| if s == 0 { REDUCE } else if s == 1 { ADD } else { HOLD }, &hp);
+    r.e.model_stop_set_deadline(10_000, 5_000);
+    let ev = r.e.model_stop_evaluate(10_000, OpsInputs::healthy());
+    assert_eq!(ev.phase, RunPhase::Drain { ends_at_ms: 15_000 });
+    assert!(ev.new_risk_blocked && r.e.model_entries_blocked());
+    assert!(!r.e.model_safety_blocked(), "the deadline is a run phase, not SAFETY_OFF");
+    assert!(!r.e.model_mgmt_asks_blocked(), "management keeps asking during the drain");
+    // Step 0: REDUCE executes during the drain.
+    r.advance_to_order(120_000);
+    assert!(fill_pending_reduce(&mut r) > 0, "REDUCE executes during the drain");
+    // Step 1: ADD is refused by the deadline row's name; no ADD order exists.
+    let inv = r.e.model_inventory_tokens(&MINT);
+    r.advance_to_order(60_000);
+    assert!(r.e.model_mgmt_pending(&MINT).is_none(), "no ADD order during the drain");
+    assert!(r.e.model_mgmt_add_reservation(&MINT).is_none(), "no ADD reservation");
+    let label = format!(
+        "mgmt:refuse:add_blocked_stop:{}",
+        action_for(StopTrigger::RunDeadline).name
+    );
+    assert_eq!(label, "mgmt:refuse:add_blocked_stop:deadline_stop_entries_drain_then_handoff");
+    assert!(rep_sum(&r.e, &label) >= 1, "ADD refused by name: {:?}", r.e.model_lane_report());
+    assert_eq!(r.e.model_inventory_tokens(&MINT), inv, "the refused ADD changed no inventory");
+    assert!(!r.e.model_safety_blocked());
+}
+
 #[test]
 fn stop_run_phase_boundaries_and_default_bounds() {
     assert_eq!(sp::RUN_DEADLINE_MS, 21_600_000);
