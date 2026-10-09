@@ -1174,6 +1174,18 @@ impl Engine {
                 return Admit::Ineligible;
             }
         };
+        // Operator decision 2026-10-09: Mayhem-mode coins are outside the paper cohort; an unknown mode is
+        // refused too (fail-closed). After the join's own refusals (so a missing curve/launch keeps its specific
+        // name) but BEFORE the market counts as ready or anything is dispatched: an excluded market never
+        // reaches the model.
+        if let Some(x) = self.model_curve_mode_exclusion(&mint) {
+            if self.model_last_refusal.len() < REGISTRY_CAP {
+                self.model_last_refusal.insert(mint, x.as_str().to_string());
+            }
+            self.mrep(format!("refuse:{}|{dims}", x.as_str()));
+            self.model_uniq(x.as_str(), &mint, venue);
+            return Admit::Ineligible;
+        }
         self.mrep(format!("snapshot_ok|{dims}"));
         // ONE observation per mint: the delay from discovery to the FIRST usable prompt. (It was
         // previously added on every ready tick, which made n equal total asks.)
@@ -1385,6 +1397,11 @@ impl Engine {
         }
         if self.model_cache.marker(&entry.mint).is_none() || meta.snap.mint != entry.mint {
             self.mrep("discard:state_gone");
+            return;
+        }
+        if let Some(x) = self.model_curve_mode_exclusion(&entry.mint) {
+            // The mode was learned (or changed) while the ask was in flight: the verdict is discarded by name.
+            self.mrep(format!("discard:{}", x.as_str()));
             return;
         }
         let floor = derive_survival_floor(

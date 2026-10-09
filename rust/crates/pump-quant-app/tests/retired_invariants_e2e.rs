@@ -92,6 +92,11 @@ fn events(confirm_virtual: u64, confirm_real: u64) -> Vec<AppEvent> {
         recv_unix_ms: Some(t_last),
         slot: 2_000,
     });
+    ev.push(AppEvent::CurveModeObserved {
+        mint: mint(),
+        mayhem: false,
+        slot: 0,
+    });
     ev.push(AppEvent::OnchainConfirm {
         mint: mint(),
         virtual_sol_lamports: confirm_virtual,
@@ -120,6 +125,11 @@ fn landing(e: &mut Engine) {
         real_tokens: 565_000_000_000_000,
         recv_unix_ms: Some(t_last + 1_500),
         slot: 2_100,
+    });
+    e.tick(AppEvent::CurveModeObserved {
+        mint: mint(),
+        mayhem: false,
+        slot: 0,
     });
     for _ in 0..6 {
         e.tick(AppEvent::Tick);

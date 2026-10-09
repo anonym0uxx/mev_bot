@@ -98,6 +98,11 @@ fn feed_line(e: &mut Engine, v: &serde_json::Value, m: DomainMint, t: i64) {
                     recv_unix_ms: Some(t),
                     slot: v["slot"].as_u64().unwrap(),
                 });
+                e.tick(AppEvent::CurveModeObserved {
+                    mint: m,
+                    mayhem: false,
+                    slot: 0,
+                });
             }
             e.tick(AppEvent::MarketTrade {
                 mint: m,

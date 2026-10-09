@@ -534,6 +534,14 @@ impl Engine {
             }
             return;
         }
+        if kind == MgmtKind::Add {
+            if let Some(x) = self.model_curve_mode_exclusion(&mint) {
+                // Operator decision 2026-10-09: no NEW exposure on a Mayhem-mode (or mode-unknown) curve.
+                // REDUCE/EXIT are never blocked by this gate.
+                self.mrep(format!("mgmt:refuse:add_{}", x.as_str()));
+                return;
+            }
+        }
         let Some(inv) = self.positions.inventory_tokens(&mint) else {
             self.mrep("mgmt:refuse:inventory_unknown");
             return;

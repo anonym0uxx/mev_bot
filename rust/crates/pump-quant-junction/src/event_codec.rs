@@ -26,6 +26,9 @@ use serde_json::{json, Map, Value};
 ///   provenance, `{"state":"known","bps":B,"lamports":L,"layout_len":N}` | `{"state":"missing","layout_len":N}`
 ///   | `{"state":"unsupported","layout_len":N}` | `{"state":"not_recorded"}`. Every other kind is byte-identical
 ///   to v2.
+/// * v3 (additive kind, 2026-10-09) — `CurveModeObserved` `{"mayhem":bool,"slot":N}` (operator decision: SKIP
+///   Mayhem-mode coins). No existing kind changed, so the version is not bumped; a reader that predates the kind
+///   REJECTS such a line by name (critical kind -> the replay is INCOMPLETE), it never drops it silently.
 ///
 /// A v2 line still decodes (same fields); its `AmmSwap` carries `CashbackField::NotRecorded` and the checked
 /// reader counts it under [`KindCount::schema_gap`], so the gap is NAMED, never read as a zero.
@@ -211,6 +214,7 @@ fn kind(e: &AppEvent) -> &'static str {
         AppEvent::WalletAction { .. } => "WalletAction",
         AppEvent::OnchainConfirm { .. } => "OnchainConfirm",
         AppEvent::CurveObserved { .. } => "CurveObserved",
+        AppEvent::CurveModeObserved { .. } => "CurveModeObserved",
         AppEvent::AmmSwap { .. } => "AmmSwap",
         AppEvent::LaunchObserved { .. } => "LaunchObserved",
         AppEvent::LaunchFromChain { .. } => "LaunchFromChain",
@@ -231,7 +235,7 @@ fn kind(e: &AppEvent) -> &'static str {
 }
 
 /// Every kind the codec knows. A writer change that adds a variant must add it here (pinned by test).
-pub const KINDS: [&str; 23] = [
+pub const KINDS: [&str; 24] = [
     "MarketTrade",
     "CorpusFlowRow",
     "NarrativeSample",
@@ -239,6 +243,7 @@ pub const KINDS: [&str; 23] = [
     "WalletAction",
     "OnchainConfirm",
     "CurveObserved",
+    "CurveModeObserved",
     "AmmSwap",
     "LaunchObserved",
     "LaunchFromChain",
@@ -348,6 +353,10 @@ fn fields(e: &AppEvent) -> Map<String, Value> {
             m.insert("real_tokens".into(), json!(real_tokens));
             m.insert("slot".into(), json!(slot));
             put(&mut m, "recv_unix_ms", recv_unix_ms.map(|v| json!(v)));
+        }
+        AppEvent::CurveModeObserved { mayhem, slot, .. } => {
+            m.insert("mayhem".into(), json!(mayhem));
+            m.insert("slot".into(), json!(slot));
         }
         _ => fields2(e, &mut m),
     }
@@ -655,6 +664,11 @@ pub fn decode(line: &str) -> Result<(String, AppEvent), String> {
             real_sol_lamports: f.u64("real_sol_lamports")?,
             real_tokens: f.u64("real_tokens")?,
             recv_unix_ms: f.oi64("recv_unix_ms")?,
+            slot: f.u64("slot")?,
+        },
+        "CurveModeObserved" => AppEvent::CurveModeObserved {
+            mint: mint()?,
+            mayhem: f.bool("mayhem")?,
             slot: f.u64("slot")?,
         },
         _ => decode2(&kind, &f, mint, ver)?,

@@ -3260,6 +3260,13 @@ fn main() -> ExitCode {
                             {
                                 queue.push(obs, slot);
                             }
+                            // Model lane (operator decision 2026-10-09: SKIP Mayhem-mode coins): the decoded
+                            // curve mode. An undecodable mode emits nothing -> the engine keeps it UNKNOWN.
+                            if let Some(m) =
+                                pump_quant_junction::decode::curve_mode_observed(&mb, &data, slot)
+                            {
+                                queue.push(m, slot);
+                            }
                             stats.ls_onchain_confirms_decoded += 1;
                             stats.last_confirm_tick = tick_counter;
                             stats.pda_venue_matches += 1;
@@ -3904,6 +3911,15 @@ fn main() -> ExitCode {
                                             )
                                         {
                                             queue.push(provenanced, slot);
+                                            if let Some(m) =
+                                                pump_quant_junction::decode::curve_mode_observed(
+                                                    &mb,
+                                                    &account_data,
+                                                    slot,
+                                                )
+                                            {
+                                                queue.push(m, slot);
+                                            }
                                             stats.helius_onchain_confirms_decoded += 1;
                                             stats.last_confirm_tick = tick_counter;
                                             stats.pda_venue_matches += 1;
@@ -4016,6 +4032,15 @@ fn main() -> ExitCode {
                                                 )
                                             {
                                                 queue.push(provenanced, slot);
+                                                if let Some(m) =
+                                                    pump_quant_junction::decode::curve_mode_observed(
+                                                        &mb,
+                                                        &account_data,
+                                                        slot,
+                                                    )
+                                                {
+                                                    queue.push(m, slot);
+                                                }
                                                 stats.helius_onchain_confirms_decoded += 1;
                                                 stats.last_confirm_tick = tick_counter;
                                                 stats.pda_venue_matches += 1;
