@@ -83,14 +83,18 @@ pub enum LegKind {
 }
 
 impl LegKind {
-    const fn code(self) -> &'static str {
+    /// Stable durable code.
+    #[must_use]
+    pub const fn code(self) -> &'static str {
         match self {
             Self::Entry => "entry",
             Self::Add => "add",
             Self::Sell => "sell",
         }
     }
-    fn from_code(s: &str) -> Option<Self> {
+    /// Parse a durable code (unknown -> `None`).
+    #[must_use]
+    pub fn from_code(s: &str) -> Option<Self> {
         match s {
             "entry" => Some(Self::Entry),
             "add" => Some(Self::Add),

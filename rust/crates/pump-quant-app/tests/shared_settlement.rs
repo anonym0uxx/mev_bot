@@ -16,6 +16,7 @@ fn r(leg: LegKind, id: u64, t: u64, v: u64, n: u64) -> FillReport {
         cum_tokens: t,
         cum_venue_lamports: v,
         cum_network_lamports: n,
+        cum_fixed_lamports: 0,
     }
 }
 
@@ -109,4 +110,98 @@ fn losing_and_dust_sells_book_negative_realized_correctly() {
         }
     );
     assert_eq!(l.cash, 10_000_000 + l.realized);
+}
+
+#[test]
+fn tip_and_ata_rent_are_booked_apart_from_the_network_estimate() {
+    let mut l = SettlementLedger::new(1_000_000_000);
+    // BUY: venue 100M, network estimate N, fixed = tip 50_000 + ATA rent 2_039_280.
+    let fixed_buy = 50_000 + 2_039_280;
+    step(
+        &mut l,
+        FillReport {
+            cum_fixed_lamports: fixed_buy,
+            ..r(LegKind::Entry, 1, 1_000, 100_000_000, N)
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        l.network_estimate,
+        i128::from(N),
+        "tip/rent never inflate the labelled network estimate"
+    );
+    assert_eq!(l.fixed_costs, i128::from(fixed_buy));
+    assert_eq!(
+        l.cash,
+        1_000_000_000 - 100_000_000 - i128::from(N) - i128::from(fixed_buy)
+    );
+    // SELL: proceeds 120M, network N, tip 50_000 (no rent on a sell).
+    let s = step(
+        &mut l,
+        FillReport {
+            cum_fixed_lamports: 50_000,
+            ..r(LegKind::Sell, 2, 1_000, 120_000_000, N)
+        },
+    )
+    .unwrap();
+    let outlay = 100_000_000 + i128::from(N) + i128::from(fixed_buy);
+    let net = 120_000_000 - i128::from(N) - 50_000;
+    assert_eq!(
+        s,
+        Settled::Applied {
+            tokens: 1_000,
+            realized_delta: net - outlay
+        }
+    );
+    assert_eq!(l.network_estimate, 2 * i128::from(N));
+    assert_eq!(l.fixed_costs, i128::from(fixed_buy) + 50_000);
+    // a fixed-cost report going backwards is refused
+    let before = l.clone();
+    assert_eq!(
+        l.settle(FillReport {
+            cum_fixed_lamports: 0,
+            ..r(LegKind::Sell, 2, 1_000, 120_000_000, N)
+        }),
+        Err(SettleError::Backwards)
+    );
+    assert_eq!(l, before);
+}
+
+#[test]
+fn settle_increment_forms_the_cumulative_and_the_durable_form_round_trips() {
+    let mut a = SettlementLedger::new(500_000_000);
+    a.settle_increment(M, LegKind::Entry, 1, 400, 40_000_000, N, 7)
+        .unwrap();
+    a.settle_increment(M, LegKind::Entry, 1, 600, 60_000_000, 0, 0)
+        .unwrap();
+    assert_eq!(
+        a.cumulative(&M, LegKind::Entry, 1),
+        (1_000, 100_000_000, N, 7)
+    );
+    let mut b = SettlementLedger::new(500_000_000);
+    b.settle(FillReport {
+        cum_fixed_lamports: 7,
+        ..r(LegKind::Entry, 1, 1_000, 100_000_000, N)
+    })
+    .unwrap();
+    assert_eq!(a, b, "increments == one cumulative report");
+    let j = a.to_json();
+    let c = SettlementLedger::from_json(&j).unwrap();
+    assert_eq!(a, c);
+    // restored ledger keeps idempotency
+    let mut c2 = c.clone();
+    assert_eq!(
+        c2.settle(FillReport {
+            cum_fixed_lamports: 7,
+            ..r(LegKind::Entry, 1, 1_000, 100_000_000, N)
+        }),
+        Ok(Settled::Duplicate)
+    );
+    // malformed / invariant-broken durable forms are refused, never empty
+    let mut bad = j.clone();
+    bad["cash"] = serde_json::json!("1");
+    assert_eq!(SettlementLedger::from_json(&bad), Err("invariant"));
+    let mut bad2 = j;
+    bad2["applied"] = serde_json::json!("x");
+    assert!(SettlementLedger::from_json(&bad2).is_err());
 }
