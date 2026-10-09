@@ -285,6 +285,39 @@ fn read_pubkey(buf: &[u8], offset: usize) -> Option<[u8; 32]> {
     Some(out)
 }
 
+/// Mode flags that follow the reserves in the current pump.fun `BondingCurve` layout.
+///
+/// ```text
+/// offset  size  field
+/// 49      32    creator          (pubkey)
+/// 81      1     is_mayhem_mode   (bool)
+/// 82      1     is_cashback_coin (bool)
+/// ```
+/// (pump-sdk IDL `BondingCurve`; every curve account in the captured tape cont_wire05 is 151 bytes.)
+///
+/// **Why it matters:** on a Mayhem-mode curve the virtual SOL reserve is NOT `30 SOL + real_sol`. Trades routed
+/// through the Mayhem program (`MAyhSmzXzV1pTf7LsNkrNwkWKTo4ougAJ1PPg47MD4e`) are priced constant-product on the
+/// pre-trade reserves and then leave the curve with a different `virtual_sol - real_sol`. Measured on the bM3a tape:
+/// all 815 / 3,962 offset-changing consecutive snapshots are on curves with this byte = 1, none of the 2,828
+/// canonical-curve pairs change it (proc/OFFSET_bM3a_REPORT.md).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PumpCurveMode {
+    /// `is_mayhem_mode`: the virtual offset is program-managed and moves between trades.
+    pub mayhem: bool,
+    /// `is_cashback_coin`.
+    pub cashback: bool,
+}
+
+/// Decode the curve's mode flags. `None` (unknown — never "not mayhem") when the identity check fails, the account
+/// predates the field (shorter than 83 bytes: the bounds-checked reads refuse), or a flag is not a canonical bool.
+pub fn decode_pump_curve_mode(account: &[u8]) -> Option<PumpCurveMode> {
+    verify_discriminator(account, Venue::PumpFun)?;
+    Some(PumpCurveMode {
+        mayhem: read_bool(account, 81)?,
+        cashback: read_bool(account, 82)?,
+    })
+}
+
 /// Read a little-endian `u16` at `offset`, returning `None` if out of bounds.
 fn read_u16_le(buf: &[u8], offset: usize) -> Option<u16> {
     let end = offset.checked_add(2)?;
