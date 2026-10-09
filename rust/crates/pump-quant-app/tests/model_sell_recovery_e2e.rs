@@ -3203,3 +3203,52 @@ fn stop_ram_floor_is_workload_bytes_capped_by_the_cgroup() {
     assert_eq!(sp::bytes_ok(None, sp::RAM_FLOOR_BYTES), None);
 }
 
+
+/// Item 5: an off-contract management completion means NO VALID MANAGEMENT VERDICT. It is never a Qwen HOLD: it
+/// creates no order, is counted under its own class (`mgmt:class:no_valid_verdict` + `mgmt:noaction:off_contract:*`),
+/// and is never counted as `mgmt:verdict:hold` / `mgmt:class:model_hold`. The position stays monitored: protection still orders on a collapse, and the next clock asks again. A later
+/// valid HOLD counts as a hold.
+#[test]
+fn an_invalid_management_answer_is_no_valid_verdict_never_a_hold_and_protection_continues() {
+    let hp = held_path("mgmt_invalid");
+    let mut r = rig(|s| if s == 0 { "this is not the trained grammar" } else { HOLD }, &hp);
+    let step = |r: &mut Rig| {
+        r.clock += 1_000;
+        r.slot += 1;
+        r.n += 1;
+        curve_obs(&mut r.e, r.clock, r.slot, 200_000_000);
+        print(&mut r.e, r.n, r.clock, r.slot, 45_300 + i128::from(r.n % 7));
+        ticks(&mut r.e, 2);
+    };
+    for _ in 0..120 {
+        if rep_sum(&r.e, "mgmt:class:") >= 1 {
+            break;
+        }
+        step(&mut r);
+    }
+    assert_eq!(rep_sum(&r.e, "mgmt:class:no_valid_verdict"), 1, "{:?}", r.e.model_lane_report());
+    assert!(rep_sum(&r.e, "mgmt:noaction:off_contract:") >= 1);
+    assert_eq!(rep_sum(&r.e, "mgmt:verdict:hold"), 0, "an invalid answer is never counted as a HOLD");
+    assert_eq!(rep_sum(&r.e, "mgmt:class:model_hold"), 0);
+    assert!(r.e.model_mgmt_pending(&MINT).is_none(), "no order from an invalid answer");
+    assert!(r.e.model_position_open(&MINT));
+    assert!(!r.e.model_safety_blocked(), "one invalid answer is one health failure, below the threshold");
+    // The next clock asks again and a valid HOLD is a hold.
+    for _ in 0..120 {
+        if rep_sum(&r.e, "mgmt:class:model_hold") >= 1 {
+            break;
+        }
+        step(&mut r);
+    }
+    assert_eq!(rep_sum(&r.e, "mgmt:class:model_hold"), 1, "{:?}", r.e.model_lane_report());
+    assert_eq!(rep_sum(&r.e, "mgmt:verdict:hold"), 1);
+    assert_eq!(rep_sum(&r.e, "mgmt:class:no_valid_verdict"), 1, "the earlier refusal stays separate");
+    // Protection is untouched by the refusal: a collapse print still creates the protective order.
+    let inv0 = r.e.model_inventory_tokens(&MINT).unwrap();
+    hard_collapse(&mut r.e, r.clock + 1_000, r.slot + 5);
+    let (_, q, _, _) = r
+        .e
+        .model_protect_pending_order(&MINT)
+        .expect("protection orders after an invalid management answer");
+    assert_eq!(q, inv0);
+}

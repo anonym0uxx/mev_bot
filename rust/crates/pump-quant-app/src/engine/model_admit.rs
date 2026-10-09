@@ -1278,7 +1278,27 @@ impl Engine {
         //   healthy  = any well-formed decision, INCLUDING a valid HOLD/SKIP. A missing-data refusal or an
         //              execution veto happens AFTER this point and never counts against the endpoint.
         // Deadlines (abandoned asks) are counted separately below.
+        //
+        // ONCE PER REQUEST ID. A request the engine already abandoned at its deadline has been charged to
+        // endpoint health exactly once (as `request_abandoned_deadline`). Its LATE arrival (the 8 s socket
+        // timeout's Err, or a truncated / malformed / valid body) keeps its own labelled counter
+        // (`endpoint:transport_error`, ...) but adds NOTHING to the trip rule - neither a failure nor a
+        // reset - so one slow ask can never count twice (deadline + socket) toward the hung threshold.
         for v in &done {
+            if v.session == self.model_session && self.model_health_charged.remove(&v.id) {
+                self.mrep("health:late_arrival_already_charged");
+                self.mrep(match &v.result {
+                    Err(_) => "endpoint:transport_error",
+                    Ok(c) if c.truncated() => "endpoint:truncated",
+                    Ok(c)
+                        if pump_quant_inference::seam::parse_decision_payload(&c.text).is_err() =>
+                    {
+                        "endpoint:malformed"
+                    }
+                    Ok(_) => "endpoint:late_valid",
+                });
+                continue;
+            }
             let healthy = match &v.result {
                 Ok(c) => {
                     !c.truncated()
@@ -1300,13 +1320,17 @@ impl Engine {
         for v in done {
             self.model_route_verdict(v, clock);
         }
-        for _id in self.model_table.expire(clock) {
+        for id in self.model_table.expire(clock) {
             self.mrep("request_abandoned_deadline");
-            bad_n += 1;
+            if self.model_health_charged.insert(id) {
+                bad_n += 1;
+            }
         }
-        for _id in self.model_mgmt.table.expire(clock) {
+        for id in self.model_mgmt.table.expire(clock) {
             self.mrep("mgmt:request_abandoned_deadline");
-            bad_n += 1;
+            if self.model_health_charged.insert(id) {
+                bad_n += 1;
+            }
         }
         self.model_safety_note_endpoint(ok_n, bad_n);
         self.model_try_fills(clock);

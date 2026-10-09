@@ -848,6 +848,34 @@ pub enum ManagementAuthority {
     NoAction(ManagementNoAction),
 }
 
+/// What a management outcome MEANS for reporting and telemetry. A refused / invalid / late / unreachable
+/// completion is [`ManagementVerdictClass::NoValidVerdict`]. It is NOT a model HOLD, even though the position
+/// stays open. Only a parsed, in-contract `HOLD` is [`ManagementVerdictClass::ModelHold`]. Protection,
+/// reconciliation and the next management clock run the same way after either one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManagementVerdictClass {
+    /// The model decided HOLD (valid, in-contract).
+    ModelHold,
+    /// The model decided ADD / REDUCE / EXIT.
+    ModelAction,
+    /// No valid management verdict exists for this clock.
+    NoValidVerdict,
+}
+
+impl ManagementAuthority {
+    /// The reporting class. The only place that maps an outcome to "hold" for telemetry.
+    #[must_use]
+    pub fn verdict_class(&self) -> ManagementVerdictClass {
+        match self {
+            ManagementAuthority::Hold => ManagementVerdictClass::ModelHold,
+            ManagementAuthority::ScaleIn { .. }
+            | ManagementAuthority::Trim { .. }
+            | ManagementAuthority::CloseAll => ManagementVerdictClass::ModelAction,
+            ManagementAuthority::NoAction(_) => ManagementVerdictClass::NoValidVerdict,
+        }
+    }
+}
+
 /// Why a management clock produced no action.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ManagementNoAction {
@@ -983,6 +1011,32 @@ mod management_tests {
             },
             max_decision_age_ms: CHAMPION_MAX_DECISION_AGE_MS,
         }
+    }
+
+    #[test]
+    fn every_no_action_is_no_valid_verdict_and_only_a_parsed_hold_is_a_hold() {
+        use crate::freshness::StalenessVeto;
+        let m = ManagementVerdictClass::NoValidVerdict;
+        for r in [
+            ManagementNoAction::ModelUnreachable,
+            ManagementNoAction::OffContract(OffContract::NoDecisionLine),
+            ManagementNoAction::EntryVerbOnManagementPrompt,
+            ManagementNoAction::StaleDecision(StalenessVeto::Stale {
+                age_ms: 1,
+                max_ms: 0,
+            }),
+        ] {
+            assert_eq!(ManagementAuthority::NoAction(r).verdict_class(), m, "{r:?}");
+        }
+        assert_eq!(
+            ManagementAuthority::Hold.verdict_class(),
+            ManagementVerdictClass::ModelHold
+        );
+        // An off-contract completion resolves to NoAction (never Hold) and is not an accepted decision.
+        let mut l = DriftLedger::new();
+        let v = decide_management(&Stub("not the grammar"), &mreq(), &mut l);
+        assert_eq!(v.verdict_class(), m, "{v:?}");
+        assert_eq!(l.accepted(), 0);
     }
 
     #[test]

@@ -471,3 +471,87 @@ fn a_new_management_question_is_still_asked_while_entries_are_blocked() {
         r.e.model_lane_report()
     );
 }
+
+/// A source whose calls block while the gate is closed, then fail at the transport (the 8 s socket timeout's Err).
+struct Gate(Arc<std::sync::atomic::AtomicBool>);
+impl ModelSource for Gate {
+    fn complete(&self, _s: &str, _u: &str) -> Result<String, InferenceError> {
+        while !self.0.load(Ordering::SeqCst) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        Err(InferenceError::Transport("socket timeout".into()))
+    }
+}
+
+/// HEALTH IS CHARGED ONCE PER REQUEST ID. Reasoning from the initial counters: consecutive failures start at 0 and
+/// the trip threshold is `CONSECUTIVE_ABANDONED_TRIP` = 3. Two asks (entry ids 1 and 2) are each abandoned at the
+/// engine deadline (+1 each -> 2) and then each answer LATE with a transport error (the socket timeout). The late
+/// error keeps its own label (`endpoint:transport_error`) but is the SAME request, so it adds 0: the count stays 2
+/// and the latch does NOT trip (the serving run counted 4 increments for 2 asks and tripped). A THIRD distinct ask
+/// (id 3) abandoned at its deadline makes 3 -> trip.
+#[test]
+fn two_abandoned_asks_whose_late_errors_arrive_do_not_trip_three_distinct_asks_do() {
+    use pump_quant_app::safety_off::CONSECUTIVE_ABANDONED_TRIP;
+    assert_eq!(CONSECUTIVE_ABANDONED_TRIP, 3, "the threshold this test reasons from");
+    let p = tmp("once_per_id");
+    let open = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut e = Engine::new(cfg(), RunMode::Paper);
+    e.enable_paper_model(Gate(Arc::clone(&open)));
+    e.model_safety_attach(&p);
+    let rep = |e: &Engine, k: &str| e.model_lane_report().get(k).copied().unwrap_or(0);
+    for ev in events(40) {
+        e.tick(ev);
+    }
+    assert_eq!(e.model_safety_consecutive_failures(), 0, "initial counter");
+    assert!(!e.model_safety_blocked());
+    let mut clock = T0 + 1_000 + 40 * 2_000;
+    let mut i = 0u32;
+    let mut step = |e: &mut Engine| {
+        clock += 5_000;
+        i += 1;
+        print(e, 200 + i, clock, 4_000 + u64::from(i));
+        ticks(e, 1);
+    };
+    // Phase A: two asks, both abandoned at the deadline while their workers are still blocked.
+    for _ in 0..40 {
+        if rep(&e, "request_abandoned_deadline") >= 2 {
+            break;
+        }
+        step(&mut e);
+    }
+    assert_eq!(rep(&e, "request_abandoned_deadline"), 2, "{:?}", e.model_lane_report());
+    assert_eq!(e.model_table_last_issued_for_test(), 2, "request ids 1 and 2");
+    assert_eq!(e.model_safety_consecutive_failures(), 2);
+    assert!(!e.model_safety_blocked());
+    // Their late transport errors arrive (no clock movement, so no new ask): labelled, NOT charged again.
+    open.store(true, Ordering::SeqCst);
+    for _ in 0..200 {
+        if rep(&e, "health:late_arrival_already_charged") >= 2 {
+            break;
+        }
+        ticks(&mut e, 1);
+    }
+    open.store(false, Ordering::SeqCst);
+    assert_eq!(rep(&e, "health:late_arrival_already_charged"), 2, "{:?}", e.model_lane_report());
+    assert_eq!(rep(&e, "endpoint:transport_error"), 2, "the socket-timeout label is kept separately");
+    assert_eq!(rep(&e, "discard:abandoned"), 2, "late answers are discarded, never executed");
+    assert_eq!(
+        e.model_safety_consecutive_failures(),
+        2,
+        "2 asks = 2 failures, not 4: {:?}",
+        e.model_lane_report()
+    );
+    assert!(!e.model_safety_blocked(), "two asks must not trip a threshold of three");
+    // Phase B: a third distinct ask is abandoned -> 3 -> trip.
+    for _ in 0..40 {
+        if e.model_safety_blocked() {
+            break;
+        }
+        step(&mut e);
+    }
+    assert_eq!(e.model_table_last_issued_for_test(), 3, "a third request id");
+    assert_eq!(rep(&e, "request_abandoned_deadline"), 3);
+    assert!(e.model_safety_blocked(), "{:?}", e.model_lane_report());
+    assert_eq!(e.model_safety_reason(), pump_quant_app::safety_off::REASON_ENDPOINT_HUNG);
+    open.store(true, Ordering::SeqCst);
+}

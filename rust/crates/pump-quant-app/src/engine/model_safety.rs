@@ -259,6 +259,13 @@ impl Engine {
         self.model_safety_trip(REASON_OPERATOR)
     }
 
+    /// Endpoint-health failures counted toward the hung-endpoint trip since the last healthy answer
+    /// (each request id at most once). Trips at [`CONSECUTIVE_ABANDONED_TRIP`].
+    #[must_use]
+    pub fn model_safety_consecutive_failures(&self) -> u32 {
+        self.model_safety.consecutive_abandoned
+    }
+
     /// Fold one poll's endpoint health into the trip rule: consecutive failures/abandonments.
     pub(super) fn model_safety_note_endpoint(&mut self, ok: u32, failed: u32) {
         if ok > 0 {

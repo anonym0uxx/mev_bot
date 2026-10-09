@@ -521,6 +521,19 @@ impl Engine {
         let mut ledger = std::mem::take(&mut self.model_drift);
         let verdict = resolve_management(v.result, &req, &mut ledger);
         self.model_drift = ledger;
+        // Reporting class first: a refused/invalid completion is "no valid management verdict", never a Qwen HOLD.
+        // The position is left as it is. Protection, reconciliation and the next clock run exactly as after a HOLD.
+        match verdict.verdict_class() {
+            crate::model_authority::ManagementVerdictClass::ModelHold => {
+                self.mrep("mgmt:class:model_hold");
+            }
+            crate::model_authority::ManagementVerdictClass::ModelAction => {
+                self.mrep("mgmt:class:model_action");
+            }
+            crate::model_authority::ManagementVerdictClass::NoValidVerdict => {
+                self.mrep("mgmt:class:no_valid_verdict");
+            }
+        }
         match verdict {
             ManagementAuthority::Hold => self.mrep("mgmt:verdict:hold"),
             // The seam's capital-based field is intentionally unused: ADD is inventory-based here.
