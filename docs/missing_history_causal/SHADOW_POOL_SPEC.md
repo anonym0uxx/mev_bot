@@ -32,7 +32,8 @@ Laws: `tests/{shadow_pool,shared_settlement,exec_identity}.rs`.
 ## 4. Reconciliation and divergence (named, permanent per segment)
 A snapshot that cannot be reconciled with the shadow sets `Divergence` and DROPS the delta; a later consistent snapshot does
 not revive it. Sale capacity then falls back to what the observed state alone supports.
-- `shadow_divergence:curve_virtual_offset_changed` — `vsol - real_sol` moved (not a constant-product trade).
+- `shadow_divergence:curve_virtual_offset_changed` — `vsol - real_sol` moved. On the captured tape this happens only on
+  Mayhem-mode curves, where the program resets virtual SOL after each Mayhem-routed trade. The reset rule is not modelled.
 - `shadow_divergence:adverse_liquidity_change` — curve token offset moved / curve complete, or pool `k` decreased (withdrawal).
 - `shadow_divergence:unreconcilable_snapshot` — observed reserves cannot fund what the shadow says (e.g. real SOL + delta < 0).
 Capacity: `capacity = observed real SOL (or quote vault) + max(0, sol_in - sol_out)`; a shadow sell whose gross exceeds it is
@@ -65,12 +66,17 @@ release basis pro rata; the last token releases the whole remainder. Network fee
 - **External** (final observed state slot 445,637,874, real SOL 37,657,528): `curve_real_sol_insufficient`, max_tokens
   6,528,869,872,346 — the v1 result, unchanged.
 - **Shadow at landing:** sell back <= net_in (no manufactured profit).
-- **Shadow through the tape:** the next snapshot (slot 445,637,775) moves `vsol` by 2,366,586,160 while real SOL moves by
-  44,667,771 -> `curve_virtual_offset_changed`; delta dropped; final shadow capacity 37,657,528; shadow sell refused;
-  net liquidation estimate `None`. So: neither an endless refusal loop presented as correct nor a manufactured exit;
-  the named result is "shadow cannot be reconciled with this tape".
+- **Shadow through the tape:** the next snapshot (slot 445,637,775) is the post-state of a real Mayhem-routed sell
+  (44,667,771 lamports out, priced constant-product on the pre-state); the program then reset `vsol - real_sol`
+  9,465,440,184 -> 7,143,521,795 (vsol -2,366,586,160) -> `curve_virtual_offset_changed`; delta dropped; final shadow
+  capacity 37,657,528; shadow sell refused; net liquidation estimate `None`. So: neither an endless refusal loop
+  presented as correct nor a manufactured exit; the named result is "shadow cannot be reconciled with this tape".
 - Tape-wide diagnostic (`proc/shadow_k_check.py`): 3,147 / 3,962 consecutive CurveObserved pairs are constant-product with
-  constant `vsol - real_sol`; 815 are not. Root cause of the non-constant offset in the tape is OPEN (see report).
+  constant `vsol - real_sol`; 815 are not. **Root cause (resolved, proc/OFFSET_bM3a_REPORT.md):** all 815 are on
+  Mayhem-mode curves (`BondingCurve.is_mayhem_mode`, byte 81 = 1; 0 of 2,828 canonical-curve pairs change the offset).
+  The capture and decoder are faithful: 4,317 / 4,440 raw account states equal a pump `TradeEvent` post-state
+  byte-for-byte. Mayhem-routed trades are priced constant-product on the pre-state, then virtual SOL is reset. The
+  divergence is the correct response: the reset rule is not modelled, so our delta cannot be carried across it.
 
 ## 9. Not built (by instruction)
 No agent-based market simulator. No engine wiring yet (the executor still runs v1).

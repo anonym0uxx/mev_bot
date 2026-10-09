@@ -576,9 +576,12 @@ fn regression_804a86fe_external_and_shadow_results_are_separate() {
     let s0 = v0.shadow.unwrap();
     assert!(s0.gross <= q.net_in && q.net_in - s0.gross <= 2);
 
-    // (C) Replaying the tape's later snapshots: the next one moves `vsol - real_sol` without a matching
-    // trade (2,366,586,160 vs 44,667,771): the observed transition is not constant-product, so the shadow
-    // CANNOT be reconciled -> named divergence, delta dropped. Not a refusal loop, not a fake exit.
+    // (C) Replaying the tape's later snapshots. 9do6fVUE.. is a Mayhem-mode curve (BondingCurve byte 81 = 1). The next
+    // snapshot is the post-state of a REAL trade, a Mayhem-routed sell of 4,937,612,810,534 tokens for 44,667,771
+    // lamports (tx at cont_wire05 line 32627). The sell was priced constant-product on the pre-state, then the
+    // program reset `vsol - real_sol` (9,465,440,184 -> 7,143,521,795). Whatever rule the Mayhem program uses to
+    // reset virtual SOL is not modelled, so the shadow cannot carry our delta across it -> named divergence, delta
+    // dropped. Not a refusal loop, not a fake exit. Evidence: proc/OFFSET_bM3a_REPORT.md.
     let mut first_div = None;
     for i in 1..FX.len() {
         if let Some(d) = book.on_curve_observation(&M, &fx(i)) {
