@@ -241,7 +241,8 @@ const PDA_MAP_CAP: usize = 500_000;
 /// Bounded sleep on WS reconnect failures (was 5s which blocked the entire
 /// event loop). 500ms gives the server time to recover without starving
 /// the tick loop.
-const WS_RECONNECT_SLEEP_MS: u64 = pump_quant_junction::endpoint_retry::HELIUS_WS_RECONNECT.base_backoff_ms;
+const WS_RECONNECT_SLEEP_MS: u64 =
+    pump_quant_junction::endpoint_retry::HELIUS_WS_RECONNECT.base_backoff_ms;
 /// Maximum reconnect attempts with exponential backoff before falling back
 /// to graceful degradation. The backoff ladder is: 500ms → 1s → 2s → 4s → 8s
 /// (capped). After MAX_RECONNECT_ATTEMPTS failures, the daemon keeps the old
@@ -342,8 +343,16 @@ fn spawn_launch_bootstrap(data_dir: &str) -> Option<BootstrapChannels> {
                 er::LAUNCH_BOOTSTRAP_PAGE,
                 er::LAUNCH_BOOTSTRAP_WALK_RETRY_BUDGET,
             );
-            let out = lb::bootstrap_one(&cache, &rsrc, &mint, lb::Budget { max_pages: BOOTSTRAP_MAX_PAGES }, now)
-                .map_err(|o| format!("{mint} {o}"));
+            let out = lb::bootstrap_one(
+                &cache,
+                &rsrc,
+                &mint,
+                lb::Budget {
+                    max_pages: BOOTSTRAP_MAX_PAGES,
+                },
+                now,
+            )
+            .map_err(|o| format!("{mint} {o}"));
             if rsrc.retries.get() > 0 || rsrc.exhausted.get() > 0 {
                 eprintln!(
                     "[pq-daemon] {}: mint={mint} calls={} retries={} exhausted_pages={}",
@@ -2120,9 +2129,34 @@ fn main() -> ExitCode {
             pump_quant_junction::model_lifecycle::MIN_FREE_BYTES,
         );
         eprintln!("[pq-daemon] durable-state headroom at start: {h:?}");
+        // 6 h paper-run budget against THIS process's actual limits (cgroup memory.max/high, RLIMIT_NOFILE, free
+        // bytes on every written filesystem) and the REAL-TIME event-stream rate range. Reported, never assumed fine.
+        {
+            let hf = std::env::var("PQ_MODEL_HELD_FILE").unwrap_or_else(|_| {
+                pump_quant_junction::model_lifecycle::DEFAULT_HELD_FILE.to_string()
+            });
+            let b = pump_quant_junction::model_lifecycle::run_budget_now(
+                &[
+                    std::path::Path::new(&sf),
+                    std::path::Path::new(&hf),
+                    std::path::Path::new(EVENT_STREAM_PATH),
+                ],
+                23_400,
+            );
+            eprintln!("[pq-daemon] run budget (6h+30m, real-time stream rate): {b:?}");
+            if b.mem_ceiling == pump_quant_junction::model_lifecycle::MemCeiling::Unlimited {
+                eprintln!(
+                    "[pq-daemon] run budget: cgroup memory.max/high UNLIMITED; memory budget = host MemAvailable - 12% MemTotal floor (no cap assumed)"
+                );
+            }
+            if b.disk_ok != Some(true) || b.nofile_ok != Some(true) || b.mem_ok != Some(true) {
+                eprintln!("[pq-daemon] ALERT_RUN_BUDGET: a resource is short or unmeasured for the 6 h run: {b:?}");
+            }
+        }
         // Loss-stop valuation metric: recorded at run start, immutable for the run. PROVISIONAL (exec quote) until
         // the shadow slice supplies its estimate (a different metric id = a different run).
-        let m = engine.model_stop_pin_valuation_metric(pump_quant_app::stop_policy::ESTIMATOR_EXEC_QUOTE);
+        let m = engine
+            .model_stop_pin_valuation_metric(pump_quant_app::stop_policy::ESTIMATOR_EXEC_QUOTE);
         eprintln!("[pq-daemon] loss-stop valuation metric pinned for this run: {m}");
     }
     let mut model_stop_last_alert = Instant::now() - Duration::from_secs(3600);
@@ -4417,7 +4451,8 @@ fn main() -> ExitCode {
                 // budget plus the walk's named retry budget (endpoint_retry::bootstrap_walk_cost = 20 + 4).
                 let held_n = engine.model_held_mints().len() as u64;
                 let now_ms = session_start.elapsed().as_millis() as i64;
-                let cost = pump_quant_junction::endpoint_retry::bootstrap_walk_cost(BOOTSTRAP_MAX_PAGES);
+                let cost =
+                    pump_quant_junction::endpoint_retry::bootstrap_walk_cost(BOOTSTRAP_MAX_PAGES);
                 if !rpc_budget.try_discovery(now_ms, held_n, cost) {
                     break;
                 }

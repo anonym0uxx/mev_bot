@@ -589,6 +589,16 @@ pub const DISK_HARD_FLOOR_BYTES: u64 = 4 * GIB;
 /// replay of 670 s of captured wire). Not host-wide 12%, not the tool's 4 GiB.
 pub const RAM_FLOOR_BYTES: u64 = 12 * GIB;
 
+/// The cgroup memory CEILING that actually applies to this process: the lower of `memory.max` (OOM kill) and
+/// `memory.high` (reclaim throttling, which stalls the event loop before any kill). `None` = both unlimited.
+#[must_use]
+pub fn cgroup_mem_ceiling(max: Option<u64>, high: Option<u64>) -> Option<u64> {
+    match (max, high) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    }
+}
+
 /// Memory available to this process: host `MemAvailable` (kB) capped by its cgroup's remaining room
 /// (`memory.max` - `memory.current`, bytes; `None` max = unlimited). `None` when MemAvailable is unknown.
 #[must_use]

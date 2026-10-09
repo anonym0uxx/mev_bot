@@ -369,12 +369,20 @@ pub fn mem_available_for_self() -> Option<u64> {
     let t = std::fs::read_to_string("/proc/meminfo").ok()?;
     let (_, avail_kb) = pump_quant_app::stop_policy::parse_meminfo(&t);
     let cg = std::fs::read_to_string("/proc/self/cgroup").ok()?;
-    let rel = cg.lines().find_map(|l| l.strip_prefix("0::"))?.trim().to_string();
+    let rel = cg
+        .lines()
+        .find_map(|l| l.strip_prefix("0::"))?
+        .trim()
+        .to_string();
     let base = std::path::Path::new("/sys/fs/cgroup").join(rel.trim_start_matches('/'));
-    let max = std::fs::read_to_string(base.join("memory.max"))
-        .ok()
-        .and_then(|s| pump_quant_app::stop_policy::parse_cgroup_limit(&s).ok())
-        .unwrap_or(None);
+    let rd = |f: &str| {
+        std::fs::read_to_string(base.join(f))
+            .ok()
+            .and_then(|s| pump_quant_app::stop_policy::parse_cgroup_limit(&s).ok())
+            .unwrap_or(None)
+    };
+    // memory.high throttles (stalls) before memory.max kills: the lower one is the ceiling.
+    let max = pump_quant_app::stop_policy::cgroup_mem_ceiling(rd("memory.max"), rd("memory.high"));
     let cur = std::fs::read_to_string(base.join("memory.current"))
         .ok()
         .and_then(|s| s.trim().parse::<u64>().ok());
@@ -387,6 +395,232 @@ pub fn ram_bytes_ok() -> Option<bool> {
     pump_quant_app::stop_policy::bytes_ok(
         mem_available_for_self(),
         pump_quant_app::stop_policy::RAM_FLOOR_BYTES,
+    )
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// 6 h paper-run resource budget from REAL-TIME rates and the process's ACTUAL limits
+// (basis: /training/mh_build/proc/RESOURCE_BUDGET.md section 6).
+// ---------------------------------------------------------------------------------------------------------------
+
+/// Event-stream growth, bytes per REAL-TIME second. Keyed on the capture `recv_unix_ms`, never on accelerated replay
+/// wall time. A range, derived in RESOURCE_BUDGET.md section 6:
+/// * `lo`: s2 mean 755.7 tx/s x 596.5 B/tx (s1's measured stream bytes per captured tx).
+/// * `mid`: s1 measured mean, 405,446,105 B over 674 capture-s.
+/// * `hi`: s1 busiest measured 1-min stream window, 41,115,483 B/min.
+/// * `stress`: s1 busiest 1-min tx window (75,997 tx) x the cont_wire05/bM3a mix (1.7405 ev/tx x 436.6 B/ev). A
+///   heavier-schema tape at the peak rate. The start check uses this bound.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StreamRate {
+    /// Quiet segment mean.
+    pub lo_bps: u64,
+    /// Measured mean.
+    pub mid_bps: u64,
+    /// Measured peak 1-min window.
+    pub hi_bps: u64,
+    /// Cross-tape peak (upper bound).
+    pub stress_bps: u64,
+}
+
+/// The measured real-time event-stream rate range (bytes/s).
+pub const STREAM_RATE: StreamRate = StreamRate {
+    lo_bps: 450_750,
+    mid_bps: 601_552,
+    hi_bps: 685_258,
+    stress_bps: 962_505,
+};
+
+/// Bytes the run writes besides the event stream, upper bound for 6.5 h: flow.ckpt x2 (atomic replace) with x10
+/// growth margin (0.34 GB), held journal (~0.04 GB at the limP1 rate of 125 kB / 150 s), err.log + barrier/model
+/// logs (~0.03 GB). Rounded up to 0.5 GB.
+pub const NON_STREAM_BYTES_6H: u64 = 500_000_000;
+
+/// The run's disk need `(lo, mid, hi, stress)` in bytes for `run_s` real-time seconds (6 h + 30 min drain = 23_400).
+#[must_use]
+pub fn run_disk_need(rate: StreamRate, run_s: u64) -> (u64, u64, u64, u64) {
+    let f = |bps: u64| {
+        bps.saturating_mul(run_s)
+            .saturating_add(NON_STREAM_BYTES_6H)
+    };
+    (
+        f(rate.lo_bps),
+        f(rate.mid_bps),
+        f(rate.hi_bps),
+        f(rate.stress_bps),
+    )
+}
+
+/// Open files the daemon needs: measured 8 fds in steady state (limP1), plus a 64-fd margin for transient
+/// sockets (RPC, model HTTP workers, reconnects) and atomic-replace temp files.
+pub const FD_NEED: u64 = 8 + 64;
+
+/// The run's budget against the actual limits read at start. Every `None` input is UNMEASURED and makes the
+/// corresponding verdict `None` (never assumed fine).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunBudget {
+    /// Least free bytes over the written filesystems.
+    pub disk_free: Option<u64>,
+    /// `(lo, mid, hi, stress)` disk need, bytes.
+    pub disk_need: (u64, u64, u64, u64),
+    /// Free at start >= STRESS need + the soft floor (even the upper bound ends above the soft floor).
+    pub disk_ok: Option<bool>,
+    /// Soft RLIMIT_NOFILE.
+    pub nofile_soft: Option<u64>,
+    /// `nofile_soft >= FD_NEED`.
+    pub nofile_ok: Option<bool>,
+    /// The cgroup memory ceiling that applies (lower of memory.max / memory.high), or `Unlimited` when both are
+    /// `max`, or `Unmeasured` when a file could not be read/parsed.
+    pub mem_ceiling: MemCeiling,
+    /// Memory the run may use: host `MemAvailable` minus the operator's 12% free-RAM floor (`RAM_FLOOR_BPS` of
+    /// `MemTotal`), further capped by the cgroup room (`ceiling - memory.current`) only when a ceiling exists.
+    pub mem_budget: Option<u64>,
+    /// `mem_budget >= RAM_FLOOR_BYTES` (12 GiB = 2x the projected 6.5 h daemon VmHWM of 5.95 GB).
+    pub mem_ok: Option<bool>,
+}
+
+/// The cgroup memory ceiling as actually read. `Unlimited` is a MEASURED fact (`memory.max` = `memory.high` =
+/// "max"); it is never invented into a cap, and it is never confused with an unreadable file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemCeiling {
+    /// Both memory.max and memory.high are "max".
+    Unlimited,
+    /// The lower of memory.max / memory.high, bytes.
+    Bytes(u64),
+    /// The cgroup path or a limit file could not be read or parsed.
+    Unmeasured,
+}
+
+/// Memory budget for the run, bytes: host `MemAvailable` minus `floor_bps` of `MemTotal` (the free-RAM floor the
+/// host must keep), capped by `ceiling - cgroup_current` when the cgroup has a ceiling. `None` = unmeasured.
+#[must_use]
+pub fn mem_run_budget(
+    mem_total_kb: Option<u64>,
+    mem_available_kb: Option<u64>,
+    floor_bps: u64,
+    ceiling: MemCeiling,
+    cgroup_current: Option<u64>,
+) -> Option<u64> {
+    let total = mem_total_kb?.saturating_mul(1024);
+    let avail = mem_available_kb?.saturating_mul(1024);
+    let floor =
+        u64::try_from(u128::from(total) * u128::from(floor_bps) / 10_000).unwrap_or(u64::MAX);
+    let host = avail.saturating_sub(floor);
+    match ceiling {
+        MemCeiling::Unlimited => Some(host),
+        MemCeiling::Bytes(c) => Some(host.min(c.saturating_sub(cgroup_current?))),
+        MemCeiling::Unmeasured => None,
+    }
+}
+
+/// Read this process's cgroup v2 memory ceiling and `memory.current` (`/proc/self/cgroup`, `/sys/fs/cgroup/...`).
+#[must_use]
+pub fn cgroup_mem_ceiling_now() -> (MemCeiling, Option<u64>) {
+    let Some(base) = std::fs::read_to_string("/proc/self/cgroup")
+        .ok()
+        .and_then(|cg| {
+            cg.lines().find_map(|l| l.strip_prefix("0::")).map(|r| {
+                std::path::Path::new("/sys/fs/cgroup").join(r.trim().trim_start_matches('/'))
+            })
+        })
+    else {
+        return (MemCeiling::Unmeasured, None);
+    };
+    let rd = |f: &str| {
+        std::fs::read_to_string(base.join(f))
+            .ok()
+            .and_then(|s| pump_quant_app::stop_policy::parse_cgroup_limit(&s).ok())
+    };
+    let cur = std::fs::read_to_string(base.join("memory.current"))
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok());
+    let ceiling = match (rd("memory.max"), rd("memory.high")) {
+        (Some(m), Some(h)) => match pump_quant_app::stop_policy::cgroup_mem_ceiling(m, h) {
+            None => MemCeiling::Unlimited,
+            Some(b) => MemCeiling::Bytes(b),
+        },
+        _ => MemCeiling::Unmeasured,
+    };
+    (ceiling, cur)
+}
+
+/// Pure budget verdict (tested); [`run_budget_now`] feeds it the live readings.
+#[must_use]
+pub fn run_budget(
+    disk_free: Option<u64>,
+    nofile_soft: Option<u64>,
+    mem_ceiling: MemCeiling,
+    mem_budget: Option<u64>,
+    run_s: u64,
+) -> RunBudget {
+    let need = run_disk_need(STREAM_RATE, run_s);
+    RunBudget {
+        disk_free,
+        disk_need: need,
+        disk_ok: disk_free.map(|f| {
+            f >= need
+                .3
+                .saturating_add(pump_quant_app::stop_policy::DISK_SOFT_FLOOR_BYTES)
+        }),
+        nofile_soft,
+        nofile_ok: nofile_soft.map(|n| n >= FD_NEED),
+        mem_ceiling,
+        mem_budget,
+        mem_ok: pump_quant_app::stop_policy::bytes_ok(
+            mem_budget,
+            pump_quant_app::stop_policy::RAM_FLOOR_BYTES,
+        ),
+    }
+}
+
+/// Soft `RLIMIT_NOFILE` of this process from `/proc/self/limits` (`None` = unreadable; "unlimited" = u64::MAX).
+#[must_use]
+pub fn nofile_soft_limit() -> Option<u64> {
+    let t = std::fs::read_to_string("/proc/self/limits").ok()?;
+    parse_nofile_soft(&t)
+}
+
+/// Parse the soft "Max open files" value from `/proc/<pid>/limits` text.
+#[must_use]
+pub fn parse_nofile_soft(limits: &str) -> Option<u64> {
+    let l = limits.lines().find(|l| l.starts_with("Max open files"))?;
+    let v = l
+        .trim_start_matches("Max open files")
+        .split_whitespace()
+        .next()?;
+    if v == "unlimited" {
+        Some(u64::MAX)
+    } else {
+        v.parse().ok()
+    }
+}
+
+/// The run budget against this process's live limits, over the paths it writes (least free decides).
+#[must_use]
+pub fn run_budget_now(write_paths: &[&Path], run_s: u64) -> RunBudget {
+    let mut disk: Option<u64> = None;
+    let mut unmeasured = false;
+    for p in write_paths {
+        match free_bytes(p) {
+            Some(f) => disk = Some(disk.map_or(f, |m| m.min(f))),
+            None => unmeasured = true,
+        }
+    }
+    let (ceiling, cur) = cgroup_mem_ceiling_now();
+    let (total_kb, avail_kb) = std::fs::read_to_string("/proc/meminfo")
+        .map(|t| pump_quant_app::stop_policy::parse_meminfo(&t))
+        .unwrap_or((None, None));
+    run_budget(
+        if unmeasured { None } else { disk },
+        nofile_soft_limit(),
+        ceiling,
+        mem_run_budget(
+            total_kb,
+            avail_kb,
+            pump_quant_app::stop_policy::RAM_FLOOR_BPS,
+            ceiling,
+            cur,
+        ),
+        run_s,
     )
 }
 
