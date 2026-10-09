@@ -90,6 +90,7 @@ pub mod safety_off;
 pub mod scalp;
 pub mod screen;
 pub mod shadow;
+pub mod shadow_pool;
 pub mod social_earn;
 pub mod social_ingest;
 pub mod social_plane;
