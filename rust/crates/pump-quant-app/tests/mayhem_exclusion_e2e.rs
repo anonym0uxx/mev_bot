@@ -369,6 +369,53 @@ fn control_a_management_add_on_a_canonical_curve_is_placed() {
 }
 
 #[test]
+fn an_add_placed_on_a_canonical_curve_that_turns_mayhem_before_landing_is_never_filled_from_curve_formulas(
+) {
+    // Reaches the ADD landing-state guard (model_mgmt_add_state) PAST the placement-time refusal: the ADD is
+    // placed while the curve is canonical, then the curve is observed Mayhem before the landing state arrives.
+    let (mut e, _calls) = armed(0, ADD);
+    drive(&mut e, &events(Some(false)), 8);
+    curve(&mut e, t_last() + 1_500, 2_100, 200_000_000);
+    ticks(&mut e, 6);
+    assert!(e.model_position_open(&MINT), "{:?}", e.model_lane_report());
+    let (mut clock, mut slot) = (t_last() + 1_500, 2_100u64);
+    let mut placed = false;
+    for n in 0..20u32 {
+        clock += 5_000;
+        slot += 1;
+        print(&mut e, 41 + n, clock, slot);
+        ticks(&mut e, 2);
+        if e.model_mgmt_pending(&MINT)
+            .is_some_and(|p| p.1 == pump_quant_app::engine::model_manage::MgmtKind::Add)
+        {
+            placed = true;
+            break;
+        }
+        curve(&mut e, clock, slot, 200_000_000);
+        ticks(&mut e, 2);
+    }
+    assert!(
+        placed,
+        "an ADD order was placed on the canonical curve: {:?}",
+        e.model_lane_report()
+    );
+    assert!(e.model_mgmt_fills().is_empty(), "nothing filled yet");
+    e.tick(mode(true));
+    for n in 0..20u32 {
+        clock += 5_000;
+        slot += 1;
+        curve(&mut e, clock, slot, 200_000_000);
+        print(&mut e, 61 + n, clock, slot);
+        ticks(&mut e, 2);
+    }
+    assert!(
+        e.model_mgmt_fills().is_empty(),
+        "no ADD filled from Mayhem reserves: {:?}",
+        e.model_lane_report()
+    );
+}
+
+#[test]
 fn reduce_is_never_blocked_by_the_mayhem_exclusion() {
     let e = held_then_manage(REDUCE, true);
     assert_eq!(rep(&e, "mgmt:refuse:add_"), 0);
