@@ -5,9 +5,9 @@
 //! table returns `None` on 16 of the 27 payloads, and dropping cashback breaks the 6 cashback sells and 4 cashback exact-in buys.
 
 use pump_quant_protocol::pumpswap_event::{
-    buy_exact_quote_in_cb, cashback_field, cashback_field_of_event, cashback_fields,
-    pre_cashback_tail_end, swap_event_payload, virtual_quote_offset, CashbackField,
-    SWAP_EVENT_FIXED_LEN,
+    buy_exact_quote_in_cb, buy_layout_ix_name, cashback_field, cashback_field_of_event,
+    cashback_fields, pre_cashback_tail_end, swap_event_payload, swap_layout_semantics_ok,
+    virtual_quote_offset, CashbackField, BUY_IX_NAME_OFFSET, CASHBACK_BPS_MAX, SWAP_EVENT_FIXED_LEN,
 };
 use pump_quant_protocol::pumpswap_fees::{sell_net_quote_cb, Fees};
 use serde_json::Value;
@@ -245,4 +245,104 @@ fn unknown_layouts_are_unsupported_not_missing_not_zero() {
             assert_eq!(s[i] == s[j], i == j);
         }
     }
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// LAYOUT SEMANTICS binding: discriminator + a known length is NOT enough for `Known`. The bytes must decode
+// as that layout (buy: `ix_name` string = this length's name, ending where the pair starts; Borsh bools at
+// `track_volume` / `can_boost`), and the rate must be a rate (<= 10_000 bps). A same-length payload with other
+// semantics is `Unsupported`, never a misread pair.
+// ---------------------------------------------------------------------------------------------------------
+
+/// Every real captured event passes the semantic check (the check is not vacuous-by-refusal).
+#[test]
+fn every_captured_event_passes_layout_semantics() {
+    for v in &events() {
+        let data = hex(v["data_hex"].as_str().unwrap());
+        let buy = v["buy"].as_bool().unwrap();
+        let p = swap_event_payload(&data, buy).unwrap();
+        assert!(swap_layout_semantics_ok(buy, p), "{}", v["key"]);
+        if buy {
+            assert_eq!(
+                &p[BUY_IX_NAME_OFFSET + 4..BUY_IX_NAME_OFFSET + 4 + buy_layout_ix_name(p.len()).unwrap().len()],
+                buy_layout_ix_name(p.len()).unwrap(),
+                "{}",
+                v["key"]
+            );
+        }
+    }
+}
+
+/// NEGATIVE: real events, same discriminator and same (known) length, but different layout semantics.
+/// Each mutation must turn `Known` into `Unsupported { layout_len }` with the unchanged length.
+#[test]
+fn same_length_payload_with_other_layout_semantics_is_unsupported_not_known() {
+    let unsupported = |buy: bool, q: &[u8], what: &str, key: &str| {
+        let c = cashback_field(buy, q);
+        assert_eq!(
+            c,
+            CashbackField::Unsupported {
+                layout_len: q.len() as u16
+            },
+            "{key}: {what}"
+        );
+        assert_eq!(c.known(), None, "{key}: {what}");
+        assert_eq!(cashback_fields(buy, q), None, "{key}: {what}");
+    };
+    let (mut n_buy, mut n_sell) = (0, 0);
+    for v in &events() {
+        let data = hex(v["data_hex"].as_str().unwrap());
+        let buy = v["buy"].as_bool().unwrap();
+        let key = v["key"].as_str().unwrap();
+        let p = swap_event_payload(&data, buy).unwrap().to_vec();
+        assert!(matches!(cashback_field(buy, &p), CashbackField::Known { .. }));
+        let vo = virtual_quote_offset(buy, p.len()).unwrap();
+        let cb_at = if buy { vo - 32 } else { 352 };
+        // (a) rate that is not a rate (> 100%).
+        let mut q = p.clone();
+        q[cb_at..cb_at + 8].copy_from_slice(&(CASHBACK_BPS_MAX + 1).to_le_bytes());
+        unsupported(buy, &q, "bps > 10000", key);
+        // (b) `can_boost` (vo + 16) not a Borsh bool.
+        let mut q = p.clone();
+        q[vo + 16] = 2;
+        unsupported(buy, &q, "can_boost not bool", key);
+        if buy {
+            // (c) ix_name of ANOTHER layout at this length: swap the bytes, keep the length prefix.
+            let name = buy_layout_ix_name(p.len()).unwrap();
+            let mut q = p.clone();
+            q[BUY_IX_NAME_OFFSET + 4] ^= 0x20; // 'b' -> 'B'
+            unsupported(buy, &q, "ix_name bytes differ", key);
+            // (d) declared ix_name length differs (string would end elsewhere -> pair shifted).
+            let mut q = p.clone();
+            q[BUY_IX_NAME_OFFSET..BUY_IX_NAME_OFFSET + 4]
+                .copy_from_slice(&(name.len() as u32 + 3).to_le_bytes());
+            unsupported(buy, &q, "ix_name length differs", key);
+            // (e) `track_volume` (352) not a Borsh bool.
+            let mut q = p.clone();
+            q[352] = 7;
+            unsupported(buy, &q, "track_volume not bool", key);
+            n_buy += 1;
+        } else {
+            n_sell += 1;
+        }
+    }
+    assert_eq!((n_buy, n_sell), (19, 8));
+}
+
+/// NEGATIVE (cross-layout): a real `buy` event (ix_name "buy") re-sized to an exact-in length is read
+/// under the exact-in table: the name does not match the length, so it is refused, not read at offset 415.
+#[test]
+fn a_buy_payload_padded_to_an_exact_in_length_is_unsupported() {
+    let v = events()
+        .into_iter()
+        .find(|v| v["key"].as_str().unwrap() == "buy:481:buy:false")
+        .unwrap();
+    let data = hex(v["data_hex"].as_str().unwrap());
+    let mut q = swap_event_payload(&data, true).unwrap().to_vec();
+    q.resize(496, 0);
+    assert!(virtual_quote_offset(true, q.len()).is_some(), "496 is a known length");
+    assert_eq!(
+        cashback_field(true, &q),
+        CashbackField::Unsupported { layout_len: 496 }
+    );
 }
