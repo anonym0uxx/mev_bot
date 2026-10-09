@@ -128,6 +128,8 @@ pub struct AmmSwapFacts {
     pub fee_parts: Option<(u32, u32, u32)>,
     /// `Pool::virtual_quote_reserves` from the event; `None` when the layout is unverified.
     pub virtual_quote: Option<u64>,
+    /// The event's cashback pair with layout provenance (known / missing / unsupported); never zero-filled.
+    pub cashback: pump_quant_protocol::pumpswap_event::CashbackField,
     /// The trader bought the token.
     pub is_buy: bool,
     /// Tokens received (buy) / given (sell).
@@ -188,6 +190,15 @@ pub fn decode_amm_swaps(tx: &LaserStreamTx) -> (Vec<AmmSwapFacts>, u32) {
         }
         let Some(ev) = decode_pumpswap_event(&ix.data) else {
             continue;
+        };
+        let cashback = match &ev {
+            PumpSwapEvent::Buy(_) => {
+                pump_quant_protocol::pumpswap_event::cashback_field_of_event(&ix.data, true)
+            }
+            PumpSwapEvent::Sell(_) => {
+                pump_quant_protocol::pumpswap_event::cashback_field_of_event(&ix.data, false)
+            }
+            PumpSwapEvent::CreatePool(_) => continue,
         };
         let (pool, user, buy, tok_res, quote_res, tok_amt, quote_amt, lp, prot, creator, vq) =
             match ev {
@@ -320,6 +331,7 @@ pub fn decode_amm_swaps(tx: &LaserStreamTx) -> (Vec<AmmSwapFacts>, u32) {
                 ))
             }),
             virtual_quote: vq,
+            cashback,
             is_buy: buy,
             token_amount: tok_amt,
             quote_lamports: quote_amt,
@@ -763,6 +775,7 @@ pub fn instructions_to_events_with_meta(
                         fee_bps: f.fee_bps,
                         fee_parts: f.fee_parts,
                         virtual_quote: f.virtual_quote,
+                        cashback: f.cashback,
                         is_buy: f.is_buy,
                         token_amount: f.token_amount,
                         quote_lamports: f.quote_lamports,

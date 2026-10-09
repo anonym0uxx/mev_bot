@@ -24,7 +24,10 @@
 use pump_quant_protocol::curve_sell_quote::{
     curve_buy_exact_in, curve_sell_from_reserves, CurveSellRefusal,
 };
-use pump_quant_protocol::pumpswap_fees::{decode_fee_config, sell_net_quote, Fees};
+use pump_quant_protocol::pumpswap_event::CashbackField;
+use pump_quant_protocol::pumpswap_fees::{
+    decode_fee_config, sell_net_quote, sell_net_quote_cb, Fees,
+};
 
 /// Measured p50 network+priority fee of one landed leg (`FEE_QUANTILES_C16.json`, `meta.fee`).
 pub const NETWORK_FEE_P50_LAMPORTS: u64 = 10_000;
@@ -62,8 +65,12 @@ pub struct BuyQuote {
     pub spend: u64,
     /// The part of `spend` that bought tokens.
     pub net_in: u64,
-    /// Venue fees inside `spend` (protocol + creator/cashback, or lp + protocol + creator).
+    /// Venue fees inside `spend` (protocol + creator/cashback, or lp + protocol + creator + cashback).
     pub venue_fees: u64,
+    /// Of `venue_fees`, the cashback credited to the buyer's claimable account: an ENTITLEMENT, not cash.
+    /// Already a cost inside `spend` (counted once); never added back to cash or proceeds. 0 unless the
+    /// landing event's layout carried a known cashback rate.
+    pub cashback_entitlement: u64,
     /// Tokens delivered.
     pub tokens: u64,
 }
@@ -90,8 +97,9 @@ pub enum QuoteRefusal {
     CurveRealSolInsufficient { max_tokens: u64 },
     /// The curve is complete (migrated) — no curve route.
     CurveComplete,
-    /// Pool event carries no coin-creator fee: the coin may be a cashback coin whose cashback rate
-    /// the engine does not receive. Refused rather than assumed zero.
+    /// Pool event carries no coin-creator fee AND its cashback rate is not known (older / unknown event
+    /// layout, or a stream schema that did not record it): the coin may be a cashback coin. Refused rather
+    /// than assumed zero. Not raised when the landing event's layout carried the cashback pair.
     AmmCashbackUnknown,
     /// Pool economics (fee parts / virtual quote) missing on the landing event.
     AmmEconomicsMissing,
@@ -138,6 +146,8 @@ pub fn curve_buy(
         spend: u64::try_from(used).map_err(|_| QuoteRefusal::Unpriceable)?,
         net_in: u64::try_from(q.net_in).map_err(|_| QuoteRefusal::Unpriceable)?,
         venue_fees: u64::try_from(fees).map_err(|_| QuoteRefusal::Unpriceable)?,
+        // Creator vs cashback recipient is not carried on the curve path (open item); never an entitlement here.
+        cashback_entitlement: 0,
         tokens: u64::try_from(q.tokens_out).map_err(|_| QuoteRefusal::Unpriceable)?,
     })
 }
@@ -175,79 +185,118 @@ pub fn curve_sell(
     }
 }
 
-/// Pool fee parts from the landing event. A zero coin-creator fee is refused: on every captured
-/// current event (27/27) creator fee and cashback are mutually exclusive, so `cr == 0` means the
-/// cashback rate is unknown to the engine (the event format does not carry it through).
-fn amm_parts(parts: Option<(u32, u32, u32)>) -> Result<Fees, QuoteRefusal> {
+/// Pool fee stack from the landing event: (lp, protocol, creator) bps plus the cashback bps.
+///
+/// * The event's layout carried the cashback pair (`CashbackField::Known`): the four rates are priced as
+///   reported. A zero cashback (or a zero creator fee) is a KNOWN ZERO, priced as zero.
+/// * Otherwise (older layout / unknown layout / not recorded): the legacy rule. A zero coin-creator fee is
+///   refused `AmmCashbackUnknown` (27/27 captured current events have creator fee and cashback mutually
+///   exclusive, so `cr == 0` may be a cashback coin whose rate is not known); a non-zero creator fee is
+///   priced with no cashback component, exactly as before this field existed.
+fn amm_parts(
+    parts: Option<(u32, u32, u32)>,
+    cashback: CashbackField,
+) -> Result<(Fees, u64), QuoteRefusal> {
     let (lp, pr, cr) = parts.ok_or(QuoteRefusal::AmmEconomicsMissing)?;
-    if cr == 0 {
-        return Err(QuoteRefusal::AmmCashbackUnknown);
-    }
-    Ok(Fees {
-        lp_bps: u64::from(lp),
-        protocol_bps: u64::from(pr),
-        creator_bps: u64::from(cr),
-    })
+    let cb_bps = match cashback.known() {
+        Some((bps, _)) => bps,
+        None if cr == 0 => return Err(QuoteRefusal::AmmCashbackUnknown),
+        None => 0,
+    };
+    Ok((
+        Fees {
+            lp_bps: u64::from(lp),
+            protocol_bps: u64::from(pr),
+            creator_bps: u64::from(cr),
+        },
+        cb_bps,
+    ))
 }
 
-/// Pool BUY with an all-in spend (`buy_exact_quote_in`, verified on independent transactions).
+/// Pool BUY with an all-in spend (`buy_exact_quote_in`, verified on independent transactions; with a known
+/// cashback rate, `buy_exact_quote_in_cb`, verified on the captured cashback-coin exact-in buys).
 pub fn amm_buy(
     base: u64,
     quote: u64,
     vq: Option<u64>,
     parts: Option<(u32, u32, u32)>,
+    cashback: CashbackField,
     spend: u64,
 ) -> Result<BuyQuote, QuoteRefusal> {
-    let f = amm_parts(parts)?;
+    let (f, cb_bps) = amm_parts(parts, cashback)?;
     let vq = vq.ok_or(QuoteRefusal::AmmEconomicsMissing)?;
-    let q = pump_quant_protocol::pumpswap_event::buy_exact_quote_in(
+    let q = pump_quant_protocol::pumpswap_event::buy_exact_quote_in_cb(
         u128::from(base),
         u128::from(quote),
         u128::from(vq),
         u128::from(spend),
-        u128::from(f.lp_bps),
-        u128::from(f.protocol_bps),
-        u128::from(f.creator_bps),
+        (
+            u128::from(f.lp_bps),
+            u128::from(f.protocol_bps),
+            u128::from(f.creator_bps),
+        ),
+        u128::from(cb_bps),
     )
     .ok_or(QuoteRefusal::Unpriceable)?;
     let net_in = u64::try_from(q.net_quote_in).map_err(|_| QuoteRefusal::Unpriceable)?;
     let fee = |bps: u64| (u128::from(net_in) * u128::from(bps)).div_ceil(10_000);
-    let fees = fee(f.lp_bps) + fee(f.protocol_bps) + fee(f.creator_bps);
+    let cb = u64::try_from(fee(cb_bps)).map_err(|_| QuoteRefusal::Unpriceable)?;
+    let fees = fee(f.lp_bps) + fee(f.protocol_bps) + fee(f.creator_bps) + u128::from(cb);
     let fees = u64::try_from(fees).map_err(|_| QuoteRefusal::Unpriceable)?;
     Ok(BuyQuote {
         spend: net_in.saturating_add(fees),
         net_in,
         venue_fees: fees,
+        cashback_entitlement: cb,
         tokens: u64::try_from(q.base_out).map_err(|_| QuoteRefusal::Unpriceable)?,
     })
 }
 
-/// Pool SELL of exactly `tokens` (SDK `sellBaseInput`, verified on independent transactions).
+/// Pool SELL of exactly `tokens` (SDK `sellBaseInput`, verified on independent transactions; with a known
+/// cashback rate the cashback is withheld from net, verified exact on the captured cashback-coin sells).
 pub fn amm_sell(
     base: u64,
     quote: u64,
     vq: Option<u64>,
     parts: Option<(u32, u32, u32)>,
+    cashback: CashbackField,
     tokens: u64,
 ) -> Result<SellQuote, QuoteRefusal> {
-    let f = amm_parts(parts)?;
+    let (f, cb_bps) = amm_parts(parts, cashback)?;
     let vq = vq.ok_or(QuoteRefusal::AmmEconomicsMissing)?;
     if tokens == 0 {
         return Err(QuoteRefusal::Unpriceable);
     }
-    let q = sell_net_quote(
-        u128::from(base),
-        u128::from(quote),
-        u128::from(vq),
-        u128::from(tokens),
-        f,
-    )
-    .ok_or(QuoteRefusal::AmmVaultInsufficient)?;
-    let fees = q.lp_fee + q.protocol_fee + q.creator_fee;
+    let (q, cb) = if cb_bps == 0 {
+        (
+            sell_net_quote(
+                u128::from(base),
+                u128::from(quote),
+                u128::from(vq),
+                u128::from(tokens),
+                f,
+            )
+            .ok_or(QuoteRefusal::AmmVaultInsufficient)?,
+            0u128,
+        )
+    } else {
+        sell_net_quote_cb(
+            u128::from(base),
+            u128::from(quote),
+            u128::from(vq),
+            u128::from(tokens),
+            f,
+            cb_bps,
+        )
+        .ok_or(QuoteRefusal::AmmVaultInsufficient)?
+    };
+    // The cashback is withheld from the seller's immediate proceeds: it is inside `venue_fees` (a cost,
+    // counted once) and reported separately as the claimable entitlement. `net` is what the swap credits.
+    let fees = q.lp_fee + q.protocol_fee + q.creator_fee + cb;
     Ok(SellQuote {
         gross: u64::try_from(q.gross).map_err(|_| QuoteRefusal::Unpriceable)?,
         venue_fees: u64::try_from(fees).map_err(|_| QuoteRefusal::Unpriceable)?,
-        cashback_withheld: 0,
+        cashback_withheld: u64::try_from(cb).map_err(|_| QuoteRefusal::Unpriceable)?,
         net: u64::try_from(q.net).map_err(|_| QuoteRefusal::Unpriceable)?,
     })
 }
@@ -307,7 +356,14 @@ mod tests {
     #[test]
     fn a_pool_event_without_creator_fee_is_cashback_unknown_not_zero() {
         assert_eq!(
-            amm_sell(1_000_000, 1_000_000, Some(0), Some((2, 93, 0)), 10),
+            amm_sell(
+                1_000_000,
+                1_000_000,
+                Some(0),
+                Some((2, 93, 0)),
+                CashbackField::Missing { layout_len: 352 },
+                10
+            ),
             Err(QuoteRefusal::AmmCashbackUnknown)
         );
     }
