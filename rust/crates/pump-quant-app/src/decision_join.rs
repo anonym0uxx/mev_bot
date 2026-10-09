@@ -131,6 +131,14 @@ pub enum JoinRefusal {
     /// observed capture-window, receive-order count) is not defined for it: the launch was not
     /// observed by our own feed. Named, never served as 0 or as an RPC-derived lifetime count.
     CreatorCountUndefinedChainOnly,
+    /// M2 cohort freeze: the launch is in the registry only from the pre-cutoff SEED; our feed never
+    /// saw its `LaunchObserved`. Entries are only for launches our feed observed.
+    LaunchSeedOnlyNotFeedObserved,
+    /// M2: the persistent creator registry is untrusted (unreadable / incompatible log, seed
+    /// mismatch, or a failed durable append). `why` is the stable registry refusal label.
+    CreatorRegistryUntrusted {
+        why: &'static str,
+    },
     /// The cache holds a print newer than the decision clock.
     FutureStateInCache {
         newest_ms: i64,
@@ -200,6 +208,8 @@ impl JoinRefusal {
             JoinRefusal::CreatorCountUndefinedChainOnly => {
                 "join_creator_count_undefined_chain_only"
             }
+            JoinRefusal::LaunchSeedOnlyNotFeedObserved => "join_launch_seed_only_not_feed_observed",
+            JoinRefusal::CreatorRegistryUntrusted { .. } => "join_creator_registry_untrusted",
             JoinRefusal::FutureStateInCache { .. } => "join_future_state_in_cache",
             JoinRefusal::State(c) => c.as_str(),
             JoinRefusal::EnrichmentIdentityMissing { .. } => "join_enrichment_identity_missing",
@@ -247,6 +257,9 @@ pub struct PromptSnapshot {
     pub prompt_digest: u64,
     /// The cache's view of the mint when the snapshot was cut, for post-inference revalidation.
     pub marker: StateMarker,
+    /// M2 decision-record provenance of the `DEV HISTORY` count (registry seed/log + label).
+    /// Never rendered into the prompt.
+    pub creator_provenance: String,
 }
 
 /// Cheap fingerprint of one mint's cache state.
@@ -552,6 +565,12 @@ pub struct DecisionCache {
     /// Bumped on every change to the unresolved-gap set, so the persister can skip unchanged ticks
     /// with one integer compare.
     missing_rev: u64,
+    /// M2: set when the persistent creator registry could not be established or a durable append
+    /// failed. Every ENTRY prompt refuses by this name (management of held exposure is unaffected).
+    creator_registry_refusal: Option<&'static str>,
+    /// M2: provenance tag carried on every entry snapshot (decision record), with the
+    /// `observed history, not lifetime / complete chain coverage` label.
+    creator_provenance: String,
 }
 
 impl Default for DecisionCache {
@@ -611,7 +630,63 @@ impl DecisionCache {
             counters: IngestCounters::default(),
             missing_rev: 0,
             history_continuity_unknown: false,
+            creator_registry_refusal: None,
+            creator_provenance: format!(
+                "creator_registry=live_feed_only_unpersisted|{}",
+                crate::creator_registry::PROVENANCE_LABEL
+            ),
         }
+    }
+
+    /// M2: seed one launch from the trained table into the creator registry ONLY. It does not mark
+    /// the launch as observed by our feed (`launch_known` stays false), so a seed-only market still
+    /// refuses entry by name (cohort freeze). Returns false on a conflicting re-observation / cap.
+    pub fn seed_creator_launch(
+        &mut self,
+        mint: [u8; 32],
+        creator: [u8; 32],
+        launch_unix_ms: i64,
+    ) -> bool {
+        let creator_id =
+            pump_quant_wallet_graph::tracked_wallet_matcher::wallet_entity_id(&creator);
+        self.creators.observe(mint, creator_id, launch_unix_ms)
+    }
+
+    /// M2: whether the creator registry already holds `mint` (dedup identity).
+    #[must_use]
+    pub fn creator_launch_held(&self, mint: &[u8; 32]) -> bool {
+        self.creators.get(mint).is_some()
+    }
+
+    /// M2: the registry's `DEV HISTORY` inputs for `mint` (read-only view, for parity checks).
+    #[must_use]
+    pub fn creator_dev_history(
+        &self,
+        mint: &[u8; 32],
+    ) -> pump_quant_proposal::decision::DevHistoryDecision {
+        self.creators.dev_history(mint)
+    }
+
+    /// M2: number of launches the creator registry holds.
+    #[must_use]
+    pub fn creator_registry_len(&self) -> usize {
+        self.creators.len()
+    }
+
+    /// M2: raise the named entry refusal for an untrusted creator registry.
+    pub fn set_creator_registry_refusal(&mut self, why: &'static str) {
+        self.creator_registry_refusal = Some(why);
+    }
+
+    /// M2: the current named registry refusal, if any.
+    #[must_use]
+    pub fn creator_registry_refusal(&self) -> Option<&'static str> {
+        self.creator_registry_refusal
+    }
+
+    /// M2: set the provenance tag carried on every entry snapshot.
+    pub fn set_creator_provenance(&mut self, tag: String) {
+        self.creator_provenance = tag;
     }
 
     #[must_use]
@@ -1297,6 +1372,10 @@ impl DecisionCache {
         let Some(&launch) = self.launch_ms.get(mint) else {
             return Err(if self.chain_launch.contains_key(mint) {
                 JoinRefusal::CreatorCountUndefinedChainOnly
+            } else if self.creators.get(mint).is_some() {
+                // Cohort freeze: the launch is known only from the SEED (trained table, before the
+                // cutoff), not from our own feed. Named, never served.
+                JoinRefusal::LaunchSeedOnlyNotFeedObserved
             } else {
                 JoinRefusal::LaunchUnknown
             });
@@ -1304,6 +1383,11 @@ impl DecisionCache {
         let dev = self.creators.dev_history(mint);
         if dev.creator_known == 0 {
             return Err(JoinRefusal::LaunchUnknown);
+        }
+        if audience == Audience::Entry {
+            if let Some(why) = self.creator_registry_refusal {
+                return Err(JoinRefusal::CreatorRegistryUntrusted { why });
+            }
         }
         // Launch time and first observation are different facts. The trained contract measures
         // `age_s` from the first OBSERVED trade (the StateLedger does the same), so a history that
@@ -1474,6 +1558,7 @@ impl DecisionCache {
                 last_recv_ms: mc_last_recv_ms,
                 n_accepted: mc_n_accepted,
             },
+            creator_provenance: self.creator_provenance.clone(),
         })
     }
 
