@@ -197,3 +197,39 @@ fn the_production_model_client_makes_exactly_one_attempt_per_ask() {
     std::thread::sleep(Duration::from_millis(300));
     assert_eq!(hits.load(Ordering::SeqCst), MODEL_ASK.max_attempts as usize);
 }
+
+/// Daemon wiring pin (SOURCE level, not behavioural: the WS reconnect and LaserStream respawn loops live inline in
+/// pq_daemon `main` and have no seam). The daemon's loop constants are bound to the named bounds, and every loop /
+/// guard uses them; a hard-coded or removed bound turns this red.
+#[test]
+fn daemon_reconnect_and_respawn_loops_are_bound_to_the_named_bounds() {
+    let src = include_str!("../src/bin/pq_daemon.rs");
+    let flat: String = src.split_whitespace().collect::<Vec<_>>().join(" ");
+    for pin in [
+        "const WS_RECONNECT_SLEEP_MS: u64 = pump_quant_junction::endpoint_retry::HELIUS_WS_RECONNECT.base_backoff_ms;",
+        "const MAX_RECONNECT_ATTEMPTS: u32 = pump_quant_junction::endpoint_retry::HELIUS_WS_RECONNECT.max_attempts;",
+        "const RECONNECT_BACKOFF_CAP_MS: u64 = pump_quant_junction::endpoint_retry::HELIUS_WS_RECONNECT.cap_backoff_ms;",
+        "const LS_RESPAWN_COOLDOWN_SECS: u64 = pump_quant_junction::endpoint_retry::LASERSTREAM_RESPAWN.base_backoff_ms / 1_000;",
+        "const LS_MAX_RESPAWN_ATTEMPTS: u32 = pump_quant_junction::endpoint_retry::LASERSTREAM_RESPAWN.max_attempts;",
+        "if ls_respawn_count >= LS_MAX_RESPAWN_ATTEMPTS {",
+        "now.duration_since(t).as_secs() >= LS_RESPAWN_COOLDOWN_SECS",
+        "ls_respawn_count += 1;",
+    ] {
+        assert_eq!(flat.matches(pin).count(), 1, "daemon wiring pin missing: {pin}");
+    }
+    // Four Helius WS reconnect loops (startup, force, Err-path, stale), each bounded and on the capped ladder.
+    assert_eq!(
+        flat.matches("for _ in 0..MAX_RECONNECT_ATTEMPTS {").count(),
+        4
+    );
+    assert_eq!(
+        flat.matches("backoff_ms = (backoff_ms * 2).min(RECONNECT_BACKOFF_CAP_MS);")
+            .count(),
+        4
+    );
+    assert_eq!(
+        flat.matches("let mut backoff_ms = WS_RECONNECT_SLEEP_MS;")
+            .count(),
+        4
+    );
+}

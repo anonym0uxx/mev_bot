@@ -387,4 +387,8 @@ fn mem_budget_is_mem_available_minus_the_12pct_floor_and_no_cap_is_invented() {
     assert_eq!(live.mem_ceiling, c);
     assert!(live.mem_budget.is_some());
     assert!(live.nofile_soft.is_some() && live.disk_free.is_some());
+    // One unmeasurable written path makes the whole disk verdict unmeasured (never the other paths' minimum).
+    let bad = std::path::Path::new("/proc/pq_no_such_dir/x/event_stream.jsonl");
+    let partial = run_budget_now(&[std::env::temp_dir().as_path(), bad], 23_400);
+    assert_eq!((partial.disk_free, partial.disk_ok), (None, None));
 }
