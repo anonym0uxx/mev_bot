@@ -124,6 +124,11 @@ fn captured_history_through_the_real_engine_reports_coverage() {
                         recv_unix_ms: Some(t),
                         slot: v["slot"].as_u64().expect("slot"),
                     });
+                    e.tick(AppEvent::CurveModeObserved {
+                        mint: mint,
+                        mayhem: false,
+                        slot: 0,
+                    });
                 }
                 n_market_trades += 1;
                 e.tick(AppEvent::MarketTrade {

@@ -1147,17 +1147,6 @@ impl Engine {
             self.mrep("skip:held_or_pending");
             return Admit::Ineligible;
         }
-        // Operator decision 2026-10-09: Mayhem-mode coins are outside the paper cohort; an unknown mode is
-        // refused too (fail-closed). Before the prompt is cut, so an excluded market never reaches the model.
-        if let Some(x) = self.model_curve_mode_exclusion(&mint) {
-            if self.model_last_refusal.len() < REGISTRY_CAP {
-                self.model_last_refusal.insert(mint, x.as_str().to_string());
-            }
-            let (venue, _, _) = self.model_cache.describe(&mint, clock);
-            self.mrep(format!("refuse:{}|venue={venue}", x.as_str()));
-            self.model_uniq(x.as_str(), &mint, venue);
-            return Admit::Ineligible;
-        }
         if self
             .model_last_ask
             .get(&mint)
@@ -1185,6 +1174,18 @@ impl Engine {
                 return Admit::Ineligible;
             }
         };
+        // Operator decision 2026-10-09: Mayhem-mode coins are outside the paper cohort; an unknown mode is
+        // refused too (fail-closed). After the join's own refusals (so a missing curve/launch keeps its specific
+        // name) but BEFORE the market counts as ready or anything is dispatched: an excluded market never
+        // reaches the model.
+        if let Some(x) = self.model_curve_mode_exclusion(&mint) {
+            if self.model_last_refusal.len() < REGISTRY_CAP {
+                self.model_last_refusal.insert(mint, x.as_str().to_string());
+            }
+            self.mrep(format!("refuse:{}|{dims}", x.as_str()));
+            self.model_uniq(x.as_str(), &mint, venue);
+            return Admit::Ineligible;
+        }
         self.mrep(format!("snapshot_ok|{dims}"));
         // ONE observation per mint: the delay from discovery to the FIRST usable prompt. (It was
         // previously added on every ready tick, which made n equal total asks.)

@@ -467,6 +467,11 @@ fn feed_market(e: &mut Engine, m: [u8; 32], t0: i64) -> i64 {
         recv_unix_ms: Some(t_last),
         slot: 2_000,
     });
+    e.tick(AppEvent::CurveModeObserved {
+        mint: DomainMint::from_bytes(m),
+        mayhem: false,
+        slot: 0,
+    });
     t_last + 1_000
 }
 

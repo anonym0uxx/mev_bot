@@ -153,6 +153,11 @@ fn tape(
             recv_unix_ms: Some(t_last),
             slot: 2_000 + u64::from(seq0),
         });
+        ev.push(AppEvent::CurveModeObserved {
+            mint: dm(m),
+            mayhem: false,
+            slot: 0,
+        });
     }
     ev.push(AppEvent::OnchainConfirm {
         mint: dm(m),
@@ -183,6 +188,11 @@ fn landing(e: &mut Engine, m: [u8; 32], after_ms: i64) {
         real_tokens: 565_000_000_000_000,
         recv_unix_ms: Some(after_ms),
         slot: 2_100,
+    });
+    e.tick(AppEvent::CurveModeObserved {
+        mint: dm(m),
+        mayhem: false,
+        slot: 0,
     });
     for _ in 0..6 {
         e.tick(AppEvent::Tick);
@@ -995,6 +1005,11 @@ fn protection_on_affected_held_mint(trip_safety_off_first: bool) {
         real_tokens: 565_000_000_000_000,
         recv_unix_ms: Some(T0 + 150_000 + 40 * 2_000 + 4_000),
         slot: 3_000, // strictly newer than the slot the order was created at
+    });
+    e.tick(AppEvent::CurveModeObserved {
+        mint: dm(AFFECTED),
+        mayhem: false,
+        slot: 0,
     });
     for _ in 0..4 {
         e.tick(AppEvent::Tick);

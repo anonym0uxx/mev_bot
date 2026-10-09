@@ -129,6 +129,11 @@ fn events(f: Feed) -> Vec<AppEvent> {
             recv_unix_ms: Some(t_last),
             slot: 2_000,
         });
+        ev.push(AppEvent::CurveModeObserved {
+            mint: mint(),
+            mayhem: false,
+            slot: 0,
+        });
     }
     ev.push(AppEvent::OnchainConfirm {
         mint: mint(),
@@ -159,6 +164,11 @@ fn landing(e: &mut Engine, after_ms: i64) {
         real_tokens: 565_000_000_000_000,
         recv_unix_ms: Some(after_ms),
         slot: 2_100,
+    });
+    e.tick(AppEvent::CurveModeObserved {
+        mint: mint(),
+        mayhem: false,
+        slot: 0,
     });
     for _ in 0..6 {
         e.tick(AppEvent::Tick);
@@ -377,6 +387,11 @@ fn a_slow_model_never_blocks_the_engine_and_a_late_answer_creates_no_order() {
         recv_unix_ms: Some(t_last(40) + 20_000),
         slot: 2_050,
     });
+    e.tick(AppEvent::CurveModeObserved {
+        mint: mint(),
+        mayhem: false,
+        slot: 0,
+    });
     std::thread::sleep(Duration::from_millis(600));
     for _ in 0..4 {
         e.tick(AppEvent::Tick);
@@ -419,6 +434,11 @@ fn a_duplicate_request_for_a_held_mint_is_never_dispatched_twice() {
             real_tokens: 565_000_000_000_000,
             recv_unix_ms: Some(t_last(40) + 40_000 + k * 20_000),
             slot: 3_000 + k as u64,
+        });
+        e.tick(AppEvent::CurveModeObserved {
+            mint: mint(),
+            mayhem: false,
+            slot: 0,
         });
         for _ in 0..3 {
             e.tick(AppEvent::Tick);
