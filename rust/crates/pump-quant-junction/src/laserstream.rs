@@ -281,33 +281,37 @@ pub fn decode_amm_swaps(tx: &LaserStreamTx) -> (Vec<AmmSwapFacts>, u32) {
             }
             continue;
         }
-        let mut found: Option<([u8; 32], bool, bool, usize)> = None;
-        for (sib_idx, sib) in tx.instructions.iter().enumerate() {
-            if sib.program_id != PUMP_SWAP_PROGRAM || is_event_ix(sib) {
-                continue;
-            }
-            if let Some(want) = swap_ix {
-                if sib_idx != want {
-                    continue;
-                }
-            }
-            if account_key_at(sib, tx, 0) != Some(pool) {
-                continue;
-            }
-            if let (Some(base), Some(quote)) =
+        let resolve = |sib_idx: usize, sib: &LaserStreamInstruction| {
+            let (Some(base), Some(quote)) =
                 (account_key_at(sib, tx, 3), account_key_at(sib, tx, 4))
-            {
-                let token = if base != WSOL_MINT_BYTES { base } else { quote };
-                let quote_is_wsol = quote == WSOL_MINT_BYTES;
-                found = Some((
-                    token,
-                    quote_is_wsol,
-                    quote_is_wsol && canonical_pool_for(&token) == pool,
-                    sib_idx,
-                ));
-                break;
-            }
-        }
+            else {
+                return None;
+            };
+            let token = if base != WSOL_MINT_BYTES { base } else { quote };
+            let quote_is_wsol = quote == WSOL_MINT_BYTES;
+            Some((
+                token,
+                quote_is_wsol,
+                quote_is_wsol && canonical_pool_for(&token) == pool,
+                sib_idx,
+            ))
+        };
+        let found: Option<([u8; 32], bool, bool, usize)> = match swap_ix {
+            // INVOCATION path: the parent check above (PumpSwap program, not an event, names this pool) is the
+            // SOLE authority binding this event to its swap instruction; the mints are read from that parent only.
+            Some(p) => tx.instructions.get(p).and_then(|sib| resolve(p, sib)),
+            // No positions: the single swap instruction naming this pool (ambiguity was excluded above).
+            None => tx
+                .instructions
+                .iter()
+                .enumerate()
+                .filter(|(_, sib)| {
+                    sib.program_id == PUMP_SWAP_PROGRAM
+                        && !is_event_ix(sib)
+                        && account_key_at(sib, tx, 0) == Some(pool)
+                })
+                .find_map(|(i, sib)| resolve(i, sib)),
+        };
         let Some((mint, quote_is_wsol, canonical, found_ix)) = found else {
             #[allow(clippy::arithmetic_side_effects)]
             // LINT-ALLOW(hot_arith,hot_cast): u64 excluded counter ×2

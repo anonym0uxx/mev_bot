@@ -136,7 +136,11 @@ fn identical_cashback_event_bytes_from_a_foreign_program_are_not_accepted() {
         let evs = event_ix_indices(&tx);
         assert!(!evs.is_empty());
         let (base, _) = decode_amm_swaps(&tx);
-        assert_eq!(base.len(), evs.len(), "control: every pAMM event is accepted");
+        assert_eq!(
+            base.len(),
+            evs.len(),
+            "control: every pAMM event is accepted"
+        );
         for foreign in [PUMP_FUN_PROGRAM, [0x42; 32]] {
             let mut t = tx.clone();
             for &i in &evs {
@@ -170,7 +174,9 @@ fn cashback_event_is_bound_to_its_emitting_swap_instruction() {
     let swap = tx
         .instructions
         .iter()
-        .position(|ix| ix.program_id == PUMP_SWAP_PROGRAM && ix.data.get(0..8) != Some(&EVENT_TAG[..]))
+        .position(|ix| {
+            ix.program_id == PUMP_SWAP_PROGRAM && ix.data.get(0..8) != Some(&EVENT_TAG[..])
+        })
         .unwrap();
     let other = tx
         .instructions
@@ -193,4 +199,64 @@ fn cashback_event_is_bound_to_its_emitting_swap_instruction() {
     let (bad, ex_bad) = decode_amm_swaps(&with_parent(other));
     assert!(bad.is_empty(), "event attached under a non-PumpSwap parent");
     assert!(ex_bad >= 1, "the refusal is counted");
+}
+
+/// INVOCATION PARENT-PROGRAM binding, isolated: the event bytes are the real ones and the EMITTING program is
+/// PumpSwap; only the INVOKING parent changes. The parent is an exact copy of the real swap instruction (same data,
+/// same accounts, so it names the event's pool and carries the mints) but its program is not PumpSwap. Likewise a
+/// PumpSwap parent naming a DIFFERENT pool. Both must be excluded (counted) with no cashback attached. Fails if the
+/// parent's program (or pool) is not checked.
+#[test]
+fn cashback_event_under_a_parent_of_the_wrong_program_or_pool_is_excluded() {
+    let tx = txs().into_iter().next().unwrap();
+    let evs = event_ix_indices(&tx);
+    assert_eq!(evs.len(), 1);
+    let ev = evs[0];
+    let swap = tx
+        .instructions
+        .iter()
+        .position(|ix| {
+            ix.program_id == PUMP_SWAP_PROGRAM && ix.data.get(0..8) != Some(&EVENT_TAG[..])
+        })
+        .unwrap();
+    let positioned = |t: &mut LaserStreamTx| {
+        for (i, ix) in t.instructions.iter_mut().enumerate() {
+            ix.outer = Some(0);
+            ix.depth = Some(if i == swap { 1 } else { 2 });
+        }
+    };
+    // Control: the real swap ix as parent -> accepted, Known, bound to it.
+    let mut ctl = tx.clone();
+    positioned(&mut ctl);
+    let (ok, ex) = decode_amm_swaps(&ctl);
+    assert_eq!((ok.len(), ex), (1, 0));
+    assert!(matches!(ok[0].cashback, CashbackField::Known { .. }));
+    assert_eq!(ok[0].swap_ix, Some(swap));
+    // Same everything; parent program is not PumpSwap. Event ix untouched (program + bytes).
+    for foreign in [PUMP_FUN_PROGRAM, [0x42; 32]] {
+        let mut t = ctl.clone();
+        t.instructions[swap].program_id = foreign;
+        assert_eq!(t.instructions[ev].program_id, PUMP_SWAP_PROGRAM);
+        assert_eq!(t.instructions[ev].data, tx.instructions[ev].data);
+        let (facts, ex) = decode_amm_swaps(&t);
+        assert!(
+            facts.is_empty(),
+            "event accepted under a non-PumpSwap parent: {:?}",
+            facts.iter().map(|f| f.cashback).collect::<Vec<_>>()
+        );
+        assert_eq!(ex, 1, "the refusal is counted");
+    }
+    // PumpSwap parent, but its account[0] names another pool (point it at a different tx key).
+    let mut t = ctl.clone();
+    let pool_k = t.instructions[swap].accounts[0];
+    let other_k = (0..t.account_keys.len() as u8)
+        .find(|&k| t.account_keys[k as usize] != t.account_keys[pool_k as usize])
+        .unwrap();
+    t.instructions[swap].accounts[0] = other_k;
+    let (facts, ex) = decode_amm_swaps(&t);
+    assert!(
+        facts.is_empty(),
+        "event accepted under a parent of another pool"
+    );
+    assert_eq!(ex, 1);
 }
