@@ -516,6 +516,7 @@ impl Engine {
                     ManagementNoAction::OffContract(c) => format!("off_contract:{c:?}"),
                     ManagementNoAction::EntryVerbOnManagementPrompt => "entry_verb".to_string(),
                     ManagementNoAction::StaleDecision(_) => "stale_decision".to_string(),
+                    ManagementNoAction::Unterminated(u) => format!("unterminated:{}", u.as_str()),
                 };
                 self.mrep(format!("mgmt:noaction:{k}"));
             }

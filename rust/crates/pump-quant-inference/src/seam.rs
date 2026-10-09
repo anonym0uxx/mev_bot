@@ -332,6 +332,92 @@ impl DriftLedger {
 /// The `finish_reason` that means the server stopped on the token budget (F5b).
 pub const FINISH_REASON_LENGTH: &str = "length";
 
+/// TERMINATION CONTRACT — the ONLY `finish_reason` values a completion may carry to be acted on.
+///
+/// `"stop"` = the server ended on the model's own end-of-turn. The request sends NO stop strings
+/// (see `request_body`), so on the pinned runtime a `"stop"` can only come from the
+/// tokenizer/template terminators: `<|im_end|>` (tokenizer `eos_token`, id 248046, the template's
+/// assistant-turn close) or `<|endoftext|>` (`generation_config.eos_token_id` 248044). `</think>`
+/// (id 248069) is NOT special in the tokenizer and is NOT a terminator: it is not in this set and
+/// is not requested as a stop string. Everything else — `"length"`, an absent reason, any other
+/// value — is refused.
+pub const ACCEPTED_FINISH_REASONS: [&str; 1] = ["stop"];
+
+/// Decision-bearing fields: each must appear EXACTLY ONCE. A second copy is the
+/// repeat-the-answer loop (or a contradiction); either way the first copy is a valid-looking
+/// prefix of an output that did not end where the trained answer ends.
+pub const SINGLE_OCCURRENCE_FIELDS: [&str; 3] = ["DECISION", "SIZE", "PRICE LIMIT"];
+
+/// Chat-template control markers that must never appear inside the returned message content.
+/// Their presence means the model ran past its own turn (or the server leaked special tokens),
+/// so the content is not one complete permitted response.
+pub const TEMPLATE_MARKERS: [&str; 5] = [
+    "<|im_end|>",
+    "<|endoftext|>",
+    "<|im_start|>",
+    "<think>",
+    "</think>",
+];
+
+/// Why a completion fails the termination contract. Every variant REFUSES: no order, no
+/// management action. Distinct from [`OffContract`] (the grammar of a complete answer).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unterminated {
+    /// `finish_reason="length"`: cut at the output budget.
+    Truncated,
+    /// The server sent no `finish_reason`: termination is UNKNOWN, which is not "complete".
+    NoFinishReason,
+    /// A `finish_reason` outside [`ACCEPTED_FINISH_REASONS`] (`content_filter`, `abort`, ...).
+    UnacceptedFinishReason,
+    /// A chat-template control marker inside the content (which one).
+    TemplateMarkerInContent(&'static str),
+    /// A decision-bearing field appears more than once (which field, how many times).
+    RepeatedField(&'static str, usize),
+}
+
+impl Unterminated {
+    /// Stable telemetry label (dashboards key on it — never reword).
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Unterminated::Truncated => "truncated",
+            Unterminated::NoFinishReason => "no_finish_reason",
+            Unterminated::UnacceptedFinishReason => "unaccepted_finish_reason",
+            Unterminated::TemplateMarkerInContent(_) => "template_marker_in_content",
+            Unterminated::RepeatedField(..) => "repeated_field",
+        }
+    }
+}
+
+/// Apply the termination contract: the server must report an accepted end-of-turn, and the
+/// content must be ONE complete response (no template markers, no second copy of a
+/// decision-bearing field). Checked BEFORE the grammar parse; a failure is a refusal.
+pub fn check_termination(finish_reason: Option<&str>, text: &str) -> Result<(), Unterminated> {
+    match finish_reason {
+        None => return Err(Unterminated::NoFinishReason),
+        Some(FINISH_REASON_LENGTH) => return Err(Unterminated::Truncated),
+        Some(r) if !ACCEPTED_FINISH_REASONS.contains(&r) => {
+            return Err(Unterminated::UnacceptedFinishReason)
+        }
+        Some(_) => {}
+    }
+    if let Some(m) = TEMPLATE_MARKERS.iter().find(|m| text.contains(**m)) {
+        return Err(Unterminated::TemplateMarkerInContent(m));
+    }
+    for key in SINGLE_OCCURRENCE_FIELDS {
+        let prefix = format!("{key}:");
+        let n = text
+            .lines()
+            .map(str::trim)
+            .filter(|l| l.starts_with(prefix.as_str()))
+            .count();
+        if n > 1 {
+            return Err(Unterminated::RepeatedField(key, n));
+        }
+    }
+    Ok(())
+}
+
 /// Whether an emitted `PRICE LIMIT` is grounded on the price the prompt supplied (F5c).
 ///
 /// The corpus's own grounding check held on **7,961 of 7,961** BUY rows: the model echoes the
@@ -836,6 +922,80 @@ INVALIDATION: execution cost: round trip 66 bp\nEVIDENCE_STATUS: complete";
         l.record(OffContract::NoDecisionLine);
         assert_eq!(l.rate_bp(), 0, "no denominator yet");
         assert!(!l.alarm(100, 10));
+    }
+
+    const ANSWER: &str = "DECISION: BUY\nSIZE: FULL\nPRICE LIMIT: 0.5\nINVALIDATION: x\nEVIDENCE: y\nEVIDENCE_STATUS: complete\n";
+
+    /// TERMINATION CONTRACT: the accepted set is exactly {"stop"}; each failure shape is a named
+    /// refusal, and a complete answer on "stop" passes (so the check cannot pass by always firing).
+    #[test]
+    fn termination_contract_accepts_only_one_complete_answer_on_stop() {
+        assert_eq!(ACCEPTED_FINISH_REASONS, ["stop"]);
+        assert_eq!(check_termination(Some("stop"), ANSWER), Ok(()));
+        assert_eq!(
+            check_termination(Some("length"), ANSWER),
+            Err(Unterminated::Truncated)
+        );
+        assert_eq!(
+            check_termination(None, ANSWER),
+            Err(Unterminated::NoFinishReason)
+        );
+        for r in ["content_filter", "abort", "tool_calls", "", "STOP"] {
+            assert_eq!(
+                check_termination(Some(r), ANSWER),
+                Err(Unterminated::UnacceptedFinishReason),
+                "{r:?}"
+            );
+        }
+    }
+
+    /// The observed step-116 failure: the complete answer, then `</think>`, then the answer again.
+    /// Also every other template marker, and a contradictory second DECISION/SIZE/PRICE LIMIT.
+    #[test]
+    fn a_valid_prefix_followed_by_more_output_is_refused() {
+        let repeat = format!("{ANSWER}</think>\n\n{ANSWER}");
+        assert_eq!(
+            check_termination(Some("stop"), &repeat),
+            Err(Unterminated::TemplateMarkerInContent("</think>"))
+        );
+        for m in TEMPLATE_MARKERS {
+            let t = format!("{ANSWER}{m}");
+            assert_eq!(
+                check_termination(Some("stop"), &t),
+                Err(Unterminated::TemplateMarkerInContent(m)),
+                "{m}"
+            );
+        }
+        // Marker stripped by the server (skip_special_tokens) but the answer repeated anyway.
+        let doubled = format!("{ANSWER}{ANSWER}");
+        assert_eq!(
+            check_termination(Some("stop"), &doubled),
+            Err(Unterminated::RepeatedField("DECISION", 2))
+        );
+        // A contradictory second size, a second price limit — each a named refusal.
+        let two_sizes = format!("{ANSWER}SIZE: SMALL\n");
+        assert_eq!(
+            check_termination(Some("stop"), &two_sizes),
+            Err(Unterminated::RepeatedField("SIZE", 2))
+        );
+        let two_limits = format!("{ANSWER}PRICE LIMIT: 9\n");
+        assert_eq!(
+            check_termination(Some("stop"), &two_limits),
+            Err(Unterminated::RepeatedField("PRICE LIMIT", 2))
+        );
+        // `SIZE_BASIS:` is a distinct trained field, not a second SIZE.
+        let basis = format!("{ANSWER}SIZE_BASIS: tier FULL\n");
+        assert_eq!(check_termination(Some("stop"), &basis), Ok(()));
+        // Every label is distinct and non-empty.
+        let labels = [
+            Unterminated::Truncated.as_str(),
+            Unterminated::NoFinishReason.as_str(),
+            Unterminated::UnacceptedFinishReason.as_str(),
+            Unterminated::TemplateMarkerInContent("x").as_str(),
+            Unterminated::RepeatedField("x", 2).as_str(),
+        ];
+        let set: std::collections::BTreeSet<_> = labels.iter().collect();
+        assert_eq!(set.len(), labels.len());
     }
 
     #[test]

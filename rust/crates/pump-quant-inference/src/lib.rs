@@ -217,6 +217,12 @@ impl Completion {
     pub fn truncated(&self) -> bool {
         self.finish_reason.as_deref() == Some(seam::FINISH_REASON_LENGTH)
     }
+
+    /// The model-output TERMINATION CONTRACT (operator decision): may this completion be acted on?
+    /// See [`seam::check_termination`].
+    pub fn termination(&self) -> Result<(), seam::Unterminated> {
+        seam::check_termination(self.finish_reason.as_deref(), &self.text)
+    }
 }
 
 impl InferenceClient {
@@ -950,6 +956,48 @@ mod f5b_tests {
         match sse_event("data: [DONE]") {
             SseEvent::Done(None) => {}
             _ => panic!("[DONE] is a reasonless stop"),
+        }
+    }
+
+    /// The production client must carry the SERVER's `finish_reason` (never a default): an
+    /// absent reason stays `None` and is refused by the termination contract; `length` stays
+    /// `length`; `stop` stays `stop`.
+    #[test]
+    fn the_production_client_reports_the_servers_own_finish_reason() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        for reason in [Some("stop"), Some("length"), None] {
+            let l = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = l.local_addr().unwrap().port();
+            let h = std::thread::spawn(move || {
+                let (mut c, _) = l.accept().unwrap();
+                let mut buf = [0_u8; 8192];
+                let _ = c.read(&mut buf);
+                let mut choice =
+                    serde_json::json!({"message":{"content":"DECISION: SKIP\nSIZE: NONE"}});
+                if let Some(r) = reason {
+                    choice["finish_reason"] = serde_json::json!(r);
+                }
+                let body = serde_json::json!({"choices":[choice]}).to_string();
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                c.write_all(resp.as_bytes()).unwrap();
+            });
+            let client = InferenceClient::new(
+                format!("http://127.0.0.1:{port}"),
+                std::time::Duration::from_secs(5),
+            );
+            let c = client.complete_with_meta("S", "U").unwrap();
+            h.join().unwrap();
+            assert_eq!(c.finish_reason.as_deref(), reason);
+            assert_eq!(
+                c.termination().is_ok(),
+                reason == Some("stop"),
+                "{reason:?}"
+            );
         }
     }
 

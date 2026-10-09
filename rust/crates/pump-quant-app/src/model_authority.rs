@@ -32,7 +32,7 @@
 use pump_quant_inference::seam::{
     management_base, management_fraction_bps, parse_decision_payload, price_limit_is_grounded,
     route, Decision, DriftLedger, ManagementBase, OffContract, Route, SizeError, SizeTier,
-    FEE_BUFFER_LAMPORTS,
+    Unterminated, FEE_BUFFER_LAMPORTS,
 };
 use pump_quant_inference::{
     resolve_clip_at_fraction_bps, Completion, EntryVenue, InferenceClient, InferenceError,
@@ -51,10 +51,15 @@ pub trait ModelSource {
     ///
     /// Default: no reason. An implementation that cannot know one reports none — never a
     /// guess — so the telemetry this feeds stays honest for stubs and test doubles.
+    /// Default for TEST DOUBLES that return one whole answer string: reported as an ordinary
+    /// end-of-turn (`"stop"`). The production [`InferenceClient`] OVERRIDES this with the server's
+    /// own reason (pinned by `the_production_client_reports_the_servers_own_finish_reason`), so a
+    /// live cut-at-budget completion is never relabelled. A double that wants to exercise the
+    /// termination contract overrides `complete_meta` itself.
     fn complete_meta(&self, system: &str, user: &str) -> Result<Completion, InferenceError> {
         self.complete(system, user).map(|text| Completion {
             text,
-            finish_reason: None,
+            finish_reason: Some("stop".to_string()),
         })
     }
 }
@@ -164,6 +169,10 @@ pub enum NoTradeReason {
     /// ([`crate::freshness::StalenessVeto`]). A refusal, not a repair: the safe direction on the
     /// entry path is no trade, so nothing is silently re-aged or applied anyway.
     StaleDecision(StalenessVeto),
+    /// The completion failed the TERMINATION CONTRACT ([`Unterminated`]): cut at the budget, no or
+    /// an unaccepted `finish_reason`, a template marker in the content, or a repeated decision
+    /// field. Never an order — whatever the prefix says.
+    Unterminated(Unterminated),
 }
 
 /// The price the prompt SUPPLIED, for the F5c grounding check.
@@ -213,12 +222,17 @@ pub fn resolve_entry(
         Err(_) => return EntryAuthority::NoTrade(NoTradeReason::ModelUnreachable),
     };
 
-    // F5b — TRUNCATION IS TELEMETRY, NOT A REFUSAL. A completion the server cut at
-    // `max_tokens` parses exactly like a finished one, so without this the single most
-    // misleading live failure mode (a decision read from half a completion) leaves no trace.
-    // Recorded on the drift ledger; the decision below is still parsed and still acts.
+    // F5b — a completion the server cut at `max_tokens` parses exactly like a finished one, so it
+    // is counted on the drift ledger (the budget-pressure signal) ...
     if completion.truncated() {
         ledger.record_truncated();
+    }
+    // ... and the TERMINATION CONTRACT refuses it (operator decision, supersedes the earlier
+    // "truncation is telemetry, not a refusal"): only a completion the server ended on the model's
+    // own end-of-turn, holding ONE copy of the answer, may create an order. A valid-looking prefix
+    // followed by a second answer, or cut at the budget, never does.
+    if let Err(u) = completion.termination() {
+        return EntryAuthority::NoTrade(NoTradeReason::Unterminated(u));
     }
 
     // Freshness BEFORE the contract and before any capital question: a verdict that arrived too
@@ -501,13 +515,13 @@ mod tests {
         }
     }
 
-    /// F5b + F5c END TO END. A completion the server CUT at `max_tokens`, whose emitted price
-    /// limit is not the price the prompt supplied, is RECORDED on the drift ledger and the trade
-    /// still goes through: both are telemetry, neither is a refusal. The second half pins the
-    /// converse — a completed stop echoing the supplied price moves neither counter — so the
-    /// check cannot pass by always firing.
+    /// F5b + F5c + TERMINATION CONTRACT, END TO END. (1) A completion the server CUT at
+    /// `max_tokens` is counted on the drift ledger AND refused (operator contract: truncation never
+    /// creates an order — this supersedes the earlier "telemetry, not a refusal"). (1b) The same text
+    /// ended on an accepted stop, whose price limit is not the supplied price, is recorded as
+    /// ungrounded and still trades (F5c stays capture-only). (2) The converse moves neither counter.
     #[test]
-    fn truncation_and_an_ungrounded_price_are_recorded_and_never_block_the_trade() {
+    fn truncation_refuses_and_is_counted_an_ungrounded_price_is_only_recorded() {
         const PROMPT: &str = "DECISION CLOCK — assess this opportunity.\n\
 t_dec_ms=1700000000000  age_s=12.0  last_trade_age_s=1.0\n\
 venue=pumpfun  curve_present=True  evidence_status=complete\n\
@@ -526,13 +540,32 @@ price_lamports_per_raw_token=0.02445740498411998  ret_5s_bp=120  ret_30s_bp=0  v
             &base,
             &mut l,
         );
-        assert!(
-            matches!(a, EntryAuthority::Buy { .. }),
-            "a cut completion is telemetry, not a refusal"
+        assert_eq!(
+            a,
+            EntryAuthority::NoTrade(NoTradeReason::Unterminated(Unterminated::Truncated)),
+            "a cut completion never creates an order"
         );
         assert_eq!(l.truncated(), 1, "the max_tokens cut must be visible");
         assert_eq!(
-            l.ungrounded_price(),
+            l.accepted(),
+            0,
+            "a refused completion is not an accepted decision"
+        );
+
+        // (1b) Same text, ended on the model's own end-of-turn: trades; the price is only recorded.
+        let mut lb = DriftLedger::new();
+        let b = decide_entry(
+            &Meta {
+                text: BUY_SMALL,
+                reason: Some("stop"),
+            },
+            &base,
+            &mut lb,
+        );
+        assert!(matches!(b, EntryAuthority::Buy { .. }), "{b:?}");
+        assert_eq!(lb.truncated(), 0);
+        assert_eq!(
+            lb.ungrounded_price(),
             1,
             "0.02 is not the price the prompt supplied"
         );
@@ -861,6 +894,8 @@ pub enum ManagementNoAction {
     /// ([`crate::freshness::StalenessVeto`]). The caller HOLDS — the same fail-safe direction as a
     /// parse failure, because cutting on a late message would be Rust inventing a decision.
     StaleDecision(StalenessVeto),
+    /// The completion failed the termination contract ([`Unterminated`]). HOLD.
+    Unterminated(Unterminated),
 }
 
 /// Ask the model what to do with a position we already hold.
@@ -881,13 +916,12 @@ pub fn decide_management<S: ModelSource + ?Sized>(
     req: &ManagementRequest<'_>,
     ledger: &mut DriftLedger,
 ) -> ManagementAuthority {
-    let completion = source
-        .complete(req.system_prompt, req.user_prompt)
-        .map(|text| Completion {
-            text,
-            finish_reason: None,
-        });
-    resolve_management(completion, req, ledger)
+    // `complete_meta`, not `complete`: the server's stop reason must reach the termination contract.
+    resolve_management(
+        source.complete_meta(req.system_prompt, req.user_prompt),
+        req,
+        ledger,
+    )
 }
 
 /// Judge a management completion that has ALREADY been fetched (by a worker, off the engine
@@ -904,6 +938,11 @@ pub fn resolve_management(
     };
     if completion.truncated() {
         ledger.record_truncated();
+    }
+    // TERMINATION CONTRACT: an unterminated management completion HOLDS (the fail-safe direction
+    // on a held position); safety triggers stay armed.
+    if let Err(u) = completion.termination() {
+        return ManagementAuthority::NoAction(ManagementNoAction::Unterminated(u));
     }
 
     // The same freshness law as the entry path, and it matters more here: a late EXIT holds
