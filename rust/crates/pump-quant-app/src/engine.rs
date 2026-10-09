@@ -15,6 +15,7 @@
 
 use std::time::Instant;
 
+pub mod books;
 pub mod model_admit;
 pub mod model_barrier;
 pub mod model_creator;
@@ -1728,7 +1729,7 @@ impl Engine {
     /// size off the paper seed.
     #[must_use]
     pub fn bankroll_balance(&self) -> u64 {
-        let b = i128::from(self.bankroll_origin.seed_lamports()) + self.bankroll_realized;
+        let b = i128::from(self.bankroll_origin.seed_lamports()) + self.books_realized();
         b.clamp(0, i128::from(u64::MAX)) as u64
     }
 
@@ -1821,7 +1822,7 @@ impl Engine {
             rejected: self.rejected,
             reject_counts: self.reject_counts,
             open_positions: self.positions.len() as u64,
-            net_realized_lamports: self.bankroll_realized,
+            net_realized_lamports: self.books_realized(),
             universe_filtered: self.universe_filtered,
             probes_budgeted: self.probes_budgeted,
             probe_spend_lamports: self.calibration.spent_lifetime,
@@ -4162,9 +4163,7 @@ impl Engine {
             if self.ata_open.len() < ATA_OPEN_CAP {
                 self.ata_open.insert(e.mint);
             }
-            self.bankroll_committed = self
-                .bankroll_committed
-                .saturating_add(u128::from(e.entry_cost));
+            self.books_commit(books::BookSite::EntryOpen, e.entry_cost);
             self.open_lane.insert(
                 e.mint,
                 OpenAttribution {
@@ -4502,7 +4501,7 @@ impl Engine {
         }
         // Realized-only bankroll accounting: every exit's net folds in immediately
         // (partial tranches included) — marks never do (§33).
-        self.bankroll_realized = self.bankroll_realized.saturating_add(e.net_lamports);
+        self.books_add_realized(books::BookSite::ExitRealize, e.net_lamports);
         if let Some(att) = self.open_lane.get_mut(&e.mint) {
             att.realized_acc = att.realized_acc.saturating_add(e.net_lamports);
         }
@@ -4543,9 +4542,7 @@ impl Engine {
                         e.mae_bps,
                     );
                 }
-                self.bankroll_committed = self
-                    .bankroll_committed
-                    .saturating_sub(u128::from(entry_spend));
+                self.books_release(books::BookSite::ExitRelease, entry_spend);
                 if quarantined {
                     self.model_quarantine.remove(&e.mint);
                     self.model_excluded_exits.push(model_admit::ExcludedExit {
@@ -6141,9 +6138,7 @@ impl Engine {
         // Decrement admitted (incremented when the position opened).
         self.admitted = self.admitted.saturating_sub(1);
         // Release the committed bankroll (added when the position opened).
-        self.bankroll_committed = self
-            .bankroll_committed
-            .saturating_sub(u128::from(entry_cost));
+        self.books_release(books::BookSite::SinkRollback, entry_cost);
         // Remove from ata_open and open_lane (inserted when the position opened).
         self.ata_open.remove(&mint);
         self.open_lane.remove(&mint);
@@ -6903,14 +6898,18 @@ mod e3_async_outbound {
         // The state open_pending leaves behind when the sink was handed the record.
         assert!(eng.positions.open(mint, 1_000, 500, 500, 0));
         eng.admitted = 1;
-        eng.bankroll_committed = u128::from(500u64);
+        eng.books_set_committed_for_test(u128::from(500u64));
         eng.ata_open.insert(mint);
         eng.note_inflight_outbound(7, inflight(mint, true, 500));
 
         assert!(eng.fail_async_outbound(7, 3_100));
         assert_eq!(eng.live_outbound_failures, 1);
         assert_eq!(eng.admitted, 0, "the admission is not a real one");
-        assert_eq!(eng.bankroll_committed, 0, "committed capital must not leak");
+        assert_eq!(
+            eng.books_committed_field_for_test(),
+            0,
+            "committed capital must not leak"
+        );
         assert!(eng.open_lane.is_empty());
         assert!(!eng.ata_open.contains(&mint));
         assert_eq!(eng.inflight_outbound_len(), 0);

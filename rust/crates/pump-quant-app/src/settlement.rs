@@ -52,6 +52,10 @@ pub enum SettleError {
     Overflow,
     /// `cash + committed != seed + realized` after the step (should be unreachable; kept as a hard guard).
     InvariantBroken,
+    /// A void was asked for an entry that is not the sole, unvoided content of the mint's holding.
+    VoidNotSoleEntry,
+    /// A report for an order that was voided (authority: never filled).
+    Voided,
 }
 
 impl SettleError {
@@ -64,6 +68,8 @@ impl SettleError {
             Self::InsufficientInventory => "settle_refused:insufficient_inventory",
             Self::Overflow => "settle_refused:overflow",
             Self::InvariantBroken => "settle_refused:invariant_cash_committed_seed_realized",
+            Self::VoidNotSoleEntry => "settle_refused:void_entry_not_sole_holding",
+            Self::Voided => "settle_refused:order_voided_never_filled",
         }
     }
 }
@@ -98,6 +104,8 @@ pub struct SettlementLedger {
     /// Fixed (tip + ATA rent) costs booked so far (configured values, not observed fees).
     pub fixed_costs: i128,
     applied: BTreeMap<([u8; 32], LegKind, u64), (u64, u64, u64, u64)>,
+    /// Entry orders voided by [`Self::void_entry`] (their applied record is kept so no report can re-apply them).
+    voided: std::collections::BTreeSet<([u8; 32], LegKind, u64)>,
 }
 
 impl SettlementLedger {
@@ -113,6 +121,7 @@ impl SettlementLedger {
             fixed_costs: 0,
             holdings: BTreeMap::new(),
             applied: BTreeMap::new(),
+            voided: std::collections::BTreeSet::new(),
         }
     }
 
@@ -128,6 +137,9 @@ impl SettlementLedger {
     /// [`SettleError`]; the ledger is unchanged on error.
     pub fn settle(&mut self, r: FillReport) -> Result<Settled, SettleError> {
         let key = (r.mint, r.leg, r.order_id);
+        if self.voided.contains(&key) {
+            return Err(SettleError::Voided);
+        }
         let prev = self.applied.get(&key).copied().unwrap_or((0, 0, 0, 0));
         let cur = (
             r.cum_tokens,
@@ -241,6 +253,44 @@ impl SettlementLedger {
         })
     }
 
+    /// VOID an entry BUY that authority says never filled. Allowed only when the mint's holding is EXACTLY what
+    /// this one order settled (no ADD, no SELL, no other entry touched it): the holding is removed, its whole cost
+    /// returns to cash, and the network estimate / fixed costs it booked are reversed. The applied record is kept
+    /// (and marked voided) so a late duplicate report of the same order can never re-apply it.
+    ///
+    /// # Errors
+    /// [`SettleError::VoidNotSoleEntry`] when anything else touched the holding; the ledger is unchanged.
+    pub fn void_entry(&mut self, mint: [u8; 32], order_id: u64) -> Result<(), SettleError> {
+        let key = (mint, LegKind::Entry, order_id);
+        let Some(&(t, v, n, f)) = self.applied.get(&key) else {
+            return Err(SettleError::VoidNotSoleEntry);
+        };
+        if self.voided.contains(&key) {
+            return Err(SettleError::VoidNotSoleEntry);
+        }
+        let others = self
+            .applied
+            .keys()
+            .any(|k| k.0 == mint && *k != key && !self.voided.contains(k));
+        let cost = i128::from(v) + i128::from(n) + i128::from(f);
+        let h = self.holdings.get(&mint).copied().unwrap_or_default();
+        if others || h.tokens != t || h.cost != cost {
+            return Err(SettleError::VoidNotSoleEntry);
+        }
+        let mut next = self.clone();
+        next.holdings.remove(&mint);
+        next.cash += cost;
+        next.committed -= cost;
+        next.network_estimate -= i128::from(n);
+        next.fixed_costs -= i128::from(f);
+        next.voided.insert(key);
+        if !next.invariant_holds() {
+            return Err(SettleError::InvariantBroken);
+        }
+        *self = next;
+        Ok(())
+    }
+
     /// Durable form (persisted inside the held ledger under `settlement`).
     #[must_use]
     pub fn to_json(&self) -> serde_json::Value {
@@ -255,6 +305,7 @@ impl SettlementLedger {
             "fixed_costs": self.fixed_costs.to_string(),
             "holdings": self.holdings.iter().map(|(m, h)| json!([hx(m), h.tokens, h.cost.to_string()])).collect::<Vec<_>>(),
             "applied": self.applied.iter().map(|((m, l, id), (t, v, n, f))| json!([hx(m), l.code(), id, t, v, n, f])).collect::<Vec<_>>(),
+            "voided": self.voided.iter().map(|(m, l, id)| json!([hx(m), l.code(), id])).collect::<Vec<_>>(),
         })
     }
 
@@ -283,6 +334,7 @@ impl SettlementLedger {
             fixed_costs: big("fixed_costs")?,
             holdings: BTreeMap::new(),
             applied: BTreeMap::new(),
+            voided: std::collections::BTreeSet::new(),
         };
         for h in v["holdings"].as_array().ok_or("holdings")? {
             let m = h[0].as_str().and_then(unhex).ok_or("holdings.mint")?;
@@ -302,6 +354,22 @@ impl SettlementLedger {
             let n = |i: usize| a[i].as_u64().ok_or("applied.value");
             out.applied
                 .insert((m, l, n(2)?), (n(3)?, n(4)?, n(5)?, n(6)?));
+        }
+        // `voided` is absent from ledgers written before voids existed: absent = none voided. Present but malformed
+        // is refused.
+        if let Some(vs) = v.get("voided") {
+            for a in vs.as_array().ok_or("voided")? {
+                let m = a[0].as_str().and_then(unhex).ok_or("voided.mint")?;
+                let l = a[1]
+                    .as_str()
+                    .and_then(LegKind::from_code)
+                    .ok_or("voided.leg")?;
+                let id = a[2].as_u64().ok_or("voided.id")?;
+                if !out.applied.contains_key(&(m, l, id)) {
+                    return Err("voided.unknown_order");
+                }
+                out.voided.insert((m, l, id));
+            }
         }
         if !out.invariant_holds() {
             return Err("invariant");

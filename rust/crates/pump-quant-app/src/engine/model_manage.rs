@@ -325,7 +325,7 @@ impl Engine {
         let bp = |p: u64| (p as f64 / entry - 1.0) * 1e4;
         // Account cash = balance - committed entry cost - capital reserved by pending entry orders.
         let balance = self.bankroll_balance();
-        let committed = u64::try_from(self.bankroll_committed).unwrap_or(u64::MAX);
+        let committed = u64::try_from(self.books_committed()).unwrap_or(u64::MAX);
         let pending: u64 = self
             .model_orders
             .values()
@@ -983,7 +983,9 @@ impl Engine {
                 .unwrap_or(0)
                 .min(att.entry_spend);
                 att.entry_spend -= rel;
-                self.bankroll_committed = self.bankroll_committed.saturating_sub(u128::from(rel));
+                self.books_scoped(&[super::books::BookSite::ReduceRelease], |s| {
+                    s.books_release(super::books::BookSite::ReduceRelease, rel);
+                });
             }
         }
         let net = exit.net_lamports;
@@ -1003,7 +1005,14 @@ impl Engine {
                 o.fees += f;
             }
         }
-        self.book_exit(exit);
+        // v2: this exit's realized net and committed release are settled just below (LegKind::Sell).
+        self.books_scoped(
+            &[
+                super::books::BookSite::ExitRealize,
+                super::books::BookSite::ExitRelease,
+            ],
+            |s| s.book_exit(exit),
+        );
         // v2: the ONE settlement path books this SELL increment. Paper fills split venue-net / network estimate /
         // tip; an executor's reported all-in fee is booked as reported (venue-net = gross - fee). A price-only
         // report carried no proceeds and cannot be settled without inventing them: named fault.
@@ -1136,7 +1145,7 @@ impl Engine {
     /// Free account cash as the management prompt states it, lamports.
     #[must_use]
     pub fn model_free_cash_lamports(&self) -> u64 {
-        let committed = u64::try_from(self.bankroll_committed).unwrap_or(u64::MAX);
+        let committed = u64::try_from(self.books_committed()).unwrap_or(u64::MAX);
         let pending: u64 = self
             .model_orders
             .values()
@@ -1239,9 +1248,9 @@ impl Engine {
     pub fn model_accounting_view(&self, mint: &[u8; 32]) -> ModelAccountingView {
         ModelAccountingView {
             seed: self.bankroll_origin.seed_lamports(),
-            realized: self.bankroll_realized,
+            realized: self.books_realized(),
             balance: self.bankroll_balance(),
-            committed: u64::try_from(self.bankroll_committed).unwrap_or(u64::MAX),
+            committed: u64::try_from(self.books_committed()).unwrap_or(u64::MAX),
             free: self.model_free_cash_lamports(),
             attribution_entry_spend: self.open_lane.get(mint).map(|a| a.entry_spend),
             attribution_realized: self.open_lane.get(mint).map(|a| a.realized_acc),
@@ -1606,7 +1615,7 @@ impl Engine {
             self.cfg.floor_fraction_bps,
         );
         let balance = self.bankroll_balance();
-        let committed = u64::try_from(self.bankroll_committed).unwrap_or(u64::MAX);
+        let committed = u64::try_from(self.books_committed()).unwrap_or(u64::MAX);
         let pending_entries: u64 = self
             .model_orders
             .values()
@@ -1836,7 +1845,10 @@ impl Engine {
         }
         // Cash: the all-in cost joins the committed capital and the attribution, so a later close releases
         // exactly what was committed. Nothing realized changes on a buy.
-        self.bankroll_committed = self.bankroll_committed.saturating_add(u128::from(cost));
+        // v2: settled just below (LegKind::Add) at exactly this all-in cost.
+        self.books_scoped(&[super::books::BookSite::AddCommit], |s| {
+            s.books_commit(super::books::BookSite::AddCommit, cost);
+        });
         if let Some(att) = self.open_lane.get_mut(&mint) {
             att.entry_spend = att.entry_spend.saturating_add(cost);
         }

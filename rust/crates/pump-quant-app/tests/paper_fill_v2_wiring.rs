@@ -68,6 +68,7 @@ const BUY: &str =
 const HOLD: &str = "DECISION: HOLD\nINVALIDATION: none\nEVIDENCE: x";
 const REDUCE: &str = "DECISION: REDUCE\nINVALIDATION: none\nEVIDENCE: x";
 const EXIT: &str = "DECISION: EXIT\nINVALIDATION: none\nEVIDENCE: x";
+const ADD: &str = "DECISION: ADD\nINVALIDATION: none\nEVIDENCE: x";
 
 impl ModelSource for Script {
     fn complete(&self, _s: &str, user: &str) -> Result<String, InferenceError> {
@@ -498,4 +499,113 @@ fn v2_price_only_reconciled_sell_cannot_be_settled_and_latches_settlement_fault(
 fn leg_kind_codes_are_stable() {
     assert_eq!(LegKind::Entry.code(), "entry");
     assert_eq!(LegKind::Sell.code(), "sell");
+}
+
+/// SINGLE BOOKING PATH (runtime half; the source half is tests/books_single_path.rs). A v2 run through every
+/// booking site the paper lane reaches (entry open, ADD commit, REDUCE release, EXIT realize + release) books
+/// NOTHING outside a settlement scope, and the engine's books are the ledger's at every step.
+#[test]
+fn v2_every_booking_goes_through_the_ledger_add_reduce_exit_zero_bypasses() {
+    let mut r = rig(
+        Some(PaperFillVersion::V2Shadow),
+        |s| match s {
+            0 => ADD,
+            1 => REDUCE,
+            _ => EXIT,
+        },
+        None,
+    );
+    let check = |r: &Rig, when: &str| {
+        assert_eq!(
+            r.e.model_books_bypasses(),
+            0,
+            "{when}: a booking bypassed the ledger: {:?}",
+            r.e.model_settlement_faults()
+        );
+        assert_eq!(r.e.model_books_source(), "settlement_ledger");
+        let l = r.e.model_settlement().unwrap();
+        let a = r.e.model_accounting_view(&MINT);
+        assert_eq!(
+            a.realized, l.realized,
+            "{when}: engine realized IS the ledger's"
+        );
+        assert_eq!(
+            i128::from(a.committed),
+            l.committed,
+            "{when}: engine committed IS the ledger's"
+        );
+        assert_eq!(
+            i128::from(a.balance),
+            l.seed + l.realized,
+            "{when}: balance = seed + ledger realized"
+        );
+        r.assert_books_agree(when);
+    };
+    check(&r, "after entry");
+    for (want, n) in [
+        ("Add", "settle:applied:add"),
+        ("Reduce", "settle:applied:sell"),
+    ] {
+        r.advance_to_order(120_000);
+        let (_, kind, _, _) =
+            r.e.model_mgmt_pending(&MINT)
+                .unwrap_or_else(|| panic!("{want} pending: {:?}", r.e.model_lane_report()));
+        assert_eq!(format!("{kind:?}"), want);
+        r.landing();
+        assert!(
+            r.rep(n) >= 1,
+            "{want} settled: {:?}",
+            r.e.model_lane_report()
+        );
+        check(&r, want);
+    }
+    r.advance_to_order(200_000);
+    r.landing();
+    assert!(
+        !r.e.model_position_open(&MINT),
+        "{:?}",
+        r.e.model_lane_report()
+    );
+    check(&r, "after EXIT");
+    let l = r.e.model_settlement().unwrap();
+    assert!(l.holdings.is_empty() && l.committed == 0 && l.cash == l.seed + l.realized);
+    // The status block reports the books' source and that they equal the ledger.
+    let st = r.e.model_paper_fill_status();
+    assert_eq!(st["engine_books"]["source"], "settlement_ledger");
+    assert_eq!(st["engine_books"]["realized"], st["settlement"]["realized"]);
+    assert_eq!(
+        st["engine_books"]["committed"],
+        st["settlement"]["committed"]
+    );
+    assert_eq!(st["engine_books"]["bypasses"], 0);
+}
+
+/// The guard itself: a booking made OUTSIDE a settlement scope under v2 does not move the books, it latches the
+/// named settlement fault `books_bypass:<site>` (SAFETY_OFF). Under v1 the same call writes the engine field.
+#[test]
+fn v2_an_unscoped_booking_is_a_named_bypass_fault_and_never_moves_the_books() {
+    use pump_quant_app::engine::books::BookSite;
+    let mut r = rig(Some(PaperFillVersion::V2Shadow), |_| HOLD, None);
+    let before = r.e.model_accounting_view(&MINT);
+    r.e.books_unscoped_commit_probe(BookSite::AddCommit, 12_345);
+    assert_eq!(r.e.model_books_bypasses(), 1);
+    assert!(
+        r.e.model_settlement_faults()
+            .iter()
+            .any(|f| f == "books_bypass:add_commit"),
+        "{:?}",
+        r.e.model_settlement_faults()
+    );
+    assert!(r.e.model_safety_blocked());
+    assert_eq!(r.e.model_safety_reason(), "settlement_fault");
+    let after = r.e.model_accounting_view(&MINT);
+    assert_eq!(after.committed, before.committed, "the books did not move");
+    assert_eq!(after.realized, before.realized);
+    // v1: the engine fields ARE the books; the same booking moves them and is not a fault.
+    let mut v1 = rig(None, |_| HOLD, None);
+    let b1 = v1.e.model_accounting_view(&MINT).committed;
+    v1.e.books_unscoped_commit_probe(BookSite::AddCommit, 12_345);
+    assert_eq!(v1.e.model_accounting_view(&MINT).committed, b1 + 12_345);
+    assert_eq!(v1.e.model_books_bypasses(), 0);
+    assert_eq!(v1.e.model_books_source(), "engine_fields_v1");
 }

@@ -216,9 +216,9 @@ impl Engine {
             self.model_order_seq,
             self.model_mgmt.seq,
             self.bankroll_origin.seed_lamports(),
-            self.bankroll_realized,
+            self.books_realized(),
             self.bankroll_balance(),
-            self.bankroll_committed,
+            self.books_committed(),
             self.model_free_cash_lamports(),
         ));
         for (m, o) in &self.model_orders {

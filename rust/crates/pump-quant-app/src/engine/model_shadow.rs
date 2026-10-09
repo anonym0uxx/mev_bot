@@ -40,6 +40,12 @@ pub struct PaperFillState {
     pub faults: Vec<String>,
     /// Price-only reconciled reports that carried no proceeds (cannot be settled without inventing proceeds).
     pub unsettleable: u64,
+    /// Book sites inside a declared settlement scope (bit mask of `books::BookSite`; see `engine/books.rs`).
+    pub book_scope: u16,
+    /// Bookings attempted under v2 outside a settlement scope (each latched a named fault).
+    pub bypasses: u64,
+    /// v2 diagnostic: Σ engine-side exit nets (NOT the book; the ledger's realized is).
+    pub exit_net_diag: i128,
 }
 
 const FAULT_LOG_CAP: usize = 64;
@@ -100,7 +106,7 @@ impl Engine {
         })
     }
 
-    fn model_settle_fault(&mut self, what: String) {
+    pub(super) fn model_settle_fault(&mut self, what: String) {
         self.mrep(format!("settle:fault:{what}"));
         if self.model_pf.faults.len() >= FAULT_LOG_CAP {
             self.model_pf.faults.remove(0);
@@ -141,6 +147,26 @@ impl Engine {
                 "settle_refused:inventory_mismatch:{}:{order_id}:engine={inv}:settlement={held}",
                 leg.code()
             ));
+        }
+    }
+
+    /// v2: void the entry BUY `order_id` on `mint` in the settlement ledger (authority: it never filled). Returns
+    /// `true` when the ledger voided it. Under v1 returns `false` (the engine fields are the books). A refused void
+    /// is a named settlement fault; the caller then books the release OUTSIDE a scope, which is itself a named
+    /// bypass, so the two books can never silently disagree.
+    pub(super) fn model_settle_void_entry(&mut self, mint: [u8; 32], order_id: u64) -> bool {
+        let Some(l) = self.model_pf.settle.as_mut() else {
+            return false;
+        };
+        match l.void_entry(mint, order_id) {
+            Ok(()) => {
+                self.mrep("settle:voided:entry");
+                true
+            }
+            Err(e) => {
+                self.model_settle_fault(format!("{}:entry:{order_id}", e.label()));
+                false
+            }
         }
     }
 
@@ -426,10 +452,10 @@ impl Engine {
                 let s = SettlementLedger::from_json(&v["settlement"])
                     .map_err(|_| R::PaperFillUntrusted)?;
                 let un = v["unsettleable"].as_u64().ok_or(R::PaperFillUntrusted)?;
-                // Realized may legitimately differ from the engine's (the engine releases basis in rounded bps,
-                // settlement in exact tokens): that difference is REPORTED (`settlement_minus_engine`), not refused.
-                // Seed and per-mint inventory are the same quantity in both books and must match exactly.
-                if s.seed != i128::from(l.seed_lamports) {
+                // Seed, realized and per-mint inventory are the same quantity in both books and must match exactly.
+                // Under v2 the held ledger's realized total was WRITTEN from the settlement ledger (engine/books.rs),
+                // so the two must be equal exactly; a difference means one of them was edited.
+                if s.seed != i128::from(l.seed_lamports) || s.realized != l.realized_lamports {
                     return Err(R::SettlementBooksMismatch);
                 }
                 for h in &l.held {
@@ -464,8 +490,8 @@ impl Engine {
         let Some(l) = self.model_pf.settle.as_ref() else {
             return serde_json::json!({"version": self.model_pf.version.label()});
         };
-        let engine_cash = i128::from(self.bankroll_origin.seed_lamports()) + self.bankroll_realized
-            - i128::try_from(self.bankroll_committed).unwrap_or(i128::MAX);
+        let books_cash = i128::from(self.bankroll_origin.seed_lamports()) + self.books_realized()
+            - i128::try_from(self.books_committed()).unwrap_or(i128::MAX);
         let markets: Vec<serde_json::Value> = self
             .model_pf
             .shadow
@@ -490,15 +516,16 @@ impl Engine {
                 "fixed_costs": l.fixed_costs.to_string(), "invariant_holds": l.invariant_holds(),
                 "holdings": l.holdings.iter().map(|(m, h)| serde_json::json!([hx(m), h.tokens, h.cost.to_string()])).collect::<Vec<_>>(),
             },
+            // Under v2 the engine's books ARE the ledger (engine/books.rs): these must equal the settlement figures.
             "engine_books": {
-                "realized": self.bankroll_realized.to_string(),
-                "committed": self.bankroll_committed.to_string(),
-                "cash": engine_cash.to_string(),
+                "source": self.model_books_source(),
+                "realized": self.books_realized().to_string(),
+                "committed": self.books_committed().to_string(),
+                "cash": books_cash.to_string(),
+                "bypasses": self.model_pf.bypasses,
             },
-            "settlement_minus_engine": {
-                "realized": (l.realized - self.bankroll_realized).to_string(),
-                "cash": (l.cash - engine_cash).to_string(),
-            },
+            // Diagnostic only: the engine's own exit arithmetic (rounded bps basis release) vs the exact-token ledger.
+            "settlement_minus_engine_exit_net": (l.realized - self.model_pf.exit_net_diag).to_string(),
             "faults": self.model_pf.faults,
             "unsettleable": self.model_pf.unsettleable,
             "shadow_markets": markets,

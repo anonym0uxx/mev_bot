@@ -205,3 +205,46 @@ fn settle_increment_forms_the_cumulative_and_the_durable_form_round_trips() {
     bad2["applied"] = serde_json::json!("x");
     assert!(SettlementLedger::from_json(&bad2).is_err());
 }
+
+/// Void of an entry the authority says never filled: allowed only when the holding is exactly that one order's,
+/// fully reverses it (cash, committed, network estimate, fixed costs), survives a round-trip, and refuses any
+/// later report of the same order by name.
+#[test]
+fn void_entry_reverses_only_a_sole_entry_and_blocks_its_late_reports() {
+    let mut l = SettlementLedger::new(1_000_000_000);
+    let fresh = l.clone();
+    let mut e = r(LegKind::Entry, 1, 1_000, 100_000_000, N);
+    e.cum_fixed_lamports = 2_039_280;
+    step(&mut l, e).unwrap();
+    l.void_entry(M, 1).unwrap();
+    assert!(l.invariant_holds());
+    assert!(l.holdings.is_empty());
+    assert_eq!((l.cash, l.committed, l.realized), (fresh.cash, 0, 0));
+    assert_eq!((l.network_estimate, l.fixed_costs), (0, 0));
+    assert_eq!(l.settle(e), Err(SettleError::Voided));
+    assert_eq!(l.void_entry(M, 1), Err(SettleError::VoidNotSoleEntry));
+    let back = SettlementLedger::from_json(&l.to_json()).unwrap();
+    assert_eq!(back, l);
+    assert_eq!(back.clone().settle(e), Err(SettleError::Voided));
+    // A holding another order touched (ADD) cannot be voided: refused, ledger unchanged.
+    let mut l2 = SettlementLedger::new(1_000_000_000);
+    step(&mut l2, r(LegKind::Entry, 1, 1_000, 100_000_000, N)).unwrap();
+    step(&mut l2, r(LegKind::Add, 2, 500, 60_000_000, N)).unwrap();
+    let snap = l2.clone();
+    assert_eq!(l2.void_entry(M, 1), Err(SettleError::VoidNotSoleEntry));
+    assert_eq!(l2, snap);
+    // Unknown order: refused.
+    assert_eq!(l2.void_entry(M, 99), Err(SettleError::VoidNotSoleEntry));
+    // A durable ledger naming a voided order it never applied is refused.
+    let mut j = l.to_json();
+    j["voided"] = serde_json::json!([[
+        "0101010101010101010101010101010101010101010101010101010101010101",
+        "entry",
+        42
+    ]]);
+    assert!(SettlementLedger::from_json(&j).is_err());
+    // Pre-void ledgers (no `voided` key) still load.
+    let mut j0 = fresh.to_json();
+    j0.as_object_mut().unwrap().remove("voided");
+    assert_eq!(SettlementLedger::from_json(&j0).unwrap(), fresh);
+}

@@ -241,7 +241,7 @@ impl Engine {
             faults,
             order_floor: self.model_order_floor,
             seed_lamports: self.bankroll_origin.seed_lamports(),
-            realized_lamports: self.bankroll_realized,
+            realized_lamports: self.books_realized(),
             model_order_seq: self.model_order_seq,
             mgmt_seq: self.model_mgmt.seq,
             written_wall_ms: 0,
@@ -479,8 +479,7 @@ impl Engine {
             || !self.model_orders.is_empty()
             || !self.model_mgmt.orders.is_empty()
             || !self.model_mgmt.protect.is_empty()
-            || self.bankroll_realized != 0
-            || self.bankroll_committed != 0
+            || !self.books_are_fresh()
         {
             return Err(RestoreRefusal::EngineNotFresh);
         }
@@ -574,7 +573,7 @@ impl Engine {
 
     fn model_held_apply(&mut self, l: &HeldLedger) -> RestoreReport {
         let mut rep = RestoreReport::default();
-        self.bankroll_realized = l.realized_lamports;
+        self.books_restore(l.realized_lamports, 0);
         self.model_order_seq = self.model_order_seq.max(l.model_order_seq);
         self.model_mgmt.seq = self.model_mgmt.seq.max(l.mgmt_seq);
         self.model_replay_through_ms = l.decision.through_ms;
@@ -603,9 +602,7 @@ impl Engine {
             // Capacity was validated; a refusal here would be a logic error, surfaced loudly.
             let ok = self.positions.restore_held(&x, self.now);
             debug_assert!(ok, "validated restore must open");
-            self.bankroll_committed = self
-                .bankroll_committed
-                .saturating_add(u128::from(h.entry_spend));
+            self.books_restore(l.realized_lamports, h.entry_spend);
             rep.committed_lamports = rep.committed_lamports.saturating_add(h.entry_spend);
             if h.inventory_tokens.is_none() {
                 rep.inventory_unknown += 1;

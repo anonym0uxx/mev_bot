@@ -1401,7 +1401,7 @@ impl Engine {
             self.cfg.floor_fraction_bps,
         );
         let balance = self.bankroll_balance();
-        let committed = u64::try_from(self.bankroll_committed).unwrap_or(u64::MAX);
+        let committed = u64::try_from(self.books_committed()).unwrap_or(u64::MAX);
         let live = self.model_live_mints();
         let req = EntryRequest {
             system_prompt: &meta.snap.system_prompt,
@@ -1756,7 +1756,10 @@ impl Engine {
             price_limit: order.price_limit,
             full_clip: true,
         };
-        self.open_pending(&pe);
+        // v2: this commit is settled below (LegKind::Entry, exactly `entry_cost`), inside the one settlement path.
+        self.books_scoped(&[super::books::BookSite::EntryOpen], |s| {
+            s.open_pending(&pe)
+        });
         if self.open_lane.contains_key(&mint) {
             let (quote_validated, landing_validated) = (order.amm, false);
             if !(quote_validated && landing_validated) {
@@ -1823,6 +1826,13 @@ impl Engine {
                 } else if self.model_v2() {
                     self.mrep("shadow:reconciled_entry_not_modelled");
                 }
+            } else if self.model_v2() {
+                // The position is open with committed capital but no inventory: the ledger cannot settle a BUY of
+                // unknown size. Named fault, never a guessed quantity.
+                self.model_settle_fault(format!(
+                    "settle_refused:entry_inventory_unknown:{}",
+                    order.id
+                ));
             }
             self.model_fills.push(ModelFillRecord {
                 order_id: order.id,
@@ -2141,8 +2151,16 @@ impl Engine {
                     let cost = self.open_lane.get(&mint).map_or(0, |a| a.entry_spend);
                     self.positions.reverse_paper_entry(&mint, cost);
                     self.admitted = self.admitted.saturating_sub(1);
-                    self.bankroll_committed =
-                        self.bankroll_committed.saturating_sub(u128::from(cost));
+                    // v2: the ledger voids exactly this order's entry (refused by name if anything else touched
+                    // the holding); the engine release is the scoped mirror of that void.
+                    let voided = self.model_settle_void_entry(mint, order_id);
+                    if voided {
+                        self.books_scoped(&[super::books::BookSite::ReconUnwind], |s| {
+                            s.books_release(super::books::BookSite::ReconUnwind, cost);
+                        });
+                    } else {
+                        self.books_release(super::books::BookSite::ReconUnwind, cost);
+                    }
                     self.ata_open.remove(&mint);
                     self.open_lane.remove(&mint);
                     self.model_quarantine.remove(&mint);

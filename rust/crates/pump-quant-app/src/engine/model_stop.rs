@@ -185,8 +185,8 @@ impl Engine {
 
     /// Cash on hand for valuation: seed + realized - committed entry spend (pending intent is not spent).
     fn model_stop_cash(&self) -> i128 {
-        i128::from(self.bankroll_origin.seed_lamports()) + self.bankroll_realized
-            - i128::try_from(self.bankroll_committed).unwrap_or(i128::MAX)
+        i128::from(self.bankroll_origin.seed_lamports()) + self.books_realized()
+            - i128::try_from(self.books_committed()).unwrap_or(i128::MAX)
     }
 
     /// Both valuations of the book with the default (exec-quote) estimator.
