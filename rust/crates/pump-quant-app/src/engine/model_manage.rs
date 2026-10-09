@@ -624,67 +624,103 @@ impl Engine {
             }
             let landing = order.created_ms + MODEL_FILL_LANDING_MS;
             let tokens = order.intended - order.filled;
-            let priced: Option<(u64, &'static str)> = if order.amm {
-                let obs = self.model_cache.amm_obs(&mint).filter(|o| {
-                    o.ts_ms >= landing
-                        && o.ts_ms <= clock
-                        && o.slot > order.created_slot
-                        && self.model_swap_ctx == Some((o.ts_ms, o.slot))
-                });
-                obs.and_then(|o| {
-                    // The sell-side FEE rounding is not program-verified (protocol::pumpswap_event):
-                    // priced at the GROSS quote; the store applies the configured venue fee. Labelled.
-                    let (_, vq, t) = self.model_amm_econ.get(&mint).copied()?;
-                    if t != o.ts_ms {
-                        return None;
-                    }
-                    let gross = pump_quant_protocol::pumpswap_event::sell_gross_quote_out(
-                        u128::from(o.base_reserves_raw),
-                        u128::from(o.quote_reserves_lamports),
-                        u128::from(vq?),
-                        u128::from(tokens),
-                    )?;
-                    let px = gross
-                        .checked_mul(1_000_000_000)?
-                        .checked_div(u128::from(tokens))?;
-                    Some((u64::try_from(px).ok()?, "mgmt:fill_amm_sell_fee_unverified"))
-                })
+            // M3: a SIZE-SPECIFIC quote for exactly the order's remaining tokens against the causal landing state
+            // (curve: incl. REAL SOL; pool: the landing swap's own fee parts + virtual quote). Requoted on every
+            // landing state at the SAME size: the model's quantity is never resized. A refusal leaves the order
+            // pending until TTL (state may change) and is counted by name; it never fabricates a settlement.
+            let quoted: Option<
+                Result<crate::exec_quote::SellQuote, crate::exec_quote::QuoteRefusal>,
+            > = if order.amm {
+                self.model_cache
+                    .amm_obs(&mint)
+                    .filter(|o| {
+                        o.ts_ms >= landing
+                            && o.ts_ms <= clock
+                            && o.slot > order.created_slot
+                            && self.model_swap_ctx == Some((o.ts_ms, o.slot))
+                    })
+                    .map(|o| match self.model_amm_econ.get(&mint).copied() {
+                        Some((parts, vq, t)) if t == o.ts_ms => crate::exec_quote::amm_sell(
+                            o.base_reserves_raw,
+                            o.quote_reserves_lamports,
+                            vq,
+                            parts,
+                            tokens,
+                        ),
+                        _ => Err(crate::exec_quote::QuoteRefusal::AmmEconomicsMissing),
+                    })
             } else {
-                let obs = self.model_cache.curve_obs(&mint).filter(|o| {
-                    o.ts_ms >= landing && o.ts_ms <= clock && o.slot > order.created_slot
-                });
-                obs.and_then(|o| {
-                    let px = if self.cfg.curve_exact_fill_enable {
-                        // The store applies the exact own-impact itself: hand it the spot, not an
-                        // already-impacted average, so impact is charged once.
-                        crate::curve_fill::spot_price_fp(o.v_sol_lamports, o.v_tokens)?
+                self.model_cache
+                    .curve_obs(&mint)
+                    .filter(|o| {
+                        o.ts_ms >= landing && o.ts_ms <= clock && o.slot > order.created_slot
+                    })
+                    .map(|o| {
+                        crate::exec_quote::curve_sell(
+                            o.v_sol_lamports,
+                            o.v_tokens,
+                            o.real_sol_lamports,
+                            tokens,
+                        )
+                    })
+            };
+            let label = if order.amm {
+                "mgmt:fill_amm_sell"
+            } else {
+                "mgmt:fill_curve"
+            };
+            let priced = match quoted {
+                Some(Ok(q)) => Some(q),
+                Some(Err(r)) => {
+                    let l = format!("mgmt:{}", r.label());
+                    if order.kind == MgmtKind::Protect {
+                        self.mrep(l.replacen("mgmt:", "protect:", 1));
                     } else {
-                        crate::curve_fill::sell_avg_price_fp(o.v_sol_lamports, o.v_tokens, tokens)?
-                    };
-                    Some((px, "mgmt:fill_curve"))
-                })
+                        self.mrep(l);
+                    }
+                    None
+                }
+                None => None,
             };
             match priced {
-                Some((px, label)) => {
-                    // PAPER EXECUTOR. It produces the SAME cumulative settlement evidence a real executor reports
-                    // (tokens, gross, all-in fees) and books it through the one settlement path, so the recorded
-                    // totals are exactly what moved cash. ASSUMPTIONS (explicit): price = the landing observation
-                    // (>= 400 ms after creation, newer slot); gross = the simulated walk incl. configured impairment
-                    // and own curve impact; fees = MODELLED (venue fee schedule + measured p50 landed leg), not
-                    // executed. The order is marked `simulated`: its economics stay outside assessable PnL.
-                    let (g, f) = match self.positions.simulate_sell_settlement(&mint, tokens, px) {
-                        Ok(gf) => gf,
-                        Err(_) => {
-                            // Same named refusals as before, through the booking path.
-                            self.model_mgmt_book(mint, order, tokens, px, None);
-                            continue;
-                        }
+                Some(q) => {
+                    // PAPER EXECUTOR. Same cumulative settlement evidence a real executor reports (tokens, gross,
+                    // all-in fees), booked through the one settlement path. ASSUMPTIONS (explicit): the landing
+                    // state is the first observation >= 400 ms after creation on a newer slot; the quote is the
+                    // program's arithmetic at that state for this exact size; fees = venue fees from the quote +
+                    // network fee (measured p50) + exit tip, each once. Not executed evidence: `simulated`.
+                    let leg = crate::exec_quote::landed_leg_cost(self.cfg.exit_tip_lamports);
+                    let (g, f) = (q.gross, q.venue_fees.saturating_add(leg));
+                    let Some(px) = crate::exec_quote::price_fp(q.net, tokens) else {
+                        self.mrep("mgmt:quote_unavailable:unpriceable");
+                        continue;
                     };
+                    // Position-side refusals (not held / inventory unknown / exceeds inventory) by name.
+                    if self
+                        .positions
+                        .simulate_sell_settlement(&mint, tokens, px.max(1))
+                        .is_err()
+                    {
+                        self.model_mgmt_book(mint, order, tokens, px, None);
+                        continue;
+                    }
                     if order.kind == MgmtKind::Protect {
                         self.mrep(label.replacen("mgmt:", "protect:", 1));
                     } else {
                         self.mrep(label);
                     }
+                    if q.net <= leg {
+                        // Dust: venue-net does not cover the landed leg. Booked as what it is (a net cost),
+                        // never presented as recovery.
+                        self.mrep("econ:sell_net_below_leg_cost");
+                    }
+                    self.mrep_add("econ:exit_gross_lamports", q.gross);
+                    self.mrep_add("econ:exit_venue_fees_lamports", q.venue_fees);
+                    self.mrep_add(
+                        "econ:exit_network_lamports",
+                        crate::exec_quote::NETWORK_FEE_P50_LAMPORTS,
+                    );
+                    self.mrep_add("econ:exit_tip_lamports", self.cfg.exit_tip_lamports);
                     if let Some(o) = self.model_mgmt.orders.get_mut(&mint) {
                         o.simulated = true;
                     }
@@ -1208,6 +1244,7 @@ enum AddState {
     Curve {
         vsol: u64,
         vtok: u64,
+        real_tok: u64,
     },
     Amm {
         base: u64,
@@ -1237,14 +1274,20 @@ impl AddState {
     }
     fn fee_bps(self) -> u32 {
         match self {
-            AddState::Curve { vsol, .. } => crate::cost_model::venue_fee_bps_per_leg(vsol),
-            AddState::Amm { .. } => 0, // the pool takes its fee from the input: tokens out are net
+            // M3: both venues are priced exact-in (fees INSIDE the notional), so no fee is added on top.
+            AddState::Curve { .. } | AddState::Amm { .. } => 0,
         }
     }
     /// Tokens delivered for a notional of `n` lamports, by the venue's own arithmetic.
     fn tokens_for(self, n: u64) -> Option<u64> {
         match self {
-            AddState::Curve { vsol, vtok } => crate::curve_fill::buy_tokens_out(vsol, vtok, n),
+            AddState::Curve {
+                vsol,
+                vtok,
+                real_tok,
+            } => crate::exec_quote::curve_buy(vsol, vtok, real_tok, n)
+                .ok()
+                .map(|q| q.tokens),
             AddState::Amm {
                 base,
                 quote,
@@ -1295,7 +1338,9 @@ impl Engine {
                 let fee = (u128::from(rem) * u128::from(o.fee_bps)).div_ceil(10_000);
                 acc.saturating_add(rem)
                     .saturating_add(u64::try_from(fee).unwrap_or(u64::MAX))
-                    .saturating_add(crate::cost_model::FIXED_LAMPORTS_PER_LEG)
+                    .saturating_add(crate::exec_quote::landed_leg_cost(
+                        self.cfg.entry_tip_lamports,
+                    ))
             })
     }
 
@@ -1325,6 +1370,10 @@ impl Engine {
             if landing.is_some() && t != o.ts_ms {
                 return Err("mgmt:refuse:add_amm_economics_missing");
             }
+            if cr == 0 {
+                // Possibly a cashback coin whose cashback rate the engine does not receive (exec_quote).
+                return Err("mgmt:refuse:add_amm_cashback_unknown");
+            }
             Ok(AddState::Amm {
                 base: o.base_reserves_raw,
                 quote: o.quote_reserves_lamports,
@@ -1344,6 +1393,7 @@ impl Engine {
             Ok(AddState::Curve {
                 vsol: o.v_sol_lamports,
                 vtok: o.v_tokens,
+                real_tok: o.real_tokens,
             })
         }
     }
@@ -1358,7 +1408,7 @@ impl Engine {
         state: AddState,
         order_bound: Option<u64>,
     ) -> Result<AddPlan, &'static str> {
-        let fixed = crate::cost_model::FIXED_LAMPORTS_PER_LEG;
+        let fixed = crate::exec_quote::landed_leg_cost(self.cfg.entry_tip_lamports);
         let fee_bps = state.fee_bps();
         let floor = derive_survival_floor(
             self.bankroll_origin.seed_lamports(),
@@ -1502,7 +1552,9 @@ impl Engine {
             Some(f) => f,
             None => u64::try_from(u128::from(spent) * u128::from(fee_bps) / 10_000)
                 .unwrap_or(0)
-                .saturating_add(crate::cost_model::FIXED_LAMPORTS_PER_LEG),
+                .saturating_add(crate::exec_quote::landed_leg_cost(
+                    self.cfg.entry_tip_lamports,
+                )),
         };
         let cost = spent.saturating_add(fee);
         if let Err(r) = self
@@ -1626,7 +1678,9 @@ impl Engine {
             (u128::from(order.max_spend) * u128::from(order.fee_bps)).div_ceil(10_000),
         )
         .unwrap_or(u64::MAX)
-        .saturating_add(crate::cost_model::FIXED_LAMPORTS_PER_LEG);
+        .saturating_add(crate::exec_quote::landed_leg_cost(
+            self.cfg.entry_tip_lamports,
+        ));
         let fee_over = order.fees.saturating_add(fee) > fee_cap;
         let px = u64::try_from((u128::from(spent) * 1_000_000_000).div_ceil(u128::from(tokens)))
             .map_err(|_| "price_overflow")?;
@@ -2285,6 +2339,7 @@ mod add_planner_tests {
         AddState::Curve {
             vsol,
             vtok: 849_000_000_000_000,
+            real_tok: 569_000_000_000_000,
         }
     }
 
@@ -2336,7 +2391,7 @@ mod add_planner_tests {
     fn a_pending_add_reserves_cash_so_a_second_order_cannot_double_spend() {
         let mut e = engine(1_000_000_000);
         let deep = curve(10_000_000_000_000);
-        let need = 42_000_000_000; // ~0.5 SOL on the 10,000 SOL book: one fits in 0.75 SOL, two do not
+        let need = 40_000_000_000; // ~0.48 SOL all-in (125 bp inside) on the 10,000 SOL book: one fits in 0.5 SOL free, two do not
         let first = e
             .model_mgmt_add_plan_at(&M, need, deep, None)
             .expect("fits alone");

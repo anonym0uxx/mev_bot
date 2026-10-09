@@ -1366,7 +1366,7 @@ fn an_add_that_already_executed_beyond_its_reservation_is_booked_as_executed_fau
     // FEES above the reserved bound, reported by an executor for an order that already executed.
     let fee_cap = u64::try_from((u128::from(max_spend) * u128::from(fee_bps)).div_ceil(10_000))
         .unwrap()
-        + pump_quant_app::cost_model::FIXED_LAMPORTS_PER_LEG;
+        + pump_quant_app::exec_quote::landed_leg_cost(10_000);
     // PRE-submission an estimate above the reservation refuses the order (planner tests). POST-execution it is
     // evidence of what happened: the books must show it. Expected values below are computed independently.
     let (tk, sp, fee_hi) = (intended / 2, max_spend / 2, fee_cap + 5_000);
@@ -1883,20 +1883,22 @@ fn expected_sim_sell(
     vtok: u64,
     tokens: u64,
 ) -> (u64, u64, u64, u64, u32) {
+    // M3 expectation, computed HERE (not via the engine's quote module): the pump.fun curve sell for exactly
+    // `tokens` at the landing reserves - gross = floor(tokens * vsol / (vtok + tokens)) - minus protocol 95 bp and
+    // creator 30 bp, each ceil-rounded (validated on independent mainnet sells), then one landed leg = measured
+    // p50 network fee 10_000 + the configured exit tip 10_000. The fill price is venue-net per token.
     let inv = h.inventory_tokens.unwrap();
-    let px =
-        u64::try_from(u128::from(vsol) * 1_000_000_000 / (u128::from(vtok) + u128::from(tokens)))
-            .unwrap();
+    let gross = u128::from(tokens) * u128::from(vsol) / (u128::from(vtok) + u128::from(tokens));
+    let ceil = |bps: u128| (gross * bps).div_ceil(10_000);
+    let venue = ceil(95) + ceil(30);
+    let net = gross - venue;
+    let px = u64::try_from((net * 1_000_000_000).div_ceil(u128::from(tokens))).unwrap();
     let frac = if tokens == inv {
         h.remaining_bps
     } else {
         u32::try_from(u128::from(tokens) * u128::from(h.remaining_bps) / u128::from(inv)).unwrap()
     };
-    let mult = u128::from(px) * 10_000 / u128::from(h.entry_price_fp);
-    let notional = u128::from(h.size_lamports) * u128::from(frac) / 10_000;
-    let gross = notional * mult / 10_000;
-    // Curve venue fee (95 bp below graduation) + one measured p50 landed leg.
-    let fee = gross * 95 / 10_000 + 10_000;
+    let fee = venue + 10_000 + 10_000;
     let cost = u128::from(h.cost_lamports) * u128::from(frac) / 10_000;
     (px, gross as u64, fee as u64, cost as u64, frac)
 }

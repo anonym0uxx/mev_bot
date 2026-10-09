@@ -410,17 +410,32 @@ fn add_targets_half_the_reconciled_inventory_and_only_the_fill_changes_state() {
         r.e.model_inventory_tokens(&MINT),
         Some(inv0 + fills[0].tokens)
     );
+    // M3: the curve ADD is exact-SOL-in at the pinned FeeConfig (95 + 30 bp INSIDE the notional), so the all-in
+    // cost is notional + one landed leg (network p50 + configured tip). No universal fee constant on top.
     assert_eq!(
         fills[0].cost_lamports,
         fills[0].spent_lamports
-            + fills[0].spent_lamports
-                * u64::from(pump_quant_app::cost_model::venue_fee_bps_per_leg(
-                    VSOL + 260_000_000
-                ))
-                / 10_000
-            + pump_quant_app::cost_model::FIXED_LAMPORTS_PER_LEG,
-        "all-in cost = notional + landing-venue fee + fixed leg"
+            + pump_quant_app::exec_quote::landed_leg_cost(cfg().entry_tip_lamports),
+        "all-in cost = notional (venue fees inside) + network fee + tip, each once"
     );
+    {
+        // The ADD fills on the FIRST eligible landing state (dsol 250M), not the later one.
+        let q = pump_quant_app::exec_quote::curve_buy(
+            VSOL + 250_000_000,
+            VTOK - 4_000_000_000_000,
+            565_000_000_000_000,
+            fills[0].spent_lamports,
+        )
+        .expect("quotable");
+        assert_eq!(
+            q.tokens, fills[0].tokens,
+            "tokens = the exact-in quote at landing"
+        );
+        assert!(
+            q.venue_fees > 0,
+            "venue fees are charged inside the notional"
+        );
+    }
     assert_eq!(
         r.e.model_free_cash_lamports(),
         cash0.saturating_sub(fills[0].cost_lamports),

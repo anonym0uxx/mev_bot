@@ -546,8 +546,10 @@ fn amm_management_reduce_then_exit_runs_through_the_real_engine_with_unassessed_
     assert_eq!(rep(&e, "mgmt:order:reduce"), 1, "{r:?}");
     assert_eq!(rep(&e, "mgmt:order:exit"), 1, "{r:?}");
     assert_eq!(rep(&e, "mgmt:fill:closed"), 1, "{r:?}");
-    // The unverified AMM sell economics are FLAGGED on every AMM sell fill, so no PnL from them is citable.
-    assert_eq!(rep(&e, "mgmt:fill_amm_sell_fee_unverified"), 2, "{r:?}");
+    // M3: AMM sells are now priced by the VERIFIED size-specific quote (8/8 independent sells exact, incl.
+    // fee rounding): each AMM sell fill carries the verified label. Fills stay `simulated` (paper executor).
+    assert_eq!(rep(&e, "mgmt:fill_amm_sell"), 2, "{r:?}");
+    assert_eq!(rep(&e, "mgmt:fill_amm_sell_fee_unverified"), 0, "{r:?}");
 }
 
 /// INDEPENDENT LEDGER over the whole captured replay. After EVERY fed event the test samples the engine's public

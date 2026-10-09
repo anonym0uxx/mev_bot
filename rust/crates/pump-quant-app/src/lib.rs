@@ -60,6 +60,7 @@ pub mod decision_join;
 pub mod engine;
 pub mod enrichment;
 pub mod event;
+pub mod exec_quote;
 pub mod expected_move;
 pub mod extraction_risk;
 pub mod flow_checkpoint;

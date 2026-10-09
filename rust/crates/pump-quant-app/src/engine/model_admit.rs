@@ -1494,14 +1494,20 @@ impl Engine {
             if let Some(fr) = order.confirmed {
                 self.model_retire_order(&mint);
                 self.mrep("fill:applied_from_reconcile");
-                self.model_open_filled(mint, order, fr.reserve_sol_lamports, fr.entry_price_fp, 0);
+                self.model_open_filled(
+                    mint,
+                    order,
+                    fr.reserve_sol_lamports,
+                    fr.entry_price_fp,
+                    None,
+                );
                 continue;
             }
             let landing = order.created_ms + MODEL_FILL_LANDING_MS;
             let size = order.clip_lamports;
             // Landing state: the first reserve observation at/after landing, from the plane the
             // DECISION used. A curve order is never priced from a pool, nor the reverse.
-            let (reserve_sol, tokens_out, entry_price, entry_fee_bps) = if order.amm {
+            let (reserve_sol, tokens_out, entry_price, venue_fees) = if order.amm {
                 let obs = self.model_cache.amm_obs(&mint).filter(|o| {
                     o.ts_ms >= landing
                         && o.ts_ms <= clock
@@ -1526,7 +1532,7 @@ impl Engine {
                 // Executable economics come from the LANDING-STATE swap's own event: the fee parts and
                 // the pool's virtual quote reserve at that instant. Either missing => the quote is
                 // unsupported and the order is refused (never a carried-forward or defaulted value).
-                let Some((Some((lp, pr, cr)), Some(vq), _)) = self
+                let Some((parts, vq, _)) = self
                     .model_amm_econ
                     .get(&mint)
                     .copied()
@@ -1535,32 +1541,30 @@ impl Engine {
                     self.mrep("fill_none:amm_economics_not_on_landing_event");
                     continue;
                 };
-                // Verified `buy_exact_quote_in` arithmetic (see protocol::pumpswap_event): effective
-                // quote = vault + virtual reserve; fees ceil-rounded per component on the net input.
-                let Some(fill) = pump_quant_protocol::pumpswap_event::buy_exact_quote_in(
-                    u128::from(obs.base_reserves_raw),
-                    u128::from(obs.quote_reserves_lamports),
-                    u128::from(vq),
-                    u128::from(size),
-                    u128::from(lp),
-                    u128::from(pr),
-                    u128::from(cr),
-                ) else {
+                // M3: verified `buy_exact_quote_in` arithmetic via the one quote module. A landing event
+                // with no coin-creator fee may be a cashback coin whose rate the engine does not receive:
+                // refused by name, never priced as zero cashback.
+                let q = match crate::exec_quote::amm_buy(
+                    obs.base_reserves_raw,
+                    obs.quote_reserves_lamports,
+                    vq,
+                    parts,
+                    size,
+                ) {
+                    Ok(q) => q,
+                    Err(r) => {
+                        self.mrep(format!("fill_none:{}", r.label()));
+                        continue;
+                    }
+                };
+                let out = q.tokens;
+                // All-in average price over the clip (fees inside). The pool took its fee from the
+                // INPUT, so `out` is already net of it: no separate entry fee.
+                let Some(px) = crate::exec_quote::price_fp(size, out) else {
                     self.mrep("fill_none:unpriceable");
                     continue;
                 };
-                let Ok(out) = u64::try_from(fill.base_out) else {
-                    self.mrep("fill_none:unpriceable");
-                    continue;
-                };
-                // All-in average price, lamports per raw token in PRICE_SCALE units. The pool took
-                // its fee from the INPUT, so `out` is already net of it: no separate entry fee.
-                let px = (u128::from(size) * 1_000_000_000).div_ceil(u128::from(out));
-                let Ok(px) = u64::try_from(px) else {
-                    self.mrep("fill_none:unpriceable");
-                    continue;
-                };
-                (obs.quote_reserves_lamports, out, px, 0u32)
+                (obs.quote_reserves_lamports, out, px, q.venue_fees)
             } else {
                 let obs = self.model_cache.curve_obs(&mint).filter(|o| {
                     o.ts_ms >= landing && o.ts_ms <= clock && o.slot > order.created_slot
@@ -1573,24 +1577,29 @@ impl Engine {
                     continue;
                 };
                 self.model_retire_order(&mint);
-                let Some(out) =
-                    crate::curve_fill::buy_tokens_out(obs.v_sol_lamports, obs.v_tokens, size)
-                else {
-                    self.mrep("fill_none:unpriceable");
-                    continue;
-                };
-                let Some(px) =
-                    crate::curve_fill::buy_avg_price_fp(obs.v_sol_lamports, obs.v_tokens, size)
-                else {
-                    self.mrep("fill_none:unpriceable");
-                    continue;
-                };
-                (
+                self.model_note_latency(&order, obs.ts_ms);
+                // M3: `buy_exact_sol_in` with the clip as the ALL-IN venue spend; protocol + creator/cashback
+                // fees (pinned pump-fees FeeConfig) are INSIDE the clip, charged once.
+                let q = match crate::exec_quote::curve_buy(
                     obs.v_sol_lamports,
-                    out,
-                    px,
-                    crate::cost_model::venue_fee_bps_per_leg(obs.v_sol_lamports),
-                )
+                    obs.v_tokens,
+                    obs.real_tokens,
+                    size,
+                ) {
+                    Ok(q) => q,
+                    Err(r) => {
+                        self.mrep(format!("fill_none:{}", r.label()));
+                        continue;
+                    }
+                };
+                // ENTRY PRICE MEANING PRESERVED: the curve entry price stays the average EXECUTION price excluding
+                // venue fees (previously `buy_avg_price_fp(size)`); fees are in the cost basis (clip), never in
+                // the price the hard stop / prompts compare marks against.
+                let Some(px) = crate::exec_quote::price_fp(q.net_in, q.tokens) else {
+                    self.mrep("fill_none:unpriceable");
+                    continue;
+                };
+                (obs.v_sol_lamports, q.tokens, px, q.venue_fees)
             };
             // THE MODEL'S OWN BOUND, converted by the same authority the live sink uses.
             if let Some(limit) = order.price_limit {
@@ -1606,7 +1615,13 @@ impl Engine {
                     }
                 }
             }
-            self.model_open_filled(mint, order, reserve_sol, entry_price, entry_fee_bps);
+            self.model_open_filled(
+                mint,
+                order,
+                reserve_sol,
+                entry_price,
+                Some((tokens_out, venue_fees)),
+            );
         }
     }
 
@@ -1619,18 +1634,24 @@ impl Engine {
         order: ModelOrder,
         reserve_sol: u64,
         entry_price: u64,
-        entry_fee_bps: u32,
+        // Paper fill: (tokens delivered, venue fees inside the clip). `None` = a reconciled executor fill,
+        // whose inventory is derived from its own reported price.
+        quoted: Option<(u64, u64)>,
     ) {
         let size = order.clip_lamports;
         let Some(rt_bps) = self.unified_rt_bps(&mint, size, reserve_sol) else {
             self.mrep("fill_none:undecoded_quote");
             return;
         };
-        let entry_fee = (u128::from(size) * u128::from(entry_fee_bps) / 10_000) as u64;
+        // Venue fees are INSIDE the clip on every model fill (exact-in): no separate entry fee is added.
+        let entry_fee = 0u64;
         let needs_ata = !self.ata_open.contains(&mint);
+        // M3: the landed BUY leg pays the network fee (measured p50) AND the configured tip, each once. Venue
+        // fees are already inside the clip (exact-in), so `entry_fee_bps` is 0 on both model fill paths.
+        let leg = crate::exec_quote::landed_leg_cost(self.cfg.entry_tip_lamports);
         let entry_cost = size
             .saturating_add(entry_fee)
-            .saturating_add(crate::cost_model::FIXED_LAMPORTS_PER_LEG)
+            .saturating_add(leg)
             .saturating_add(if needs_ata {
                 crate::cost_model::ATA_RENT_LAMPORTS
             } else {
@@ -1646,6 +1667,11 @@ impl Engine {
             self.mrep("fill_none:below_wallet_floor");
             return;
         }
+        self.mrep_add(
+            "econ:entry_network_lamports",
+            crate::exec_quote::NETWORK_FEE_P50_LAMPORTS,
+        );
+        self.mrep_add("econ:entry_tip_lamports", self.cfg.entry_tip_lamports);
         let pe = PendingEntry {
             lane: order.lane,
             discovery_lane: order.discovery_lane,
@@ -1692,10 +1718,18 @@ impl Engine {
                 self.model_protect_ignored.remove(&mint);
             }
             // The fill is the ONLY source of inventory: tokens delivered at the fill price.
-            let tokens =
-                u64::try_from(u128::from(size) * 1_000_000_000 / u128::from(entry_price.max(1)))
-                    .ok()
-                    .filter(|t| *t > 0);
+            // A paper fill books the tokens the quote delivered (never re-derived from a rounded price).
+            let tokens = match quoted {
+                Some((t, fees)) => {
+                    self.mrep_add("econ:entry_venue_fees_lamports", fees);
+                    Some(t).filter(|t| *t > 0)
+                }
+                None => {
+                    u64::try_from(u128::from(size) * 1_000_000_000 / u128::from(entry_price.max(1)))
+                        .ok()
+                        .filter(|t| *t > 0)
+                }
+            };
             self.model_mgmt_on_fill(mint, tokens, entry_price, order.id);
             self.model_fills.push(ModelFillRecord {
                 order_id: order.id,
