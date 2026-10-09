@@ -21,6 +21,7 @@ pub mod model_manage;
 pub mod model_protect;
 pub mod model_restore;
 pub mod model_safety;
+pub mod model_stop;
 use crate::analytics::ReflectionAnalytics;
 use crate::brain::{
     exit_reason_of, platform_of, AppBlobStore, BrainAuthorRecord, BrainEntry, BrainMetaState,
@@ -847,6 +848,8 @@ pub struct Engine {
     model_mgmt: model_manage::MgmtLane,
     /// Durable SAFETY_OFF state (see `crate::safety_off`).
     model_safety: crate::safety_off::SafetyOff,
+    /// Stop trigger -> action table state (`crate::stop_policy`, `engine/model_stop.rs`).
+    model_stop: model_stop::StopState,
     model_last_ask: BTreeMap<[u8; 32], i64>,
     model_first_cand: BTreeMap<[u8; 32], i64>,
     model_drift: pump_quant_inference::seam::DriftLedger,
@@ -1522,6 +1525,7 @@ impl Engine {
             model_orders: BTreeMap::new(),
             model_mgmt: model_manage::MgmtLane::new(),
             model_safety: crate::safety_off::SafetyOff::default(),
+            model_stop: model_stop::StopState::default(),
             model_last_ask: BTreeMap::new(),
             model_first_cand: BTreeMap::new(),
             model_registry: BTreeSet::new(),

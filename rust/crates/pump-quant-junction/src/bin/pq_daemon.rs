@@ -272,6 +272,9 @@ const EXIT_MODEL_LIVE_CONFLICT: u8 = 98;
 const EXIT_HELD_STATE_REFUSED: u8 = 97;
 /// `PQ_FLOW_RESUME_MS` was set outside a declared offline paper replay, or its value is invalid.
 const EXIT_RESUME_CLOCK_REFUSED: u8 = 96;
+/// Exit code: the paper model lane found a live signing/submission capability at start (stop table row
+/// `refuse_start_live_capability`).
+const EXIT_LIVE_CAPABILITY: u8 = 95;
 /// Path (relative to CWD) for the graceful-shutdown sentinel file.
 const DAEMON_STOP_FILE: &str = "data/DAEMON_STOP";
 /// Path (relative to CWD) for the emergency-stop sentinel file.
@@ -1925,6 +1928,23 @@ fn main() -> ExitCode {
         }
     }
     if model_armed {
+        // STOP TABLE row `refuse_start_live_capability`: the paper lane never starts next to a live signing or
+        // submission capability. A keypair is only ever loaded by the live constructor (`--live`).
+        if let Err(why) = pump_quant_junction::model_lifecycle::startup_paper_check(
+            &engine,
+            args.live_mode,
+            args.live_mode,
+        ) {
+            eprintln!(
+                "[pq-daemon] FATAL_LIVE_CAPABILITY_PRESENT: {why} - the paper model lane refuses to start with a live signing/submission capability"
+            );
+            return ExitCode::from(EXIT_LIVE_CAPABILITY);
+        }
+        eprintln!(
+            "[pq-daemon] startup paper check: no keypair, no --live, no submission sink (paper)"
+        );
+    }
+    if model_armed {
         let held_file = std::env::var("PQ_MODEL_HELD_FILE").unwrap_or_else(|_| {
             pump_quant_junction::model_lifecycle::DEFAULT_HELD_FILE.to_string()
         });
@@ -2082,6 +2102,19 @@ fn main() -> ExitCode {
     let mut model_stop_last_alert = Instant::now() - Duration::from_secs(3600);
     let mut model_stop_session = pump_quant_junction::model_lifecycle::StopSession::new();
     let mut stale_callout = pump_quant_junction::model_lifecycle::StaleCallout::default();
+    // STOP TABLE (pump_quant_app::stop_policy): run deadline + drain bound, and the bootstrap RPC budget with a
+    // held-position reservation.
+    let (stop_deadline_ms, stop_drain_ms) = pump_quant_junction::model_lifecycle::run_deadline_from(
+        std::env::var("PQ_RUN_DEADLINE_MS").ok().as_deref(),
+        std::env::var("PQ_DRAIN_BOUND_MS").ok().as_deref(),
+    );
+    engine.model_stop_set_deadline(stop_deadline_ms, stop_drain_ms);
+    if model_armed {
+        eprintln!(
+            "[pq-daemon] stop table: run deadline {stop_deadline_ms} ms, drain bound {stop_drain_ms} ms, then protective handoff (never force-close)"
+        );
+    }
+    let mut rpc_budget = pump_quant_junction::model_lifecycle::bootstrap_budget();
     // Management-sell report inbox (REDUCE/EXIT/ADD fills reported by the executor/operator). Cumulative reports are
     // idempotent, so a restart that re-reads the whole file applies nothing twice.
     let report_inbox_path = std::env::var("PQ_MGMT_REPORT_INBOX")
@@ -4351,10 +4384,18 @@ fn main() -> ExitCode {
                 }
             }
             for m in engine.model_launch_unknown(8) {
-                if bootstrap_requested.insert(m) {
-                    let b58 = solana_program::pubkey::Pubkey::new_from_array(m).to_string();
-                    let _ = req_tx.send(b58);
+                if bootstrap_requested.contains(&m) {
+                    continue;
                 }
+                // Discovery spend never eats the held-position reservation (20 pages = one full walk).
+                let held_n = engine.model_held_mints().len() as u64;
+                let now_ms = session_start.elapsed().as_millis() as i64;
+                if !rpc_budget.try_discovery(now_ms, held_n, 20) {
+                    break;
+                }
+                bootstrap_requested.insert(m);
+                let b58 = solana_program::pubkey::Pubkey::new_from_array(m).to_string();
+                let _ = req_tx.send(b58);
             }
         }
 
@@ -4864,6 +4905,40 @@ fn main() -> ExitCode {
             }
             #[allow(clippy::manual_is_multiple_of)] // MSRV 1.85: is_multiple_of stabilised in 1.87
             if model_armed && (tick_counter % 20 == 0 || barrier_fire) {
+                // STOP TABLE: measured conditions -> named actions. Management, protection and reconciliation are
+                // never disabled here; risk rows latch SAFETY_OFF; the deadline drains then hands off.
+                let sf = std::env::var("PQ_MODEL_SAFETY_FILE").unwrap_or_else(|_| {
+                    pump_quant_junction::model_lifecycle::DEFAULT_SAFETY_FILE.to_string()
+                });
+                let held_n = engine.model_held_mints().len() as u64;
+                let ops = pump_quant_app::stop_policy::OpsInputs {
+                    disk_ok: pump_quant_junction::model_lifecycle::disk_headroom_ok(
+                        std::path::Path::new(&sf),
+                        pump_quant_junction::model_lifecycle::MIN_FREE_BYTES,
+                    ),
+                    ram_ok: pump_quant_junction::model_lifecycle::ram_headroom_ok(),
+                    feed_ok: last_slot_time.elapsed() <= Duration::from_secs(STALE_SECS),
+                    rpc_budget_ok: launch_bootstrap.is_none()
+                        || !rpc_budget.discovery_exhausted(held_n),
+                    shadow_divergence: false, // placeholder hook: the shadow slice supplies this
+                    deadline_passed: false,
+                };
+                let ev =
+                    engine.model_stop_evaluate(session_start.elapsed().as_millis() as i64, ops);
+                for t in &ev.newly_raised {
+                    let a = pump_quant_app::stop_policy::action_for(*t);
+                    eprintln!(
+                        "[pq-daemon] {}: trigger={t:?} action={} latch={:?} model_valuation[{}]={:?} external_valuation={:?}",
+                        a.alert, a.name, a.latch, ev.estimator, ev.model_valuation, ev.external_valuation
+                    );
+                }
+                if ev.handoff_due
+                    && pump_quant_junction::model_lifecycle::request_deadline_handoff(
+                        std::path::Path::new(DAEMON_STOP_FILE),
+                    )
+                {
+                    eprintln!("[pq-daemon] ALERT_RUN_DEADLINE_DRAIN: drain bound elapsed - protective handoff requested via the stop protocol; books are NOT force-closed");
+                }
                 let now_ms = engine.model_clock_ms_now();
                 for l in stale_callout.evaluate(&engine, now_ms, 60_000) {
                     eprintln!(
