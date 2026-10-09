@@ -137,6 +137,7 @@ pub mod queue;
 pub mod report_inbox;
 pub mod reserve_delta;
 pub mod state_fetch;
+pub mod stream_recovery;
 pub mod tape_export;
 pub mod trade_join;
 pub mod trade_journal;

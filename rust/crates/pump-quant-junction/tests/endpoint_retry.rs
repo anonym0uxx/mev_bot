@@ -198,38 +198,35 @@ fn the_production_model_client_makes_exactly_one_attempt_per_ask() {
     assert_eq!(hits.load(Ordering::SeqCst), MODEL_ASK.max_attempts as usize);
 }
 
-/// Daemon wiring pin (SOURCE level, not behavioural: the WS reconnect and LaserStream respawn loops live inline in
-/// pq_daemon `main` and have no seam). The daemon's loop constants are bound to the named bounds, and every loop /
-/// guard uses them; a hard-coded or removed bound turns this red.
+/// Daemon wiring pin - SUPPLEMENTARY source-level evidence only (the behaviour is tested in tests/stream_recovery.rs):
+/// every Helius WS reconnect path and the LaserStream respawn go through the extracted, behaviourally tested
+/// `stream_recovery` functions with the named bounds; no inline ladder remains.
 #[test]
 fn daemon_reconnect_and_respawn_loops_are_bound_to_the_named_bounds() {
     let src = include_str!("../src/bin/pq_daemon.rs");
     let flat: String = src.split_whitespace().collect::<Vec<_>>().join(" ");
     for pin in [
-        "const WS_RECONNECT_SLEEP_MS: u64 = pump_quant_junction::endpoint_retry::HELIUS_WS_RECONNECT.base_backoff_ms;",
         "const MAX_RECONNECT_ATTEMPTS: u32 = pump_quant_junction::endpoint_retry::HELIUS_WS_RECONNECT.max_attempts;",
-        "const RECONNECT_BACKOFF_CAP_MS: u64 = pump_quant_junction::endpoint_retry::HELIUS_WS_RECONNECT.cap_backoff_ms;",
-        "const LS_RESPAWN_COOLDOWN_SECS: u64 = pump_quant_junction::endpoint_retry::LASERSTREAM_RESPAWN.base_backoff_ms / 1_000;",
         "const LS_MAX_RESPAWN_ATTEMPTS: u32 = pump_quant_junction::endpoint_retry::LASERSTREAM_RESPAWN.max_attempts;",
-        "if ls_respawn_count >= LS_MAX_RESPAWN_ATTEMPTS {",
-        "now.duration_since(t).as_secs() >= LS_RESPAWN_COOLDOWN_SECS",
-        "ls_respawn_count += 1;",
+        "respawn_step( &mut ls_gov, &pump_quant_junction::endpoint_retry::LASERSTREAM_RESPAWN,",
+        "mpsc::sync_channel::<LaserStreamUpdate>(pump_quant_junction::stream_recovery::LS_QUEUE_CAP);",
+        "pump_quant_junction::stream_recovery::spawn_line_reader(",
     ] {
         assert_eq!(flat.matches(pin).count(), 1, "daemon wiring pin missing: {pin}");
     }
-    // Four Helius WS reconnect loops (startup, force, Err-path, stale), each bounded and on the capped ladder.
+    // Four Helius WS reconnect paths (force, closed, Err, stale), each through the extracted episode.
     assert_eq!(
-        flat.matches("for _ in 0..MAX_RECONNECT_ATTEMPTS {").count(),
+        flat.matches("pump_quant_junction::stream_recovery::ws_reconnect_episode( &pump_quant_junction::endpoint_retry::HELIUS_WS_RECONNECT,").count(),
         4
     );
     assert_eq!(
-        flat.matches("backoff_ms = (backoff_ms * 2).min(RECONNECT_BACKOFF_CAP_MS);")
-            .count(),
-        4
+        flat.matches("for _ in 0..MAX_RECONNECT_ATTEMPTS").count(),
+        0,
+        "no inline ladder"
     );
     assert_eq!(
-        flat.matches("let mut backoff_ms = WS_RECONNECT_SLEEP_MS;")
-            .count(),
-        4
+        flat.matches("mpsc::channel::<LaserStreamUpdate>").count(),
+        0,
+        "unbounded queue gone"
     );
 }
