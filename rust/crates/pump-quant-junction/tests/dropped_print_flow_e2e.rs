@@ -231,6 +231,8 @@ fn prev_snapshot() -> ReserveSnapshot {
     ReserveSnapshot {
         virtual_sol: 30_000_000_000,
         virtual_token: 1_000_000_000,
+        real_sol: 0,
+        real_token: 0,
         slot: 900,
     }
 }

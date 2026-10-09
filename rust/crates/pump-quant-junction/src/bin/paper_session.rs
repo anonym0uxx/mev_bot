@@ -792,11 +792,7 @@ fn main() -> ExitCode {
                                             // Update the snapshot for next delta.
                                             reserve_tracker.insert(
                                                 mb,
-                                                ReserveSnapshot {
-                                                    virtual_sol: curve.virtual_sol,
-                                                    virtual_token: curve.virtual_token,
-                                                    slot,
-                                                },
+                                                ReserveSnapshot::of(&curve, slot),
                                             );
                                         }
                                     }
@@ -876,11 +872,7 @@ fn main() -> ExitCode {
                                                 // Update the snapshot for next delta.
                                                 reserve_tracker.insert(
                                                     mb,
-                                                    ReserveSnapshot {
-                                                        virtual_sol: curve.virtual_sol,
-                                                        virtual_token: curve.virtual_token,
-                                                        slot,
-                                                    },
+                                                    ReserveSnapshot::of(&curve, slot),
                                                 );
                                             } else {
                                                 // Discriminator mismatch — log loudly

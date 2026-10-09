@@ -55,7 +55,7 @@ use pump_quant_junction::pumpportal::{
     handle_create_payload, handle_migration_payload, handle_trade_payload,
 };
 use pump_quant_junction::queue::BoundedJunctionQueue;
-use pump_quant_junction::reserve_delta::{derive_market_trade_from_delta, ReserveSnapshot};
+use pump_quant_junction::reserve_delta::ReserveSnapshot;
 use pump_quant_junction::trade_join::{JoinOutcome, TradeJoin};
 
 /// How many `(mint, slot)` keys the instruction-identity table holds before it drops the
@@ -851,6 +851,8 @@ struct SessionStats {
     delta_trades_derived: u64,
     delta_no_trade: u64,
     delta_out_of_range: u64,
+    /// Snapshots whose curve is NOT Ordinary (Mayhem / mode unknown): no trade derived (offset slice).
+    delta_mode_unsupported: u64,
     pdas_derived: usize,
     pda_venue_matches: usize,
     pda_venue_present: usize,
@@ -904,6 +906,7 @@ impl SessionStats {
             delta_trades_derived: 0,
             delta_no_trade: 0,
             delta_out_of_range: 0,
+            delta_mode_unsupported: 0,
             pdas_derived: 0,
             pda_venue_matches: 0,
             pda_venue_present: 0,
@@ -2945,6 +2948,7 @@ fn main() -> ExitCode {
                     "\"delta_trades_derived\":{},",
                     "\"delta_no_trade\":{},",
                     "\"delta_out_of_range\":{},",
+                    "\"delta_mode_unsupported\":{},",
                     "\"flow_upstream_drops\":{},",
                     "\"flow_windows_incomplete\":{},",
                     "\"flow_missing_observations\":{},",
@@ -2992,6 +2996,7 @@ fn main() -> ExitCode {
                 stats.delta_trades_derived,
                 stats.delta_no_trade,
                 stats.delta_out_of_range,
+                stats.delta_mode_unsupported,
                 flow_drop.drops_total,
                 flow_drop.mints_incomplete_now,
                 flow_drop.mints_history_unreconstructed,
@@ -3307,14 +3312,19 @@ fn main() -> ExitCode {
                             // derives a trade nor records a drop (a net delta over several trades is
                             // not a gap — the events own the history).
                             let snapshot_trades = curve_trade_source.snapshot_may_feed_trades();
+                            // Offset slice: the constant-offset virtual-delta derivation applies ONLY to
+                            // an Ordinary curve; Mayhem / unknown derive nothing and are classified by mode.
+                            let delta_mode =
+                                pump_quant_junction::reserve_delta::DeltaMode::of_account(&data);
                             let derived = if snapshot_trades {
-                                derive_market_trade_from_delta(
+                                pump_quant_junction::reserve_delta::derive_market_trade_from_delta_for_mode(
                                     &mb,
                                     prev,
                                     &curve,
                                     slot,
                                     true,
                                     recv_unix_ms,
+                                    delta_mode,
                                 )
                             } else {
                                 None
@@ -3376,23 +3386,23 @@ fn main() -> ExitCode {
                                 // join refuses any 300 s flow window that would otherwise be
                                 // served as complete or quietly idle; an ordinary no-trade
                                 // (`NoPrint`) is left alone.
+                                if delta_mode != pump_quant_junction::reserve_delta::DeltaMode::Ordinary {
+                                    stats.delta_mode_unsupported += 1;
+                                }
                                 let _ =
-                                    pump_quant_junction::reserve_delta::note_curve_snapshot_outcome(
+                                    pump_quant_junction::reserve_delta::note_curve_snapshot_outcome_for_mode(
                                         &mut engine,
                                         mb,
                                         prev.as_ref(),
                                         &curve,
                                         slot,
                                         recv_unix_ms,
+                                        delta_mode,
                                     );
                             }
                             reserve_tracker.insert(
                                 mb,
-                                ReserveSnapshot {
-                                    virtual_sol: curve.virtual_sol,
-                                    virtual_token: curve.virtual_token,
-                                    slot,
-                                },
+                                ReserveSnapshot::of(&curve, slot),
                             );
                             // C1: publish these reserves into the curve cache. The hot path (and the
                             // outbound sink's state fetch) then answers from the stream instead of paying a
@@ -3955,13 +3965,17 @@ fn main() -> ExitCode {
                                             // The WS feed records no receive time, so this
                                             // print cannot be windowed on a clock it does not
                                             // have. `None` is the honest value.
-                                            if let Some(trade_pe) = derive_market_trade_from_delta(
-                                                &mb, prev, &curve, slot, true, None,
+                                            let delta_mode = pump_quant_junction::reserve_delta::DeltaMode::of_account(&account_data);
+                                            if let Some(trade_pe) = pump_quant_junction::reserve_delta::derive_market_trade_from_delta_for_mode(
+                                                &mb, prev, &curve, slot, true, None, delta_mode,
                                             ) {
                                                 queue.push(trade_pe, slot);
                                                 stats.delta_trades_derived += 1;
                                             } else {
                                                 stats.delta_no_trade += 1;
+                                                if delta_mode != pump_quant_junction::reserve_delta::DeltaMode::Ordinary {
+                                                    stats.delta_mode_unsupported += 1;
+                                                }
 
                                                 if !pump_quant_junction::reserve_delta::delta_representable(prev.as_ref(), &curve) {
 
@@ -3971,11 +3985,7 @@ fn main() -> ExitCode {
                                             }
                                             reserve_tracker.insert(
                                                 mb,
-                                                ReserveSnapshot {
-                                                    virtual_sol: curve.virtual_sol,
-                                                    virtual_token: curve.virtual_token,
-                                                    slot,
-                                                },
+                                                ReserveSnapshot::of(&curve, slot),
                                             );
                                             // C1: publish these reserves into the curve cache. The hot path (and the
                                             // outbound sink's state fetch) then answers from the stream instead of paying a
@@ -4075,15 +4085,19 @@ fn main() -> ExitCode {
                                                 }
 
                                                 let prev = reserve_tracker.get(&mb).copied();
+                                                let delta_mode = pump_quant_junction::reserve_delta::DeltaMode::of_account(&account_data);
                                                 if let Some(trade_pe) =
-                                                    derive_market_trade_from_delta(
-                                                        &mb, prev, &curve, slot, true, None,
+                                                    pump_quant_junction::reserve_delta::derive_market_trade_from_delta_for_mode(
+                                                        &mb, prev, &curve, slot, true, None, delta_mode,
                                                     )
                                                 {
                                                     queue.push(trade_pe, slot);
                                                     stats.delta_trades_derived += 1;
                                                 } else {
                                                     stats.delta_no_trade += 1;
+                                                    if delta_mode != pump_quant_junction::reserve_delta::DeltaMode::Ordinary {
+                                                        stats.delta_mode_unsupported += 1;
+                                                    }
 
                                                     if !pump_quant_junction::reserve_delta::delta_representable(prev.as_ref(), &curve) {
 
@@ -4093,11 +4107,7 @@ fn main() -> ExitCode {
                                                 }
                                                 reserve_tracker.insert(
                                                     mb,
-                                                    ReserveSnapshot {
-                                                        virtual_sol: curve.virtual_sol,
-                                                        virtual_token: curve.virtual_token,
-                                                        slot,
-                                                    },
+                                                    ReserveSnapshot::of(&curve, slot),
                                                 );
                                                 // C1: publish these reserves into the curve cache. The hot path (and the
                                                 // outbound sink's state fetch) then answers from the stream instead of paying a
