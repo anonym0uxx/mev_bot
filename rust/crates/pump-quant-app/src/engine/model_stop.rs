@@ -158,11 +158,12 @@ impl Engine {
                 return Err("mark_stale");
             }
             match self.model_amm_econ.get(mint).copied() {
-                Some((parts, vq, t)) if t == o.ts_ms => crate::exec_quote::amm_sell(
+                Some((parts, vq, t, cashback)) if t == o.ts_ms => crate::exec_quote::amm_sell(
                     o.base_reserves_raw,
                     o.quote_reserves_lamports,
                     vq,
                     parts,
+                    cashback,
                     inv,
                 ),
                 _ => Err(crate::exec_quote::QuoteRefusal::AmmEconomicsMissing),
