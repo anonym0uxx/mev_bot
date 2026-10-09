@@ -173,7 +173,7 @@ fn ram_input_reads_host_and_own_cgroup() {
 #[test]
 fn run_disk_need_is_a_real_time_range_and_the_start_check_uses_the_stress_bound() {
     use pump_quant_junction::model_lifecycle::{
-        run_budget, run_disk_need, MemCeiling, NON_STREAM_BYTES_6H, STREAM_RATE,
+        run_budget, run_disk_need, NON_STREAM_BYTES_6H, STREAM_RATE,
     };
     let (lo, mid, hi, st) = run_disk_need(STREAM_RATE, 23_400);
     assert_eq!(
@@ -199,40 +199,19 @@ fn run_disk_need_is_a_real_time_range_and_the_start_check_uses_the_stress_bound(
     let soft = pump_quant_app::stop_policy::DISK_SOFT_FLOOR_BYTES;
     let gib12 = pump_quant_app::stop_policy::RAM_FLOOR_BYTES;
     assert_eq!(
-        run_budget(
-            Some(st + soft),
-            Some(4096),
-            MemCeiling::Unlimited,
-            Some(gib12),
-            23_400
-        )
-        .disk_ok,
+        run_budget(Some(st + soft), Some(4096), mv(Some(gib12)), 23_400).disk_ok,
         Some(true)
     );
     assert_eq!(
-        run_budget(
-            Some(st + soft - 1),
-            Some(4096),
-            MemCeiling::Unlimited,
-            Some(gib12),
-            23_400
-        )
-        .disk_ok,
+        run_budget(Some(st + soft - 1), Some(4096), mv(Some(gib12)), 23_400).disk_ok,
         Some(false),
         "stress bound decides"
     );
     assert_eq!(
-        run_budget(
-            Some(hi + soft),
-            Some(4096),
-            MemCeiling::Unlimited,
-            Some(gib12),
-            23_400
-        )
-        .disk_ok,
+        run_budget(Some(hi + soft), Some(4096), mv(Some(gib12)), 23_400).disk_ok,
         Some(false)
     );
-    let unk = run_budget(None, None, MemCeiling::Unmeasured, None, 23_400);
+    let unk = run_budget(None, None, mv(None), 23_400);
     assert_eq!(
         (unk.disk_ok, unk.nofile_ok, unk.mem_ok),
         (None, None, None),
@@ -246,7 +225,7 @@ fn run_disk_need_is_a_real_time_range_and_the_start_check_uses_the_stress_bound(
 fn nofile_and_cgroup_ceiling_use_the_actual_limits() {
     use pump_quant_app::stop_policy::cgroup_mem_ceiling;
     use pump_quant_junction::model_lifecycle::{
-        nofile_soft_limit, parse_nofile_soft, run_budget, MemCeiling, FD_NEED,
+        nofile_soft_limit, parse_nofile_soft, run_budget, FD_NEED,
     };
     let t = "Limit                     Soft Limit           Hard Limit           Units     \nMax open files            4096                 524288               files     \n";
     assert_eq!(parse_nofile_soft(t), Some(4096));
@@ -258,25 +237,11 @@ fn nofile_and_cgroup_ceiling_use_the_actual_limits() {
     assert!(nofile_soft_limit().is_some(), "readable on this host");
     assert_eq!(FD_NEED, 72);
     assert_eq!(
-        run_budget(
-            Some(u64::MAX),
-            Some(FD_NEED),
-            MemCeiling::Unlimited,
-            None,
-            1
-        )
-        .nofile_ok,
+        run_budget(Some(u64::MAX), Some(FD_NEED), mv(None), 1).nofile_ok,
         Some(true)
     );
     assert_eq!(
-        run_budget(
-            Some(u64::MAX),
-            Some(FD_NEED - 1),
-            MemCeiling::Unlimited,
-            None,
-            1
-        )
-        .nofile_ok,
+        run_budget(Some(u64::MAX), Some(FD_NEED - 1), mv(None), 1).nofile_ok,
         Some(false)
     );
     assert_eq!(
@@ -293,101 +258,300 @@ fn nofile_and_cgroup_ceiling_use_the_actual_limits() {
     assert_eq!(cgroup_mem_ceiling(None, None), None);
 }
 
-/// Item 2: memory budget. When the cgroup is UNLIMITED (memory.max = memory.high = "max", the measured state of
-/// /system.slice/hermes-gateway.service) the budget is host MemAvailable minus the 12% free-RAM floor of MemTotal;
-/// no cap is invented. A real ceiling caps by its remaining room; an unreadable ceiling is unmeasured (never fine).
+/// A memory verdict with this effective availability (no cgroup cap), for the run_budget tests.
+fn mv(effective: Option<u64>) -> pump_quant_junction::model_lifecycle::MemVerdict {
+    pump_quant_junction::model_lifecycle::MemVerdict {
+        state: pump_quant_junction::model_lifecycle::MemState::NoCgroupCap,
+        host_floor: Some(0),
+        host_term: effective,
+        effective,
+        ok: pump_quant_app::stop_policy::bytes_ok(
+            effective,
+            pump_quant_app::stop_policy::RAM_FLOOR_BYTES,
+        ),
+    }
+}
+
+fn lvl(
+    level: &str,
+    max: Option<Option<u64>>,
+    high: Option<Option<u64>>,
+    current: Option<u64>,
+) -> pump_quant_junction::model_lifecycle::CgLevel {
+    pump_quant_junction::model_lifecycle::CgLevel {
+        level: level.to_string(),
+        max,
+        high,
+        current,
+    }
+}
+
+/// Item 1 (follow-up scope): ONE memory rule. effective = min(MemAvailable - 12% MemTotal, tightest cgroup room
+/// over the WHOLE ancestor chain); the host floor is subtracted once; three distinct states; unmeasurable = UNKNOWN.
 #[test]
-fn mem_budget_is_mem_available_minus_the_12pct_floor_and_no_cap_is_invented() {
+fn mem_rule_all_max_chain_is_no_cgroup_cap_and_the_host_term_still_applies() {
     use pump_quant_app::stop_policy::{RAM_FLOOR_BPS, RAM_FLOOR_BYTES};
-    use pump_quant_junction::model_lifecycle::{
-        cgroup_mem_ceiling_now, mem_run_budget, run_budget, run_budget_now, MemCeiling,
-    };
-    assert_eq!(RAM_FLOOR_BPS, 1_200);
-    // 100 GiB total, 50 GiB available: floor 12 GiB -> 38 GiB budget, even with a huge memory.current.
+    use pump_quant_junction::model_lifecycle::{mem_rule, MemState};
     let gib_kb = 1u64 << 20;
     let gib = 1u64 << 30;
-    let t = 100 * gib_kb;
-    let a = 50 * gib_kb;
-    let unl = mem_run_budget(
-        Some(t),
-        Some(a),
+    let chain = [
+        lvl("/a/b", Some(None), Some(None), Some(u64::MAX)),
+        lvl("/a", Some(None), Some(None), Some(u64::MAX)),
+    ];
+    let v = mem_rule(
+        Some(100 * gib_kb),
+        Some(50 * gib_kb),
+        &chain,
         RAM_FLOOR_BPS,
-        MemCeiling::Unlimited,
-        Some(u64::MAX),
+        RAM_FLOOR_BYTES,
+    );
+    assert_eq!(v.state, MemState::NoCgroupCap);
+    assert_eq!(v.host_floor, Some(12 * gib));
+    assert_eq!(v.host_term, Some(38 * gib));
+    assert_eq!(
+        v.effective,
+        Some(38 * gib),
+        "no cap is NOT unlimited: host term applies"
+    );
+    assert_eq!(v.ok, Some(true));
+    // Host below its floor: 0, not fine, even with no cgroup cap.
+    let low = mem_rule(
+        Some(100 * gib_kb),
+        Some(10 * gib_kb),
+        &chain,
+        RAM_FLOOR_BPS,
+        RAM_FLOOR_BYTES,
+    );
+    assert_eq!((low.effective, low.ok), (Some(0), Some(false)));
+    // Empty chain (process in the root cgroup) = no cap.
+    let root = mem_rule(
+        Some(100 * gib_kb),
+        Some(50 * gib_kb),
+        &[],
+        RAM_FLOOR_BPS,
+        RAM_FLOOR_BYTES,
+    );
+    assert_eq!(root.state, MemState::NoCgroupCap);
+}
+
+#[test]
+fn mem_rule_capped_ancestor_decides_even_when_the_leaf_is_max() {
+    use pump_quant_app::stop_policy::{RAM_FLOOR_BPS, RAM_FLOOR_BYTES};
+    use pump_quant_junction::model_lifecycle::{mem_rule, MemState};
+    let gib_kb = 1u64 << 20;
+    let gib = 1u64 << 30;
+    let chain = [
+        lvl("/slice/svc", Some(None), Some(None), Some(gib)),
+        lvl("/slice", Some(Some(20 * gib)), Some(None), Some(5 * gib)),
+    ];
+    let v = mem_rule(
+        Some(1000 * gib_kb),
+        Some(500 * gib_kb),
+        &chain,
+        RAM_FLOOR_BPS,
+        RAM_FLOOR_BYTES,
     );
     assert_eq!(
-        unl,
-        Some(50 * gib - 12 * gib),
-        "MemAvailable minus 12% of MemTotal"
+        v.state,
+        MemState::CgroupCap {
+            cap: 20 * gib,
+            room: 15 * gib,
+            level: "/slice".into()
+        }
     );
-    assert_eq!(
-        mem_run_budget(Some(t), Some(a), RAM_FLOOR_BPS, MemCeiling::Unlimited, None),
-        unl,
-        "unlimited: memory.current is irrelevant, no cap invented"
-    );
-    // A real 4 GiB ceiling with 1 GiB used caps the budget at 3 GiB.
-    assert_eq!(
-        mem_run_budget(
-            Some(t),
-            Some(a),
-            RAM_FLOOR_BPS,
-            MemCeiling::Bytes(4 * gib),
-            Some(gib)
+    assert_eq!(v.effective, Some(15 * gib));
+    assert_eq!(v.ok, Some(true));
+    // memory.high at an ancestor caps too (lower of max/high).
+    let chain_h = [
+        lvl("/slice/svc", Some(None), Some(None), Some(gib)),
+        lvl(
+            "/slice",
+            Some(Some(20 * gib)),
+            Some(Some(14 * gib)),
+            Some(5 * gib),
         ),
-        Some(3 * gib)
+    ];
+    let h = mem_rule(
+        Some(1000 * gib_kb),
+        Some(500 * gib_kb),
+        &chain_h,
+        RAM_FLOOR_BPS,
+        RAM_FLOOR_BYTES,
+    );
+    assert_eq!((h.effective, h.ok), (Some(9 * gib), Some(false)));
+}
+
+#[test]
+fn mem_rule_parent_tighter_than_child_wins_and_child_tighter_wins_too() {
+    use pump_quant_app::stop_policy::{RAM_FLOOR_BPS, RAM_FLOOR_BYTES};
+    use pump_quant_junction::model_lifecycle::{mem_rule, MemState};
+    let gib_kb = 1u64 << 20;
+    let gib = 1u64 << 30;
+    // Child cap 64 GiB (room 60), parent cap 40 GiB with 30 used (room 10): parent decides.
+    let chain = [
+        lvl("/p/c", Some(Some(64 * gib)), Some(None), Some(4 * gib)),
+        lvl("/p", Some(Some(40 * gib)), Some(None), Some(30 * gib)),
+    ];
+    let v = mem_rule(
+        Some(1000 * gib_kb),
+        Some(500 * gib_kb),
+        &chain,
+        RAM_FLOOR_BPS,
+        RAM_FLOOR_BYTES,
     );
     assert_eq!(
-        mem_run_budget(
-            Some(t),
-            Some(a),
+        v.state,
+        MemState::CgroupCap {
+            cap: 40 * gib,
+            room: 10 * gib,
+            level: "/p".into()
+        }
+    );
+    assert_eq!((v.effective, v.ok), (Some(10 * gib), Some(false)));
+    // Order independent: parent listed first gives the same verdict.
+    let rev = [chain[1].clone(), chain[0].clone()];
+    assert_eq!(
+        mem_rule(
+            Some(1000 * gib_kb),
+            Some(500 * gib_kb),
+            &rev,
             RAM_FLOOR_BPS,
-            MemCeiling::Bytes(4 * gib),
-            None
-        ),
+            RAM_FLOOR_BYTES
+        )
+        .effective,
+        Some(10 * gib)
+    );
+    // The host term is tighter than every cgroup room: host decides.
+    let tight_host = mem_rule(
+        Some(100 * gib_kb),
+        Some(20 * gib_kb),
+        &chain,
+        RAM_FLOOR_BPS,
+        RAM_FLOOR_BYTES,
+    );
+    assert_eq!(tight_host.effective, Some(8 * gib));
+}
+
+#[test]
+fn mem_rule_unreadable_files_are_unknown_never_pass() {
+    use pump_quant_app::stop_policy::{RAM_FLOOR_BPS, RAM_FLOOR_BYTES};
+    use pump_quant_junction::model_lifecycle::{mem_rule, MemState};
+    let gib_kb = 1u64 << 20;
+    let gib = 1u64 << 30;
+    let big = (Some(1000 * gib_kb), Some(900 * gib_kb));
+    for chain in [
+        vec![lvl("/x", None, Some(None), Some(gib))],
+        vec![lvl("/x", Some(None), None, Some(gib))],
+        vec![
+            lvl("/x/y", Some(None), Some(None), Some(gib)),
+            lvl("/x", Some(Some(500 * gib)), Some(None), None),
+        ],
+        // An unreadable ancestor after a capped child still makes the verdict UNKNOWN.
+        vec![
+            lvl("/x/y", Some(Some(500 * gib)), Some(None), Some(gib)),
+            lvl("/x", None, None, None),
+        ],
+    ] {
+        let v = mem_rule(big.0, big.1, &chain, RAM_FLOOR_BPS, RAM_FLOOR_BYTES);
+        assert!(
+            matches!(v.state, MemState::Unmeasurable(_)),
+            "{chain:?} -> {v:?}"
+        );
+        assert_eq!((v.effective, v.ok), (None, None), "UNKNOWN, never PASS");
+    }
+    // A capless 'max' level with unreadable memory.current is still measurable (current is irrelevant there).
+    let ok = mem_rule(
+        big.0,
+        big.1,
+        &[lvl("/x", Some(None), Some(None), None)],
+        RAM_FLOOR_BPS,
+        RAM_FLOOR_BYTES,
+    );
+    assert_eq!(ok.state, MemState::NoCgroupCap);
+    // meminfo unreadable: UNKNOWN regardless of the cgroup.
+    let nm = mem_rule(None, None, &[], RAM_FLOOR_BPS, RAM_FLOOR_BYTES);
+    assert_eq!((nm.effective, nm.ok), (None, None));
+}
+
+/// FAILS if the 12% host floor is subtracted twice (or on the cgroup term): host term 88 GiB, cgroup room 30 GiB
+/// -> effective must be exactly 30 GiB (not 30 - 12 = 18), and a 13 GiB room must pass the 12 GiB floor.
+#[test]
+fn mem_rule_subtracts_the_host_floor_exactly_once() {
+    use pump_quant_app::stop_policy::{RAM_FLOOR_BPS, RAM_FLOOR_BYTES};
+    use pump_quant_junction::model_lifecycle::mem_rule;
+    let gib_kb = 1u64 << 20;
+    let gib = 1u64 << 30;
+    let room30 = [lvl("/s", Some(Some(40 * gib)), Some(None), Some(10 * gib))];
+    let v = mem_rule(
+        Some(100 * gib_kb),
+        Some(100 * gib_kb),
+        &room30,
+        RAM_FLOOR_BPS,
+        RAM_FLOOR_BYTES,
+    );
+    assert_eq!(v.host_term, Some(88 * gib), "100 - 12% of 100 = 88, once");
+    assert_eq!(v.effective, Some(30 * gib), "no floor on the cgroup term");
+    let room13 = [lvl("/s", Some(Some(23 * gib)), Some(None), Some(10 * gib))];
+    let w = mem_rule(
+        Some(100 * gib_kb),
+        Some(100 * gib_kb),
+        &room13,
+        RAM_FLOOR_BPS,
+        RAM_FLOOR_BYTES,
+    );
+    assert_eq!((w.effective, w.ok), (Some(13 * gib), Some(true)));
+    // Host term exactly at the floor: 12% of 100 subtracted once from 24 -> 12 GiB -> passes; twice -> 0.
+    let x = mem_rule(
+        Some(100 * gib_kb),
+        Some(24 * gib_kb),
+        &[],
+        RAM_FLOOR_BPS,
+        RAM_FLOOR_BYTES,
+    );
+    assert_eq!((x.effective, x.ok), (Some(12 * gib), Some(true)));
+}
+
+/// The chain reader walks every ancestor up to (excluding) the root, and the RUNTIME RAM input and the STARTUP
+/// budget are the same function over the same live readings.
+#[test]
+fn cgroup_chain_reader_walks_to_the_root_and_startup_equals_runtime() {
+    use pump_quant_junction::model_lifecycle::{
+        mem_available_for_self, mem_verdict_now, read_cgroup_chain, run_budget_now, MemState,
+    };
+    let d = tmp("cgchain");
+    for (rel, max, high, cur) in [
+        ("a", "max", "max", "100"),
+        ("a/b", "5000", "max", "1000"),
+        ("a/b/c", "max", "max", "10"),
+    ] {
+        let p = d.join(rel);
+        std::fs::create_dir_all(&p).unwrap();
+        std::fs::write(p.join("memory.max"), format!("{max}\n")).unwrap();
+        std::fs::write(p.join("memory.high"), format!("{high}\n")).unwrap();
+        std::fs::write(p.join("memory.current"), format!("{cur}\n")).unwrap();
+    }
+    let chain = read_cgroup_chain(&d, "/a/b/c\n");
+    assert_eq!(
+        chain.iter().map(|l| l.level.as_str()).collect::<Vec<_>>(),
+        vec!["/a/b/c", "/a/b", "/a"]
+    );
+    assert_eq!(chain[1].max, Some(Some(5000)));
+    assert_eq!(chain[0].max, Some(None));
+    std::fs::remove_file(d.join("a").join("memory.high")).unwrap();
+    assert_eq!(
+        read_cgroup_chain(&d, "/a/b/c")[2].high,
         None,
-        "a ceiling without memory.current is unmeasured"
+        "unreadable recorded, not defaulted"
     );
-    assert_eq!(
-        mem_run_budget(
-            Some(t),
-            Some(a),
-            RAM_FLOOR_BPS,
-            MemCeiling::Unmeasured,
-            Some(0)
-        ),
-        None
-    );
-    assert_eq!(
-        mem_run_budget(None, Some(a), RAM_FLOOR_BPS, MemCeiling::Unlimited, None),
-        None
-    );
-    // Available below the floor saturates to 0 (never negative, never fine).
-    assert_eq!(
-        mem_run_budget(
-            Some(t),
-            Some(10 * gib_kb),
-            RAM_FLOOR_BPS,
-            MemCeiling::Unlimited,
-            None
-        ),
-        Some(0)
-    );
-    let b = |m| run_budget(Some(u64::MAX), Some(4096), MemCeiling::Unlimited, m, 1).mem_ok;
-    assert_eq!(b(Some(RAM_FLOOR_BYTES)), Some(true));
-    assert_eq!(b(Some(RAM_FLOOR_BYTES - 1)), Some(false));
-    assert_eq!(b(None), None);
-    // Live: this test process reads its own cgroup; the budget equals the pure function over the same readings.
-    let (c, _cur) = cgroup_mem_ceiling_now();
-    assert_ne!(
-        c,
-        MemCeiling::Unmeasured,
-        "cgroup v2 limits are readable on this host"
-    );
-    let live = run_budget_now(&[std::env::temp_dir().as_path()], 23_400);
-    assert_eq!(live.mem_ceiling, c);
-    assert!(live.mem_budget.is_some());
-    assert!(live.nofile_soft.is_some() && live.disk_free.is_some());
-    // One unmeasurable written path makes the whole disk verdict unmeasured (never the other paths' minimum).
+    // Live: startup budget and runtime input agree on state and verdict (same function).
+    let live = mem_verdict_now();
+    assert!(!matches!(live.state, MemState::Unmeasurable(_)), "{live:?}");
+    let b = run_budget_now(&[std::env::temp_dir().as_path()], 23_400);
+    assert_eq!(b.mem.state, live.state);
+    assert_eq!(b.mem_ok, b.mem.ok);
+    assert_eq!(b.mem.host_floor, live.host_floor);
+    assert!(mem_available_for_self().is_some());
+    assert_eq!(ram_bytes_ok().is_some(), true);
     let bad = std::path::Path::new("/proc/pq_no_such_dir/x/event_stream.jsonl");
     let partial = run_budget_now(&[std::env::temp_dir().as_path(), bad], 23_400);
     assert_eq!((partial.disk_free, partial.disk_ok), (None, None));

@@ -2144,11 +2144,21 @@ fn main() -> ExitCode {
                 23_400,
             );
             eprintln!("[pq-daemon] run budget (6h+30m, real-time stream rate): {b:?}");
-            if b.mem_ceiling == pump_quant_junction::model_lifecycle::MemCeiling::Unlimited {
-                eprintln!(
-                    "[pq-daemon] run budget: cgroup memory.max/high UNLIMITED; memory budget = host MemAvailable - 12% MemTotal floor (no cap assumed)"
-                );
-            }
+            eprintln!(
+                "[pq-daemon] MEMORY_BUDGET state={} host_floor_bytes={:?} host_term_bytes={:?} effective_available_bytes={:?} floor_bytes={} ok={:?} (shared headroom, re-evaluated every runtime check)",
+                pump_quant_junction::model_lifecycle::mem_state_label(&b.mem.state),
+                b.mem.host_floor,
+                b.mem.host_term,
+                b.mem.effective,
+                pump_quant_app::stop_policy::RAM_FLOOR_BYTES,
+                b.mem.ok
+            );
+            eprintln!(
+                "[pq-daemon] NOFILE soft={:?} need={} ok={:?}",
+                b.nofile_soft,
+                pump_quant_junction::model_lifecycle::FD_NEED,
+                b.nofile_ok
+            );
             if b.disk_ok != Some(true) || b.nofile_ok != Some(true) || b.mem_ok != Some(true) {
                 eprintln!("[pq-daemon] ALERT_RUN_BUDGET: a resource is short or unmeasured for the 6 h run: {b:?}");
             }

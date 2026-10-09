@@ -362,40 +362,215 @@ pub fn ram_headroom_ok() -> Option<bool> {
     pump_quant_app::stop_policy::ram_ok(total, avail, pump_quant_app::stop_policy::RAM_FLOOR_BPS)
 }
 
-/// Memory AVAILABLE to this process, bytes: min(host MemAvailable, own cgroup's memory.max - memory.current).
-/// `None` = unmeasurable (restricts like low). Reads `/proc/meminfo`, `/proc/self/cgroup`, `/sys/fs/cgroup/...`.
-#[must_use]
-pub fn mem_available_for_self() -> Option<u64> {
-    let t = std::fs::read_to_string("/proc/meminfo").ok()?;
-    let (_, avail_kb) = pump_quant_app::stop_policy::parse_meminfo(&t);
-    let cg = std::fs::read_to_string("/proc/self/cgroup").ok()?;
-    let rel = cg
-        .lines()
-        .find_map(|l| l.strip_prefix("0::"))?
-        .trim()
-        .to_string();
-    let base = std::path::Path::new("/sys/fs/cgroup").join(rel.trim_start_matches('/'));
-    let rd = |f: &str| {
-        std::fs::read_to_string(base.join(f))
-            .ok()
-            .and_then(|s| pump_quant_app::stop_policy::parse_cgroup_limit(&s).ok())
-            .unwrap_or(None)
-    };
-    // memory.high throttles (stalls) before memory.max kills: the lower one is the ceiling.
-    let max = pump_quant_app::stop_policy::cgroup_mem_ceiling(rd("memory.max"), rd("memory.high"));
-    let cur = std::fs::read_to_string(base.join("memory.current"))
-        .ok()
-        .and_then(|s| s.trim().parse::<u64>().ok());
-    pump_quant_app::stop_policy::mem_available_bytes(avail_kb, max, cur)
+/// One cgroup v2 level of this process's ancestor chain, as read. `None` in `max`/`high` = unreadable or
+/// unparseable; `Some(None)` = the literal "max" (no limit at this level); `Some(Some(n))` = a byte limit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CgLevel {
+    /// The level's path relative to the cgroup root (e.g. "/system.slice/hermes-gateway.service").
+    pub level: String,
+    /// `memory.max`.
+    pub max: Option<Option<u64>>,
+    /// `memory.high`.
+    pub high: Option<Option<u64>>,
+    /// `memory.current` (`None` = unreadable).
+    pub current: Option<u64>,
 }
 
-/// RAM stop input against the workload-measured floor ([`pump_quant_app::stop_policy::RAM_FLOOR_BYTES`]).
+/// The cgroup term's state. Three DISTINCT states; "no cgroup cap" does NOT mean unlimited physical memory
+/// (the host term still applies), and unmeasurable is UNKNOWN, never PASS.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MemState {
+    /// Every level of the ancestor chain reads "max" for both memory.max and memory.high.
+    NoCgroupCap,
+    /// The tightest level: its ceiling (lower of memory.max / memory.high), its room (ceiling - memory.current)
+    /// and its path.
+    CgroupCap { cap: u64, room: u64, level: String },
+    /// A file needed for the verdict could not be read or parsed (what, by name).
+    Unmeasurable(String),
+}
+
+/// THE memory rule, shared by the startup budget and the per-tick RAM stop input:
+/// `effective = min(host MemAvailable - floor_bps of MemTotal, min over the cgroup chain of (limit - current))`,
+/// compared against `floor_bytes`. The host floor is subtracted ONCE, on the host term only.
+/// The ~219 GB measured on this host is SHARED headroom (inference and other processes consume it), so callers
+/// re-evaluate this on every check; it is never cached as a reservation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemVerdict {
+    /// Cgroup term state.
+    pub state: MemState,
+    /// The host floor, bytes (`floor_bps` of MemTotal). `None` = meminfo unreadable.
+    pub host_floor: Option<u64>,
+    /// Host term: MemAvailable - host_floor (saturating). `None` = meminfo unreadable.
+    pub host_term: Option<u64>,
+    /// min(host_term, cgroup room). `None` = UNKNOWN.
+    pub effective: Option<u64>,
+    /// `effective >= floor_bytes`; `None` = UNKNOWN (restricts new exposure, never PASS).
+    pub ok: Option<bool>,
+}
+
+/// Pure memory rule (see [`MemVerdict`]). `levels` is the WHOLE ancestor chain (any order); every level counts.
 #[must_use]
-pub fn ram_bytes_ok() -> Option<bool> {
-    pump_quant_app::stop_policy::bytes_ok(
-        mem_available_for_self(),
+pub fn mem_rule(
+    mem_total_kb: Option<u64>,
+    mem_available_kb: Option<u64>,
+    levels: &[CgLevel],
+    floor_bps: u64,
+    floor_bytes: u64,
+) -> MemVerdict {
+    let host_floor = mem_total_kb.map(|t| {
+        u64::try_from(u128::from(t.saturating_mul(1024)) * u128::from(floor_bps) / 10_000)
+            .unwrap_or(u64::MAX)
+    });
+    let host_term = match (mem_available_kb, host_floor) {
+        (Some(a), Some(f)) => Some(a.saturating_mul(1024).saturating_sub(f)),
+        _ => None,
+    };
+    let mut state = MemState::NoCgroupCap;
+    for l in levels {
+        let (Some(max), Some(high)) = (l.max, l.high) else {
+            state =
+                MemState::Unmeasurable(format!("{}: memory.max/memory.high unreadable", l.level));
+            break;
+        };
+        let Some(cap) = pump_quant_app::stop_policy::cgroup_mem_ceiling(max, high) else {
+            continue; // "max" at this level: no cap here; ancestors still count
+        };
+        let Some(cur) = l.current else {
+            state = MemState::Unmeasurable(format!("{}: memory.current unreadable", l.level));
+            break;
+        };
+        let room = cap.saturating_sub(cur);
+        let tighter = match &state {
+            MemState::CgroupCap { room: r, .. } => room < *r,
+            _ => true,
+        };
+        if tighter {
+            state = MemState::CgroupCap {
+                cap,
+                room,
+                level: l.level.clone(),
+            };
+        }
+    }
+    let effective = match (&state, host_term) {
+        (MemState::Unmeasurable(_), _) | (_, None) => None,
+        (MemState::NoCgroupCap, Some(h)) => Some(h),
+        // The floor is NOT subtracted again here: the cgroup term is raw room.
+        (MemState::CgroupCap { room, .. }, Some(h)) => Some(h.min(*room)),
+    };
+    MemVerdict {
+        state,
+        host_floor,
+        host_term,
+        effective,
+        ok: pump_quant_app::stop_policy::bytes_ok(effective, floor_bytes),
+    }
+}
+
+/// Read the WHOLE cgroup v2 ancestor chain of `rel` (the `0::` path of `/proc/self/cgroup`) under `root`
+/// (normally `/sys/fs/cgroup`), leaf first, up to but excluding the root itself (the root carries no limits).
+#[must_use]
+pub fn read_cgroup_chain(root: &Path, rel: &str) -> Vec<CgLevel> {
+    let lim = |d: &Path, f: &str| {
+        std::fs::read_to_string(d.join(f))
+            .ok()
+            .and_then(|s| pump_quant_app::stop_policy::parse_cgroup_limit(&s).ok())
+    };
+    let mut out = Vec::new();
+    let mut rel_p = PathBuf::from(rel.trim());
+    loop {
+        let r = rel_p.to_string_lossy().trim_start_matches('/').to_string();
+        if r.is_empty() {
+            break;
+        }
+        let d = root.join(&r);
+        out.push(CgLevel {
+            level: format!("/{r}"),
+            max: lim(&d, "memory.max"),
+            high: lim(&d, "memory.high"),
+            current: std::fs::read_to_string(d.join("memory.current"))
+                .ok()
+                .and_then(|s| s.trim().parse::<u64>().ok()),
+        });
+        if !rel_p.pop() {
+            break;
+        }
+    }
+    out
+}
+
+/// HARNESS-ONLY simulated pressure (offline replay harness; `PQ_OFFLINE_PAPER_REPLAY` set, never live). The file
+/// [`SIMULATED_PRESSURE_FILE`] names the resource(s) to report as short: `ram`, `disk`, `disk_unknown`. Every use
+/// is logged as SIMULATED_PRESSURE and kept apart from the measured readings.
+pub const SIMULATED_PRESSURE_FILE: &str = "data/HARNESS_SIMULATED_PRESSURE";
+
+/// Which simulated pressures are on (`harness` false -> none, whatever the file says).
+#[must_use]
+pub fn simulated_pressure(harness: bool) -> (bool, bool, bool) {
+    if !harness {
+        return (false, false, false);
+    }
+    let t = std::fs::read_to_string(SIMULATED_PRESSURE_FILE).unwrap_or_default();
+    let has = |k: &str| t.split_whitespace().any(|w| w == k);
+    (has("ram"), has("disk"), has("disk_unknown"))
+}
+
+/// The shared memory rule over this process's LIVE readings (`/proc/meminfo`, `/proc/self/cgroup`, the whole
+/// `/sys/fs/cgroup` ancestor chain). Called at startup AND on every runtime check.
+#[must_use]
+pub fn mem_verdict_now() -> MemVerdict {
+    let (total_kb, avail_kb) = std::fs::read_to_string("/proc/meminfo")
+        .map(|t| pump_quant_app::stop_policy::parse_meminfo(&t))
+        .unwrap_or((None, None));
+    let rel = std::fs::read_to_string("/proc/self/cgroup")
+        .ok()
+        .and_then(|cg| {
+            cg.lines()
+                .find_map(|l| l.strip_prefix("0::"))
+                .map(str::to_string)
+        });
+    let levels = match rel {
+        Some(r) => read_cgroup_chain(Path::new("/sys/fs/cgroup"), &r),
+        None => vec![CgLevel {
+            level: "/proc/self/cgroup".into(),
+            max: None,
+            high: None,
+            current: None,
+        }],
+    };
+    mem_rule(
+        total_kb,
+        avail_kb,
+        &levels,
+        pump_quant_app::stop_policy::RAM_FLOOR_BPS,
         pump_quant_app::stop_policy::RAM_FLOOR_BYTES,
     )
+}
+
+/// Effective memory available to this process under the shared rule (`None` = UNKNOWN).
+#[must_use]
+pub fn mem_available_for_self() -> Option<u64> {
+    mem_verdict_now().effective
+}
+
+/// RAM stop input: the shared rule's verdict against [`pump_quant_app::stop_policy::RAM_FLOOR_BYTES`].
+#[must_use]
+pub fn ram_bytes_ok() -> Option<bool> {
+    mem_verdict_now().ok
+}
+
+/// Human label for the three memory states (startup log, report).
+#[must_use]
+pub fn mem_state_label(s: &MemState) -> String {
+    match s {
+        MemState::NoCgroupCap => {
+            "no cgroup cap (every ancestor level 'max'; host term still applies)".to_string()
+        }
+        MemState::CgroupCap { cap, room, level } => {
+            format!("cgroup cap {cap} at level {level} (room {room})")
+        }
+        MemState::Unmeasurable(w) => format!("unmeasurable ({w}) -> UNKNOWN, never PASS"),
+    }
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -468,79 +643,10 @@ pub struct RunBudget {
     pub nofile_soft: Option<u64>,
     /// `nofile_soft >= FD_NEED`.
     pub nofile_ok: Option<bool>,
-    /// The cgroup memory ceiling that applies (lower of memory.max / memory.high), or `Unlimited` when both are
-    /// `max`, or `Unmeasured` when a file could not be read/parsed.
-    pub mem_ceiling: MemCeiling,
-    /// Memory the run may use: host `MemAvailable` minus the operator's 12% free-RAM floor (`RAM_FLOOR_BPS` of
-    /// `MemTotal`), further capped by the cgroup room (`ceiling - memory.current`) only when a ceiling exists.
-    pub mem_budget: Option<u64>,
-    /// `mem_budget >= RAM_FLOOR_BYTES` (12 GiB = 2x the projected 6.5 h daemon VmHWM of 5.95 GB).
+    /// The shared memory rule's verdict ([`mem_rule`]): state, host floor, effective available.
+    pub mem: MemVerdict,
+    /// `mem.effective >= RAM_FLOOR_BYTES` (12 GiB = 2x the projected 6.5 h daemon VmHWM of 5.95 GB).
     pub mem_ok: Option<bool>,
-}
-
-/// The cgroup memory ceiling as actually read. `Unlimited` is a MEASURED fact (`memory.max` = `memory.high` =
-/// "max"); it is never invented into a cap, and it is never confused with an unreadable file.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MemCeiling {
-    /// Both memory.max and memory.high are "max".
-    Unlimited,
-    /// The lower of memory.max / memory.high, bytes.
-    Bytes(u64),
-    /// The cgroup path or a limit file could not be read or parsed.
-    Unmeasured,
-}
-
-/// Memory budget for the run, bytes: host `MemAvailable` minus `floor_bps` of `MemTotal` (the free-RAM floor the
-/// host must keep), capped by `ceiling - cgroup_current` when the cgroup has a ceiling. `None` = unmeasured.
-#[must_use]
-pub fn mem_run_budget(
-    mem_total_kb: Option<u64>,
-    mem_available_kb: Option<u64>,
-    floor_bps: u64,
-    ceiling: MemCeiling,
-    cgroup_current: Option<u64>,
-) -> Option<u64> {
-    let total = mem_total_kb?.saturating_mul(1024);
-    let avail = mem_available_kb?.saturating_mul(1024);
-    let floor =
-        u64::try_from(u128::from(total) * u128::from(floor_bps) / 10_000).unwrap_or(u64::MAX);
-    let host = avail.saturating_sub(floor);
-    match ceiling {
-        MemCeiling::Unlimited => Some(host),
-        MemCeiling::Bytes(c) => Some(host.min(c.saturating_sub(cgroup_current?))),
-        MemCeiling::Unmeasured => None,
-    }
-}
-
-/// Read this process's cgroup v2 memory ceiling and `memory.current` (`/proc/self/cgroup`, `/sys/fs/cgroup/...`).
-#[must_use]
-pub fn cgroup_mem_ceiling_now() -> (MemCeiling, Option<u64>) {
-    let Some(base) = std::fs::read_to_string("/proc/self/cgroup")
-        .ok()
-        .and_then(|cg| {
-            cg.lines().find_map(|l| l.strip_prefix("0::")).map(|r| {
-                std::path::Path::new("/sys/fs/cgroup").join(r.trim().trim_start_matches('/'))
-            })
-        })
-    else {
-        return (MemCeiling::Unmeasured, None);
-    };
-    let rd = |f: &str| {
-        std::fs::read_to_string(base.join(f))
-            .ok()
-            .and_then(|s| pump_quant_app::stop_policy::parse_cgroup_limit(&s).ok())
-    };
-    let cur = std::fs::read_to_string(base.join("memory.current"))
-        .ok()
-        .and_then(|s| s.trim().parse::<u64>().ok());
-    let ceiling = match (rd("memory.max"), rd("memory.high")) {
-        (Some(m), Some(h)) => match pump_quant_app::stop_policy::cgroup_mem_ceiling(m, h) {
-            None => MemCeiling::Unlimited,
-            Some(b) => MemCeiling::Bytes(b),
-        },
-        _ => MemCeiling::Unmeasured,
-    };
-    (ceiling, cur)
 }
 
 /// Pure budget verdict (tested); [`run_budget_now`] feeds it the live readings.
@@ -548,8 +654,7 @@ pub fn cgroup_mem_ceiling_now() -> (MemCeiling, Option<u64>) {
 pub fn run_budget(
     disk_free: Option<u64>,
     nofile_soft: Option<u64>,
-    mem_ceiling: MemCeiling,
-    mem_budget: Option<u64>,
+    mem: MemVerdict,
     run_s: u64,
 ) -> RunBudget {
     let need = run_disk_need(STREAM_RATE, run_s);
@@ -563,12 +668,8 @@ pub fn run_budget(
         }),
         nofile_soft,
         nofile_ok: nofile_soft.map(|n| n >= FD_NEED),
-        mem_ceiling,
-        mem_budget,
-        mem_ok: pump_quant_app::stop_policy::bytes_ok(
-            mem_budget,
-            pump_quant_app::stop_policy::RAM_FLOOR_BYTES,
-        ),
+        mem_ok: mem.ok,
+        mem,
     }
 }
 
@@ -605,21 +706,10 @@ pub fn run_budget_now(write_paths: &[&Path], run_s: u64) -> RunBudget {
             None => unmeasured = true,
         }
     }
-    let (ceiling, cur) = cgroup_mem_ceiling_now();
-    let (total_kb, avail_kb) = std::fs::read_to_string("/proc/meminfo")
-        .map(|t| pump_quant_app::stop_policy::parse_meminfo(&t))
-        .unwrap_or((None, None));
     run_budget(
         if unmeasured { None } else { disk },
         nofile_soft_limit(),
-        ceiling,
-        mem_run_budget(
-            total_kb,
-            avail_kb,
-            pump_quant_app::stop_policy::RAM_FLOOR_BPS,
-            ceiling,
-            cur,
-        ),
+        mem_verdict_now(),
         run_s,
     )
 }
