@@ -249,6 +249,7 @@ impl Engine {
         serde_json::json!({
             "clock_ms": self.model_clock_ms, "held_generation": self.model_held.generation,
             "safety_off": self.model_safety.blocked, "protect_deferred_total": self.positions.protect_deferred,
+            "paper_fill": self.model_paper_fill_status(),
             "held": held})
     }
 }

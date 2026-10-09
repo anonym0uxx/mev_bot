@@ -249,6 +249,9 @@ pub struct HeldLedger {
     /// Compaction floor: an order id at or below it that is absent from `orders` was COMPACTED (named, never
     /// "unknown"). Zero when nothing was ever compacted.
     pub order_floor: u64,
+    /// `paper_fill_v2_shadow` only: shadow book + shared settlement ledger. `None` (and ABSENT from the file) under
+    /// the default v1, so v1 ledgers are byte-identical to before.
+    pub paper_fill: Option<Value>,
 }
 
 /// Why a ledger could not be read.
@@ -320,6 +323,14 @@ impl HeldLedger {
     /// Serialise (stable key order is not required; the digest is computed over the entries instead).
     #[must_use]
     pub fn to_json(&self) -> Value {
+        let mut v = self.to_json_base();
+        if let (Some(pf), Some(o)) = (&self.paper_fill, v.as_object_mut()) {
+            o.insert("paper_fill".to_string(), pf.clone());
+        }
+        v
+    }
+
+    fn to_json_base(&self) -> Value {
         json!({
             "schema": HELD_SCHEMA,
             "seed_lamports": self.seed_lamports,
@@ -656,6 +667,11 @@ impl HeldLedger {
             lineage: v["lineage"].as_str().unwrap_or("").to_string(),
             held,
             pending,
+            paper_fill: match &v["paper_fill"] {
+                Value::Null => None,
+                x if x.is_object() => Some(x.clone()),
+                _ => return Err(bad("paper_fill")),
+            },
         })
     }
 
@@ -735,6 +751,15 @@ pub enum RestoreRefusal {
     OrderIdBeyondSequence,
     /// A fault names an order that is in neither the settled records nor the pending list.
     FaultWithoutOrder,
+    /// The ledger's paper fill model differs from the one this engine runs (a v2 section into a v1 engine, or a
+    /// foreign version string): the books were kept under a different fill model.
+    PaperFillVersionMismatch,
+    /// A v2 engine restoring held exposure from a ledger that has no `paper_fill` section.
+    PaperFillSectionMissing,
+    /// The `paper_fill` section is malformed (shadow book or settlement ledger unreadable / invariant broken).
+    PaperFillUntrusted,
+    /// The settlement ledger disagrees with the held books (seed, realized, or per-mint inventory).
+    SettlementBooksMismatch,
 }
 
 /// What a successful restore rebuilt.
@@ -786,6 +811,7 @@ mod tests {
                 contradicting: vec![HeldOutcome::NotFilled],
             }],
             order_floor: 2,
+            paper_fill: None,
             sell_prefixes: vec![(1, vec![(10, 220_000, 220)])],
             sells: vec![HeldSell {
                 id: 3,

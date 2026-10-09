@@ -242,9 +242,25 @@ impl Engine {
         )
     }
 
-    /// Apply the stop table once with the default liquidation estimator ([`ESTIMATOR_EXEC_QUOTE`]).
-    pub fn model_stop_evaluate(&mut self, elapsed_run_ms: i64, ops: OpsInputs) -> StopEvaluation {
-        self.model_stop_evaluate_with(elapsed_run_ms, ops, None)
+    /// Apply the stop table once. Under `paper_fill_v1_observed`: the exec-quote estimator
+    /// ([`ESTIMATOR_EXEC_QUOTE`]) and the caller's `shadow_divergence`. Under `paper_fill_v2_shadow`: the SHADOW net
+    /// liquidation estimates ([`ESTIMATOR_SHADOW`]) and the shadow book's divergence on any held market is OR-ed
+    /// into `shadow_divergence` (it can raise the row, never clear one the caller raised).
+    pub fn model_stop_evaluate(
+        &mut self,
+        elapsed_run_ms: i64,
+        mut ops: OpsInputs,
+    ) -> StopEvaluation {
+        if !self.model_v2() {
+            return self.model_stop_evaluate_with(elapsed_run_ms, ops, None);
+        }
+        if let Some((m, d)) = self.model_shadow_held_divergence() {
+            ops.shadow_divergence = true;
+            let hx: String = m[..4].iter().map(|b| format!("{b:02x}")).collect();
+            self.mrep(format!("stop:shadow_divergence_input:{hx}:{}", d.label()));
+        }
+        let est = self.model_shadow_liquidation_estimates();
+        self.model_stop_evaluate_with(elapsed_run_ms, ops, Some(&est))
     }
 
     /// Apply the stop table once. `elapsed_run_ms` is the run's age; `ops` the measured operational conditions;

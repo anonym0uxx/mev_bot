@@ -976,6 +976,15 @@ impl Engine {
             .insert(mint, (a.fee_parts, a.virtual_quote, ts_ms, a.cashback));
         if !applied {
             self.mrep("amm_swap_dropped_out_of_order");
+        } else {
+            // v2 only: graduation of a curve shadow + reconciliation of the pool shadow on this pre-trade state.
+            self.model_shadow_on_pool(
+                &mint,
+                a.token_reserve_pre,
+                a.quote_reserve_pre,
+                a.virtual_quote,
+                a.slot,
+            );
         }
         // The swap's own execution price (quote per token incl. fees) feeds the flow/price windows
         // as a PRICED print. It is NOT the executable state: that is the pre-trade reserve above.
@@ -1501,11 +1510,14 @@ impl Engine {
                     fr.reserve_sol_lamports,
                     fr.entry_price_fp,
                     None,
+                    None,
                 );
                 continue;
             }
             let landing = order.created_ms + MODEL_FILL_LANDING_MS;
             let size = order.clip_lamports;
+            // v2: the observed landing state + our net SOL into the reserves, for the shadow book.
+            let mut shadow_basis: Option<(crate::shadow_pool::FillBasis, u64)> = None;
             // Landing state: the first reserve observation at/after landing, from the plane the
             // DECISION used. A curve order is never priced from a pool, nor the reverse.
             let (reserve_sol, tokens_out, entry_price, venue_fees) = if order.amm {
@@ -1545,20 +1557,35 @@ impl Engine {
                 // M3: verified `buy_exact_quote_in` arithmetic via the one quote module. A landing event
                 // with no coin-creator fee may be a cashback coin whose rate the engine does not receive:
                 // refused by name, never priced as zero cashback.
-                let q = match crate::exec_quote::amm_buy(
+                // v2: priced on observed + our carried delta (v1: the observed state itself).
+                let Some((fb, fq)) = self.model_fill_pool(
+                    &mint,
                     obs.base_reserves_raw,
                     obs.quote_reserves_lamports,
-                    vq,
-                    parts,
-                    cashback,
-                    size,
-                ) {
+                    vq.unwrap_or(0),
+                    obs.slot,
+                ) else {
+                    self.mrep("fill_none:quote_unavailable:shadow_state_invalid");
+                    continue;
+                };
+                let q = match crate::exec_quote::amm_buy(fb, fq, vq, parts, cashback, size) {
                     Ok(q) => q,
                     Err(r) => {
                         self.mrep(format!("fill_none:{}", r.label()));
                         continue;
                     }
                 };
+                if self.model_v2() {
+                    shadow_basis = Some((
+                        crate::shadow_pool::FillBasis::Pool(crate::shadow_pool::PoolBase {
+                            base: obs.base_reserves_raw,
+                            quote: obs.quote_reserves_lamports,
+                            vq: vq.unwrap_or(0),
+                            slot: obs.slot,
+                        }),
+                        q.net_in,
+                    ));
+                }
                 let out = q.tokens;
                 // All-in average price over the clip (fees inside). The pool took its fee from the
                 // INPUT, so `out` is already net of it: no separate entry fee.
@@ -1587,18 +1614,34 @@ impl Engine {
                 self.model_note_latency(&order, obs.ts_ms);
                 // M3: `buy_exact_sol_in` with the clip as the ALL-IN venue spend; protocol + creator/cashback
                 // fees (pinned pump-fees FeeConfig) are INSIDE the clip, charged once.
-                let q = match crate::exec_quote::curve_buy(
-                    obs.v_sol_lamports,
-                    obs.v_tokens,
-                    obs.real_tokens,
-                    size,
-                ) {
+                // v2: priced on observed + our carried delta (v1: the observed state itself).
+                let Some(fc) = self.model_fill_curve(&mint, &obs) else {
+                    self.mrep("fill_none:quote_unavailable:shadow_state_invalid");
+                    continue;
+                };
+                let q = match crate::exec_quote::curve_buy(fc.vsol, fc.vtok, fc.real_tok, size) {
                     Ok(q) => q,
                     Err(r) => {
                         self.mrep(format!("fill_none:{}", r.label()));
                         continue;
                     }
                 };
+                if self.model_v2() {
+                    // External-liquidity benchmark: the same size on the observed state alone, reported apart.
+                    if let Ok(x) = crate::exec_quote::curve_buy(
+                        obs.v_sol_lamports,
+                        obs.v_tokens,
+                        obs.real_tokens,
+                        size,
+                    ) {
+                        self.mrep_add("shadow:entry_external_benchmark_tokens", x.tokens);
+                    }
+                    self.mrep_add("shadow:entry_shadow_tokens", q.tokens);
+                    shadow_basis = Some((
+                        crate::shadow_pool::FillBasis::Curve(super::model_shadow::curve_base(&obs)),
+                        q.net_in,
+                    ));
+                }
                 // ENTRY PRICE MEANING PRESERVED: the curve entry price stays the average EXECUTION price excluding
                 // venue fees (previously `buy_avg_price_fp(size)`); fees are in the cost basis (clip), never in
                 // the price the hard stop / prompts compare marks against.
@@ -1633,6 +1676,7 @@ impl Engine {
                 reserve_sol,
                 entry_price,
                 Some((tokens_out, venue_fees)),
+                shadow_basis,
             );
         }
     }
@@ -1649,6 +1693,8 @@ impl Engine {
         // Paper fill: (tokens delivered, (venue fees inside the clip, of which cashback entitlement)). `None` =
         // a reconciled executor fill, whose inventory is derived from its own reported price.
         quoted: Option<(u64, (u64, u64))>,
+        // v2 paper fill: (observed landing state, net SOL that entered the reserves) for the shadow book.
+        shadow_basis: Option<(crate::shadow_pool::FillBasis, u64)>,
     ) {
         let size = order.clip_lamports;
         let Some(rt_bps) = self.unified_rt_bps(&mint, size, reserve_sol) else {
@@ -1748,6 +1794,36 @@ impl Engine {
                 }
             };
             self.model_mgmt_on_fill(mint, tokens, entry_price, order.id);
+            // v2: the ONE settlement path books the entry BUY (all-in clip as venue spend, network estimate and
+            // tip + ATA rent as fixed costs: exactly the committed entry cost), and the shadow carries our delta.
+            if let Some(t) = tokens {
+                let fixed = self.cfg.entry_tip_lamports.saturating_add(if needs_ata {
+                    crate::cost_model::ATA_RENT_LAMPORTS
+                } else {
+                    0
+                });
+                self.model_settle(
+                    mint,
+                    crate::shadow_pool::LegKind::Entry,
+                    order.id,
+                    t,
+                    size,
+                    crate::exec_quote::NETWORK_FEE_P50_LAMPORTS,
+                    fixed,
+                );
+                if let Some((basis, net_in)) = shadow_basis {
+                    self.model_shadow_apply(
+                        mint,
+                        basis,
+                        crate::shadow_pool::LegKind::Entry,
+                        order.id,
+                        t,
+                        net_in,
+                    );
+                } else if self.model_v2() {
+                    self.mrep("shadow:reconciled_entry_not_modelled");
+                }
+            }
             self.model_fills.push(ModelFillRecord {
                 order_id: order.id,
                 mint,
@@ -1802,6 +1878,7 @@ impl Engine {
     /// maps to an order. Settled history is not touched.
     pub(super) fn model_on_position_closed(&mut self, mint: &[u8; 32]) {
         self.model_mgmt_forget(mint);
+        self.model_shadow_forget(mint);
         if let Some(id) = self.model_position_order.remove(mint) {
             if let Some(rec) = self.model_order_log.get_mut(&id) {
                 if rec.state == OrderState::Filled {

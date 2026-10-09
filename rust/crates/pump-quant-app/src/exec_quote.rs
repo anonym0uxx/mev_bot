@@ -107,6 +107,11 @@ pub enum QuoteRefusal {
     AmmVaultInsufficient,
     /// Size too small to move a whole unit, or arithmetic out of range.
     Unpriceable,
+    /// `paper_fill_v2_shadow` only: the shadow sell's gross exceeds the conserved capacity (observed real SOL /
+    /// vault + our conserved contribution).
+    ShadowCapacityExceeded,
+    /// `paper_fill_v2_shadow` only: observed + carried delta is not representable.
+    ShadowStateInvalid,
 }
 
 impl QuoteRefusal {
@@ -123,6 +128,8 @@ impl QuoteRefusal {
             Self::AmmEconomicsMissing => "quote_unavailable:amm_economics_missing",
             Self::AmmVaultInsufficient => "quote_unavailable:amm_vault_insufficient",
             Self::Unpriceable => "quote_unavailable:unpriceable",
+            Self::ShadowCapacityExceeded => "quote_unavailable:shadow_capacity_exceeded",
+            Self::ShadowStateInvalid => "quote_unavailable:shadow_state_invalid",
         }
     }
 }

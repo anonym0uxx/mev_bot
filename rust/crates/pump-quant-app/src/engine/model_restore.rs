@@ -250,6 +250,7 @@ impl Engine {
             held,
             pending,
             decision: self.model_decision_state(),
+            paper_fill: self.model_pf_section(),
         }
     }
 
@@ -438,6 +439,14 @@ impl Engine {
                 return Err(RestoreOutcomeError::Untrusted(w));
             }
         };
+        // Paper fill model (v2 shadow + settlement) is validated against the held books BEFORE anything is applied.
+        let pf = match self.model_pf_validate(ledger.paper_fill.as_ref(), &ledger) {
+            Ok(p) => p,
+            Err(r) => {
+                self.mrep("held_state:restore_refused");
+                return Err(RestoreOutcomeError::Refused(r));
+            }
+        };
         if ledger.held.is_empty() && ledger.pending.is_empty() {
             // Nothing held. Books (realized, sequences) still restore so ids never repeat.
             if let Err(r) = self.model_held_validate(&ledger) {
@@ -445,6 +454,7 @@ impl Engine {
                 return Err(RestoreOutcomeError::Refused(r));
             }
             self.model_held_apply(&ledger);
+            self.model_pf_apply(pf);
             return Ok(Some(RestoreReport {
                 realized_lamports: ledger.realized_lamports,
                 ..RestoreReport::default()
@@ -453,6 +463,7 @@ impl Engine {
         match self.model_held_validate(&ledger) {
             Ok(()) => {
                 let rep = self.model_held_apply(&ledger);
+                self.model_pf_apply(pf);
                 self.mrep("held_state:restored");
                 Ok(Some(rep))
             }

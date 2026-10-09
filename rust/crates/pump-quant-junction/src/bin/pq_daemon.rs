@@ -1945,6 +1945,22 @@ fn main() -> ExitCode {
         );
     }
     if model_armed {
+        // PAPER FILL MODEL (before restore: the held ledger's paper_fill section is validated against it).
+        // Unset = `paper_fill_v1_observed` (unchanged behaviour). An unknown label refuses startup by name.
+        match std::env::var("PQ_PAPER_FILL").ok().as_deref() {
+            None => {}
+            Some(lbl) => match pump_quant_app::shadow_pool::PaperFillVersion::parse(lbl) {
+                Some(v) => engine.model_set_paper_fill(v),
+                None => {
+                    eprintln!("[pq-daemon] FATAL_PAPER_FILL_UNKNOWN: PQ_PAPER_FILL={lbl:?} is not a known paper fill model");
+                    return ExitCode::from(2);
+                }
+            },
+        }
+        eprintln!(
+            "[pq-daemon] paper fill model: {}",
+            engine.model_paper_fill().label()
+        );
         let held_file = std::env::var("PQ_MODEL_HELD_FILE").unwrap_or_else(|_| {
             pump_quant_junction::model_lifecycle::DEFAULT_HELD_FILE.to_string()
         });
@@ -4920,7 +4936,8 @@ fn main() -> ExitCode {
                     feed_ok: last_slot_time.elapsed() <= Duration::from_secs(STALE_SECS),
                     rpc_budget_ok: launch_bootstrap.is_none()
                         || !rpc_budget.discovery_exhausted(held_n),
-                    shadow_divergence: false, // placeholder hook: the shadow slice supplies this
+                    // Under paper_fill_v2_shadow the engine ORs in the shadow book's divergence on held markets.
+                    shadow_divergence: false,
                     deadline_passed: false,
                 };
                 let ev =

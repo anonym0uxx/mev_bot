@@ -668,14 +668,34 @@ impl Engine {
                     })
                     .map(|o| match self.model_amm_econ.get(&mint).copied() {
                         Some((parts, vq, t, cashback)) if t == o.ts_ms => {
-                            crate::exec_quote::amm_sell(
+                            // v2: observed + our carried delta, capped by conserved capacity (v1: observed).
+                            match self.model_fill_pool(
+                                &mint,
                                 o.base_reserves_raw,
                                 o.quote_reserves_lamports,
-                                vq,
-                                parts,
-                                cashback,
-                                tokens,
-                            )
+                                vq.unwrap_or(0),
+                                o.slot,
+                            ) {
+                                None => Err(crate::exec_quote::QuoteRefusal::ShadowStateInvalid),
+                                Some((fb, fq)) => {
+                                    let q = crate::exec_quote::amm_sell(
+                                        fb, fq, vq, parts, cashback, tokens,
+                                    );
+                                    match q {
+                                        Ok(x)
+                                            if self.model_v2()
+                                                && u128::from(x.gross)
+                                                    > self.model_shadow_capacity(
+                                                        &mint,
+                                                        o.quote_reserves_lamports,
+                                                    ) =>
+                                        {
+                                            Err(crate::exec_quote::QuoteRefusal::ShadowCapacityExceeded)
+                                        }
+                                        other => other,
+                                    }
+                                }
+                            }
                         }
                         _ => Err(crate::exec_quote::QuoteRefusal::AmmEconomicsMissing),
                     })
@@ -685,15 +705,55 @@ impl Engine {
                     .filter(|o| {
                         o.ts_ms >= landing && o.ts_ms <= clock && o.slot > order.created_slot
                     })
-                    .map(|o| {
-                        crate::exec_quote::curve_sell(
-                            o.v_sol_lamports,
-                            o.v_tokens,
-                            o.real_sol_lamports,
-                            tokens,
-                        )
+                    .map(|o| match self.model_fill_curve(&mint, &o) {
+                        // v2: observed + our carried delta, capped by conserved capacity (v1: observed).
+                        None => Err(crate::exec_quote::QuoteRefusal::ShadowStateInvalid),
+                        Some(s) => {
+                            match crate::exec_quote::curve_sell(s.vsol, s.vtok, s.real_sol, tokens)
+                            {
+                                Ok(x)
+                                    if self.model_v2()
+                                        && u128::from(x.gross)
+                                            > self.model_shadow_capacity(
+                                                &mint,
+                                                o.real_sol_lamports,
+                                            ) =>
+                                {
+                                    Err(crate::exec_quote::QuoteRefusal::ShadowCapacityExceeded)
+                                }
+                                other => other,
+                            }
+                        }
                     })
             };
+            // v2: the external-liquidity benchmark (observed state alone, same size) is reported next to the
+            // shadow quote, never replacing it.
+            if self.model_v2() {
+                let ext = if route_amm {
+                    None
+                } else {
+                    self.model_cache
+                        .curve_obs(&mint)
+                        .filter(|o| {
+                            o.ts_ms >= landing && o.ts_ms <= clock && o.slot > order.created_slot
+                        })
+                        .map(|o| {
+                            crate::exec_quote::curve_sell(
+                                o.v_sol_lamports,
+                                o.v_tokens,
+                                o.real_sol_lamports,
+                                tokens,
+                            )
+                        })
+                };
+                match ext {
+                    Some(Ok(x)) => self.mrep_add("shadow:sell_external_benchmark_gross", x.gross),
+                    Some(Err(r)) => {
+                        self.mrep(format!("shadow:sell_external_benchmark:{}", r.label()))
+                    }
+                    None => {}
+                }
+            }
             let label = if route_amm {
                 "mgmt:fill_amm_sell"
             } else {
@@ -774,6 +834,39 @@ impl Engine {
                     );
                     if !matches!(r, SellReportResult::Applied { .. }) {
                         self.mrep("mgmt:paper_fill:not_applied");
+                    } else if self.model_v2() && self.positions.has(&mint) {
+                        // v2: OUR sell enters the shadow (tokens back into reserves, gross out of them). A closed
+                        // position's shadow was forgotten with it (nothing left to carry).
+                        let basis = if route_amm {
+                            self.model_cache.amm_obs(&mint).and_then(|o| {
+                                self.model_amm_econ.get(&mint).and_then(|e| e.1).map(|vq| {
+                                    crate::shadow_pool::FillBasis::Pool(
+                                        crate::shadow_pool::PoolBase {
+                                            base: o.base_reserves_raw,
+                                            quote: o.quote_reserves_lamports,
+                                            vq,
+                                            slot: o.slot,
+                                        },
+                                    )
+                                })
+                            })
+                        } else {
+                            self.model_cache.curve_obs(&mint).map(|o| {
+                                crate::shadow_pool::FillBasis::Curve(super::model_shadow::curve_base(&o))
+                            })
+                        };
+                        let leg = crate::shadow_pool::LegKind::Sell;
+                        let (ct, cl) = self.model_shadow_cum(&mint, leg, order.id);
+                        if let Some(b) = basis {
+                            self.model_shadow_apply(
+                                mint,
+                                b,
+                                leg,
+                                order.id,
+                                ct.saturating_add(tokens),
+                                cl.saturating_add(g),
+                            );
+                        }
                     }
                 }
                 None => {
@@ -902,6 +995,33 @@ impl Engine {
             }
         }
         self.book_exit(exit);
+        // v2: the ONE settlement path books this SELL increment. Paper fills split venue-net / network estimate /
+        // tip; an executor's reported all-in fee is booked as reported (venue-net = gross - fee). A price-only
+        // report carried no proceeds and cannot be settled without inventing them: named fault.
+        if self.model_v2() {
+            let leg_cost = crate::exec_quote::landed_leg_cost(self.cfg.exit_tip_lamports);
+            match settled {
+                Some((g, f)) if order.simulated && f >= leg_cost => self.model_settle(
+                    mint,
+                    crate::shadow_pool::LegKind::Sell,
+                    order.id,
+                    tokens,
+                    g - (f - leg_cost),
+                    crate::exec_quote::NETWORK_FEE_P50_LAMPORTS,
+                    self.cfg.exit_tip_lamports,
+                ),
+                Some((g, f)) => self.model_settle(
+                    mint,
+                    crate::shadow_pool::LegKind::Sell,
+                    order.id,
+                    tokens,
+                    g.saturating_sub(f),
+                    0,
+                    0,
+                ),
+                None => self.model_settle_unsettleable(order.id),
+            }
+        }
         self.model_mgmt.fills.push(MgmtFill {
             order_id: order.id,
             mint,
@@ -1419,9 +1539,18 @@ impl Engine {
                 None if cr == 0 => return Err("mgmt:refuse:add_amm_cashback_unknown"),
                 None => 0,
             };
+            let Some((fb, fq)) = self.model_fill_pool(
+                mint,
+                o.base_reserves_raw,
+                o.quote_reserves_lamports,
+                vq,
+                o.slot,
+            ) else {
+                return Err("mgmt:refuse:add_quote_unavailable:shadow_state_invalid");
+            };
             Ok(AddState::Amm {
-                base: o.base_reserves_raw,
-                quote: o.quote_reserves_lamports,
+                base: fb,
+                quote: fq,
                 vq,
                 lp,
                 pr,
@@ -1436,10 +1565,14 @@ impl Engine {
             let Some(o) = obs else {
                 return Err("mgmt:refuse:add_no_executable_state");
             };
+            // v2: observed + our carried delta (v1: observed).
+            let Some(s) = self.model_fill_curve(mint, &o) else {
+                return Err("mgmt:refuse:add_quote_unavailable:shadow_state_invalid");
+            };
             Ok(AddState::Curve {
-                vsol: o.v_sol_lamports,
-                vtok: o.v_tokens,
-                real_tok: o.real_tokens,
+                vsol: s.vsol,
+                vtok: s.vtok,
+                real_tok: s.real_tok,
             })
         }
     }
@@ -1571,7 +1704,77 @@ impl Engine {
                 let px =
                     (u128::from(plan.n) * 1_000_000_000).div_ceil(u128::from(plan.tokens.max(1)));
                 let px = u64::try_from(px).unwrap_or(u64::MAX);
+                let filled_before = self
+                    .model_mgmt
+                    .orders
+                    .get(&mint)
+                    .map_or(order.filled, |o| o.filled);
                 self.model_mgmt_book_add(mint, order, plan.tokens, plan.n, px, plan.fee_bps, None);
+                let booked = self
+                    .model_mgmt
+                    .orders
+                    .get(&mint)
+                    .map_or(true, |o| o.filled > filled_before);
+                if self.model_v2() && booked && self.positions.has(&mint) {
+                    // v2: OUR ADD enters the shadow: net SOL into the reserves (venue fees excluded), tokens out.
+                    let net_in = match state {
+                        AddState::Curve {
+                            vsol,
+                            vtok,
+                            real_tok,
+                        } => crate::exec_quote::curve_buy(vsol, vtok, real_tok, plan.n)
+                            .ok()
+                            .map(|q| q.net_in),
+                        AddState::Amm {
+                            base,
+                            quote,
+                            vq,
+                            lp,
+                            pr,
+                            cr,
+                            cb,
+                        } => pump_quant_protocol::pumpswap_event::buy_exact_quote_in_cb(
+                            u128::from(base),
+                            u128::from(quote),
+                            u128::from(vq),
+                            u128::from(plan.n),
+                            (u128::from(lp), u128::from(pr), u128::from(cr)),
+                            u128::from(cb),
+                        )
+                        .and_then(|f| u64::try_from(f.net_quote_in).ok()),
+                    };
+                    let basis = if order.amm {
+                        self.model_cache.amm_obs(&mint).and_then(|o| {
+                            self.model_amm_econ.get(&mint).and_then(|e| e.1).map(|vq| {
+                                crate::shadow_pool::FillBasis::Pool(crate::shadow_pool::PoolBase {
+                                    base: o.base_reserves_raw,
+                                    quote: o.quote_reserves_lamports,
+                                    vq,
+                                    slot: o.slot,
+                                })
+                            })
+                        })
+                    } else {
+                        self.model_cache.curve_obs(&mint).map(|o| {
+                            crate::shadow_pool::FillBasis::Curve(super::model_shadow::curve_base(&o))
+                        })
+                    };
+                    match (basis, net_in) {
+                        (Some(b), Some(n)) => {
+                            let leg = crate::shadow_pool::LegKind::Add;
+                            let (ct, cl) = self.model_shadow_cum(&mint, leg, order.id);
+                            self.model_shadow_apply(
+                                mint,
+                                b,
+                                leg,
+                                order.id,
+                                ct.saturating_add(plan.tokens),
+                                cl.saturating_add(n),
+                            );
+                        }
+                        _ => self.mrep("shadow:add_not_modelled"),
+                    }
+                }
             }
             Err(r) => {
                 self.model_mgmt_end(&mint, false);
@@ -1622,6 +1825,35 @@ impl Engine {
         self.bankroll_committed = self.bankroll_committed.saturating_add(u128::from(cost));
         if let Some(att) = self.open_lane.get_mut(&mint) {
             att.entry_spend = att.entry_spend.saturating_add(cost);
+        }
+        // v2: the ONE settlement path books this ADD increment at exactly the committed all-in cost. A derived fee
+        // splits into venue (rate * spent), network estimate and tip; a reported all-in fee is booked as reported.
+        if self.model_v2() {
+            match settled_fee {
+                None => {
+                    let rate_fee = fee.saturating_sub(crate::exec_quote::landed_leg_cost(
+                        self.cfg.entry_tip_lamports,
+                    ));
+                    self.model_settle(
+                        mint,
+                        crate::shadow_pool::LegKind::Add,
+                        order.id,
+                        tokens,
+                        spent.saturating_add(rate_fee),
+                        crate::exec_quote::NETWORK_FEE_P50_LAMPORTS,
+                        self.cfg.entry_tip_lamports,
+                    );
+                }
+                Some(f) => self.model_settle(
+                    mint,
+                    crate::shadow_pool::LegKind::Add,
+                    order.id,
+                    tokens,
+                    spent.saturating_add(f),
+                    0,
+                    0,
+                ),
+            }
         }
         self.model_mgmt.fills.push(MgmtFill {
             order_id: order.id,

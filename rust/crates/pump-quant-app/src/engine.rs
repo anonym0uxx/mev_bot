@@ -22,6 +22,7 @@ pub mod model_manage;
 pub mod model_protect;
 pub mod model_restore;
 pub mod model_safety;
+pub mod model_shadow;
 pub mod model_stop;
 use crate::analytics::ReflectionAnalytics;
 use crate::brain::{
@@ -893,6 +894,8 @@ pub struct Engine {
     model_session: u64,
     model_settled_order_cap: Option<usize>,
     model_held: model_restore::HeldPersist,
+    /// Paper fill model + shadow book + shared settlement ledger (inert under the default v1).
+    model_pf: model_shadow::PaperFillState,
     /// Durable missing-history ledger (writer + bookkeeping); `None` until attached.
     missing_store: model_admit::MissingStore,
     flow_store: model_admit::FlowStore,
@@ -1563,6 +1566,7 @@ impl Engine {
             model_session: new_session_id(),
             model_settled_order_cap: None,
             model_held: model_restore::HeldPersist::default(),
+            model_pf: model_shadow::PaperFillState::default(),
             missing_store: model_admit::MissingStore::default(),
             flow_store: model_admit::FlowStore::default(),
             model_order_log: BTreeMap::new(),
@@ -2713,17 +2717,20 @@ impl Engine {
                         self.model_note_clock(ts_ms);
                         self.model_note_slot(slot);
                         self.model_register(*mint.as_bytes());
-                        self.model_cache.observe_curve(
-                            *mint.as_bytes(),
-                            crate::curve_annotation::CurveObservation {
-                                v_sol_lamports,
-                                v_tokens,
-                                real_sol_lamports,
-                                real_tokens,
-                                ts_ms,
-                                slot,
-                            },
-                        );
+                        let co = crate::curve_annotation::CurveObservation {
+                            v_sol_lamports,
+                            v_tokens,
+                            real_sol_lamports,
+                            real_tokens,
+                            ts_ms,
+                            slot,
+                        };
+                        let fresh = self.model_cache.observe_curve(*mint.as_bytes(), co);
+                        // v2 only: a fresh snapshot replaces the shadow's base and is reconciled against our
+                        // carried delta BEFORE any fill is priced on it.
+                        if fresh {
+                            self.model_shadow_on_curve(mint.as_bytes(), &co);
+                        }
                         // Event-driven: the first eligible landing state fills the order.
                         let c = self.model_clock_ms;
                         self.model_try_fills(c);
