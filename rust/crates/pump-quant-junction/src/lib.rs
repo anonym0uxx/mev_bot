@@ -119,6 +119,7 @@ mod chaos_tests;
 pub mod corpus_rows;
 pub mod curve_trade_events;
 pub mod decode;
+pub mod disk_budget;
 pub mod endpoint_retry;
 pub mod engine_replay; // Phase 3: config-driven engine re-simulation
 pub mod event_codec;

@@ -500,19 +500,66 @@ pub fn read_cgroup_chain(root: &Path, rel: &str) -> Vec<CgLevel> {
 }
 
 /// HARNESS-ONLY simulated pressure (offline replay harness; `PQ_OFFLINE_PAPER_REPLAY` set, never live). The file
-/// [`SIMULATED_PRESSURE_FILE`] names the resource(s) to report as short: `ram`, `disk`, `disk_unknown`. Every use
+/// [`SIMULATED_PRESSURE_FILE`] names the resource(s) to report as short (see [`SimulatedPressure`]). Every use
 /// is logged as SIMULATED_PRESSURE and kept apart from the measured readings.
 pub const SIMULATED_PRESSURE_FILE: &str = "data/HARNESS_SIMULATED_PRESSURE";
 
-/// Which simulated pressures are on (`harness` false -> none, whatever the file says).
-#[must_use]
-pub fn simulated_pressure(harness: bool) -> (bool, bool, bool) {
-    if !harness {
-        return (false, false, false);
+/// HARNESS-ONLY simulated pressures that are on. Words in [`SIMULATED_PRESSURE_FILE`]: `ram` (RAM verdict short),
+/// `disk_soft` (free just under the soft floor), `disk_reserve` (free inside the exit reserve), `disk_hard` (free
+/// under the hard floor: latches SAFETY_OFF), `disk_unknown` (first destination unmeasurable). The MEASURED values
+/// are still read and logged next to the simulated ones.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SimulatedPressure {
+    /// RAM verdict forced short.
+    pub ram: bool,
+    /// Simulated free bytes for every disk destination, if any.
+    pub disk_free: Option<u64>,
+    /// First disk destination forced unmeasurable.
+    pub disk_unknown: bool,
+}
+
+impl SimulatedPressure {
+    /// Any pressure on.
+    #[must_use]
+    pub fn any(&self) -> bool {
+        self.ram || self.disk_free.is_some() || self.disk_unknown
     }
-    let t = std::fs::read_to_string(SIMULATED_PRESSURE_FILE).unwrap_or_default();
+}
+
+/// Parse the pressure file text (pure).
+#[must_use]
+pub fn parse_simulated_pressure(t: &str) -> SimulatedPressure {
+    use pump_quant_app::stop_policy::{DISK_HARD_FLOOR_BYTES, DISK_SOFT_FLOOR_BYTES};
     let has = |k: &str| t.split_whitespace().any(|w| w == k);
-    (has("ram"), has("disk"), has("disk_unknown"))
+    let disk_free = if has("disk_hard") {
+        Some(DISK_HARD_FLOOR_BYTES - 1)
+    } else if has("disk_reserve") {
+        Some(DISK_HARD_FLOOR_BYTES + crate::disk_budget::EXIT_RESERVE_BYTES - 1)
+    } else if has("disk_soft") {
+        Some(DISK_SOFT_FLOOR_BYTES - 1)
+    } else {
+        None
+    };
+    SimulatedPressure {
+        ram: has("ram"),
+        disk_free,
+        disk_unknown: has("disk_unknown"),
+    }
+}
+
+/// Simulated pressures on now. `harness` false (not an offline paper replay) -> none, whatever the file says.
+#[must_use]
+pub fn simulated_pressure(harness: bool) -> SimulatedPressure {
+    simulated_pressure_from(harness, Path::new(SIMULATED_PRESSURE_FILE))
+}
+
+/// [`simulated_pressure`] reading `file` (tests).
+#[must_use]
+pub fn simulated_pressure_from(harness: bool, file: &Path) -> SimulatedPressure {
+    if !harness {
+        return SimulatedPressure::default();
+    }
+    parse_simulated_pressure(&std::fs::read_to_string(file).unwrap_or_default())
 }
 
 /// The shared memory rule over this process's LIVE readings (`/proc/meminfo`, `/proc/self/cgroup`, the whole

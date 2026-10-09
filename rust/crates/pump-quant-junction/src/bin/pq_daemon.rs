@@ -1766,6 +1766,38 @@ fn construct_live_engine(
 
 // ─── Main ──────────────────────────────────────────────────────────────────
 
+/// Every REQUIRED write destination of this daemon (item 2 of the m1acc follow-up): event stream, journals, flow
+/// checkpoint, held ledger, safety latch, stdout/stderr redirect targets, handoff/report outputs. Same env/defaults
+/// as the code that writes them.
+fn daemon_write_dests() -> Vec<pump_quant_junction::disk_budget::Dest> {
+    let sf = std::env::var("PQ_MODEL_SAFETY_FILE")
+        .unwrap_or_else(|_| pump_quant_junction::model_lifecycle::DEFAULT_SAFETY_FILE.to_string());
+    let hf = std::env::var("PQ_MODEL_HELD_FILE")
+        .unwrap_or_else(|_| pump_quant_junction::model_lifecycle::DEFAULT_HELD_FILE.to_string());
+    let fh = std::env::var("PQ_FLOW_HISTORY_FILE")
+        .unwrap_or_else(|_| "data/flow_history.ckpt".to_string());
+    let p = std::path::Path::new;
+    pump_quant_junction::disk_budget::required_destinations(
+        p(EVENT_STREAM_PATH),
+        &[
+            p(TAPE_PATH),
+            p(SESSION_HISTORY_PATH),
+            p("data/barrier_log.jsonl"),
+        ],
+        p(&fh),
+        p(&hf),
+        p(&sf),
+        &pump_quant_junction::disk_budget::std_redirect_targets(),
+        &[
+            p(pump_quant_junction::model_lifecycle::HANDOFF_REQUEST_FILE),
+            p(pump_quant_junction::model_lifecycle::PROTECTIVE_HANDOFF_ACK_FILE),
+            p(STATUS_PATH),
+            p("data/model_lane_report.json"),
+        ],
+        23_400,
+    )
+}
+
 fn main() -> ExitCode {
     let args = match parse_args() {
         Ok(a) => a,
@@ -2159,7 +2191,40 @@ fn main() -> ExitCode {
                 pump_quant_junction::model_lifecycle::FD_NEED,
                 b.nofile_ok
             );
-            if b.disk_ok != Some(true) || b.nofile_ok != Some(true) || b.mem_ok != Some(true) {
+            // Disk: EVERY required write destination grouped by filesystem (st_dev), need summed per filesystem,
+            // the LIMITING destination named. Need = SCENARIO estimate (~26 min of one day's capture), not a
+            // guaranteed bound. UNKNOWN (an unmeasurable required destination) is never PASS: new exposure is NOT
+            // armed (the stop table's disk row is raised before the first tick) and ALERT_DISK_BUDGET_UNKNOWN fires.
+            let dests = daemon_write_dests();
+            let t = pump_quant_junction::disk_budget::disk_table(
+                &dests,
+                &pump_quant_junction::disk_budget::probe_fs,
+                pump_quant_app::stop_policy::DISK_SOFT_FLOOR_BYTES,
+            );
+            for l in pump_quant_junction::disk_budget::render_table(&t) {
+                eprintln!("[pq-daemon] {l}");
+            }
+            let (startup_disk, alert) =
+                pump_quant_junction::disk_budget::startup_disk_gate(t.verdict);
+            if let Some(a) = alert {
+                eprintln!(
+                    "[pq-daemon] {a}: overall disk verdict {:?} (limiting row {:?}, unmeasurable {:?}); new exposure NOT armed",
+                    t.verdict,
+                    t.limiting.map(|i| &t.rows[i]),
+                    t.unmeasurable
+                );
+            }
+            if startup_disk != Some(true) {
+                // Not armed: the entry table refuses new asks from the first tick. No stop-table evaluation here (a
+                // restored book has no marks yet and must not be valued at startup); the first runtime check (tick 0)
+                // re-measures the same destinations and holds the disk row (BUY + ADD) while it stays short/UNKNOWN.
+                engine.set_model_entries_blocked(true);
+                eprintln!(
+                    "[pq-daemon] startup disk verdict {:?}: new exposure NOT armed (entries blocked)",
+                    t.verdict
+                );
+            }
+            if b.nofile_ok != Some(true) || b.mem_ok != Some(true) {
                 eprintln!("[pq-daemon] ALERT_RUN_BUDGET: a resource is short or unmeasured for the 6 h run: {b:?}");
             }
         }
@@ -2750,6 +2815,9 @@ fn main() -> ExitCode {
 
     // GAP #14: Track session start time for daemon_health.json uptime reporting.
     let session_start = Instant::now();
+    let disk_dests = daemon_write_dests();
+    let mut disk_monitor = pump_quant_junction::disk_budget::DiskMonitor::default();
+    let mut resource_last_sig = String::new();
 
     // ── GAP E: generate unique session_id ──────────────────────────────
     // A unique per-daemon-restart identifier (PID + start timestamp) so A/B
@@ -4980,29 +5048,44 @@ fn main() -> ExitCode {
             if model_armed && (tick_counter % 20 == 0 || barrier_fire) {
                 // STOP TABLE: measured conditions -> named actions. Management, protection and reconciliation are
                 // never disabled here; risk rows latch SAFETY_OFF; the deadline drains then hands off.
-                let sf = std::env::var("PQ_MODEL_SAFETY_FILE").unwrap_or_else(|_| {
-                    pump_quant_junction::model_lifecycle::DEFAULT_SAFETY_FILE.to_string()
-                });
                 let held_n = engine.model_held_mints().len() as u64;
-                // Disk: the least-free filesystem among every durable output (safety latch, held journal, event
-                // stream) against the measured soft/hard floors (proc/RESOURCE_BUDGET.md). RAM: bytes available to
-                // this process (host MemAvailable capped by its cgroup) against the workload-measured floor.
-                let hf = std::env::var("PQ_MODEL_HELD_FILE").unwrap_or_else(|_| {
-                    pump_quant_junction::model_lifecycle::DEFAULT_HELD_FILE.to_string()
-                });
-                let (disk_ok, disk_hard_ok) = pump_quant_junction::model_lifecycle::disk_floors_ok(
-                    &[
-                        std::path::Path::new(&sf),
-                        std::path::Path::new(&hf),
-                        std::path::Path::new(EVENT_STREAM_PATH),
-                    ],
-                    pump_quant_app::stop_policy::DISK_SOFT_FLOOR_BYTES,
-                    pump_quant_app::stop_policy::DISK_HARD_FLOOR_BYTES,
+                // Disk: every required destination (daemon_write_dests) sampled through the run AND the drain: bytes
+                // written per destination, free per filesystem, time-to-floor projected from the measured growth.
+                // New exposure stops at the soft floor OR inside the EXIT RESERVE (bytes or time) so reconciliation,
+                // protection, durable writes and the handoff keep room. UNKNOWN restricts (never dropped); only a
+                // MEASURED hard-floor breach latches. RAM: the SAME shared rule as the startup budget (mem_rule).
+                // HARNESS-ONLY simulated pressure (offline replay only) is logged as SIMULATED_PRESSURE next to the
+                // measured values.
+                let sim = pump_quant_junction::model_lifecycle::simulated_pressure(replay_harness);
+                let dr = disk_monitor.sample(
+                    &disk_dests,
+                    session_start.elapsed().as_secs_f64(),
+                    sim.disk_free,
+                    sim.disk_unknown,
                 );
+                let mv = pump_quant_junction::model_lifecycle::mem_verdict_now();
+                if sim.any() {
+                    eprintln!(
+                        "[pq-daemon] SIMULATED_PRESSURE (harness-only, not a measured reading): {sim:?}; MEASURED mem effective={:?} state={}",
+                        mv.effective,
+                        pump_quant_junction::model_lifecycle::mem_state_label(&mv.state)
+                    );
+                }
+                let ram_ok = if sim.ram { Some(false) } else { mv.ok };
+                let disk_ok = dr.soft_ok;
+                let disk_hard_ok = dr.hard_ok;
+                let sig = format!("{disk_ok:?}/{disk_hard_ok:?}/{ram_ok:?}/{}", sim.any());
+                if sig != resource_last_sig || tick_counter % 2_000 == 0 {
+                    eprintln!(
+                        "[pq-daemon] RESOURCE_RUNTIME disk_soft_ok={disk_ok:?} disk_hard_ok={disk_hard_ok:?} ram_ok={ram_ok:?} mem_effective={:?} unmeasurable={:?} fs={:?}",
+                        mv.effective, dr.unmeasurable, dr.fs
+                    );
+                    resource_last_sig = sig;
+                }
                 let ops = pump_quant_app::stop_policy::OpsInputs {
                     disk_ok,
                     disk_hard_ok,
-                    ram_ok: pump_quant_junction::model_lifecycle::ram_bytes_ok(),
+                    ram_ok,
                     feed_ok: last_slot_time.elapsed() <= Duration::from_secs(STALE_SECS),
                     rpc_budget_ok: launch_bootstrap.is_none()
                         || !rpc_budget.discovery_exhausted(held_n),
