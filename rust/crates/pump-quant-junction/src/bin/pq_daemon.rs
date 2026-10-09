@@ -4942,6 +4942,26 @@ fn main() -> ExitCode {
                 };
                 let ev =
                     engine.model_stop_evaluate(session_start.elapsed().as_millis() as i64, ops);
+                if ev
+                    .newly_raised
+                    .contains(&pump_quant_app::stop_policy::StopTrigger::ShadowDivergence)
+                {
+                    if let Some((m, d)) = engine.model_shadow_held_divergence() {
+                        eprintln!(
+                            "[pq-daemon] SHADOW-DIVERGENCE mint={} divergence={} (held exposure preserved; nothing closed)",
+                            m.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+                            d.label()
+                        );
+                    }
+                }
+                if let Some(l) = engine.model_settlement() {
+                    eprintln!(
+                        "[pq-daemon] PAPER-FILL {} settlement: cash={} committed={} realized={} seed={} network_estimate={} fixed={} holdings={} invariant={} faults={:?}",
+                        engine.model_paper_fill().label(),
+                        l.cash, l.committed, l.realized, l.seed, l.network_estimate, l.fixed_costs,
+                        l.holdings.len(), l.invariant_holds(), engine.model_settlement_faults()
+                    );
+                }
                 for t in &ev.newly_raised {
                     let a = pump_quant_app::stop_policy::action_for(*t);
                     eprintln!(
