@@ -50,6 +50,7 @@
 #![forbid(unsafe_code)]
 
 pub mod curve;
+pub mod curve_sell_quote;
 pub mod decode;
 pub mod errors;
 pub mod ix;
