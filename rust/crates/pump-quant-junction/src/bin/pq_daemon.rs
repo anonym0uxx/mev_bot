@@ -241,28 +241,34 @@ const PDA_MAP_CAP: usize = 500_000;
 /// Bounded sleep on WS reconnect failures (was 5s which blocked the entire
 /// event loop). 500ms gives the server time to recover without starving
 /// the tick loop.
-const WS_RECONNECT_SLEEP_MS: u64 = 500;
+const WS_RECONNECT_SLEEP_MS: u64 = pump_quant_junction::endpoint_retry::HELIUS_WS_RECONNECT.base_backoff_ms;
 /// Maximum reconnect attempts with exponential backoff before falling back
 /// to graceful degradation. The backoff ladder is: 500ms → 1s → 2s → 4s → 8s
 /// (capped). After MAX_RECONNECT_ATTEMPTS failures, the daemon keeps the old
 /// (broken) connection and continues with PumpPortal/LaserStream — it does
 /// NOT crash. The stale-check watchdog will retry on the next tick.
-const MAX_RECONNECT_ATTEMPTS: u32 = 5;
+const MAX_RECONNECT_ATTEMPTS: u32 =
+    pump_quant_junction::endpoint_retry::HELIUS_WS_RECONNECT.max_attempts;
 /// Backoff cap in milliseconds. The exponential ladder doubles from
 /// WS_RECONNECT_SLEEP_MS (500ms) up to this cap. 10s is long enough to let
 /// a rate-limited server recover but short enough to not starve the tick loop.
-const RECONNECT_BACKOFF_CAP_MS: u64 = 10_000;
+const RECONNECT_BACKOFF_CAP_MS: u64 =
+    pump_quant_junction::endpoint_retry::HELIUS_WS_RECONNECT.cap_backoff_ms;
 /// Minimum seconds between LaserStream respawn attempts. Without this, a
 /// binary that exits immediately (e.g. wrong subcommand, missing creds)
 /// triggers a tight-loop respawn on every `Disconnected` poll, burning CPU
 /// and spamming logs. 15s is long enough to break the cycle but short
 /// enough to recover when the issue is transient (network blip).
-const LS_RESPAWN_COOLDOWN_SECS: u64 = 15;
+const LS_RESPAWN_COOLDOWN_SECS: u64 =
+    pump_quant_junction::endpoint_retry::LASERSTREAM_RESPAWN.base_backoff_ms / 1_000;
 /// Maximum LaserStream respawn attempts before giving up and falling back
 /// to Helius WS permanently. Prevents infinite respawn loops against a
 /// fundamentally broken binary (e.g. pq-stream-capture.exe spawned without
 /// a subcommand, or pq-laserstream-grpc.exe with a bad endpoint).
-const LS_MAX_RESPAWN_ATTEMPTS: u32 = 5;
+const LS_MAX_RESPAWN_ATTEMPTS: u32 =
+    pump_quant_junction::endpoint_retry::LASERSTREAM_RESPAWN.max_attempts;
+/// Launch-bootstrap walk page budget (one mint).
+const BOOTSTRAP_MAX_PAGES: u32 = 20;
 
 /// Exit code on emergency stop.
 const EXIT_EMERGENCY: u8 = 99;
@@ -325,12 +331,28 @@ fn spawn_launch_bootstrap(data_dir: &str) -> Option<BootstrapChannels> {
     let (res_tx, res_rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let src = lb::HeliusHttp::new(key, std::time::Duration::from_secs(20));
+        use pump_quant_junction::endpoint_retry as er;
         for mint in req_rx {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
-            let out = lb::bootstrap_one(&cache, &src, &mint, lb::Budget { max_pages: 20 }, now)
+            // Named bound: per-page attempts + a per-walk retry budget (fresh per mint walk).
+            let rsrc = er::RetryingPages::new(
+                &src,
+                er::LAUNCH_BOOTSTRAP_PAGE,
+                er::LAUNCH_BOOTSTRAP_WALK_RETRY_BUDGET,
+            );
+            let out = lb::bootstrap_one(&cache, &rsrc, &mint, lb::Budget { max_pages: BOOTSTRAP_MAX_PAGES }, now)
                 .map_err(|o| format!("{mint} {o}"));
+            if rsrc.retries.get() > 0 || rsrc.exhausted.get() > 0 {
+                eprintln!(
+                    "[pq-daemon] {}: mint={mint} calls={} retries={} exhausted_pages={}",
+                    er::LAUNCH_BOOTSTRAP_PAGE.name,
+                    rsrc.calls.get(),
+                    rsrc.retries.get(),
+                    rsrc.exhausted.get()
+                );
+            }
             if res_tx.send(out).is_err() {
                 break;
             }
@@ -4391,10 +4413,12 @@ fn main() -> ExitCode {
                 if bootstrap_requested.contains(&m) {
                     continue;
                 }
-                // Discovery spend never eats the held-position reservation (20 pages = one full walk).
+                // Discovery spend never eats the held-position reservation. Charged at the WORST-CASE walk: the page
+                // budget plus the walk's named retry budget (endpoint_retry::bootstrap_walk_cost = 20 + 4).
                 let held_n = engine.model_held_mints().len() as u64;
                 let now_ms = session_start.elapsed().as_millis() as i64;
-                if !rpc_budget.try_discovery(now_ms, held_n, 20) {
+                let cost = pump_quant_junction::endpoint_retry::bootstrap_walk_cost(BOOTSTRAP_MAX_PAGES);
+                if !rpc_budget.try_discovery(now_ms, held_n, cost) {
                     break;
                 }
                 bootstrap_requested.insert(m);
