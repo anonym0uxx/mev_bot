@@ -2098,6 +2098,10 @@ fn main() -> ExitCode {
             pump_quant_junction::model_lifecycle::MIN_FREE_BYTES,
         );
         eprintln!("[pq-daemon] durable-state headroom at start: {h:?}");
+        // Loss-stop valuation metric: recorded at run start, immutable for the run. PROVISIONAL (exec quote) until
+        // the shadow slice supplies its estimate (a different metric id = a different run).
+        let m = engine.model_stop_pin_valuation_metric(pump_quant_app::stop_policy::ESTIMATOR_EXEC_QUOTE);
+        eprintln!("[pq-daemon] loss-stop valuation metric pinned for this run: {m}");
     }
     let mut model_stop_last_alert = Instant::now() - Duration::from_secs(3600);
     let mut model_stop_session = pump_quant_junction::model_lifecycle::StopSession::new();
@@ -4911,12 +4915,25 @@ fn main() -> ExitCode {
                     pump_quant_junction::model_lifecycle::DEFAULT_SAFETY_FILE.to_string()
                 });
                 let held_n = engine.model_held_mints().len() as u64;
-                let ops = pump_quant_app::stop_policy::OpsInputs {
-                    disk_ok: pump_quant_junction::model_lifecycle::disk_headroom_ok(
+                // Disk: the least-free filesystem among every durable output (safety latch, held journal, event
+                // stream) against the measured soft/hard floors (proc/RESOURCE_BUDGET.md). RAM: bytes available to
+                // this process (host MemAvailable capped by its cgroup) against the workload-measured floor.
+                let hf = std::env::var("PQ_MODEL_HELD_FILE").unwrap_or_else(|_| {
+                    pump_quant_junction::model_lifecycle::DEFAULT_HELD_FILE.to_string()
+                });
+                let (disk_ok, disk_hard_ok) = pump_quant_junction::model_lifecycle::disk_floors_ok(
+                    &[
                         std::path::Path::new(&sf),
-                        pump_quant_junction::model_lifecycle::MIN_FREE_BYTES,
-                    ),
-                    ram_ok: pump_quant_junction::model_lifecycle::ram_headroom_ok(),
+                        std::path::Path::new(&hf),
+                        std::path::Path::new(EVENT_STREAM_PATH),
+                    ],
+                    pump_quant_app::stop_policy::DISK_SOFT_FLOOR_BYTES,
+                    pump_quant_app::stop_policy::DISK_HARD_FLOOR_BYTES,
+                );
+                let ops = pump_quant_app::stop_policy::OpsInputs {
+                    disk_ok,
+                    disk_hard_ok,
+                    ram_ok: pump_quant_junction::model_lifecycle::ram_bytes_ok(),
                     feed_ok: last_slot_time.elapsed() <= Duration::from_secs(STALE_SECS),
                     rpc_budget_ok: launch_bootstrap.is_none()
                         || !rpc_budget.discovery_exhausted(held_n),

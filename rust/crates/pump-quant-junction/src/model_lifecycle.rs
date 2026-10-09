@@ -362,6 +362,51 @@ pub fn ram_headroom_ok() -> Option<bool> {
     pump_quant_app::stop_policy::ram_ok(total, avail, pump_quant_app::stop_policy::RAM_FLOOR_BPS)
 }
 
+/// Memory AVAILABLE to this process, bytes: min(host MemAvailable, own cgroup's memory.max - memory.current).
+/// `None` = unmeasurable (restricts like low). Reads `/proc/meminfo`, `/proc/self/cgroup`, `/sys/fs/cgroup/...`.
+#[must_use]
+pub fn mem_available_for_self() -> Option<u64> {
+    let t = std::fs::read_to_string("/proc/meminfo").ok()?;
+    let (_, avail_kb) = pump_quant_app::stop_policy::parse_meminfo(&t);
+    let cg = std::fs::read_to_string("/proc/self/cgroup").ok()?;
+    let rel = cg.lines().find_map(|l| l.strip_prefix("0::"))?.trim().to_string();
+    let base = std::path::Path::new("/sys/fs/cgroup").join(rel.trim_start_matches('/'));
+    let max = std::fs::read_to_string(base.join("memory.max"))
+        .ok()
+        .and_then(|s| pump_quant_app::stop_policy::parse_cgroup_limit(&s).ok())
+        .unwrap_or(None);
+    let cur = std::fs::read_to_string(base.join("memory.current"))
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok());
+    pump_quant_app::stop_policy::mem_available_bytes(avail_kb, max, cur)
+}
+
+/// RAM stop input against the workload-measured floor ([`pump_quant_app::stop_policy::RAM_FLOOR_BYTES`]).
+#[must_use]
+pub fn ram_bytes_ok() -> Option<bool> {
+    pump_quant_app::stop_policy::bytes_ok(
+        mem_available_for_self(),
+        pump_quant_app::stop_policy::RAM_FLOOR_BYTES,
+    )
+}
+
+/// Disk stop inputs `(soft_ok, hard_ok)` over EVERY durable-output path (event stream, journals, checkpoints): the
+/// least free filesystem decides. Any unmeasurable path -> `(None, None)` (soft restricts; hard does not latch).
+#[must_use]
+pub fn disk_floors_ok(paths: &[&Path], soft: u64, hard: u64) -> (Option<bool>, Option<bool>) {
+    let mut min_free: Option<u64> = None;
+    for p in paths {
+        match free_bytes(p) {
+            None => return (None, None),
+            Some(f) => min_free = Some(min_free.map_or(f, |m| m.min(f))),
+        }
+    }
+    match min_free {
+        None => (None, None),
+        Some(f) => (Some(f >= soft), Some(f >= hard)),
+    }
+}
+
 /// Disk headroom as a stop-table input: `Some(true)` only when measured at or above the floor.
 #[must_use]
 pub fn disk_headroom_ok(path: &Path, floor: u64) -> Option<bool> {
