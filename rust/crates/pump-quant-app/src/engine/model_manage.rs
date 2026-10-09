@@ -852,7 +852,9 @@ impl Engine {
                             })
                         } else {
                             self.model_cache.curve_obs(&mint).map(|o| {
-                                crate::shadow_pool::FillBasis::Curve(super::model_shadow::curve_base(&o))
+                                crate::shadow_pool::FillBasis::Curve(
+                                    super::model_shadow::curve_base(&o),
+                                )
                             })
                         };
                         let leg = crate::shadow_pool::LegKind::Sell;
@@ -986,6 +988,13 @@ impl Engine {
         }
         let net = exit.net_lamports;
         let closed = exit.closed;
+        // A full exit closes the token account: `book_exit` credits the ATA deposit back net of the close fee. The
+        // settlement books the same credit inside this SELL's proceeds (labelled by a counter), never elsewhere.
+        let ata_refund = if closed && self.ata_open.contains(&mint) {
+            crate::cost_model::ATA_RENT_LAMPORTS - crate::cost_model::ATA_CLOSE_LAMPORTS
+        } else {
+            0
+        };
         if let Some(o) = self.model_mgmt.orders.get_mut(&mint) {
             o.filled += tokens;
             o.version += 1;
@@ -999,6 +1008,9 @@ impl Engine {
         // tip; an executor's reported all-in fee is booked as reported (venue-net = gross - fee). A price-only
         // report carried no proceeds and cannot be settled without inventing them: named fault.
         if self.model_v2() {
+            if ata_refund > 0 {
+                self.mrep("settle:ata_rent_refund_in_closing_sell");
+            }
             let leg_cost = crate::exec_quote::landed_leg_cost(self.cfg.exit_tip_lamports);
             match settled {
                 Some((g, f)) if order.simulated && f >= leg_cost => self.model_settle(
@@ -1006,7 +1018,7 @@ impl Engine {
                     crate::shadow_pool::LegKind::Sell,
                     order.id,
                     tokens,
-                    g - (f - leg_cost),
+                    (g - (f - leg_cost)).saturating_add(ata_refund),
                     crate::exec_quote::NETWORK_FEE_P50_LAMPORTS,
                     self.cfg.exit_tip_lamports,
                 ),
@@ -1015,7 +1027,7 @@ impl Engine {
                     crate::shadow_pool::LegKind::Sell,
                     order.id,
                     tokens,
-                    g.saturating_sub(f),
+                    g.saturating_sub(f).saturating_add(ata_refund),
                     0,
                     0,
                 ),
@@ -1756,7 +1768,9 @@ impl Engine {
                         })
                     } else {
                         self.model_cache.curve_obs(&mint).map(|o| {
-                            crate::shadow_pool::FillBasis::Curve(super::model_shadow::curve_base(&o))
+                            crate::shadow_pool::FillBasis::Curve(super::model_shadow::curve_base(
+                                &o,
+                            ))
                         })
                     };
                     match (basis, net_in) {
