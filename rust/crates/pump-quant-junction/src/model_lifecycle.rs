@@ -333,6 +333,86 @@ pub fn check_headroom(path: &Path, floor: u64) -> Headroom {
     }
 }
 
+// ---------------------------------------------------------------------------------------------------------------
+// Stop trigger -> action table: daemon-side measurement and actions (`pump_quant_app::stop_policy`).
+// ---------------------------------------------------------------------------------------------------------------
+
+/// Startup refusal: a live signing/submission capability is present. The paper model lane refuses to start.
+///
+/// # Errors
+/// The capability found, by name (see `stop_policy::require_paper_only`).
+pub fn startup_paper_check(
+    engine: &Engine,
+    live_flag: bool,
+    keypair_loaded: bool,
+) -> Result<(), &'static str> {
+    pump_quant_app::stop_policy::require_paper_only(pump_quant_app::stop_policy::StartCapability {
+        live_flag,
+        keypair_loaded,
+        submission_sink_installed: engine.outbound_sink_installed(),
+        paper_mode: engine.mode() == pump_quant_app::engine::RunMode::Paper,
+    })
+}
+
+/// Host RAM headroom from `/proc/meminfo` against the operator's 12% floor. `None` = unmeasurable.
+#[must_use]
+pub fn ram_headroom_ok() -> Option<bool> {
+    let t = std::fs::read_to_string("/proc/meminfo").ok()?;
+    let (total, avail) = pump_quant_app::stop_policy::parse_meminfo(&t);
+    pump_quant_app::stop_policy::ram_ok(total, avail, pump_quant_app::stop_policy::RAM_FLOOR_BPS)
+}
+
+/// Disk headroom as a stop-table input: `Some(true)` only when measured at or above the floor.
+#[must_use]
+pub fn disk_headroom_ok(path: &Path, floor: u64) -> Option<bool> {
+    match check_headroom(path, floor) {
+        Headroom::Ok { .. } => Some(true),
+        Headroom::Low { .. } => Some(false),
+        Headroom::Unknown => None,
+    }
+}
+
+/// Run deadline and drain bound. The default is the operator's 6 h + 30 min drain; an override
+/// (`PQ_RUN_DEADLINE_MS` / `PQ_DRAIN_BOUND_MS`) may only SHORTEN them (a longer run is not this switch's call).
+#[must_use]
+pub fn run_deadline_from(deadline: Option<&str>, drain: Option<&str>) -> (i64, i64) {
+    use pump_quant_app::stop_policy::{DRAIN_BOUND_MS, RUN_DEADLINE_MS};
+    let pick = |v: Option<&str>, dflt: i64| {
+        v.and_then(|x| x.trim().parse::<i64>().ok())
+            .filter(|x| *x > 0)
+            .map_or(dflt, |x| x.min(dflt))
+    };
+    (pick(deadline, RUN_DEADLINE_MS), pick(drain, DRAIN_BOUND_MS))
+}
+
+/// The drain bound passed: hand off through the EXISTING stop protocol by raising the stop sentinel. The stop
+/// gate then completes only when flat+reconciled or after a session/request/exposure-bound acknowledgement;
+/// otherwise the daemon stays up, blocked, protecting. Nothing is force-closed. Returns whether it was raised now.
+pub fn request_deadline_handoff(stop_file: &Path) -> bool {
+    if stop_file.exists() {
+        return false;
+    }
+    if let Some(d) = stop_file.parent() {
+        let _ = std::fs::create_dir_all(d);
+    }
+    std::fs::write(stop_file, "run_deadline_drain_elapsed\n").is_ok()
+}
+
+/// RPC/data budget for launch bootstrap (the only paper-mode RPC consumer), in history PAGES per hour, with a
+/// reservation for held-position support. Basis (measured, docs/HELIUS_BUDGET_2026-07-29.md): plan ceiling
+/// 200 req/s, measured standing load 0.133 req/s. Capacity 3_600 pages/h (1 page/s average = 0.5% of the
+/// ceiling); each held position reserves 120 pages/h (6 full 20-page walks) that discovery may not spend.
+#[must_use]
+pub fn bootstrap_budget() -> pump_quant_app::stop_policy::WindowBudget {
+    pump_quant_app::stop_policy::WindowBudget::new(
+        pump_quant_app::stop_policy::HeldReserve {
+            capacity: 3_600,
+            per_held: 120,
+        },
+        3_600_000,
+    )
+}
+
 /// Default held-state ledger path.
 pub const DEFAULT_HELD_FILE: &str = "data/model_held_state.json";
 

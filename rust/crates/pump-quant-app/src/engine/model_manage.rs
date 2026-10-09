@@ -523,9 +523,15 @@ impl Engine {
     }
 
     fn model_mgmt_place(&mut self, mint: [u8; 32], kind: MgmtKind, bps: u32, clock: i64) {
-        if kind == MgmtKind::Add && self.model_safety_blocked() {
-            // Risk-increasing: never while SAFETY_OFF holds. REDUCE/EXIT stay permitted.
-            self.mrep("mgmt:refuse:add_blocked_safety_off");
+        if kind == MgmtKind::Add && self.model_new_risk_blocked() {
+            // Risk-increasing: never while SAFETY_OFF or any stop-table restriction holds. REDUCE/EXIT stay
+            // permitted (stop_policy: no row disables management).
+            if self.model_safety_blocked() {
+                self.mrep("mgmt:refuse:add_blocked_safety_off");
+            } else {
+                let l = self.model_stop_block_label();
+                self.mrep(format!("mgmt:refuse:add_blocked_stop:{l}"));
+            }
             return;
         }
         let Some(inv) = self.positions.inventory_tokens(&mint) else {
@@ -1512,8 +1518,8 @@ impl Engine {
     fn model_mgmt_try_add(&mut self, mint: [u8; 32], order: MgmtOrder, clock: i64) {
         let landing = order.created_ms + MODEL_FILL_LANDING_MS;
         let need = order.intended - order.filled;
-        if self.model_safety_blocked() {
-            // Defence in depth: the trip already removes unfilled ADDs.
+        if self.model_new_risk_blocked() {
+            // Defence in depth: the trip / restriction already removes unfilled ADDs.
             self.model_mgmt_end(&mint, false);
             self.mrep("mgmt:add_cancelled_safety_off");
             return;

@@ -179,7 +179,8 @@ impl Engine {
             self.model_safety = prev;
             return Err(RearmRefusal::PersistFailed);
         }
-        self.model_table.set_entries_blocked(false);
+        // Re-derive: an active stop-table restriction (disk, feed, deadline, ...) keeps entries blocked.
+        self.model_stop_sync_entry_block();
         self.mrep("safety:rearmed");
         Ok(())
     }
