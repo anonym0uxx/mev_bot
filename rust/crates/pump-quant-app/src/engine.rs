@@ -19,6 +19,7 @@ pub mod model_admit;
 pub mod model_barrier;
 pub mod model_creator;
 pub mod model_manage;
+pub mod model_mayhem;
 pub mod model_protect;
 pub mod model_restore;
 pub mod model_safety;
@@ -939,6 +940,10 @@ pub struct Engine {
     model_swap_ctx: Option<(i64, u64)>,
     /// The last named refusal per registered market (for never-ready reporting).
     model_last_refusal: BTreeMap<[u8; 32], String>,
+    /// Operator decision 2026-10-09 (SKIP Mayhem-mode coins): the decoded `is_mayhem_mode` per market, from
+    /// `AppEvent::CurveModeObserved`. Absent = UNKNOWN (refused). Sticky-true: once a curve was observed in
+    /// Mayhem mode it stays excluded. Bounded by the registry cap. See `model_mayhem`.
+    model_curve_mayhem: BTreeMap<[u8; 32], bool>,
     /// The installed model source, when the lane is armed. `None` in legacy/replay.
     model_source: Option<std::sync::Arc<dyn ModelSource + Send + Sync>>,
     now: u64,
@@ -1582,6 +1587,7 @@ impl Engine {
             model_slot: 0,
             model_swap_ctx: None,
             model_last_refusal: BTreeMap::new(),
+            model_curve_mayhem: BTreeMap::new(),
             model_source: None,
             now: 0,
             numeric: NumericLane::new(),
@@ -2738,6 +2744,11 @@ impl Engine {
                 if self.paper_model_mode {
                     self.model_observe_launch(*mint.as_bytes(), creator, launch_unix_ms);
                     self.model_register(*mint.as_bytes());
+                }
+            }
+            AppEvent::CurveModeObserved { mint, mayhem, slot } => {
+                if self.paper_model_mode {
+                    self.model_observe_curve_mode(*mint.as_bytes(), mayhem, slot);
                 }
             }
             AppEvent::LaunchFromChain {

@@ -289,6 +289,24 @@ pub enum AppEvent {
         slot: u64,
     },
 
+    /// The pump.fun BondingCurve's MODE flag (`is_mayhem_mode`, byte 81), decoded from a real account update by
+    /// `pump_quant_protocol::decode::decode_pump_curve_mode`. Emitted ONLY when the byte decoded (a canonical
+    /// bool on a verified BondingCurve that is long enough to carry it); a short/foreign/noncanonical account
+    /// emits NOTHING, so "never observed" stays UNKNOWN in the engine, never "not Mayhem".
+    ///
+    /// Operator decision 2026-10-09: Mayhem-mode coins are SKIPPED by the paper model lane (their virtual-SOL
+    /// offset is program-managed and moves between trades, so the canonical curve pricing does not hold). The
+    /// engine refuses entry/ADD on a Mayhem curve AND on a curve whose mode is unknown (fail-closed). Armed-only:
+    /// with the model lane off this event is a no-op.
+    CurveModeObserved {
+        /// The curve's mint.
+        mint: Mint,
+        /// `is_mayhem_mode` as decoded.
+        mayhem: bool,
+        /// The account update's slot.
+        slot: u64,
+    },
+
     /// One PumpSwap swap decoded from the pool's own event CPI, ORIENTED to the token: the token
     /// mint (never the pool), the pool it happened in, and that pool's PRE-trade reserves as the
     /// event reports them. Consumed ONLY by the paper-model lane (legacy numeric/gate paths never
@@ -567,6 +585,7 @@ impl AppEvent {
             | AppEvent::WalletAction { mint, .. }
             | AppEvent::OnchainConfirm { mint, .. }
             | AppEvent::CurveObserved { mint, .. }
+            | AppEvent::CurveModeObserved { mint, .. }
             | AppEvent::AmmSwap { mint, .. }
             | AppEvent::CorpusFlowRow { mint, .. }
             | AppEvent::LaunchObserved { mint, .. }

@@ -95,6 +95,31 @@ pub fn curve_observed_from_curve(
     })
 }
 
+/// The curve's decoded MODE flag as a model-lane event (operator decision 2026-10-09: SKIP Mayhem-mode coins).
+///
+/// Delegates to [`pump_quant_protocol::decode::decode_pump_curve_mode`]. Returns `None` -- and the caller emits
+/// NOTHING -- when the identity check fails, the account predates the field, or the byte is not a canonical
+/// bool: the engine then keeps the market's mode UNKNOWN and refuses it by name (`curve_mode_unknown`). A
+/// failed decode is never turned into `mayhem: false`.
+#[must_use]
+pub fn curve_mode_observed(
+    mint_bytes: &[u8; 32],
+    account_data: &[u8],
+    slot: u64,
+) -> Option<ProvenancedEvent> {
+    let mode = pump_quant_protocol::decode::decode_pump_curve_mode(account_data)?;
+    Some(ProvenancedEvent {
+        event: AppEvent::CurveModeObserved {
+            mint: Mint(*mint_bytes),
+            mayhem: mode.mayhem,
+            slot,
+        },
+        source: ProvenanceSource::LaserStreamAccount,
+        slot,
+        is_live: true,
+    })
+}
+
 /// Construct an `OnchainConfirm` from a decoded `PumpCurve` without re-decoding.
 ///
 /// This is the API the wire-up calls when it already has a `PumpCurve` from
