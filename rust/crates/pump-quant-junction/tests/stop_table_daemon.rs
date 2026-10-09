@@ -5,8 +5,8 @@
 use pump_quant_app::config::Config;
 use pump_quant_app::engine::{Engine, RunMode};
 use pump_quant_junction::model_lifecycle::{
-    bootstrap_budget, disk_headroom_ok, request_deadline_handoff, run_deadline_from,
-    startup_paper_check,
+    bootstrap_budget, disk_floors_ok, disk_headroom_ok, mem_available_for_self, ram_bytes_ok,
+    request_deadline_handoff, run_deadline_from, startup_paper_check,
 };
 
 fn tmp(tag: &str) -> std::path::PathBuf {
@@ -107,3 +107,28 @@ fn disk_input_is_some_true_only_when_measured_at_or_above_the_floor() {
         None
     );
 }
+
+#[test]
+fn disk_floors_take_the_least_free_path_and_unmeasurable_never_latches() {
+    let d = tmp("floors");
+    let a = d.join("safety.json");
+    let b = d.join("held.json");
+    let free = pump_quant_junction::model_lifecycle::free_bytes(&a).expect("measurable tmp dir");
+    // Soft above free, hard below free: restricted, not latched.
+    assert_eq!(disk_floors_ok(&[&a, &b], free + (1 << 30), 1), (Some(false), Some(true)));
+    // Both floors above free: restricted and hard-latched.
+    assert_eq!(disk_floors_ok(&[&a, &b], u64::MAX, u64::MAX), (Some(false), Some(false)));
+    // Both below: healthy.
+    assert_eq!(disk_floors_ok(&[&a, &b], 1, 1), (Some(true), Some(true)));
+    // One unmeasurable path: soft unknown (restricts), hard unknown (does NOT latch).
+    let bad = std::path::Path::new("/proc/pq_no_such_dir/x/held.json");
+    assert_eq!(disk_floors_ok(&[&a, bad], 1, 1), (None, None));
+}
+
+#[test]
+fn ram_input_reads_host_and_own_cgroup() {
+    let a = mem_available_for_self().expect("measurable on this host");
+    assert!(a > 0);
+    assert_eq!(ram_bytes_ok(), Some(a >= pump_quant_app::stop_policy::RAM_FLOOR_BYTES));
+}
+

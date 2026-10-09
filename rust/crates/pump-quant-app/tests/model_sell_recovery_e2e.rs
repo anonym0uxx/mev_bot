@@ -2618,6 +2618,7 @@ fn stop_table_every_trigger_has_one_named_row_and_no_row_disables_management_pro
         StopTrigger::EndpointHung,
         StopTrigger::ReconciliationFault,
         StopTrigger::DurableWriteFailure,
+        StopTrigger::DiskHardFloor,
         StopTrigger::ShadowDivergence,
         StopTrigger::PaperLossStop,
         StopTrigger::UnknownLiquidationValue,
@@ -2788,6 +2789,12 @@ fn stop_paper_loss_stop_trips_at_exactly_half_a_sol_by_the_model_estimate_and_ne
     let ev = r.e.model_stop_evaluate(0, OpsInputs::healthy());
     assert_eq!(ev.estimator, sp::ESTIMATOR_EXEC_QUOTE);
     assert!(ev.raised.is_empty());
+    // Shadow estimate: a DIFFERENT valuation metric, hence a different run (the metric is pinned per run; see
+    // stop_valuation_metric_is_pinned_at_run_start_and_cannot_switch_mid_run). Same world, fresh run.
+    let hp = held_path("st_loss_shadow");
+    let mut r = rig(|_| HOLD, &hp);
+    let cash = cash_of(&r.e);
+    assert_eq!(r.e.model_stop_pin_valuation_metric(sp::ESTIMATOR_SHADOW), sp::ESTIMATOR_SHADOW);
     // Shadow estimate: loss = 0.5 SOL - 1 lamport -> no trip.
     let half = i128::from(sp::PAPER_LOSS_STOP_LAMPORTS);
     let below = [LiquidationEstimate { mint: MINT, value: Ok(2_000_000_000 - cash - half + 1) }];
@@ -3081,3 +3088,118 @@ fn stop_hung_endpoint_management_asks_stay_bounded_and_protection_still_orders()
     assert_eq!(l.counters.accepted, 0, "no late verdict accepted");
     assert!(r.e.model_mgmt_pending(&MINT).is_none(), "no management order from a late verdict");
 }
+
+/// Item 3: the loss stop's valuation metric is PROVISIONAL (labelled in its id), recorded at run start and immutable
+/// for the run. An evaluation offering the other metric mid-run is refused by name, counted, and the book is valued
+/// under the PINNED metric - it can neither switch to the shadow estimate nor fall back to the exec quote.
+#[test]
+fn stop_valuation_metric_is_pinned_at_run_start_and_cannot_switch_mid_run() {
+    assert!(sp::ESTIMATOR_EXEC_QUOTE.starts_with("provisional:"), "the placeholder is labelled provisional");
+    assert!(!sp::ESTIMATOR_SHADOW.starts_with("provisional:"));
+    // Run A: pinned to the provisional exec-quote metric at start.
+    let hp = held_path("st_metric_a");
+    let mut r = rig(|_| HOLD, &hp);
+    assert_eq!(r.e.model_stop_state().valuation_metric(), None);
+    assert_eq!(r.e.model_stop_pin_valuation_metric(sp::ESTIMATOR_EXEC_QUOTE), sp::ESTIMATOR_EXEC_QUOTE);
+    assert_eq!(r.e.model_stop_state().valuation_metric(), Some(sp::ESTIMATOR_EXEC_QUOTE));
+    assert_eq!(rep_sum(&r.e, "stop:valuation_metric_pinned:provisional:"), 1);
+    let ev0 = r.e.model_stop_evaluate(0, OpsInputs::healthy());
+    assert_eq!(ev0.estimator, sp::ESTIMATOR_EXEC_QUOTE);
+    // Mid-run, a shadow estimate showing a 0.5 SOL loss is offered: refused; the exec-quote valuation stands.
+    let cash = cash_of(&r.e);
+    let half = i128::from(sp::PAPER_LOSS_STOP_LAMPORTS);
+    let at = [LiquidationEstimate { mint: MINT, value: Ok(2_000_000_000 - cash - half) }];
+    let ev = r.e.model_stop_evaluate_with(0, OpsInputs::healthy(), Some(&at));
+    assert_eq!(ev.estimator, sp::ESTIMATOR_EXEC_QUOTE, "no mid-run switch");
+    assert_eq!(ev.model_valuation, ev0.model_valuation, "valued under the pinned metric");
+    assert!(!ev.newly_raised.contains(&StopTrigger::PaperLossStop));
+    assert_eq!(r.e.model_stop_state().metric_switch_refused(), 1);
+    assert_eq!(rep_sum(&r.e, "stop:valuation_metric_switch_refused"), 1);
+    // A second explicit pin naming the other metric is refused too.
+    assert_eq!(r.e.model_stop_pin_valuation_metric(sp::ESTIMATOR_SHADOW), sp::ESTIMATOR_EXEC_QUOTE);
+    assert_eq!(r.e.model_stop_state().metric_switch_refused(), 2);
+    // Run B: pinned to the shadow metric; a later evaluation without shadow estimates does NOT fall back to the
+    // exec quote: the held position is risk-UNKNOWN by name.
+    let hp = held_path("st_metric_b");
+    let mut r = rig(|_| HOLD, &hp);
+    r.e.model_stop_pin_valuation_metric(sp::ESTIMATOR_SHADOW);
+    let ev = r.e.model_stop_evaluate(0, OpsInputs::healthy());
+    assert_eq!(ev.estimator, sp::ESTIMATOR_SHADOW);
+    assert_eq!(ev.model_valuation, RiskValuation::Unknown { mint: MINT, reason: "shadow_estimate_missing" });
+    assert!(ev.newly_raised.contains(&StopTrigger::UnknownLiquidationValue));
+    assert_eq!(r.e.model_stop_state().metric_switch_refused(), 1);
+    // Unpinned run: the first evaluation pins the metric it was given.
+    let hp = held_path("st_metric_c");
+    let mut r = rig(|_| HOLD, &hp);
+    r.e.model_stop_evaluate(0, OpsInputs::healthy());
+    assert_eq!(r.e.model_stop_state().valuation_metric(), Some(sp::ESTIMATOR_EXEC_QUOTE));
+}
+
+/// Item 4 (disk): below the SOFT floor new risk is restricted and alerted while low (no latch); below the HARD floor
+/// (measured) SAFETY_OFF latches by name and stays latched when space returns; in both, REDUCE management executes,
+/// protection orders, durable evidence keeps being written (held-state persist succeeds) and nothing is deleted.
+#[test]
+fn stop_disk_soft_floor_restricts_hard_floor_latches_and_evidence_keeps_being_written() {
+    assert_eq!(sp::DISK_SOFT_FLOOR_BYTES, 20 * sp::GIB);
+    assert_eq!(sp::DISK_HARD_FLOOR_BYTES, 4 * sp::GIB);
+    assert!(sp::DISK_HARD_FLOOR_BYTES < sp::DISK_SOFT_FLOOR_BYTES);
+    let hp = held_path("st_disk_hard");
+    let mut r = rig(|s| if s == 0 { REDUCE } else { HOLD }, &hp);
+    r.e.model_safety_attach(&hp.with_file_name("safety.json"));
+    // Soft only.
+    let soft = OpsInputs { disk_ok: Some(false), ..OpsInputs::healthy() };
+    let ev = r.e.model_stop_evaluate(0, soft);
+    assert_eq!(ev.raised.iter().map(|x| x.0).collect::<Vec<_>>(), vec![StopTrigger::DiskHeadroomLow]);
+    assert!(r.e.model_entries_blocked() && !r.e.model_safety_blocked());
+    assert!(rep_sum(&r.e, "stop:ALERT_DISK_HEADROOM_LOW") >= 1);
+    // Unmeasurable hard reading does not latch (soft covers it).
+    let ev = r.e.model_stop_evaluate(0, OpsInputs { disk_ok: None, disk_hard_ok: None, ..OpsInputs::healthy() });
+    assert!(!ev.raised.iter().any(|x| x.0 == StopTrigger::DiskHardFloor) && !r.e.model_safety_blocked());
+    // Hard floor measured.
+    let hard = OpsInputs { disk_ok: Some(false), disk_hard_ok: Some(false), ..OpsInputs::healthy() };
+    let ev = r.e.model_stop_evaluate(0, hard);
+    assert!(ev.newly_raised.contains(&StopTrigger::DiskHardFloor));
+    assert!(r.e.model_safety_blocked());
+    assert_eq!(r.e.model_safety_reason(), "disk_hard_floor");
+    assert!(rep_sum(&r.e, "stop:ALERT_DISK_HARD_FLOOR:risk_off_disk_hard_floor_evidence_kept") >= 1);
+    // Evidence keeps being written; nothing deleted.
+    assert!(r.e.model_held_persist_now(), "held-state journal still written under the hard floor");
+    assert!(hp.exists() && hp.with_file_name("safety.json").exists(), "nothing deleted");
+    // Management continues (REDUCE executes) and protection orders.
+    r.advance_to_order(120_000);
+    assert!(fill_pending_reduce(&mut r) > 0, "REDUCE executes under the hard floor");
+    // Space returns: the latch holds (no auto re-arm).
+    let ev = r.e.model_stop_evaluate(0, OpsInputs::healthy());
+    assert!(!ev.raised.iter().any(|x| x.0 == StopTrigger::DiskHeadroomLow), "soft row cleared");
+    assert!(r.e.model_safety_blocked() && r.e.model_entries_blocked(), "hard floor latches");
+    assert_eq!(r.e.model_safety_reason(), "disk_hard_floor");
+    hard_collapse(&mut r.e, r.clock + 1_000, r.slot + 5);
+    assert!(r.e.model_protect_pending_order(&MINT).is_some(), "protection under the hard floor");
+}
+
+/// Item 4 (RAM): the stop input is bytes AVAILABLE to the process = min(host MemAvailable, cgroup room), against the
+/// workload-measured floor (not host-wide 12%, not the tool's 4 GiB). A cgroup limit binds even with a huge host.
+#[test]
+fn stop_ram_floor_is_workload_bytes_capped_by_the_cgroup() {
+    assert_eq!(sp::RAM_FLOOR_BYTES, 12 * sp::GIB);
+    let host_kb = Some(245_881_348); // measured MemAvailable 2026-10-09
+    assert_eq!(sp::parse_cgroup_limit("max\n"), Ok(None));
+    assert_eq!(sp::parse_cgroup_limit("4294967296\n"), Ok(Some(4_294_967_296)));
+    assert!(sp::parse_cgroup_limit("junk").is_err());
+    // Unlimited cgroup (the measured daemon cgroup): host availability decides.
+    let a = sp::mem_available_bytes(host_kb, None, None);
+    assert_eq!(a, Some(245_881_348 * 1024));
+    assert_eq!(sp::bytes_ok(a, sp::RAM_FLOOR_BYTES), Some(true));
+    // A 4 GiB cgroup nearly full binds although the host has 234 GiB free.
+    let a = sp::mem_available_bytes(host_kb, Some(4 * sp::GIB), Some(4 * sp::GIB - 1_000));
+    assert_eq!(a, Some(1_000));
+    assert_eq!(sp::bytes_ok(a, sp::RAM_FLOOR_BYTES), Some(false));
+    // Exactly at the floor is ok; one byte below is not.
+    assert_eq!(sp::bytes_ok(Some(sp::RAM_FLOOR_BYTES), sp::RAM_FLOOR_BYTES), Some(true));
+    assert_eq!(sp::bytes_ok(Some(sp::RAM_FLOOR_BYTES - 1), sp::RAM_FLOOR_BYTES), Some(false));
+    // Unmeasurable is not fine.
+    assert_eq!(sp::mem_available_bytes(None, None, None), None);
+    assert_eq!(sp::mem_available_bytes(host_kb, Some(4 * sp::GIB), None), None);
+    assert_eq!(sp::bytes_ok(None, sp::RAM_FLOOR_BYTES), None);
+}
+

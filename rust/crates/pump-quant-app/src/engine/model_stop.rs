@@ -30,6 +30,12 @@ pub struct StopState {
     pub deadline_passed: bool,
     held_failures_seen: u64,
     safety_failures_seen: u64,
+    /// The valuation METRIC ID the loss stop reads, pinned at run start (or by the first evaluation) and immutable
+    /// for the run. Today [`ESTIMATOR_EXEC_QUOTE`] (PROVISIONAL, labelled); the shadow slice's estimate is a
+    /// different metric id and therefore a different run.
+    valuation_metric: Option<&'static str>,
+    /// Evaluations that offered a different metric than the pinned one (refused, counted).
+    metric_switch_refused: u64,
 }
 
 impl Default for StopState {
@@ -42,6 +48,8 @@ impl Default for StopState {
             deadline_passed: false,
             held_failures_seen: 0,
             safety_failures_seen: 0,
+            valuation_metric: None,
+            metric_switch_refused: 0,
         }
     }
 }
@@ -67,7 +75,40 @@ pub struct StopEvaluation {
     pub new_risk_blocked: bool,
 }
 
+impl StopState {
+    /// The pinned valuation metric id (None before run start / the first evaluation).
+    #[must_use]
+    pub fn valuation_metric(&self) -> Option<&'static str> {
+        self.valuation_metric
+    }
+
+    /// How many evaluations offered a metric other than the pinned one (each refused).
+    #[must_use]
+    pub fn metric_switch_refused(&self) -> u64 {
+        self.metric_switch_refused
+    }
+}
+
 impl Engine {
+    /// Pin the loss-stop valuation metric for this run (call once at run start). Returns the metric in force: a
+    /// second call naming a different metric does NOT switch it (refused, counted, reported by name).
+    pub fn model_stop_pin_valuation_metric(&mut self, metric: &'static str) -> &'static str {
+        match self.model_stop.valuation_metric {
+            None => {
+                self.model_stop.valuation_metric = Some(metric);
+                self.mrep(format!("stop:valuation_metric_pinned:{metric}"));
+                metric
+            }
+            Some(m) => {
+                if m != metric {
+                    self.model_stop.metric_switch_refused += 1;
+                    self.mrep("stop:valuation_metric_switch_refused");
+                }
+                m
+            }
+        }
+    }
+
     /// Override the run deadline and drain bound (daemon configuration / tests).
     pub fn model_stop_set_deadline(&mut self, deadline_ms: i64, drain_ms: i64) {
         self.model_stop.deadline_ms = deadline_ms;
@@ -268,7 +309,22 @@ impl Engine {
         if ops.shadow_divergence {
             raised.insert(StopTrigger::ShadowDivergence);
         }
-        let (model_val, external_val) = self.model_stop_valuations_with(shadow);
+        // The metric is immutable for the run: the first evaluation pins it if run start did not; an evaluation
+        // offering the other metric is refused and valued under the PINNED one (never the better of the two).
+        let offered = if shadow.is_some() {
+            ESTIMATOR_SHADOW
+        } else {
+            ESTIMATOR_EXEC_QUOTE
+        };
+        let metric = self.model_stop_pin_valuation_metric(offered);
+        let (model_val, external_val) = if metric == offered {
+            self.model_stop_valuations_with(shadow)
+        } else if metric == ESTIMATOR_EXEC_QUOTE {
+            self.model_stop_valuations_with(None)
+        } else {
+            // Pinned to the shadow metric but no shadow estimates were supplied: risk is UNKNOWN, not exec-quote.
+            self.model_stop_valuations_with(Some(&[]))
+        };
         if let Some(t) = valuation_trigger(&model_val) {
             raised.insert(t);
         }
@@ -281,6 +337,10 @@ impl Engine {
         let mut active: BTreeSet<StopTrigger> = BTreeSet::new();
         if ops.disk_ok != Some(true) {
             active.insert(StopTrigger::DiskHeadroomLow);
+        }
+        // Hard floor: only a MEASURED reading below it latches (risk-off); evidence keeps being written.
+        if ops.disk_hard_ok == Some(false) {
+            raised.insert(StopTrigger::DiskHardFloor);
         }
         if ops.ram_ok != Some(true) {
             active.insert(StopTrigger::RamHeadroomLow);
@@ -343,11 +403,7 @@ impl Engine {
             newly_raised,
             model_valuation: model_val,
             external_valuation: external_val,
-            estimator: if shadow.is_some() {
-                ESTIMATOR_SHADOW
-            } else {
-                ESTIMATOR_EXEC_QUOTE
-            },
+            estimator: metric,
             phase,
             handoff_due: phase == RunPhase::HandoffDue,
             new_risk_blocked: self.model_new_risk_blocked(),
