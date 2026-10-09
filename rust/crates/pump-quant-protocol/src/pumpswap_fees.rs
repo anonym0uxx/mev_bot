@@ -239,3 +239,23 @@ pub fn sell_net_quote(
         net,
     })
 }
+
+/// SELL with the cashback component the current program withholds on cashback coins (`SellEvent.cashback`,
+/// `cashback_fee_basis_points`): `net = gross - lp - protocol - creator - cashback`, each ceil-rounded, the
+/// vault check as [`sell_net_quote`]. Exact on every captured sell layout (409/425/433, cashback and not):
+/// `tests/pumpswap_event_layouts.rs`. The cashback is credited to the seller's claimable account, NOT paid
+/// with the swap: it is not spendable proceeds until a separate claim reconciles.
+#[must_use]
+pub fn sell_net_quote_cb(
+    base_reserve: u128,
+    quote_vault: u128,
+    virtual_quote: u128,
+    base_in: u128,
+    f: Fees,
+    cashback_bps: u64,
+) -> Option<(SellQuote, u128)> {
+    let q = sell_net_quote(base_reserve, quote_vault, virtual_quote, base_in, f)?;
+    let cb = fee_ceil(q.gross, cashback_bps)?;
+    let net = q.net.checked_sub(cb)?;
+    Some((SellQuote { net, ..q }, cb))
+}

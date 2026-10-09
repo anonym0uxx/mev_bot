@@ -229,3 +229,34 @@ fn held_population_quotes_at_the_capture_slot() {
         assert!(curve_sell_quote(&s, &ccfg, max + 1).is_err());
     }
 }
+
+#[test]
+fn independent_curve_exact_in_buys_are_exact_and_exact_out_buys_are_not_quoted() {
+    use pump_quant_protocol::curve_sell_quote::curve_buy_exact_in;
+    let f: Value =
+        serde_json::from_str(include_str!("fixtures/curve_buy_vectors_2026_10.json")).unwrap();
+    let s = |v: &Value, k: &str| -> u64 { v[k].as_str().unwrap().parse().unwrap() };
+    let (mut exact_in, mut exact_out) = (0, 0);
+    for v in f["events"].as_array().unwrap() {
+        let gross = s(v, "sol") + s(v, "fee") + s(v, "cfee") + s(v, "cb");
+        let q = curve_buy_exact_in(
+            s(v, "vsol_pre"),
+            s(v, "vtok_pre"),
+            u64::MAX,
+            gross,
+            s(v, "fee_bps"),
+            s(v, "cfee_bps") + s(v, "cb_bps"),
+        )
+        .unwrap();
+        // The spend split is exact on every buy (fees are ceil(net * bps)).
+        assert_eq!(q.net_in, u128::from(s(v, "sol")), "{}", v["sig"]);
+        if v["ix"] == "buy" {
+            // Exact-OUT instruction: the trader named the tokens, so the (n-1) delivery rule does not apply.
+            exact_out += 1;
+            continue;
+        }
+        assert_eq!(q.tokens_out, u128::from(s(v, "tokens")), "{}", v["sig"]);
+        exact_in += 1;
+    }
+    assert_eq!((exact_in, exact_out), (10, 2));
+}

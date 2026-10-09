@@ -164,12 +164,46 @@ pub struct BuyEvent {
 /// never guessed. Evidence: 27 on-chain events, each equal to the pool account's own field.
 #[must_use]
 pub const fn virtual_quote_offset(is_buy: bool, payload_len: usize) -> Option<usize> {
+    // Extended 2026-10 from 27 more mainnet events (tests/fixtures/pumpswap_event_layouts_2026_10.json): the
+    // tail grew (cashback/buyback fields, `ix_name` string) and the length now also encodes the ix name.
     match (is_buy, payload_len) {
-        (true, 472) => Some(447),
-        (true, 457) => Some(432),
-        (false, 409) => Some(384),
+        // buy_exact_quote_in: 472 (pre-cashback-tail), 488 (cashback), 496 (current).
+        (true, 472 | 488 | 496) => Some(447),
+        // buy: 457 (pre), 473 (cashback), 481 (current).
+        (true, 457 | 473 | 481) => Some(432),
+        // buy_exact_quote_in_v2 (current): its longer ix name shifts the field by 3.
+        (true, 499) => Some(450),
+        (false, 409 | 425 | 433) => Some(384),
         _ => None,
     }
+}
+
+/// `(cashback_fee_basis_points, cashback)` of a Buy/Sell event payload: buy at `virtual_quote_offset - 32`,
+/// sell at 352, on every layout [`virtual_quote_offset`] knows (all of them carry the pair, cashback coin or
+/// not: 27/27 captured events). `None` on an unknown layout or a truncated payload. The cashback is withheld
+/// from the trader's immediate proceeds and credited to a claimable account.
+#[must_use]
+pub fn cashback_fields(is_buy: bool, payload: &[u8]) -> Option<(u64, u64)> {
+    let vo = virtual_quote_offset(is_buy, payload.len())?;
+    let o = if is_buy { vo.checked_sub(32)? } else { 352 };
+    Some((
+        read_u64_le(payload, o)?,
+        read_u64_le(payload, o.checked_add(8)?)?,
+    ))
+}
+
+/// The payload of a Buy/Sell event inner instruction (after tag + discriminator), for callers that
+/// need tail fields the typed decoders do not surface.
+#[must_use]
+pub fn swap_event_payload(data: &[u8], is_buy: bool) -> Option<&[u8]> {
+    event_payload(
+        data,
+        if is_buy {
+            &BUY_EVENT_DISCRIMINATOR
+        } else {
+            &SELL_EVENT_DISCRIMINATOR
+        },
+    )
 }
 
 /// The result of [`buy_exact_quote_in`].
@@ -236,6 +270,54 @@ pub fn buy_exact_quote_in(
         return None;
     }
     Some(ExactQuoteInFill {
+        net_quote_in: net,
+        base_out: out,
+    })
+}
+
+/// [`buy_exact_quote_in`] with the cashback component added to the fee stack (cashback coins charge it on
+/// buys too: `BuyEvent.cashback`). Same inferred `net - 1` rule; the extra component is ceil-rounded like
+/// the others. Reduces to [`buy_exact_quote_in`] at `cashback_bps == 0`.
+#[must_use]
+pub fn buy_exact_quote_in_cb(
+    base_reserve: u128,
+    quote_vault: u128,
+    virtual_quote: u128,
+    gross_in: u128,
+    fees: (u128, u128, u128),
+    cashback_bps: u128,
+) -> Option<ExactQuoteInFill> {
+    const D: u128 = 10_000;
+    let (lp_bps, protocol_bps, creator_bps) = fees;
+    let tot = |n: u128| -> Option<u128> {
+        let c = |bps: u128| n.checked_mul(bps).map(|x| x.div_ceil(D));
+        n.checked_add(c(lp_bps)?)?
+            .checked_add(c(protocol_bps)?)?
+            .checked_add(c(creator_bps)?)?
+            .checked_add(c(cashback_bps)?)
+    };
+    if gross_in == 0 {
+        return None;
+    }
+    let (mut lo, mut hi) = (0u128, gross_in);
+    while lo < hi {
+        let mid = lo + (hi - lo).div_ceil(2);
+        if tot(mid)? <= gross_in {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    let net = lo;
+    if net < 2 {
+        return None;
+    }
+    let eff = quote_vault.checked_add(virtual_quote)?;
+    let n1 = net - 1;
+    let out = base_reserve
+        .checked_mul(n1)?
+        .checked_div(eff.checked_add(n1)?)?;
+    (out > 0).then_some(ExactQuoteInFill {
         net_quote_in: net,
         base_out: out,
     })

@@ -178,3 +178,125 @@ pub fn curve_sell_quote(
         mcap_lamports: mcap,
     })
 }
+
+/// Exact-SOL-in curve BUY: what `buy_exact_sol_in` does with a total spend `spend` (fees inside).
+///
+/// EVIDENCE (independent mainnet txs, read-only; `tests/m3_fresh_sell_quotes.rs`): the program spends the
+/// largest `n` with `n + ceil(n*protocol/1e4) + ceil(n*creator/1e4) <= spend`, then delivers
+/// `floor((n-1) * vtok / (vsol + n - 1))` tokens (the SDK's `subn(1)` input), capped at `real_token`. Exact on
+/// 10/10 `buy_exact_sol_in`/`buy_exact_quote_in` events; the 2 exact-OUT `buy` events are a different
+/// instruction and are not quoted here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CurveBuyQuote {
+    /// Quote that reaches the constant-product leg.
+    pub net_in: u128,
+    pub protocol_fee: u128,
+    pub creator_fee: u128,
+    pub tokens_out: u128,
+}
+
+/// Rates the curve charges at reserves (`vsol`, `vtok`) under `cfg` (non-mayhem SOL curve, creator set).
+#[must_use]
+pub fn curve_fees_at(cfg: &FeeConfig, vsol: u64, vtok: u64) -> Option<Fees> {
+    if vtok == 0 {
+        return None;
+    }
+    let mcap = u128::from(vsol)
+        .checked_mul(CURVE_MCAP_SUPPLY)?
+        .checked_div(u128::from(vtok))?;
+    tier_for(&cfg.fee_tiers, mcap)
+}
+
+/// Exact-in BUY of `spend` lamports (all-in venue spend) against (`vsol`, `vtok`, `real_token`).
+#[must_use]
+pub fn curve_buy_exact_in(
+    vsol: u64,
+    vtok: u64,
+    real_token: u64,
+    spend: u64,
+    protocol_bps: u64,
+    creator_bps: u64,
+) -> Option<CurveBuyQuote> {
+    let g = u128::from(spend);
+    let tot = |n: u128| -> Option<u128> {
+        n.checked_add(fee_ceil(n, protocol_bps)?)?
+            .checked_add(fee_ceil(n, creator_bps)?)
+    };
+    let (mut lo, mut hi) = (0u128, g);
+    while lo < hi {
+        let mid = lo + (hi - lo).div_ceil(2);
+        if tot(mid)? <= g {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    let n = lo;
+    if n < 2 || vtok == 0 {
+        return None;
+    }
+    let n1 = n - 1;
+    let out = u128::from(vtok)
+        .checked_mul(n1)?
+        .checked_div(u128::from(vsol).checked_add(n1)?)?
+        .min(u128::from(real_token));
+    if out == 0 {
+        return None;
+    }
+    Some(CurveBuyQuote {
+        net_in: n,
+        protocol_fee: fee_ceil(n, protocol_bps)?,
+        creator_fee: fee_ceil(n, creator_bps)?,
+        tokens_out: out,
+    })
+}
+
+/// SELL of `tokens_in` from bare reserves (the engine's observation plane: no account tail). Same arithmetic as
+/// [`curve_sell_quote`]; the caller has already refused mayhem / non-SOL / configured-creator curves. Refuses
+/// when the gross exceeds `real_sol`.
+pub fn curve_sell_from_reserves(
+    vsol: u64,
+    vtok: u64,
+    real_sol: u64,
+    tokens_in: u64,
+    f: Fees,
+) -> Result<CurveSellQuote, CurveSellRefusal> {
+    let s = CurveSellState {
+        virtual_sol: vsol,
+        virtual_token: vtok,
+        real_sol,
+        complete: vtok == 0,
+        creator_set: true,
+        mayhem: false,
+        cashback: false,
+        quote_is_sol: true,
+        creator_fee_bps: 0,
+        holder_reward: false,
+    };
+    if s.complete {
+        return Err(CurveSellRefusal::CurveComplete);
+    }
+    if tokens_in == 0 {
+        return Err(CurveSellRefusal::ZeroQuantity);
+    }
+    let gross = gross_out(&s, u128::from(tokens_in)).ok_or(CurveSellRefusal::Overflow)?;
+    if gross > u128::from(real_sol) {
+        return Err(CurveSellRefusal::RealSolInsufficient {
+            max_tokens: max_sellable_tokens(&s).ok_or(CurveSellRefusal::Overflow)?,
+        });
+    }
+    let protocol_fee = fee_ceil(gross, f.protocol_bps).ok_or(CurveSellRefusal::Overflow)?;
+    let creator_fee = fee_ceil(gross, f.creator_bps).ok_or(CurveSellRefusal::Overflow)?;
+    let net = gross
+        .checked_sub(protocol_fee)
+        .and_then(|x| x.checked_sub(creator_fee))
+        .ok_or(CurveSellRefusal::Overflow)?;
+    Ok(CurveSellQuote {
+        gross,
+        fees: f,
+        protocol_fee,
+        creator_fee,
+        net,
+        mcap_lamports: 0,
+    })
+}
