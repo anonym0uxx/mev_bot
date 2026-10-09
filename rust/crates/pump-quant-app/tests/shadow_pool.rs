@@ -603,3 +603,97 @@ fn regression_804a86fe_external_and_shadow_results_are_separate() {
     // The v1 defect magnitude for the record: 71,369,737 paper gross vs 37,657,528 real SOL.
     assert!(71_369_737 > last.real_sol);
 }
+
+// ---------------------------------------------------------------- shadow capacity cap (mutant 4 = curve, 4b = pool)
+// POOL: the cap BINDS. `sell_net_quote` only guards `quote_vault >= gross - lp_fee` (the LP fee stays in the pool),
+// so a gross in (shadow vault, shadow vault + lp_fee] passes the quote but draws more SOL out than observed + our
+// conserved contribution. Vector from proc/wire_v4_cap_probe.py (bisected to the first gross above the vault).
+#[test]
+fn pool_shadow_cap_binds_inside_the_lp_fee_window_the_quote_guard_lets_through() {
+    let mut book = ShadowBook::default();
+    let p0 = PoolBase {
+        base: 1_000_000_000_000,
+        quote: 1_000_000_000,
+        vq: 20_000_000_000,
+        slot: 1,
+    };
+    book.apply_own_fill(
+        M,
+        FillBasis::Pool(p0),
+        LegKind::Entry,
+        1,
+        23_255_813_953,
+        500_000_000,
+    );
+    let tokens = 73_255_814_007;
+    let v = book.pool_sell_view(&M, &p0, Some((20, 5, 5)), CB_LEGACY, tokens);
+    assert!(v.delta_carried);
+    assert_eq!(v.capacity_lamports, 1_500_000_000);
+    // The raw quote on the shadow reserves passes its own vault guard ...
+    let raw = curve_free_pool_quote(976_744_186_047, 1_500_000_000, 20_000_000_000, tokens);
+    assert_eq!(
+        raw,
+        Some(1_500_000_001),
+        "gross one lamport above the shadow vault"
+    );
+    // ... so only the conserved-capacity cap refuses it.
+    assert_eq!(
+        v.shadow,
+        Err(ShadowRefusal::CapacityExceeded {
+            capacity: 1_500_000_000
+        })
+    );
+    assert_eq!(
+        book.net_liquidation_estimate(
+            &M,
+            Some(&ObservedVenue::Pool(p0, Some((20, 5, 5)), CB_LEGACY)),
+            tokens
+        ),
+        None,
+        "cap refusal = unknown liquidation, never a number"
+    );
+}
+
+/// The pool quote's gross with the vault guard, exactly as `exec_quote::amm_sell` (no cashback) computes it.
+fn curve_free_pool_quote(base: u64, quote: u64, vq: u64, tokens: u64) -> Option<u64> {
+    let q = pump_quant_app::exec_quote::amm_sell(
+        base,
+        quote,
+        Some(vq),
+        Some((20, 5, 5)),
+        CB_LEGACY,
+        tokens,
+    )
+    .ok()?;
+    Some(q.gross)
+}
+
+// CURVE: the cap is REDUNDANT on the actual call path, and this test pins WHY. `shadow_curve` prices on
+// `real_sol' = obs.real_sol + dsol` and returns `cap = obs.real_sol + max(0, dsol)`, so `cap >= real_sol'`; and
+// `curve_sell_from_reserves` (pump-quant-protocol curve_sell_quote.rs) refuses `gross > real_sol'`
+// (`RealSolInsufficient`). Hence every Ok shadow quote already has `gross <= real_sol' <= cap`. If either side of
+// that inequality is changed (cap shrunk, quote guard removed), this sweep goes red.
+#[test]
+fn curve_shadow_cap_is_implied_by_the_quote_real_sol_guard_on_every_state() {
+    for (rsol, spend, sold_frac) in [
+        (50_000_000u64, 100_000_000u64, 3u64),
+        (1_000_000_000, 300_000_000, 1),
+        (10_000_000_000, 2_000_000_000, 2),
+        (80_000_000_000, 4_000_000_000, 5),
+    ] {
+        let mut book = ShadowBook::default();
+        let b = curve(rsol, 10);
+        let (tok, _) = buy(&mut book, b, 1, spend);
+        for mul in 1..=sold_frac * 2 {
+            let tokens = tok / 2 * mul;
+            let (s, cap) = book.shadow_curve(&M, &b).unwrap();
+            assert!(cap >= u128::from(s.real_sol), "cap >= shadow real_sol");
+            let v = book.curve_sell_view(&M, &b, tokens);
+            match v.shadow {
+                Ok(q) => assert!(u128::from(q.gross) <= u128::from(s.real_sol)),
+                Err(ShadowRefusal::Quote(QuoteRefusal::CurveRealSolInsufficient { .. })) => {}
+                Err(e) => panic!("curve cap reached first ({e:?}): the cap is NOT redundant here"),
+            }
+        }
+    }
+}
