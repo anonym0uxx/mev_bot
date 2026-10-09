@@ -1,5 +1,9 @@
 //! `paper_fill_v2_shadow` shadow-pool laws (spec: docs/missing_history_causal/SHADOW_POOL_SPEC.md).
 use pump_quant_app::exec_quote::{curve_buy, curve_sell, QuoteRefusal};
+use pump_quant_protocol::pumpswap_event::CashbackField;
+/// Older-layout cashback state: with a non-zero creator fee the legacy rule prices no cashback (behaviour the
+/// shadow laws were written against). Unknown cashback with a zero creator fee is refused (test below).
+const CB_LEGACY: CashbackField = CashbackField::Missing { layout_len: 352 };
 use pump_quant_app::shadow_pool::{
     ApplyOutcome, CurveBase, Divergence, FillBasis, LegKind, ObservedVenue, PaperFillVersion,
     PoolBase, ShadowBook, ShadowRefusal, ShadowVenue, NETWORK_FEE_PER_LANDED_LEG_ESTIMATE,
@@ -243,7 +247,7 @@ fn adverse_liquidity_change_removes_fictional_sale_capacity() {
         book.on_pool_observation(&M, &p1),
         Some(Divergence::AdverseLiquidityChange)
     );
-    let v = book.pool_sell_view(&M, &p1, Some((20, 5, 5)), 10_000_000_000);
+    let v = book.pool_sell_view(&M, &p1, Some((20, 5, 5)), CB_LEGACY, 10_000_000_000);
     assert!(!v.delta_carried);
     assert_eq!(v.capacity_lamports, 25_000_000_000);
     assert_eq!(
@@ -389,7 +393,7 @@ fn graduation_ends_curve_shadow_and_starts_empty_pool_segment() {
         vq: 0,
         slot: 20,
     };
-    let v = book.pool_sell_view(&M, &p0, Some((20, 5, 5)), tok);
+    let v = book.pool_sell_view(&M, &p0, Some((20, 5, 5)), CB_LEGACY, tok);
     assert_eq!(
         v.capacity_lamports, 85_000_000_000,
         "curve SOL is not carried into the pool"
@@ -425,9 +429,64 @@ fn engine_hooks_divergence_and_net_liquidation_estimate() {
         slot: 1,
     };
     assert_eq!(
-        book.net_liquidation_estimate(&M, Some(&ObservedVenue::Pool(p, Some((20, 5, 5)))), tok),
+        book.net_liquidation_estimate(
+            &M,
+            Some(&ObservedVenue::Pool(p, Some((20, 5, 5)), CB_LEGACY)),
+            tok
+        ),
         None
     );
+}
+
+/// Integration seam (shadow x cashback): unknown cashback on a zero-creator-fee pool = unknown liquidation value.
+#[test]
+fn unknown_cashback_on_zero_creator_fee_pool_is_unknown_liquidation_not_zero() {
+    let mut book = ShadowBook::default();
+    let p = PoolBase {
+        base: 1_000_000_000_000,
+        quote: 50_000_000_000,
+        vq: 0,
+        slot: 1,
+    };
+    book.apply_own_fill(
+        M,
+        FillBasis::Pool(p),
+        LegKind::Entry,
+        1,
+        10_000_000_000,
+        500_000_000,
+    );
+    for cb in [
+        CashbackField::Missing { layout_len: 352 },
+        CashbackField::Unsupported { layout_len: 999 },
+        CashbackField::NotRecorded,
+    ] {
+        let v = book.pool_sell_view(&M, &p, Some((20, 5, 0)), cb, 1_000_000_000);
+        assert!(
+            matches!(v.external, Err(QuoteRefusal::AmmCashbackUnknown)),
+            "{cb:?}"
+        );
+        assert!(
+            v.shadow.is_err(),
+            "{cb:?}: shadow never prices unknown cashback"
+        );
+        let obs = ObservedVenue::Pool(p, Some((20, 5, 0)), cb);
+        assert_eq!(
+            book.net_liquidation_estimate(&M, Some(&obs), 1_000_000_000),
+            None,
+            "{cb:?}"
+        );
+    }
+    // Known zero cashback is priced (a known zero, not unknown).
+    let known0 = CashbackField::Known {
+        bps: 0,
+        lamports: 0,
+        layout_len: 369,
+    };
+    let obs = ObservedVenue::Pool(p, Some((20, 5, 0)), known0);
+    assert!(book
+        .net_liquidation_estimate(&M, Some(&obs), 1_000_000_000)
+        .is_some());
 }
 
 // ---------------------------------------------------------------- 804a86fe regression fixture

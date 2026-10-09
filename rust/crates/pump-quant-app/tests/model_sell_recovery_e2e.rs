@@ -2591,16 +2591,33 @@ fn fill_pending_reduce(r: &mut Rig) -> u64 {
 }
 
 #[test]
-fn stop_table_every_trigger_has_one_named_row_and_no_row_disables_management_protection_or_reconciliation() {
+fn stop_table_every_trigger_has_one_named_row_and_no_row_disables_management_protection_or_reconciliation(
+) {
     let mut names = std::collections::BTreeSet::new();
     for t in StopTrigger::ALL {
         let a = action_for(t);
         assert!(names.insert(a.name), "row names are unique: {t:?}");
         assert!(!a.alert.is_empty(), "{t:?} surfaces a named alert");
-        assert_eq!((a.entry, a.add), (Gate::Block, Gate::Block), "{t:?} blocks new BUY and ADD");
-        assert_eq!(a.manage, Continue::IfValid, "{t:?}: REDUCE/EXIT continue where valid");
-        assert_eq!(a.protect, Continue::Always, "{t:?}: protection always continues");
-        assert_eq!(a.reconcile, Continue::Always, "{t:?}: reconciliation always continues");
+        assert_eq!(
+            (a.entry, a.add),
+            (Gate::Block, Gate::Block),
+            "{t:?} blocks new BUY and ADD"
+        );
+        assert_eq!(
+            a.manage,
+            Continue::IfValid,
+            "{t:?}: REDUCE/EXIT continue where valid"
+        );
+        assert_eq!(
+            a.protect,
+            Continue::Always,
+            "{t:?}: protection always continues"
+        );
+        assert_eq!(
+            a.reconcile,
+            Continue::Always,
+            "{t:?}: reconciliation always continues"
+        );
         assert_eq!(a.handoff_after_drain, t == StopTrigger::RunDeadline);
     }
     let latch = |t| action_for(t).latch;
@@ -2612,7 +2629,10 @@ fn stop_table_every_trigger_has_one_named_row_and_no_row_disables_management_pro
         StopTrigger::PaperLossStop,
         StopTrigger::UnknownLiquidationValue,
     ] {
-        assert!(matches!(latch(t), Latch::SafetyOff(_)), "{t:?} latches SAFETY_OFF (no auto re-arm)");
+        assert!(
+            matches!(latch(t), Latch::SafetyOff(_)),
+            "{t:?} latches SAFETY_OFF (no auto re-arm)"
+        );
     }
     for t in [
         StopTrigger::DiskHeadroomLow,
@@ -2620,10 +2640,17 @@ fn stop_table_every_trigger_has_one_named_row_and_no_row_disables_management_pro
         StopTrigger::FeedGap,
         StopTrigger::RpcBudgetLow,
     ] {
-        assert_eq!(latch(t), Latch::WhileCondition, "{t:?} is an operational warning, not risk-off");
+        assert_eq!(
+            latch(t),
+            Latch::WhileCondition,
+            "{t:?} is an operational warning, not risk-off"
+        );
     }
     assert_eq!(latch(StopTrigger::RunDeadline), Latch::RunPhase);
-    assert_eq!(latch(StopTrigger::LiveCapabilityPresent), Latch::RefuseStart);
+    assert_eq!(
+        latch(StopTrigger::LiveCapabilityPresent),
+        Latch::RefuseStart
+    );
 }
 
 #[test]
@@ -2632,11 +2659,20 @@ fn stop_endpoint_hung_stops_entry_asks_but_a_valid_management_verdict_still_redu
     let mut r = rig(|s| if s == 0 { REDUCE } else { HOLD }, &hp);
     r.e.model_safety_trip(pump_quant_app::safety_off::REASON_ENDPOINT_HUNG);
     let ev = r.e.model_stop_evaluate(0, OpsInputs::healthy());
-    assert!(ev.raised.iter().any(|(t, _)| *t == StopTrigger::EndpointHung));
+    assert!(ev
+        .raised
+        .iter()
+        .any(|(t, _)| *t == StopTrigger::EndpointHung));
     assert!(r.e.model_entries_blocked(), "entry asks stopped");
-    assert!(!r.e.model_mgmt_asks_blocked(), "management keeps its own request path");
+    assert!(
+        !r.e.model_mgmt_asks_blocked(),
+        "management keeps its own request path"
+    );
     r.advance_to_order(120_000);
-    assert!(fill_pending_reduce(&mut r) > 0, "a valid REDUCE verdict executes under endpoint-hung");
+    assert!(
+        fill_pending_reduce(&mut r) > 0,
+        "a valid REDUCE verdict executes under endpoint-hung"
+    );
 }
 
 #[test]
@@ -2654,7 +2690,10 @@ fn stop_reconciliation_fault_latches_risk_off_and_reconciliation_still_settles()
     let (hp, id, intended) = reduce_pending_world("st_recon");
     let mut e = fresh(&hp);
     e.model_held_restore().unwrap().unwrap();
-    assert_eq!(e.model_mgmt_ingest_report(MINT, id, intended + 1, 22_000), SellReportResult::Fault);
+    assert_eq!(
+        e.model_mgmt_ingest_report(MINT, id, intended + 1, 22_000),
+        SellReportResult::Fault
+    );
     let ev = e.model_stop_evaluate(0, OpsInputs::healthy());
     assert!(ev.newly_raised.contains(&StopTrigger::ReconciliationFault));
     assert!(e.model_safety_blocked());
@@ -2672,68 +2711,147 @@ fn stop_durable_write_failure_latches_risk_off_by_name() {
     let hp = held_path("st_dur");
     let mut r = rig(|_| HOLD, &hp);
     let ev = r.e.model_stop_evaluate(0, OpsInputs::healthy());
-    assert!(ev.raised.is_empty(), "healthy: nothing raised {:?}", ev.raised);
+    assert!(
+        ev.raised.is_empty(),
+        "healthy: nothing raised {:?}",
+        ev.raised
+    );
     r.e.model_held_attach(std::path::Path::new("/proc/pq_no_such_dir/held.json"));
     assert!(!r.e.model_held_persist_now());
     let ev = r.e.model_stop_evaluate(0, OpsInputs::healthy());
     assert!(ev.newly_raised.contains(&StopTrigger::DurableWriteFailure));
     assert_eq!(r.e.model_safety_reason(), "durable_write_failure");
-    assert!(r.e.model_inventory_tokens(&MINT).is_some(), "nothing closed");
+    assert!(
+        r.e.model_inventory_tokens(&MINT).is_some(),
+        "nothing closed"
+    );
 }
 
 /// Disk / RAM / feed gap / RPC budget: entries + ADD restricted while the condition holds, REDUCE management and
 /// protection continue, SAFETY_OFF is NOT tripped, and the restriction clears when the condition clears.
 fn while_condition_row(tag: &str, ops: OpsInputs, t: StopTrigger) {
     let hp = held_path(tag);
-    let mut r = rig(|s| if s == 0 { REDUCE } else if s == 1 { ADD } else { HOLD }, &hp);
+    let mut r = rig(
+        |s| {
+            if s == 0 {
+                REDUCE
+            } else if s == 1 {
+                ADD
+            } else {
+                HOLD
+            }
+        },
+        &hp,
+    );
     assert!(!r.e.model_entries_blocked());
     let ev = r.e.model_stop_evaluate(0, ops);
     assert_eq!(ev.raised.iter().map(|x| x.0).collect::<Vec<_>>(), vec![t]);
-    assert!(ev.new_risk_blocked && r.e.model_entries_blocked(), "{t:?}: new entries blocked");
-    assert!(!r.e.model_safety_blocked(), "{t:?}: an operational warning is not a risk-off latch");
+    assert!(
+        ev.new_risk_blocked && r.e.model_entries_blocked(),
+        "{t:?}: new entries blocked"
+    );
+    assert!(
+        !r.e.model_safety_blocked(),
+        "{t:?}: an operational warning is not a risk-off latch"
+    );
     assert!(!r.e.model_mgmt_asks_blocked());
     r.advance_to_order(120_000);
-    assert!(fill_pending_reduce(&mut r) > 0, "{t:?}: REDUCE management continues");
+    assert!(
+        fill_pending_reduce(&mut r) > 0,
+        "{t:?}: REDUCE management continues"
+    );
     // Step 1 asks ADD: refused by the row's name.
     r.advance_to_order(60_000);
-    assert!(r.e.model_mgmt_pending(&MINT).is_none(), "{t:?}: no ADD order");
+    assert!(
+        r.e.model_mgmt_pending(&MINT).is_none(),
+        "{t:?}: no ADD order"
+    );
     let label = format!("mgmt:refuse:add_blocked_stop:{}", action_for(t).name);
-    assert!(rep_sum(&r.e, &label) >= 1, "{t:?}: ADD refused by name {label}: {:?}", r.e.model_lane_report());
+    assert!(
+        rep_sum(&r.e, &label) >= 1,
+        "{t:?}: ADD refused by name {label}: {:?}",
+        r.e.model_lane_report()
+    );
     // Condition clears -> restriction clears (no latch).
     let ev = r.e.model_stop_evaluate(0, OpsInputs::healthy());
-    assert!(ev.raised.is_empty() && !r.e.model_entries_blocked(), "{t:?}: clears with the condition");
+    assert!(
+        ev.raised.is_empty() && !r.e.model_entries_blocked(),
+        "{t:?}: clears with the condition"
+    );
 }
 
 #[test]
 fn stop_disk_headroom_low_restricts_entries_only_while_low() {
-    while_condition_row("st_disk", OpsInputs { disk_ok: Some(false), ..OpsInputs::healthy() }, StopTrigger::DiskHeadroomLow);
+    while_condition_row(
+        "st_disk",
+        OpsInputs {
+            disk_ok: Some(false),
+            ..OpsInputs::healthy()
+        },
+        StopTrigger::DiskHeadroomLow,
+    );
 }
 
 #[test]
 fn stop_disk_headroom_unmeasurable_restricts_like_low() {
-    while_condition_row("st_disk_u", OpsInputs { disk_ok: None, ..OpsInputs::healthy() }, StopTrigger::DiskHeadroomLow);
+    while_condition_row(
+        "st_disk_u",
+        OpsInputs {
+            disk_ok: None,
+            ..OpsInputs::healthy()
+        },
+        StopTrigger::DiskHeadroomLow,
+    );
 }
 
 #[test]
 fn stop_ram_headroom_low_restricts_entries_only_while_low() {
-    while_condition_row("st_ram", OpsInputs { ram_ok: Some(false), ..OpsInputs::healthy() }, StopTrigger::RamHeadroomLow);
+    while_condition_row(
+        "st_ram",
+        OpsInputs {
+            ram_ok: Some(false),
+            ..OpsInputs::healthy()
+        },
+        StopTrigger::RamHeadroomLow,
+    );
 }
 
 #[test]
 fn stop_feed_gap_restricts_entries_only_while_gapped() {
-    while_condition_row("st_feed", OpsInputs { feed_ok: false, ..OpsInputs::healthy() }, StopTrigger::FeedGap);
+    while_condition_row(
+        "st_feed",
+        OpsInputs {
+            feed_ok: false,
+            ..OpsInputs::healthy()
+        },
+        StopTrigger::FeedGap,
+    );
 }
 
 #[test]
 fn stop_rpc_budget_low_restricts_entries_only_while_low() {
-    while_condition_row("st_rpc", OpsInputs { rpc_budget_ok: false, ..OpsInputs::healthy() }, StopTrigger::RpcBudgetLow);
+    while_condition_row(
+        "st_rpc",
+        OpsInputs {
+            rpc_budget_ok: false,
+            ..OpsInputs::healthy()
+        },
+        StopTrigger::RpcBudgetLow,
+    );
 }
 
 #[test]
 fn stop_operational_warning_keeps_protection_serving() {
     let hp = held_path("st_prot");
     let mut r = rig(|_| HOLD, &hp);
-    r.e.model_stop_evaluate(0, OpsInputs { feed_ok: false, disk_ok: Some(false), ..OpsInputs::healthy() });
+    r.e.model_stop_evaluate(
+        0,
+        OpsInputs {
+            feed_ok: false,
+            disk_ok: Some(false),
+            ..OpsInputs::healthy()
+        },
+    );
     for _ in 0..100 {
         r.clock += 1_000;
         r.slot += 1;
@@ -2744,7 +2862,9 @@ fn stop_operational_warning_keeps_protection_serving() {
     }
     let inv0 = r.e.model_inventory_tokens(&MINT).unwrap();
     hard_collapse(&mut r.e, r.clock + 1_000, r.slot + 5);
-    let (_, q, _, _) = r.e.model_protect_pending_order(&MINT).expect("protection serves under restriction");
+    let (_, q, _, _) =
+        r.e.model_protect_pending_order(&MINT)
+            .expect("protection serves under restriction");
     assert_eq!(q, inv0);
 }
 
@@ -2752,7 +2872,13 @@ fn stop_operational_warning_keeps_protection_serving() {
 fn stop_shadow_divergence_hook_latches_risk_off() {
     let hp = held_path("st_shadow");
     let mut r = rig(|_| HOLD, &hp);
-    let ev = r.e.model_stop_evaluate(0, OpsInputs { shadow_divergence: true, ..OpsInputs::healthy() });
+    let ev = r.e.model_stop_evaluate(
+        0,
+        OpsInputs {
+            shadow_divergence: true,
+            ..OpsInputs::healthy()
+        },
+    );
     assert!(ev.newly_raised.contains(&StopTrigger::ShadowDivergence));
     assert_eq!(r.e.model_safety_reason(), "shadow_divergence");
 }
@@ -2764,43 +2890,83 @@ fn cash_of(e: &Engine) -> i128 {
 }
 
 #[test]
-fn stop_paper_loss_stop_trips_at_exactly_half_a_sol_by_the_model_estimate_and_never_picks_the_better_valuation() {
+fn stop_paper_loss_stop_trips_at_exactly_half_a_sol_by_the_model_estimate_and_never_picks_the_better_valuation(
+) {
     let hp = held_path("st_loss");
     let mut r = rig(|_| HOLD, &hp);
     let cash = cash_of(&r.e);
     // Default estimator: the size-specific executable quote, labelled; its value is net of the landed exit leg.
     let (m, x) = r.e.model_stop_valuations();
     let est = r.e.model_liquidation_estimate(&MINT).unwrap();
-    assert_eq!(m, RiskValuation::Known { equity: cash + est, loss_from_start: 2_000_000_000 - cash - est });
+    assert_eq!(
+        m,
+        RiskValuation::Known {
+            equity: cash + est,
+            loss_from_start: 2_000_000_000 - cash - est
+        }
+    );
     let spot = r.e.model_open_exposure()[0].spot_estimate_lamports.unwrap();
-    assert_eq!(x, RiskValuation::Known { equity: cash + i128::from(spot), loss_from_start: 2_000_000_000 - cash - i128::from(spot) });
-    assert!(est < i128::from(spot), "costs make the model estimate lower than zero-size spot");
+    assert_eq!(
+        x,
+        RiskValuation::Known {
+            equity: cash + i128::from(spot),
+            loss_from_start: 2_000_000_000 - cash - i128::from(spot)
+        }
+    );
+    assert!(
+        est < i128::from(spot),
+        "costs make the model estimate lower than zero-size spot"
+    );
     let ev = r.e.model_stop_evaluate(0, OpsInputs::healthy());
     assert_eq!(ev.estimator, sp::ESTIMATOR_EXEC_QUOTE);
     assert!(ev.raised.is_empty());
     // Shadow estimate: loss = 0.5 SOL - 1 lamport -> no trip.
     let half = i128::from(sp::PAPER_LOSS_STOP_LAMPORTS);
-    let below = [LiquidationEstimate { mint: MINT, value: Ok(2_000_000_000 - cash - half + 1) }];
-    let ev = r.e.model_stop_evaluate_with(0, OpsInputs::healthy(), Some(&below));
+    let below = [LiquidationEstimate {
+        mint: MINT,
+        value: Ok(2_000_000_000 - cash - half + 1),
+    }];
+    let ev =
+        r.e.model_stop_evaluate_with(0, OpsInputs::healthy(), Some(&below));
     assert_eq!(ev.estimator, sp::ESTIMATOR_SHADOW);
-    assert!(matches!(ev.model_valuation, RiskValuation::Known { loss_from_start, .. } if loss_from_start == half - 1));
+    assert!(
+        matches!(ev.model_valuation, RiskValuation::Known { loss_from_start, .. } if loss_from_start == half - 1)
+    );
     assert!(!r.e.model_safety_blocked(), "below the stop: no trip");
     // Exactly 0.5 SOL by the model estimate -> trip, even though the external valuation shows a far smaller loss.
-    let at = [LiquidationEstimate { mint: MINT, value: Ok(2_000_000_000 - cash - half) }];
-    let ev = r.e.model_stop_evaluate_with(0, OpsInputs::healthy(), Some(&at));
-    assert!(matches!(ev.external_valuation, RiskValuation::Known { loss_from_start, .. } if loss_from_start < half / 10));
+    let at = [LiquidationEstimate {
+        mint: MINT,
+        value: Ok(2_000_000_000 - cash - half),
+    }];
+    let ev =
+        r.e.model_stop_evaluate_with(0, OpsInputs::healthy(), Some(&at));
+    assert!(
+        matches!(ev.external_valuation, RiskValuation::Known { loss_from_start, .. } if loss_from_start < half / 10)
+    );
     assert!(ev.newly_raised.contains(&StopTrigger::PaperLossStop));
     assert_eq!(r.e.model_safety_reason(), "paper_loss_stop");
-    assert!(r.e.model_inventory_tokens(&MINT).is_some(), "the loss stop closes nothing");
+    assert!(
+        r.e.model_inventory_tokens(&MINT).is_some(),
+        "the loss stop closes nothing"
+    );
 }
 
 #[test]
 fn stop_shadow_estimate_missing_for_a_held_position_is_risk_unknown_not_zero() {
     let hp = held_path("st_shmiss");
     let mut r = rig(|_| HOLD, &hp);
-    let ev = r.e.model_stop_evaluate_with(0, OpsInputs::healthy(), Some(&[]));
-    assert_eq!(ev.model_valuation, RiskValuation::Unknown { mint: MINT, reason: "shadow_estimate_missing" });
-    assert!(ev.newly_raised.contains(&StopTrigger::UnknownLiquidationValue));
+    let ev =
+        r.e.model_stop_evaluate_with(0, OpsInputs::healthy(), Some(&[]));
+    assert_eq!(
+        ev.model_valuation,
+        RiskValuation::Unknown {
+            mint: MINT,
+            reason: "shadow_estimate_missing"
+        }
+    );
+    assert!(ev
+        .newly_raised
+        .contains(&StopTrigger::UnknownLiquidationValue));
 }
 
 #[test]
@@ -2813,18 +2979,35 @@ fn stop_unknown_liquidation_value_is_risk_unknown_never_zero_or_cost_and_never_a
     print(&mut r.e, 999, t, r.slot + 50, 45_300);
     ticks(&mut r.e, 1);
     let ev = r.e.model_stop_evaluate(0, OpsInputs::healthy());
-    assert_eq!(ev.model_valuation, RiskValuation::Unknown { mint: MINT, reason: "mark_stale" });
-    assert!(matches!(ev.external_valuation, RiskValuation::Unknown { .. }), "external also unknown, reported");
-    assert!(ev.newly_raised.contains(&StopTrigger::UnknownLiquidationValue));
+    assert_eq!(
+        ev.model_valuation,
+        RiskValuation::Unknown {
+            mint: MINT,
+            reason: "mark_stale"
+        }
+    );
+    assert!(
+        matches!(ev.external_valuation, RiskValuation::Unknown { .. }),
+        "external also unknown, reported"
+    );
+    assert!(ev
+        .newly_raised
+        .contains(&StopTrigger::UnknownLiquidationValue));
     assert_eq!(r.e.model_safety_reason(), "risk_unknown_liquidation_value");
-    assert!(rep_sum(&r.e, "stop:ALERT_RISK_UNKNOWN_LIQUIDATION_VALUE") >= 1, "named alert");
+    assert!(
+        rep_sum(&r.e, "stop:ALERT_RISK_UNKNOWN_LIQUIDATION_VALUE") >= 1,
+        "named alert"
+    );
     assert_eq!(books(&r.e), b0, "unknown value books nothing");
     // A fresh mark returns: still blocked (no auto re-arm).
     curve_obs(&mut r.e, t + 1_000, r.slot + 60, 200_000_000);
     ticks(&mut r.e, 1);
     let ev = r.e.model_stop_evaluate(0, OpsInputs::healthy());
     assert!(matches!(ev.model_valuation, RiskValuation::Known { .. }));
-    assert!(r.e.model_safety_blocked() && r.e.model_entries_blocked(), "no auto re-arm");
+    assert!(
+        r.e.model_safety_blocked() && r.e.model_entries_blocked(),
+        "no auto re-arm"
+    );
     // Only an explicit operator re-arm lifts it.
     r.e.model_safety_rearm("alon").unwrap();
     assert!(!r.e.model_entries_blocked());
@@ -2832,15 +3015,33 @@ fn stop_unknown_liquidation_value_is_risk_unknown_never_zero_or_cost_and_never_a
 
 #[test]
 fn stop_value_book_never_substitutes_zero_or_cost_for_an_unknown_position() {
-    let ok = LiquidationEstimate { mint: [1; 32], value: Ok(100) };
-    let unk = LiquidationEstimate { mint: [2; 32], value: Err("mark_stale") };
-    assert_eq!(sp::value_book(1_000, 900, &[ok.clone()]), RiskValuation::Known { equity: 1_000, loss_from_start: 0 });
+    let ok = LiquidationEstimate {
+        mint: [1; 32],
+        value: Ok(100),
+    };
+    let unk = LiquidationEstimate {
+        mint: [2; 32],
+        value: Err("mark_stale"),
+    };
     assert_eq!(
-        sp::value_book(1_000, 900, &[ok, unk]),
-        RiskValuation::Unknown { mint: [2; 32], reason: "mark_stale" }
+        sp::value_book(1_000, 900, &[ok.clone()]),
+        RiskValuation::Known {
+            equity: 1_000,
+            loss_from_start: 0
+        }
     );
     assert_eq!(
-        sp::valuation_trigger(&RiskValuation::Unknown { mint: [2; 32], reason: "x" }),
+        sp::value_book(1_000, 900, &[ok, unk]),
+        RiskValuation::Unknown {
+            mint: [2; 32],
+            reason: "mark_stale"
+        }
+    );
+    assert_eq!(
+        sp::valuation_trigger(&RiskValuation::Unknown {
+            mint: [2; 32],
+            reason: "x"
+        }),
         Some(StopTrigger::UnknownLiquidationValue)
     );
 }
@@ -2851,27 +3052,49 @@ fn stop_rearm_with_an_active_operational_restriction_keeps_entries_blocked() {
     let mut r = rig(|_| HOLD, &hp);
     r.e.model_safety_attach(&hp.with_file_name("safety.json"));
     r.e.model_safety_trip_operator();
-    r.e.model_stop_evaluate(0, OpsInputs { disk_ok: Some(false), ..OpsInputs::healthy() });
+    r.e.model_stop_evaluate(
+        0,
+        OpsInputs {
+            disk_ok: Some(false),
+            ..OpsInputs::healthy()
+        },
+    );
     r.e.model_safety_rearm("alon").unwrap();
-    assert!(r.e.model_entries_blocked(), "disk restriction still holds after re-arm");
+    assert!(
+        r.e.model_entries_blocked(),
+        "disk restriction still holds after re-arm"
+    );
     r.e.model_stop_evaluate(0, OpsInputs::healthy());
     assert!(!r.e.model_entries_blocked());
 }
 
 #[test]
-fn stop_run_deadline_stops_entries_drains_with_management_and_protection_then_requests_handoff_without_closing() {
+fn stop_run_deadline_stops_entries_drains_with_management_and_protection_then_requests_handoff_without_closing(
+) {
     let hp = held_path("st_deadline");
     let mut r = rig(|s| if s == 0 { REDUCE } else { HOLD }, &hp);
     r.e.model_stop_set_deadline(10_000, 5_000);
     let ev = r.e.model_stop_evaluate(9_999, OpsInputs::healthy());
-    assert_eq!((ev.phase, ev.handoff_due, r.e.model_entries_blocked()), (RunPhase::Running, false, false));
+    assert_eq!(
+        (ev.phase, ev.handoff_due, r.e.model_entries_blocked()),
+        (RunPhase::Running, false, false)
+    );
     let ev = r.e.model_stop_evaluate(10_000, OpsInputs::healthy());
     assert_eq!(ev.phase, RunPhase::Drain { ends_at_ms: 15_000 });
-    assert!(!ev.handoff_due && r.e.model_entries_blocked(), "deadline: entries stopped, drain begins");
-    assert!(!r.e.model_safety_blocked(), "the deadline is a run phase, not a risk-off latch");
+    assert!(
+        !ev.handoff_due && r.e.model_entries_blocked(),
+        "deadline: entries stopped, drain begins"
+    );
+    assert!(
+        !r.e.model_safety_blocked(),
+        "the deadline is a run phase, not a risk-off latch"
+    );
     // DRAIN: management continues.
     r.advance_to_order(120_000);
-    assert!(fill_pending_reduce(&mut r) > 0, "REDUCE executes during the drain");
+    assert!(
+        fill_pending_reduce(&mut r) > 0,
+        "REDUCE executes during the drain"
+    );
     // Sticky for the run, even if a clock reading went backwards.
     let ev = r.e.model_stop_evaluate(0, OpsInputs::healthy());
     assert!(matches!(ev.phase, RunPhase::Drain { .. }) && r.e.model_entries_blocked());
@@ -2892,42 +3115,90 @@ fn stop_run_deadline_stops_entries_drains_with_management_and_protection_then_re
         ticks(&mut r.e, 2);
     }
     hard_collapse(&mut r.e, r.clock + 1_000, r.slot + 5);
-    assert!(r.e.model_protect_pending_order(&MINT).is_some(), "protection after the deadline");
+    assert!(
+        r.e.model_protect_pending_order(&MINT).is_some(),
+        "protection after the deadline"
+    );
 }
 
 #[test]
 fn stop_run_phase_boundaries_and_default_bounds() {
     assert_eq!(sp::RUN_DEADLINE_MS, 21_600_000);
     assert_eq!(sp::DRAIN_BOUND_MS, 1_800_000);
-    assert_eq!(sp::run_phase(21_599_999, sp::RUN_DEADLINE_MS, sp::DRAIN_BOUND_MS), RunPhase::Running);
+    assert_eq!(
+        sp::run_phase(21_599_999, sp::RUN_DEADLINE_MS, sp::DRAIN_BOUND_MS),
+        RunPhase::Running
+    );
     assert_eq!(
         sp::run_phase(21_600_000, sp::RUN_DEADLINE_MS, sp::DRAIN_BOUND_MS),
-        RunPhase::Drain { ends_at_ms: 23_400_000 }
+        RunPhase::Drain {
+            ends_at_ms: 23_400_000
+        }
     );
-    assert_eq!(sp::run_phase(23_399_999, sp::RUN_DEADLINE_MS, sp::DRAIN_BOUND_MS), RunPhase::Drain { ends_at_ms: 23_400_000 });
-    assert_eq!(sp::run_phase(23_400_000, sp::RUN_DEADLINE_MS, sp::DRAIN_BOUND_MS), RunPhase::HandoffDue);
+    assert_eq!(
+        sp::run_phase(23_399_999, sp::RUN_DEADLINE_MS, sp::DRAIN_BOUND_MS),
+        RunPhase::Drain {
+            ends_at_ms: 23_400_000
+        }
+    );
+    assert_eq!(
+        sp::run_phase(23_400_000, sp::RUN_DEADLINE_MS, sp::DRAIN_BOUND_MS),
+        RunPhase::HandoffDue
+    );
 }
 
 #[test]
 fn stop_startup_refuses_any_live_signing_or_submission_capability() {
-    let paper = sp::StartCapability { live_flag: false, keypair_loaded: false, submission_sink_installed: false, paper_mode: true };
+    let paper = sp::StartCapability {
+        live_flag: false,
+        keypair_loaded: false,
+        submission_sink_installed: false,
+        paper_mode: true,
+    };
     assert_eq!(sp::require_paper_only(paper), Ok(()));
-    assert_eq!(sp::require_paper_only(sp::StartCapability { live_flag: true, ..paper }), Err("live_flag_present"));
-    assert_eq!(sp::require_paper_only(sp::StartCapability { keypair_loaded: true, ..paper }), Err("keypair_loaded"));
     assert_eq!(
-        sp::require_paper_only(sp::StartCapability { submission_sink_installed: true, ..paper }),
+        sp::require_paper_only(sp::StartCapability {
+            live_flag: true,
+            ..paper
+        }),
+        Err("live_flag_present")
+    );
+    assert_eq!(
+        sp::require_paper_only(sp::StartCapability {
+            keypair_loaded: true,
+            ..paper
+        }),
+        Err("keypair_loaded")
+    );
+    assert_eq!(
+        sp::require_paper_only(sp::StartCapability {
+            submission_sink_installed: true,
+            ..paper
+        }),
         Err("submission_sink_not_paper")
     );
-    assert_eq!(sp::require_paper_only(sp::StartCapability { paper_mode: false, ..paper }), Err("engine_not_paper_mode"));
+    assert_eq!(
+        sp::require_paper_only(sp::StartCapability {
+            paper_mode: false,
+            ..paper
+        }),
+        Err("engine_not_paper_mode")
+    );
 }
 
 #[test]
 fn stop_rpc_budget_reserves_capacity_for_held_positions() {
-    let rule = sp::HeldReserve { capacity: 100, per_held: 30 };
+    let rule = sp::HeldReserve {
+        capacity: 100,
+        per_held: 30,
+    };
     let mut b = sp::WindowBudget::new(rule, 1_000);
     // 2 held positions reserve 60: discovery may spend only 40.
     assert!(b.try_discovery(0, 2, 40));
-    assert!(!b.try_discovery(0, 2, 1), "discovery never eats the held reserve");
+    assert!(
+        !b.try_discovery(0, 2, 1),
+        "discovery never eats the held reserve"
+    );
     assert!(b.discovery_exhausted(2));
     assert!(b.try_held(0, 60), "held support may use the reserve");
     assert!(!b.try_held(0, 1), "but not beyond capacity");
@@ -2943,7 +3214,18 @@ fn stop_ram_headroom_from_meminfo() {
     let t = "MemTotal:       263000000 kB\nMemFree: 1 kB\nMemAvailable:    31560000 kB\n";
     let (tot, av) = sp::parse_meminfo(t);
     assert_eq!((tot, av), (Some(263_000_000), Some(31_560_000)));
-    assert_eq!(sp::ram_ok(tot, av, sp::RAM_FLOOR_BPS), Some(true), "12.0% exactly is ok");
-    assert_eq!(sp::ram_ok(tot, Some(31_559_999), sp::RAM_FLOOR_BPS), Some(false));
-    assert_eq!(sp::ram_ok(None, av, sp::RAM_FLOOR_BPS), None, "unmeasurable is not fine");
+    assert_eq!(
+        sp::ram_ok(tot, av, sp::RAM_FLOOR_BPS),
+        Some(true),
+        "12.0% exactly is ok"
+    );
+    assert_eq!(
+        sp::ram_ok(tot, Some(31_559_999), sp::RAM_FLOOR_BPS),
+        Some(false)
+    );
+    assert_eq!(
+        sp::ram_ok(None, av, sp::RAM_FLOOR_BPS),
+        None,
+        "unmeasurable is not fine"
+    );
 }

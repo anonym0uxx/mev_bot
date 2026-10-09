@@ -34,6 +34,7 @@ use std::collections::BTreeMap;
 use serde_json::{json, Value};
 
 use crate::exec_quote::{QuoteRefusal, SellQuote};
+use pump_quant_protocol::pumpswap_event::CashbackField;
 
 /// The fill-model version string this module implements (reported with every shadow result).
 pub const PAPER_FILL_V2_SHADOW: &str = "paper_fill_v2_shadow";
@@ -538,10 +539,11 @@ impl ShadowBook {
         mint: &[u8; 32],
         obs: &PoolBase,
         parts: Option<(u32, u32, u32)>,
+        cashback: CashbackField,
         tokens: u64,
     ) -> ShadowSellView {
         let external =
-            crate::exec_quote::amm_sell(obs.base, obs.quote, Some(obs.vq), parts, tokens);
+            crate::exec_quote::amm_sell(obs.base, obs.quote, Some(obs.vq), parts, cashback, tokens);
         let carried = self
             .markets
             .get(mint)
@@ -554,13 +556,15 @@ impl ShadowBook {
                 delta_carried: carried,
             };
         };
-        let shadow = match crate::exec_quote::amm_sell(s.base, s.quote, Some(s.vq), parts, tokens) {
-            Ok(q) if u128::from(q.gross) > cap => {
-                Err(ShadowRefusal::CapacityExceeded { capacity: cap })
-            }
-            Ok(q) => Ok(q),
-            Err(r) => Err(ShadowRefusal::Quote(r)),
-        };
+        let shadow =
+            match crate::exec_quote::amm_sell(s.base, s.quote, Some(s.vq), parts, cashback, tokens)
+            {
+                Ok(q) if u128::from(q.gross) > cap => {
+                    Err(ShadowRefusal::CapacityExceeded { capacity: cap })
+                }
+                Ok(q) => Ok(q),
+                Err(r) => Err(ShadowRefusal::Quote(r)),
+            };
         ShadowSellView {
             external,
             shadow,
@@ -678,8 +682,8 @@ pub const NETWORK_FEE_PER_LANDED_LEG_ESTIMATE: u64 = 10_000;
 pub enum ObservedVenue {
     /// Curve state.
     Curve(CurveBase),
-    /// Pool state + the landing event's fee parts.
-    Pool(PoolBase, Option<(u32, u32, u32)>),
+    /// Pool state + the landing event's fee parts + its cashback field (unknown cashback refuses, never zero).
+    Pool(PoolBase, Option<(u32, u32, u32)>, CashbackField),
 }
 
 impl ShadowBook {
@@ -714,7 +718,7 @@ impl ShadowBook {
                 }
                 self.curve_sell_view(mint, c, tokens)
             }
-            ObservedVenue::Pool(p, parts) => {
+            ObservedVenue::Pool(p, parts, cashback) => {
                 if self
                     .markets
                     .get(mint)
@@ -722,7 +726,7 @@ impl ShadowBook {
                 {
                     return None;
                 }
-                self.pool_sell_view(mint, p, *parts, tokens)
+                self.pool_sell_view(mint, p, *parts, *cashback, tokens)
             }
         };
         let q = view.shadow.ok()?;
