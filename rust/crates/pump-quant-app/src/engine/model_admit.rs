@@ -1600,6 +1600,13 @@ impl Engine {
                     }
                     continue;
                 };
+                // The curve buy formula is validated only on the Ordinary population. An order whose curve is
+                // (or became) Mayhem / mode-unknown is retired with a named refusal, never filled.
+                if let Some(x) = self.model_curve_mode_exclusion(&mint) {
+                    self.model_retire_order(&mint);
+                    self.mrep(format!("fill_none:{}", x.quote_refusal()));
+                    continue;
+                }
                 self.model_retire_order(&mint);
                 self.model_note_latency(&order, obs.ts_ms);
                 // M3: `buy_exact_sol_in` with the clip as the ALL-IN venue spend; protocol + creator/cashback

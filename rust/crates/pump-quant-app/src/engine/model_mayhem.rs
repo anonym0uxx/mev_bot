@@ -37,6 +37,18 @@ impl CurveModeExclusion {
             CurveModeExclusion::ModeUnknown => "curve_mode_unknown",
         }
     }
+
+    /// The named refusal for a bonding-curve QUOTE or MARK (exec_quote::curve_buy / curve_sell / spot price).
+    /// Those formulas are validated only on the Ordinary population (non-Mayhem, SOL quote; proc/OFFSET_v4_REPORT.md
+    /// §1). A Mayhem or mode-unknown curve does not inherit them: no fill, sell quote, liquidation value or mark is
+    /// produced from its reserves. The raw reserves remain recorded as evidence (the curve cache is untouched).
+    #[must_use]
+    pub const fn quote_refusal(self) -> &'static str {
+        match self {
+            CurveModeExclusion::MayhemMode => "curve_quote_unsupported:mayhem_mode",
+            CurveModeExclusion::ModeUnknown => "curve_quote_unsupported:curve_mode_unknown",
+        }
+    }
 }
 
 /// Cap on markets whose mode is remembered (same bound as the model registry). A market beyond the cap

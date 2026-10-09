@@ -663,6 +663,24 @@ impl Engine {
             if route_amm && !order.amm {
                 self.mrep("mgmt:route:curve_to_pool");
             }
+            if !route_amm {
+                if let Some(x) = self.model_curve_mode_exclusion(&mint) {
+                    // The curve sell formula is validated only on the Ordinary population. A Mayhem / mode-unknown
+                    // curve is a NAMED unpriceable route: the order stays (REDUCE/EXIT are never blocked from being
+                    // placed) but is never priced or settled from these reserves; it expires unfilled at TTL.
+                    let p = if order.kind == MgmtKind::Protect {
+                        "protect"
+                    } else {
+                        "mgmt"
+                    };
+                    self.mrep(format!("{p}:quote_unavailable:{}", x.quote_refusal()));
+                    if clock - order.created_ms > MODEL_ORDER_TTL_MS {
+                        self.model_mgmt_end(&mint, false);
+                        self.mrep("mgmt:order_expired_unfilled");
+                    }
+                    continue;
+                }
+            }
             let quoted: Option<
                 Result<crate::exec_quote::SellQuote, crate::exec_quote::QuoteRefusal>,
             > = if route_amm {
@@ -1147,6 +1165,13 @@ impl Engine {
                         self.model_cache.amm_obs(&h.mint).map(|o| o.ts_ms),
                         Some("amm_offline_value_unvalidated"),
                     )
+                } else if let Some(x) = self.model_curve_mode_exclusion(&h.mint) {
+                    // No mark from the curve formulas on a Mayhem / mode-unknown curve.
+                    (
+                        None,
+                        self.model_cache.curve_obs(&h.mint).map(|o| o.ts_ms),
+                        Some(x.quote_refusal()),
+                    )
                 } else {
                     match self.model_cache.curve_obs(&h.mint) {
                         None => (None, None, Some("no_reserve_observation")),
@@ -1437,6 +1462,10 @@ impl Engine {
                 cb,
             })
         } else {
+            if self.model_curve_mode_exclusion(mint).is_some() {
+                // Defence in depth (ADD is already refused upstream): no curve buy quote on Mayhem / unknown.
+                return Err("mgmt:refuse:add_curve_quote_unsupported");
+            }
             let obs = self.model_cache.curve_obs(mint).filter(|o| match landing {
                 Some((lo, hi, slot)) => o.ts_ms >= lo && o.ts_ms <= hi && o.slot > slot,
                 None => true,

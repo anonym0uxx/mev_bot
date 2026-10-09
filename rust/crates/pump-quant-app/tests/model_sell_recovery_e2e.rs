@@ -264,6 +264,13 @@ fn fresh(held: &std::path::Path) -> Engine {
         answer: |_| HOLD,
     });
     e.model_held_attach(held);
+    // The curve-mode map is in-memory (not in held.json): a restarted daemon re-learns it from the first decoded
+    // account update, whose CurveModeObserved pq_daemon pushes BEFORE that update's reserves. Model that here.
+    e.tick(AppEvent::CurveModeObserved {
+        mint: mint(),
+        mayhem: false,
+        slot: 0,
+    });
     e
 }
 

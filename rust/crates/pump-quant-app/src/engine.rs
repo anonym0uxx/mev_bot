@@ -3249,6 +3249,21 @@ impl Engine {
     /// clamping the impossible value would have turned a decoder fault into a
     /// plausible-looking thin market and hidden it forever (§18.2).
     fn confirm(&mut self, mint: [u8; 32], virtual_sol: u64, real_sol: u64) {
+        // MODE GATE (armed model lane only; the legacy/golden path has no mode feed and is unchanged). The
+        // constant-offset cross-check below is valid only for an Ordinary curve. A Mayhem or mode-unknown
+        // confirm is not recorded and is counted by name. It is NOT a decoder fault and NOT a missing trade:
+        // its decoded reserves are legitimate, just unsupported for trading.
+        if self.paper_model_mode {
+            let mode = crate::curve_depth::CurveDepthMode::from_decoded_mayhem(
+                self.model_curve_mode(&mint),
+            );
+            if let Err(r) =
+                crate::curve_depth::CurveDepth::decoded_for_mode(mode, virtual_sol, real_sol)
+            {
+                self.mrep(format!("confirm:{}", r.as_str()));
+                return;
+            }
+        }
         if crate::curve_depth::CurveDepth::decoded(virtual_sol, real_sol).is_unknown() {
             return;
         }

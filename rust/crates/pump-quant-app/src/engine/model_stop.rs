@@ -169,6 +169,9 @@ impl Engine {
                 _ => Err(crate::exec_quote::QuoteRefusal::AmmEconomicsMissing),
             }
         } else {
+            if let Some(x) = self.model_curve_mode_exclusion(mint) {
+                return Err(x.quote_refusal());
+            }
             let o = self
                 .model_cache
                 .curve_obs(mint)

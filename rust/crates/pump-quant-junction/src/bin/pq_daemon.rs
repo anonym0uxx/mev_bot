@@ -3247,6 +3247,14 @@ fn main() -> ExitCode {
                         if let Some((provenanced, curve)) =
                             decode_onchain_confirm_with_curve(&mb, &data, slot)
                         {
+                            // Model lane (operator decision 2026-10-09: SKIP Mayhem-mode coins): the decoded
+                            // curve mode, pushed BEFORE the confirm so the engine's mode-gated confirm sees it.
+                            // An unsupported/undecodable mode emits nothing -> the engine keeps it UNKNOWN.
+                            if let Some(m) =
+                                pump_quant_junction::decode::curve_mode_observed(&mb, &data, slot)
+                            {
+                                queue.push(m, slot);
+                            }
                             queue.push(provenanced, slot);
                             // Model lane: the full four-reserve observation with its wire clock.
                             // Additive; an update with no clock emits nothing.
@@ -3259,13 +3267,6 @@ fn main() -> ExitCode {
                                 )
                             {
                                 queue.push(obs, slot);
-                            }
-                            // Model lane (operator decision 2026-10-09: SKIP Mayhem-mode coins): the decoded
-                            // curve mode. An undecodable mode emits nothing -> the engine keeps it UNKNOWN.
-                            if let Some(m) =
-                                pump_quant_junction::decode::curve_mode_observed(&mb, &data, slot)
-                            {
-                                queue.push(m, slot);
                             }
                             stats.ls_onchain_confirms_decoded += 1;
                             stats.last_confirm_tick = tick_counter;
@@ -3910,7 +3911,6 @@ fn main() -> ExitCode {
                                                 slot,
                                             )
                                         {
-                                            queue.push(provenanced, slot);
                                             if let Some(m) =
                                                 pump_quant_junction::decode::curve_mode_observed(
                                                     &mb,
@@ -3920,6 +3920,7 @@ fn main() -> ExitCode {
                                             {
                                                 queue.push(m, slot);
                                             }
+                                            queue.push(provenanced, slot);
                                             stats.helius_onchain_confirms_decoded += 1;
                                             stats.last_confirm_tick = tick_counter;
                                             stats.pda_venue_matches += 1;
@@ -4031,7 +4032,6 @@ fn main() -> ExitCode {
                                                     slot,
                                                 )
                                             {
-                                                queue.push(provenanced, slot);
                                                 if let Some(m) =
                                                     pump_quant_junction::decode::curve_mode_observed(
                                                         &mb,
@@ -4041,6 +4041,7 @@ fn main() -> ExitCode {
                                                 {
                                                     queue.push(m, slot);
                                                 }
+                                                queue.push(provenanced, slot);
                                                 stats.helius_onchain_confirms_decoded += 1;
                                                 stats.last_confirm_tick = tick_counter;
                                                 stats.pda_venue_matches += 1;

@@ -372,11 +372,23 @@ fn control_a_management_add_on_a_canonical_curve_is_placed() {
 fn reduce_is_never_blocked_by_the_mayhem_exclusion() {
     let e = held_then_manage(REDUCE, true);
     assert_eq!(rep(&e, "mgmt:refuse:add_"), 0);
+    // The REDUCE is still PLACED (the exclusion stops new exposure only). Operator 15:40 PT (offset slice):
+    // a Mayhem curve must not inherit the ordinary curve QUOTE formulas, so the placed order is refused BY NAME
+    // at pricing and never settled from Mayhem reserves (it was previously filled via curve_sell).
     assert!(
-        e.model_mgmt_pending(&MINT).is_some() || !e.model_mgmt_fills().is_empty(),
+        rep(&e, "mgmt:order:reduce") >= 1,
         "a REDUCE order is still placed on a Mayhem curve: {:?}",
         e.model_lane_report()
     );
+    assert!(
+        rep(
+            &e,
+            "mgmt:quote_unavailable:curve_quote_unsupported:mayhem_mode"
+        ) >= 1,
+        "{:?}",
+        e.model_lane_report()
+    );
+    assert!(e.model_mgmt_fills().is_empty());
 }
 
 #[test]
