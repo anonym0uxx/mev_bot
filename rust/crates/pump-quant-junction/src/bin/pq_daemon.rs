@@ -4955,11 +4955,22 @@ fn main() -> ExitCode {
                     }
                 }
                 if let Some(l) = engine.model_settlement() {
+                    // Durable divergence evidence (persisted in held.json `paper_fill.divergences`; survives close/restart).
+                    let dl = engine.model_divergence_log();
+                    if let Some(d) = dl.last() {
+                        eprintln!(
+                            "[pq-daemon] SHADOW-DIVERGENCE-EVIDENCE records={} last: mint={} divergence={} slot={} ts_ms={} observed={:?} base_offsets={:?} dropped_delta={:?} inventory={:?}",
+                            dl.len(),
+                            d.mint.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+                            d.divergence.label(), d.slot, d.ts_ms, d.observed, d.base_offsets, d.dropped_delta, d.inventory_tokens
+                        );
+                    }
                     eprintln!(
-                        "[pq-daemon] PAPER-FILL {} settlement: cash={} committed={} realized={} seed={} network_estimate={} fixed={} holdings={} invariant={} faults={:?}",
+                        "[pq-daemon] PAPER-FILL {} settlement: cash={} committed={} realized={} seed={} network_estimate={} fixed={} holdings={} invariant={} faults={:?} books_source={} bypasses={}",
                         engine.model_paper_fill().label(),
                         l.cash, l.committed, l.realized, l.seed, l.network_estimate, l.fixed_costs,
-                        l.holdings.len(), l.invariant_holds(), engine.model_settlement_faults()
+                        l.holdings.len(), l.invariant_holds(), engine.model_settlement_faults(),
+                        engine.model_books_source(), engine.model_books_bypasses()
                     );
                 }
                 for t in &ev.newly_raised {

@@ -46,6 +46,93 @@ pub struct PaperFillState {
     pub bypasses: u64,
     /// v2 diagnostic: Σ engine-side exit nets (NOT the book; the ledger's realized is).
     pub exit_net_diag: i128,
+    /// DURABLE divergence evidence (v2): one record per declared divergence, kept after the market is closed and
+    /// forgotten, persisted in the held ledger and restored exactly. Bounded ([`DIVERGENCE_LOG_CAP`]); the count of
+    /// records dropped by the bound is kept too. Evidence only: nothing reads it to decide or to clear a divergence.
+    pub divergences: Vec<DivergenceRecord>,
+    /// Records dropped by the bound.
+    pub divergences_dropped: u64,
+}
+
+/// A validated `paper_fill` section: shadow book, settlement ledger, unsettleable count, divergence evidence.
+pub(super) type PfParsed = (
+    ShadowBook,
+    SettlementLedger,
+    u64,
+    (Vec<DivergenceRecord>, u64),
+);
+
+/// Bound on the durable divergence evidence log.
+pub const DIVERGENCE_LOG_CAP: usize = 256;
+
+/// One declared shadow divergence, as evidence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DivergenceRecord {
+    pub mint: [u8; 32],
+    pub divergence: Divergence,
+    /// Slot / wire clock of the observation that declared it.
+    pub slot: u64,
+    pub ts_ms: i64,
+    /// The observation that declared it (curve: vsol, vtok, real_sol, real_tok; pool: base, quote, vq, 0).
+    pub observed: [u64; 4],
+    /// The offsets the delta was opened on (curve only), and our dropped delta (sol_in, sol_out, tok_out, tok_in).
+    pub base_offsets: Option<(u64, u64)>,
+    pub dropped_delta: [u128; 4],
+    /// Held inventory at the time (engine), so the record alone shows what was exposed.
+    pub inventory_tokens: Option<u64>,
+}
+
+impl DivergenceRecord {
+    fn to_json(&self) -> serde_json::Value {
+        let hx: String = self.mint.iter().map(|b| format!("{b:02x}")).collect();
+        serde_json::json!({
+            "mint": hx, "divergence": self.divergence.label(), "slot": self.slot, "ts_ms": self.ts_ms,
+            "observed": self.observed, "base_offsets": self.base_offsets.map(|(a, b)| serde_json::json!([a, b])),
+            "dropped_delta": self.dropped_delta.iter().map(u128::to_string).collect::<Vec<_>>(),
+            "inventory_tokens": self.inventory_tokens,
+        })
+    }
+
+    fn from_json(v: &serde_json::Value) -> Option<Self> {
+        let hx = v["mint"].as_str()?;
+        if hx.len() != 64 {
+            return None;
+        }
+        let mut mint = [0u8; 32];
+        for (i, o) in mint.iter_mut().enumerate() {
+            *o = u8::from_str_radix(hx.get(i * 2..i * 2 + 2)?, 16).ok()?;
+        }
+        let divergence = Divergence::from_label(v["divergence"].as_str()?)?;
+        let ob = v["observed"].as_array()?;
+        let dd = v["dropped_delta"].as_array()?;
+        if ob.len() != 4 || dd.len() != 4 {
+            return None;
+        }
+        let mut observed = [0u64; 4];
+        let mut dropped_delta = [0u128; 4];
+        for i in 0..4 {
+            observed[i] = ob[i].as_u64()?;
+            dropped_delta[i] = dd[i].as_str()?.parse().ok()?;
+        }
+        let base_offsets = match &v["base_offsets"] {
+            serde_json::Value::Null => None,
+            x => Some((x[0].as_u64()?, x[1].as_u64()?)),
+        };
+        let inventory_tokens = match &v["inventory_tokens"] {
+            serde_json::Value::Null => None,
+            x => Some(x.as_u64()?),
+        };
+        Some(Self {
+            mint,
+            divergence,
+            slot: v["slot"].as_u64()?,
+            ts_ms: v["ts_ms"].as_i64()?,
+            observed,
+            base_offsets,
+            dropped_delta,
+            inventory_tokens,
+        })
+    }
 }
 
 const FAULT_LOG_CAP: usize = 64;
@@ -236,10 +323,52 @@ impl Engine {
             return;
         }
         let b = curve_base(o);
+        let pre = self.model_pf.shadow.market(mint).cloned();
         if let Some(d) = self.model_pf.shadow.on_curve_observation(mint, &b) {
             self.mrep(d.label());
             self.mrep(format!("shadow:divergence_at_slot:{}", o.slot));
+            self.model_divergence_record(
+                *mint,
+                d,
+                o.slot,
+                o.ts_ms,
+                [b.vsol, b.vtok, b.real_sol, b.real_tok],
+                pre.as_ref(),
+            );
         }
+    }
+
+    /// Append one durable divergence record (bounded; evidence only).
+    fn model_divergence_record(
+        &mut self,
+        mint: [u8; 32],
+        d: Divergence,
+        slot: u64,
+        ts_ms: i64,
+        observed: [u64; 4],
+        pre: Option<&crate::shadow_pool::ShadowMarket>,
+    ) {
+        if self.model_pf.divergences.len() >= DIVERGENCE_LOG_CAP {
+            self.model_pf.divergences.remove(0);
+            self.model_pf.divergences_dropped += 1;
+        }
+        let rec = DivergenceRecord {
+            mint,
+            divergence: d,
+            slot,
+            ts_ms,
+            observed,
+            base_offsets: pre.and_then(|m| m.curve_offsets),
+            dropped_delta: pre.map_or([0; 4], |m| [m.sol_in, m.sol_out, m.tok_out, m.tok_in]),
+            inventory_tokens: self.positions.inventory_tokens(&mint),
+        };
+        self.model_pf.divergences.push(rec);
+    }
+
+    /// Durable divergence evidence (v2), oldest first.
+    #[must_use]
+    pub fn model_divergence_log(&self) -> &[DivergenceRecord] {
+        &self.model_pf.divergences
     }
 
     /// A canonical pool swap's pre-trade state: graduation of a curve shadow, then pool reconciliation (v2).
@@ -277,8 +406,11 @@ impl Engine {
             vq,
             slot,
         };
+        let pre = self.model_pf.shadow.market(mint).cloned();
         if let Some(d) = self.model_pf.shadow.on_pool_observation(mint, &b) {
             self.mrep(d.label());
+            let ts = self.model_clock_ms;
+            self.model_divergence_record(*mint, d, slot, ts, [base, quote, vq, 0], pre.as_ref());
         }
     }
 
@@ -417,6 +549,8 @@ impl Engine {
             "shadow_pool": self.model_pf.shadow.to_json(),
             "settlement": l.to_json(),
             "unsettleable": self.model_pf.unsettleable,
+            "divergences": self.model_pf.divergences.iter().map(DivergenceRecord::to_json).collect::<Vec<_>>(),
+            "divergences_dropped": self.model_pf.divergences_dropped,
         }))
     }
 
@@ -425,8 +559,7 @@ impl Engine {
         &self,
         section: Option<&serde_json::Value>,
         l: &crate::held_state::HeldLedger,
-    ) -> Result<Option<(ShadowBook, SettlementLedger, u64)>, crate::held_state::RestoreRefusal>
-    {
+    ) -> Result<Option<PfParsed>, crate::held_state::RestoreRefusal> {
         use crate::held_state::RestoreRefusal as R;
         match (self.model_v2(), section) {
             (false, None) => Ok(None),
@@ -438,7 +571,7 @@ impl Engine {
                     let mut s = SettlementLedger::new(seed);
                     s.realized = l.realized_lamports;
                     s.cash = i128::from(seed) + l.realized_lamports;
-                    Ok(Some((ShadowBook::default(), s, 0)))
+                    Ok(Some((ShadowBook::default(), s, 0, (Vec::new(), 0))))
                 } else {
                     Err(R::PaperFillSectionMissing)
                 }
@@ -470,16 +603,33 @@ impl Engine {
                 {
                     return Err(R::SettlementBooksMismatch);
                 }
-                Ok(Some((book, s, un)))
+                // Divergence evidence: absent (a ledger written before the log existed) = none; present = exact.
+                let divs = match &v["divergences"] {
+                    serde_json::Value::Null => (Vec::new(), 0),
+                    serde_json::Value::Array(xs) => {
+                        let recs: Option<Vec<DivergenceRecord>> =
+                            xs.iter().map(DivergenceRecord::from_json).collect();
+                        (
+                            recs.ok_or(R::PaperFillUntrusted)?,
+                            v["divergences_dropped"]
+                                .as_u64()
+                                .ok_or(R::PaperFillUntrusted)?,
+                        )
+                    }
+                    _ => return Err(R::PaperFillUntrusted),
+                };
+                Ok(Some((book, s, un, divs)))
             }
         }
     }
 
-    pub(super) fn model_pf_apply(&mut self, parsed: Option<(ShadowBook, SettlementLedger, u64)>) {
-        if let Some((b, s, un)) = parsed {
+    pub(super) fn model_pf_apply(&mut self, parsed: Option<PfParsed>) {
+        if let Some((b, s, un, (divs, dropped))) = parsed {
             self.model_pf.shadow = b;
             self.model_pf.settle = Some(s);
             self.model_pf.unsettleable = un;
+            self.model_pf.divergences = divs;
+            self.model_pf.divergences_dropped = dropped;
         }
     }
 
@@ -529,6 +679,8 @@ impl Engine {
             "faults": self.model_pf.faults,
             "unsettleable": self.model_pf.unsettleable,
             "shadow_markets": markets,
+            "divergence_log": self.model_pf.divergences.iter().map(DivergenceRecord::to_json).collect::<Vec<_>>(),
+            "divergences_dropped": self.model_pf.divergences_dropped,
             "held_divergence": self.model_shadow_held_divergence().map(|(m, d)| serde_json::json!([hx(&m), d.label()])),
         })
     }

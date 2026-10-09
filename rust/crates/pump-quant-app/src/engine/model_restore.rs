@@ -602,6 +602,11 @@ impl Engine {
             // Capacity was validated; a refusal here would be a logic error, surfaced loudly.
             let ok = self.positions.restore_held(&x, self.now);
             debug_assert!(ok, "validated restore must open");
+            // A held position's tokens sit in OUR token account, so that account is open: re-register it (bounded as
+            // at entry) so the closing sell credits the ATA deposit back exactly as an uninterrupted run does.
+            if self.ata_open.len() < super::ATA_OPEN_CAP {
+                self.ata_open.insert(h.mint);
+            }
             self.books_restore(l.realized_lamports, h.entry_spend);
             rep.committed_lamports = rep.committed_lamports.saturating_add(h.entry_spend);
             if h.inventory_tokens.is_none() {

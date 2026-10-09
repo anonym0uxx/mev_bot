@@ -183,6 +183,17 @@ impl Divergence {
             Self::CurveVirtualOffsetChanged => "shadow_divergence:curve_virtual_offset_changed",
         }
     }
+    /// Inverse of [`Self::label`].
+    #[must_use]
+    pub fn from_label(s: &str) -> Option<Self> {
+        [
+            Self::AdverseLiquidityChange,
+            Self::UnreconcilableSnapshot,
+            Self::CurveVirtualOffsetChanged,
+        ]
+        .into_iter()
+        .find(|d| d.label() == s)
+    }
     const fn code(self) -> &'static str {
         match self {
             Self::AdverseLiquidityChange => "adverse",

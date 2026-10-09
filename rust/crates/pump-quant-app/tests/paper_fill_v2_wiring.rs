@@ -681,3 +681,153 @@ fn v1_books_are_the_engine_fields_and_no_ledger_exists() {
         committed
     );
 }
+
+/// DIVERGENCE EVIDENCE IS DURABLE. A declared divergence leaves a bounded evidence record (mint, label, slot, clock,
+/// the declaring observation, the base offsets, our dropped delta, the exposed inventory) that is persisted in the
+/// held ledger, restored EXACTLY by a fresh engine, still present after the position is closed and its shadow
+/// market forgotten, and the restored shadow stays diverged (a restart never clears a divergence).
+#[test]
+fn v2_divergence_evidence_survives_restart_and_close_and_is_never_cleared() {
+    let h = tmp("v2div");
+    let mut r = rig(
+        Some(PaperFillVersion::V2Shadow),
+        |s| if s == 0 { HOLD } else { EXIT },
+        Some(&h),
+    );
+    let inv0 = r.e.model_inventory_tokens(&MINT).unwrap();
+    r.clock += 500;
+    r.slot += 1;
+    let div_slot = r.slot;
+    r.e.tick(curve_ev(r.clock, r.slot, r.rsol, 2_000_000_000));
+    let log = r.e.model_divergence_log().to_vec();
+    assert_eq!(log.len(), 1, "one record per declared divergence");
+    let d = &log[0];
+    assert_eq!(d.mint, MINT);
+    assert_eq!(d.divergence, Divergence::CurveVirtualOffsetChanged);
+    assert_eq!(d.slot, div_slot);
+    assert_eq!(d.inventory_tokens, Some(inv0));
+    let (vsol, _, rs, _) = state(r.rsol);
+    assert_eq!(d.observed[0], vsol - 2_000_000_000);
+    assert_eq!(d.observed[2], rs);
+    assert_eq!(
+        d.base_offsets.map(|o| o.0),
+        Some(VOFF),
+        "opened on the canonical offset"
+    );
+    assert!(
+        d.dropped_delta[0] > 0,
+        "our dropped SOL contribution is recorded"
+    );
+    // Persist + fresh engine: exact restore, still diverged.
+    assert!(r.e.model_held_persist_now());
+    let mut e2 = engine(Some(PaperFillVersion::V2Shadow), |_| HOLD);
+    e2.model_held_attach(&h);
+    e2.model_held_restore()
+        .expect("restore ok")
+        .expect("ledger");
+    assert_eq!(e2.model_divergence_log(), &log[..]);
+    assert_eq!(
+        e2.model_shadow_book().divergence(&MINT),
+        Some(Divergence::CurveVirtualOffsetChanged),
+        "a restart never clears a divergence"
+    );
+    // Close the position (the model's EXIT, priced on the observed state alone): the market is forgotten, the
+    // evidence stays, and it is still in the persisted ledger.
+    r.advance_to_order(200_000);
+    r.landing();
+    assert!(
+        !r.e.model_position_open(&MINT),
+        "{:?}",
+        r.e.model_lane_report()
+    );
+    assert!(r.e.model_shadow_book().market(&MINT).is_none());
+    assert_eq!(r.e.model_divergence_log(), &log[..]);
+    assert!(r.e.model_held_persist_now());
+    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&h).unwrap()).unwrap();
+    assert_eq!(
+        v["paper_fill"]["divergences"][0]["divergence"],
+        "shadow_divergence:curve_virtual_offset_changed"
+    );
+    // Tampered evidence is refused by name, never silently dropped.
+    let mut t = v.clone();
+    t["paper_fill"]["divergences"][0]["divergence"] = serde_json::json!("cleared");
+    let h2 = h.with_file_name("held_divtamper.json");
+    std::fs::write(&h2, t.to_string()).unwrap();
+    let mut e3 = engine(Some(PaperFillVersion::V2Shadow), |_| HOLD);
+    e3.model_held_attach(&h2);
+    let err = e3.model_held_restore().unwrap_err();
+    assert!(format!("{err:?}").contains("PaperFillUntrusted"), "{err:?}");
+}
+
+/// RESTART PARITY of the closing sell: a held position restored from the ledger still owns its open token account, so
+/// its closing sell credits the ATA deposit back (net of the close fee) exactly as an uninterrupted run does. Found by
+/// daemon run wW5a3 (restart): before the fix the restored close booked NO refund (49,985,182 vs 52,019,462).
+#[test]
+fn v2_restart_then_close_books_the_same_ata_refund_as_an_uninterrupted_run() {
+    let exit_all = |_: i64| EXIT;
+    // Uninterrupted.
+    let mut a = rig(Some(PaperFillVersion::V2Shadow), exit_all, None);
+    a.advance_to_order(200_000);
+    a.landing();
+    assert!(!a.e.model_position_open(&MINT));
+    assert_eq!(a.rep("settle:ata_rent_refund_in_closing_sell"), 1);
+    // Same path, persisted + restored into a fresh engine before the EXIT is asked.
+    let h = tmp("v2ata");
+    let mut r = rig(Some(PaperFillVersion::V2Shadow), exit_all, Some(&h));
+    assert!(r.e.model_held_persist_now());
+    let mut b = Rig {
+        e: engine(Some(PaperFillVersion::V2Shadow), exit_all),
+        clock: r.clock,
+        slot: r.slot,
+        n: r.n,
+        rsol: r.rsol,
+    };
+    b.e.model_held_attach(&h);
+    b.e.model_held_restore().expect("restore").expect("ledger");
+    // The restarted process re-observes the launch and the history (as the daemon's feeds do after a restart).
+    b.e.tick(AppEvent::LaunchObserved {
+        mint: mint(),
+        creator: CREATOR,
+        launch_unix_ms: T0,
+    });
+    for i in 0..40u32 {
+        b.e.tick(trade(
+            i,
+            T0 + 1_000 + i64::from(i) * 2_000,
+            1_000 + u64::from(i),
+            22_000 + i128::from(i),
+        ));
+    }
+    b.advance_to_order(200_000);
+    b.landing();
+    assert!(
+        !b.e.model_position_open(&MINT),
+        "{:?}",
+        b.e.model_lane_report()
+    );
+    assert_eq!(
+        b.rep("settle:ata_rent_refund_in_closing_sell"),
+        1,
+        "the restored close credits the ATA deposit back: {:?}",
+        b.e.model_lane_report()
+    );
+    let (la, lb) = (
+        a.e.model_settlement().unwrap(),
+        b.e.model_settlement().unwrap(),
+    );
+    assert!(lb.invariant_holds() && lb.holdings.is_empty() && lb.committed == 0);
+    // The SELL record carries the refund: venue-net of the restored close >= the deposit net of close fee.
+    let sell = |l: &pump_quant_app::settlement::SettlementLedger| {
+        l.to_json()["applied"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|x| x[1] == "sell")
+            .map(|x| x[4].as_u64().unwrap())
+            .unwrap()
+    };
+    let refund = pump_quant_app::cost_model::ATA_RENT_LAMPORTS
+        - pump_quant_app::cost_model::ATA_CLOSE_LAMPORTS;
+    assert!(sell(lb) > refund, "restored close includes the refund");
+    let _ = la;
+}
