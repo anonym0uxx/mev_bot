@@ -1657,8 +1657,9 @@ fn construct_live_engine(
 
     // ── 5. Sink config ─────────────────────────────────────────────────
     let compute = ComputePlan {
-        unit_limit: 120_000,
-        unit_price_micro_lamports: 5_000,
+        unit_limit: pump_quant_app::txcost::TXCOST_V1_20261010.cu_limit,
+        unit_price_micro_lamports: pump_quant_app::txcost::TXCOST_V1_20261010
+            .cu_price_micro_lamports,
     };
     // Helius Sender tip: required by all Sender tiers. We use SWQOS-only
     // (swqos_only=true) whose minimum is 5,000 lamports (0.000005 SOL).
@@ -1671,7 +1672,8 @@ fn construct_live_engine(
             0x1c, 0x6d, 0xf1, 0x33, 0x05, 0xc8, 0xb8, 0x7c, 0x64, 0x4f, 0x4d, 0x8c, 0x6d, 0x82,
             0x0b, 0x37, 0x89, 0xa6,
         ],
-        lamports: 5_000, // 0.000005 SOL — SWQOS-only minimum
+        // SCOPE_TXCOST_R9 T1: from the one versioned cost config (5,000 = SWQOS-only minimum).
+        lamports: pump_quant_app::txcost::TXCOST_V1_20261010.tip_lamports,
     });
     let fee_tail = FeeTail::None;
 

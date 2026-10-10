@@ -566,7 +566,7 @@ impl Engine {
             .shadow
             .net_liquidation_estimate_at(self.model_fee_ctx(slot), mint, Some(&obs), inv)
             .ok_or("shadow_quote_unavailable")?;
-        Ok(net - i128::from(self.cfg.exit_tip_lamports))
+        Ok(net - i128::from(self.cfg.txcost_for(true).tip_lamports))
     }
 
     /// Forget a closed market's shadow (no pending order can still fill on it).

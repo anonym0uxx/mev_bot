@@ -624,7 +624,7 @@ fn exit_on_pool(qres: u64, parts: (u32, u32, u32)) -> serde_json::Value {
             mint_supply: Some(1_000_000_000_000_000),
         },
         FeeCtx::by_slot(landing_slot),
-        0,
+        pump_quant_app::txcost::TxCostConfig::legacy(0),
         0,
     )
     .unwrap();
@@ -725,7 +725,7 @@ fn t3_protocol_tier_at_a_real_threshold_rows_for_the_independent_decoder() {
                 mint_supply: Some(s),
             },
             FeeCtx::by_slot(454_754_100),
-            0,
+            pump_quant_app::txcost::TxCostConfig::legacy(0),
             0,
         )
         .unwrap();

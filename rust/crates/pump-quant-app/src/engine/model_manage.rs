@@ -916,7 +916,7 @@ impl Engine {
                     // state is the first observation >= 400 ms after creation on a newer slot; the quote is the
                     // program's arithmetic at that state for this exact size; fees = venue fees from the quote +
                     // network fee (measured p50) + exit tip, each once. Not executed evidence: `simulated`.
-                    let leg = crate::exec_quote::landed_leg_cost(self.cfg.exit_tip_lamports);
+                    let leg = self.cfg.txcost_for(true).planned_leg_lamports();
                     let (g, f) = (q.gross, q.venue_fees.saturating_add(leg));
                     let Some(px) = crate::exec_quote::price_fp(q.net, tokens) else {
                         self.mrep("mgmt:quote_unavailable:unpriceable");
@@ -954,9 +954,12 @@ impl Engine {
                     }
                     self.mrep_add(
                         "econ:exit_network_lamports",
-                        crate::exec_quote::NETWORK_FEE_P50_LAMPORTS,
+                        self.cfg.txcost_planned_network_lamports(),
                     );
-                    self.mrep_add("econ:exit_tip_lamports", self.cfg.exit_tip_lamports);
+                    self.mrep_add(
+                        "econ:exit_tip_lamports",
+                        self.cfg.txcost_for(true).tip_lamports,
+                    );
                     if let Some(o) = self.model_mgmt.orders.get_mut(&mint) {
                         o.simulated = true;
                     }
@@ -1207,7 +1210,7 @@ impl Engine {
             if ata_refund > 0 {
                 self.mrep("settle:ata_rent_refund_in_closing_sell");
             }
-            let leg_cost = crate::exec_quote::landed_leg_cost(self.cfg.exit_tip_lamports);
+            let leg_cost = self.cfg.txcost_for(true).planned_leg_lamports();
             match settled {
                 Some((g, f)) if order.simulated && f >= leg_cost => self.model_settle(
                     mint,
@@ -1215,8 +1218,8 @@ impl Engine {
                     order.id,
                     tokens,
                     (g - (f - leg_cost)).saturating_add(ata_refund),
-                    crate::exec_quote::NETWORK_FEE_P50_LAMPORTS,
-                    self.cfg.exit_tip_lamports,
+                    self.cfg.txcost_planned_network_lamports(),
+                    self.cfg.txcost_for(true).tip_lamports,
                 ),
                 Some((g, f)) => self.model_settle(
                     mint,
@@ -1754,9 +1757,7 @@ impl Engine {
                 let fee = (u128::from(rem) * u128::from(o.fee_bps)).div_ceil(10_000);
                 acc.saturating_add(rem)
                     .saturating_add(u64::try_from(fee).unwrap_or(u64::MAX))
-                    .saturating_add(crate::exec_quote::landed_leg_cost(
-                        self.cfg.entry_tip_lamports,
-                    ))
+                    .saturating_add(self.cfg.txcost_for(false).planned_leg_lamports())
             })
     }
 
@@ -1859,7 +1860,7 @@ impl Engine {
         state: AddState,
         order_bound: Option<u64>,
     ) -> Result<AddPlan, &'static str> {
-        let fixed = crate::exec_quote::landed_leg_cost(self.cfg.entry_tip_lamports);
+        let fixed = self.cfg.txcost_for(false).planned_leg_lamports();
         let fee_bps = state.fee_bps();
         let floor = derive_survival_floor(
             self.bankroll_origin.seed_lamports(),
@@ -2088,9 +2089,7 @@ impl Engine {
             Some(f) => f,
             None => u64::try_from(u128::from(spent) * u128::from(fee_bps) / 10_000)
                 .unwrap_or(0)
-                .saturating_add(crate::exec_quote::landed_leg_cost(
-                    self.cfg.entry_tip_lamports,
-                )),
+                .saturating_add(self.cfg.txcost_for(false).planned_leg_lamports()),
         };
         let cost = spent.saturating_add(fee);
         if let Err(r) = self
@@ -2121,17 +2120,16 @@ impl Engine {
         if self.model_v2() {
             match settled_fee {
                 None => {
-                    let rate_fee = fee.saturating_sub(crate::exec_quote::landed_leg_cost(
-                        self.cfg.entry_tip_lamports,
-                    ));
+                    let rate_fee =
+                        fee.saturating_sub(self.cfg.txcost_for(false).planned_leg_lamports());
                     self.model_settle(
                         mint,
                         crate::shadow_pool::LegKind::Add,
                         order.id,
                         tokens,
                         spent.saturating_add(rate_fee),
-                        crate::exec_quote::NETWORK_FEE_P50_LAMPORTS,
-                        self.cfg.entry_tip_lamports,
+                        self.cfg.txcost_planned_network_lamports(),
+                        self.cfg.txcost_for(false).tip_lamports,
                     );
                 }
                 Some(f) => self.model_settle(
@@ -2246,9 +2244,7 @@ impl Engine {
             (u128::from(order.max_spend) * u128::from(order.fee_bps)).div_ceil(10_000),
         )
         .unwrap_or(u64::MAX)
-        .saturating_add(crate::exec_quote::landed_leg_cost(
-            self.cfg.entry_tip_lamports,
-        ));
+        .saturating_add(self.cfg.txcost_for(false).planned_leg_lamports());
         let fee_over = order.fees.saturating_add(fee) > fee_cap;
         let px = u64::try_from((u128::from(spent) * 1_000_000_000).div_ceil(u128::from(tokens)))
             .map_err(|_| "price_overflow")?;

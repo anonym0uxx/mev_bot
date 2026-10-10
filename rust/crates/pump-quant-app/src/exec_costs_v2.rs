@@ -17,7 +17,8 @@
 use pump_quant_proposal::contract_v2::ExecCosts;
 use pump_quant_protocol::fee_schedule::{self, FeeScheduleRefusal, FeeStamp};
 
-use crate::exec_quote::{FeeCtx, QuoteRefusal, NETWORK_FEE_P50_LAMPORTS};
+use crate::exec_quote::{FeeCtx, QuoteRefusal};
+use crate::txcost::TxCostConfig;
 
 /// Which market the order lands on, with the verified state the fee tier is read from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,7 +62,8 @@ fn pool_rate(mcap: u128, ctx: FeeCtx) -> Result<(u64, FeeStamp), QuoteRefusal> {
     Ok((r.total_bps(), s))
 }
 
-/// The v2 per-row execution costs for an order on `market` at `ctx`, with the configured tip and the
+/// The v2 per-row execution costs for an order on `market` at `ctx`, with the planned network fee and tip of the
+/// ONE versioned transaction-cost configuration `tx` (SCOPE_TXCOST_R9 T1) and the
 /// unrefunded token-account rent. A slot with no known configuration, or a pool whose live supply was not read,
 /// is a named refusal (the v2 prompt is then not cut), never today's rate and never an assumed supply.
 ///
@@ -70,7 +72,7 @@ fn pool_rate(mcap: u128, ctx: FeeCtx) -> Result<(u64, FeeStamp), QuoteRefusal> {
 pub fn exec_costs(
     market: ExecMarket,
     ctx: FeeCtx,
-    tip_lamports: u64,
+    tx: TxCostConfig,
     rent_unrefunded_lamports: u64,
 ) -> Result<ExecCosts, QuoteRefusal> {
     let (bp, stamp) = match market {
@@ -91,8 +93,8 @@ pub fn exec_costs(
     Ok(ExecCosts {
         venue_bp_per_side: bp,
         fee_stamp: stamp.label(),
-        network_lamports_per_leg: NETWORK_FEE_P50_LAMPORTS,
-        tip_lamports_per_leg: tip_lamports,
+        network_lamports_per_leg: tx.planned_network_lamports(),
+        tip_lamports_per_leg: tx.tip_lamports,
         rent_unrefunded_lamports,
     })
 }
@@ -115,8 +117,13 @@ mod tests {
     }
 
     fn bp(m: ExecMarket) -> Result<u64, QuoteRefusal> {
-        exec_costs(m, FeeCtx::new(454_754_100, FeeSelection::BySlot), 0, 0)
-            .map(|c| c.venue_bp_per_side)
+        exec_costs(
+            m,
+            FeeCtx::new(454_754_100, FeeSelection::BySlot),
+            TxCostConfig::legacy(0),
+            0,
+        )
+        .map(|c| c.venue_bp_per_side)
     }
 
     #[test]
@@ -127,7 +134,7 @@ mod tests {
                 vtok: 1_000_000_000_000_000,
             },
             FeeCtx::by_slot(454_754_100),
-            10_000,
+            TxCostConfig::legacy(10_000),
             5_000,
         )
         .unwrap();
@@ -137,7 +144,12 @@ mod tests {
 
     #[test]
     fn historical_slot_without_config_refuses_and_never_states_todays_rate() {
-        let r = exec_costs(at_cap(30_000 * SOL), FeeCtx::by_slot(441_327_828), 0, 0);
+        let r = exec_costs(
+            at_cap(30_000 * SOL),
+            FeeCtx::by_slot(441_327_828),
+            TxCostConfig::legacy(0),
+            0,
+        );
         assert!(matches!(r, Err(QuoteRefusal::FeeSchedule(_))), "{r:?}");
     }
 

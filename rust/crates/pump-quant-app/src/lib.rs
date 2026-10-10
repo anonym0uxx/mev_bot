@@ -103,6 +103,7 @@ pub mod stop_policy;
 pub mod structure;
 pub mod token_ingest;
 pub mod toxicity;
+pub mod txcost;
 pub mod venue;
 
 pub use config::{Config, ConfigError, FillModeCfg};

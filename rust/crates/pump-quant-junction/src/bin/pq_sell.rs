@@ -194,8 +194,9 @@ fn main() -> ExitCode {
 
     // ── Sink config (same as daemon) ─────────────────────────────────────
     let compute = ComputePlan {
-        unit_limit: 120_000,
-        unit_price_micro_lamports: 5_000,
+        unit_limit: pump_quant_app::txcost::TXCOST_V1_20261010.cu_limit,
+        unit_price_micro_lamports: pump_quant_app::txcost::TXCOST_V1_20261010
+            .cu_price_micro_lamports,
     };
     let tip = Some(TipPlan {
         to: [
@@ -203,7 +204,7 @@ fn main() -> ExitCode {
             0x1c, 0x6d, 0xf1, 0x33, 0x05, 0xc8, 0xb8, 0x7c, 0x64, 0x4f, 0x4d, 0x8c, 0x6d, 0x82,
             0x0b, 0x37, 0x89, 0xa6,
         ],
-        lamports: 5_000,
+        lamports: pump_quant_app::txcost::TXCOST_V1_20261010.tip_lamports,
     });
 
     let sink_config = LiveSinkConfig {

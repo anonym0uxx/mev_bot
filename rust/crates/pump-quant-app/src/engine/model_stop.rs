@@ -231,7 +231,7 @@ impl Engine {
             .map(|x| x.0)
         }
         .map_err(crate::exec_quote::QuoteRefusal::label)?;
-        let leg = crate::exec_quote::landed_leg_cost(self.cfg.exit_tip_lamports);
+        let leg = self.cfg.txcost_for(true).planned_leg_lamports();
         Ok(i128::from(q.net) - i128::from(leg))
     }
 
