@@ -46,7 +46,7 @@ impl<F: Fn() -> bool> Sleeper for RealSleeper<F> {
             }
             let s = left.min(100);
             std::thread::sleep(std::time::Duration::from_millis(s));
-            left -= s;
+            left = left.saturating_sub(s);
         }
         !(self.cancelled)()
     }
@@ -140,7 +140,7 @@ impl RespawnGovernor {
             self.gave_up = true;
             return RespawnDecision::Exhausted;
         }
-        self.count += 1;
+        self.count = self.count.saturating_add(1);
         self.last_ms = Some(now_ms);
         RespawnDecision::Attempt(self.count)
     }

@@ -408,5 +408,5 @@ fn reader_threads_exit_on_eof_and_the_queue_is_bounded() {
         std::thread::sleep(Duration::from_millis(5));
     }
     assert!(h3.is_finished(), "reader exits when the receiver is gone");
-    assert!(LS_QUEUE_CAP > 0 && LS_QUEUE_CAP <= 65_536);
+    const _: () = assert!(LS_QUEUE_CAP > 0 && LS_QUEUE_CAP <= 65_536); // compile-time (was a runtime constant assert)
 }

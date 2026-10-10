@@ -551,7 +551,7 @@ fn cgroup_chain_reader_walks_to_the_root_and_startup_equals_runtime() {
     assert_eq!(b.mem_ok, b.mem.ok);
     assert_eq!(b.mem.host_floor, live.host_floor);
     assert!(mem_available_for_self().is_some());
-    assert_eq!(ram_bytes_ok().is_some(), true);
+    assert!(ram_bytes_ok().is_some());
     let bad = std::path::Path::new("/proc/pq_no_such_dir/x/event_stream.jsonl");
     let partial = run_budget_now(&[std::env::temp_dir().as_path(), bad], 23_400);
     assert_eq!((partial.disk_free, partial.disk_ok), (None, None));

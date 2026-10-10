@@ -3061,7 +3061,7 @@ fn stop_value_book_never_substitutes_zero_or_cost_for_an_unknown_position() {
         value: Err("mark_stale"),
     };
     assert_eq!(
-        sp::value_book(1_000, 900, &[ok.clone()]),
+        sp::value_book(1_000, 900, std::slice::from_ref(&ok)),
         RiskValuation::Known {
             equity: 1_000,
             loss_from_start: 0
@@ -3544,7 +3544,8 @@ fn stop_valuation_metric_is_pinned_at_run_start_and_cannot_switch_mid_run() {
 fn stop_disk_soft_floor_restricts_hard_floor_latches_and_evidence_keeps_being_written() {
     assert_eq!(sp::DISK_SOFT_FLOOR_BYTES, 20 * sp::GIB);
     assert_eq!(sp::DISK_HARD_FLOOR_BYTES, 4 * sp::GIB);
-    assert!(sp::DISK_HARD_FLOOR_BYTES < sp::DISK_SOFT_FLOOR_BYTES);
+    // compile-time check (was a runtime assert! on constants; same condition, now cannot be skipped)
+    const _: () = assert!(sp::DISK_HARD_FLOOR_BYTES < sp::DISK_SOFT_FLOOR_BYTES);
     let hp = held_path("st_disk_hard");
     let mut r = rig(|s| if s == 0 { REDUCE } else { HOLD }, &hp);
     r.e.model_safety_attach(&hp.with_file_name("safety.json"));

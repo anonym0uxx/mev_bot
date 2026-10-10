@@ -998,7 +998,8 @@ pub fn read_checked(
                 let why = if is_v2 { why } else { format!("v1: {why}") };
                 let r = s.reasons.entry(kind).or_default();
                 if r.len() < 8 || r.contains_key(&why) {
-                    *r.entry(why).or_insert(0) += 1;
+                    let n = r.entry(why).or_insert(0);
+                    *n = n.saturating_add(1);
                 }
             }
         }

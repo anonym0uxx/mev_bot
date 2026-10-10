@@ -179,7 +179,7 @@ fn print(e: &mut Engine, i: u32, ts: i64, slot: u64, liq: u64) {
         price_fp: 22_000 + i128::from(i % 7),
         quote_lamports: 500_000_000 + u64::from(i),
         liquidity_lamports: liq,
-        signed_base: if i % 3 != 0 {
+        signed_base: if !i.is_multiple_of(3) {
             30_000_000_000
         } else {
             -30_000_000_000

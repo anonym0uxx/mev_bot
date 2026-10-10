@@ -19,6 +19,7 @@
 //!     `adverse_liquidity_change`, delta DROPPED;
 //!   - observed real SOL + our conserved SOL contribution below zero, or observed real tokens below the tokens
 //!     we took out -> `unreconcilable_snapshot`, delta DROPPED.
+//!
 //!   A dropped delta never comes back: sale capacity falls back to what the observed state supports.
 //! * SALE CAPACITY is conserved: a shadow sell's gross never exceeds `observed real SOL (pool: quote vault) +
 //!   our conserved net SOL contribution` (`max(0, sol_in - sol_out)` of OUR fills in this venue segment).

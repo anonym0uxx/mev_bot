@@ -129,7 +129,9 @@ pub fn disk_table(
     }
     let mut rows: Vec<FsRow> = by_dev.into_values().collect();
     for r in &mut rows {
-        r.margin = i128::from(r.free) - i128::from(r.need) - i128::from(floor);
+        r.margin = i128::from(r.free)
+            .saturating_sub(i128::from(r.need))
+            .saturating_sub(i128::from(floor));
     }
     let limiting = rows
         .iter()
@@ -181,7 +183,7 @@ pub fn required_destinations(
     handoff: &[&Path],
     run_s: u64,
 ) -> Vec<Dest> {
-    let share = |total: u64, n: usize| total / (n.max(1) as u64);
+    let share = |total: u64, n: usize| total.checked_div(n.max(1) as u64).unwrap_or(0);
     let mut v = vec![Dest {
         kind: DestKind::EventStream,
         path: event_stream.to_path_buf(),
@@ -337,12 +339,15 @@ pub struct DiskMonitor {
     base_free: BTreeMap<u64, (f64, u64)>,
 }
 
+/// One destination reading: `(path, Some((dev, free)) | None, current size)`.
+pub type DiskReading = (PathBuf, Option<(u64, u64)>, u64);
+
 /// Pure runtime evaluation of one sample.
 /// `readings`: per destination `(path, Some((dev, free)) | None, current size)`; `now_s`: monotonic seconds.
 #[must_use]
 pub fn evaluate_runtime(
     mon: &mut DiskMonitor,
-    readings: &[(PathBuf, Option<(u64, u64)>, u64)],
+    readings: &[DiskReading],
     now_s: f64,
     soft_floor: u64,
     hard_floor: u64,
@@ -413,7 +418,7 @@ impl DiskMonitor {
         simulated_free: Option<u64>,
         simulated_unknown: bool,
     ) -> DiskRuntime {
-        let readings: Vec<(PathBuf, Option<(u64, u64)>, u64)> = dests
+        let readings: Vec<DiskReading> = dests
             .iter()
             .enumerate()
             .map(|(i, d)| {

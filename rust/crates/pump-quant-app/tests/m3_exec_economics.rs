@@ -70,7 +70,7 @@ fn ticks(e: &mut Engine, n: usize) {
     }
 }
 fn trade(e: &mut Engine, i: u32, ts: i64, slot: u64) {
-    let buy = i % 3 != 0;
+    let buy = !i.is_multiple_of(3);
     e.tick(AppEvent::MarketTrade {
         mint: mint(),
         price_fp: 22_000 + i128::from(i),
@@ -191,7 +191,7 @@ impl Rig {
             .sum()
     }
     /// Quiet market until a management order is pending (prints keep the position monitored).
-    fn to_order(&mut self, vsol: u64, vtok: u64, real_sol: u64) {
+    fn run_to_order(&mut self, vsol: u64, vtok: u64, real_sol: u64) {
         let end = self.clock + 180_000;
         while self.clock < end && self.e.model_mgmt_pending(&MINT).is_none() {
             self.clock += 1_000;
@@ -269,14 +269,13 @@ fn a_drained_curve_refuses_the_requested_size_by_name_and_books_nothing() {
     let inv = r.e.model_inventory_tokens(&MINT).unwrap();
     let real0 = r.e.model_accounting_view(&MINT).realized;
     let (vs, vt) = (VSOL + 200_000_000, VTOK - 4_000_000_000_000);
-    r.to_order(vs, vt, 8_100_000_000);
+    r.run_to_order(vs, vt, 8_100_000_000);
     let (_, _, intended, _) = r.e.model_mgmt_pending(&MINT).unwrap();
     assert_eq!(intended, inv, "EXIT asks for the whole free inventory");
     // Landing state: real SOL 1_000 lamports. Gross of the requested size >> 1_000: the program refuses it.
     r.land(vs, vt, 1_000);
-    assert_eq!(
+    assert!(
         r.rep("mgmt:quote_unavailable:curve_real_sol_insufficient") >= 1,
-        true,
         "{:?}",
         r.e.model_lane_report()
     );
@@ -305,7 +304,7 @@ fn an_exit_books_gross_venue_fees_network_and_tip_each_once() {
     let mut r = rig(|s| if s == 0 { EXIT } else { HOLD });
     let inv = r.e.model_inventory_tokens(&MINT).unwrap();
     let (vs, vt) = (VSOL + 200_000_000, VTOK - 4_000_000_000_000);
-    r.to_order(vs, vt, 8_100_000_000);
+    r.run_to_order(vs, vt, 8_100_000_000);
     let before = r.e.model_accounting_view(&MINT);
     r.land(vs, vt, 8_100_000_000);
     let f = r.e.model_mgmt_fills().last().copied().expect("exit filled");
@@ -349,7 +348,7 @@ fn dust_proceeds_below_the_landed_leg_are_a_net_cost_not_recovery() {
     let (vs, vt) = (30_000_000_000u64, 1_072_999_000_000_000u64);
     let g = u128::from(inv) * u128::from(vs) / (u128::from(vt) + u128::from(inv));
     let real = u64::try_from(g).unwrap() + 1;
-    r.to_order(VSOL + 200_000_000, VTOK - 4_000_000_000_000, 8_100_000_000);
+    r.run_to_order(VSOL + 200_000_000, VTOK - 4_000_000_000_000, 8_100_000_000);
     r.land(vs, vt, real);
     let f = r.e.model_mgmt_fills().last().copied();
     if let Some(f) = f {
@@ -454,7 +453,7 @@ fn a_held_curve_position_graduates_and_its_exit_routes_to_the_verified_pool() {
     let inv = r.e.model_inventory_tokens(&MINT).unwrap();
     let basis = r.e.model_accounting_view(&MINT).remaining_cost_basis;
     let (vs, vt) = (VSOL + 200_000_000, VTOK - 4_000_000_000_000);
-    r.to_order(vs, vt, 8_100_000_000);
+    r.run_to_order(vs, vt, 8_100_000_000);
     let (id, _k, intended, filled) = r.e.model_mgmt_pending(&MINT).unwrap();
     // Graduation before any curve landing state: the curve is complete (zero reserves) -> curve sell refused.
     graduate(&mut r);
@@ -504,7 +503,7 @@ fn a_held_curve_position_graduates_and_its_exit_routes_to_the_verified_pool() {
 fn a_conflicting_pool_binding_is_a_named_unavailable_route_never_a_fill() {
     let mut r = rig(|s| if s == 0 { EXIT } else { HOLD });
     let inv = r.e.model_inventory_tokens(&MINT).unwrap();
-    r.to_order(VSOL + 200_000_000, VTOK - 4_000_000_000_000, 8_100_000_000);
+    r.run_to_order(VSOL + 200_000_000, VTOK - 4_000_000_000_000, 8_100_000_000);
     graduate(&mut r);
     r.clock += 1_000;
     r.slot += 5;
@@ -540,7 +539,7 @@ fn a_graduated_position_without_verified_pool_state_is_degraded_not_settled() {
     let mut r = rig(|s| if s == 0 { EXIT } else { HOLD });
     let inv = r.e.model_inventory_tokens(&MINT).unwrap();
     let realized0 = r.e.model_accounting_view(&MINT).realized;
-    r.to_order(VSOL + 200_000_000, VTOK - 4_000_000_000_000, 8_100_000_000);
+    r.run_to_order(VSOL + 200_000_000, VTOK - 4_000_000_000_000, 8_100_000_000);
     graduate(&mut r);
     for _ in 0..8 {
         r.clock += 1_000;
@@ -566,7 +565,7 @@ use pump_quant_protocol::pumpswap_event::CashbackField;
 
 fn exit_on_cashback_pool(cashback: CashbackField) -> (Rig, u64) {
     let mut r = rig(|s| if s == 0 { EXIT } else { HOLD });
-    r.to_order(VSOL + 200_000_000, VTOK - 4_000_000_000_000, 8_100_000_000);
+    r.run_to_order(VSOL + 200_000_000, VTOK - 4_000_000_000_000, 8_100_000_000);
     let (_, _, intended, _) = r.e.model_mgmt_pending(&MINT).unwrap();
     graduate(&mut r);
     ticks(&mut r.e, 4);

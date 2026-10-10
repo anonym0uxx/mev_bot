@@ -36,7 +36,7 @@ impl RetryBound {
         if attempt == 0 {
             return 0;
         }
-        let shift = (attempt - 1).min(32);
+        let shift = attempt.saturating_sub(1).min(32);
         self.base_backoff_ms
             .saturating_mul(1u64 << shift)
             .min(self.cap_backoff_ms)
@@ -94,7 +94,7 @@ pub const LASERSTREAM_RESPAWN: RetryBound = RetryBound {
 /// RPC calls one bootstrap walk may make in the worst case. The daemon charges this to `bootstrap_budget()`.
 #[must_use]
 pub fn bootstrap_walk_cost(max_pages: u32) -> u64 {
-    u64::from(max_pages) + u64::from(LAUNCH_BOOTSTRAP_WALK_RETRY_BUDGET)
+    u64::from(max_pages).saturating_add(u64::from(LAUNCH_BOOTSTRAP_WALK_RETRY_BUDGET))
 }
 
 /// Whether a page failure is transient (worth a retry): transport errors, HTTP 429 and 5xx. A JSON-RPC error answer,
@@ -164,21 +164,21 @@ impl PageSource for RetryingPages<'_> {
     ) -> Result<Page, FetchError> {
         let mut attempt = 0u32;
         loop {
-            self.calls.set(self.calls.get() + 1);
+            self.calls.set(self.calls.get().saturating_add(1));
             match self.inner.page(address, filters, token) {
                 Ok(p) => return Ok(p),
                 Err(e) => {
-                    let more = attempt + 1 < self.bound.max_attempts
+                    let more = attempt.saturating_add(1) < self.bound.max_attempts
                         && self.retries.get() < self.walk_budget
                         && is_transient(&e);
                     if !more {
                         if is_transient(&e) {
-                            self.exhausted.set(self.exhausted.get() + 1);
+                            self.exhausted.set(self.exhausted.get().saturating_add(1));
                         }
                         return Err(e);
                     }
-                    attempt += 1;
-                    self.retries.set(self.retries.get() + 1);
+                    attempt = attempt.saturating_add(1);
+                    self.retries.set(self.retries.get().saturating_add(1));
                     (self.sleep)(Duration::from_millis(self.bound.backoff_ms(attempt)));
                 }
             }

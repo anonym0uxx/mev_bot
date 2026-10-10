@@ -95,7 +95,7 @@ fn trade(i: u32, ts: i64, slot: u64, px: i128) -> AppEvent {
         price_fp: px,
         quote_lamports: 500_000_000 + u64::from(i),
         liquidity_lamports: VOFF + RSOL0,
-        signed_base: if i % 3 != 0 {
+        signed_base: if !i.is_multiple_of(3) {
             30_000_000_000
         } else {
             -30_000_000_000

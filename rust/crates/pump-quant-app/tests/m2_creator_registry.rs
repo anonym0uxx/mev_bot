@@ -114,7 +114,7 @@ fn oracle(rows: &[([u8; 32], [u8; 32], i64)]) -> std::collections::BTreeMap<[u8;
 fn population() -> Vec<([u8; 32], [u8; 32], i64)> {
     let mut v = Vec::new();
     for i in 0..120u32 {
-        let creator = key(i % 6 + (i % 5 == 0) as u32 * 0, 0xC0 + (i % 6) as u8);
+        let creator = key(i % 6, 0xC0 + (i % 6) as u8);
         let t = 1_000_000 + i64::from(i / 2) * 1_000; // pairs share a millisecond
         v.push((key(i, 0xA0), creator, t));
     }

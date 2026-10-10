@@ -618,6 +618,7 @@ pub fn mem_available_bytes(
 ///
 /// # Errors
 /// Unparseable text (the caller treats the reading as unmeasurable).
+#[allow(clippy::result_unit_err)] // public API kept as-is: changing the error type would change callers
 pub fn parse_cgroup_limit(text: &str) -> Result<Option<u64>, ()> {
     let t = text.trim();
     if t == "max" {

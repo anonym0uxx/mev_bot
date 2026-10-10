@@ -179,7 +179,6 @@ impl Engine {
     /// the latest reserve state, minus one landed exit leg (network fee p50 + exit tip). Label:
     /// [`ESTIMATOR_EXEC_QUOTE`] - the placeholder for the shadow model's estimate. A missing, stale or
     /// unpriceable input is a NAMED unavailable value, never zero and never cost.
-    #[must_use]
     pub fn model_liquidation_estimate(&self, mint: &[u8; 32]) -> Result<i128, &'static str> {
         let inv = self
             .positions

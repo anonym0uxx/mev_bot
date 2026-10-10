@@ -103,10 +103,15 @@ pub struct SettlementLedger {
     pub holdings: BTreeMap<[u8; 32], Holding>,
     /// Fixed (tip + ATA rent) costs booked so far (configured values, not observed fees).
     pub fixed_costs: i128,
-    applied: BTreeMap<([u8; 32], LegKind, u64), (u64, u64, u64, u64)>,
+    applied: BTreeMap<AppliedKey, AppliedTotals>,
     /// Entry orders voided by [`Self::void_entry`] (their applied record is kept so no report can re-apply them).
     voided: std::collections::BTreeSet<([u8; 32], LegKind, u64)>,
 }
+
+/// Applied-leg key: (mint, leg kind, order id).
+type AppliedKey = ([u8; 32], LegKind, u64);
+/// Applied-leg cumulative totals (same tuple as before the alias).
+type AppliedTotals = (u64, u64, u64, u64);
 
 impl SettlementLedger {
     /// A fresh ledger with `seed` lamports of cash.

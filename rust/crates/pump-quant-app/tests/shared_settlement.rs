@@ -60,7 +60,7 @@ fn buy_add_partial_sells_close_with_invariant_after_every_step() {
     step(&mut l, r(LegKind::Sell, 8, 600, 50_000_000, N)).unwrap();
     step(&mut l, r(LegKind::Sell, 8, 1_000, 90_000_000, N)).unwrap();
     assert!(
-        l.holdings.get(&M).is_none(),
+        !l.holdings.contains_key(&M),
         "fully closed, no stranded basis"
     );
     assert_eq!(l.committed, 0);

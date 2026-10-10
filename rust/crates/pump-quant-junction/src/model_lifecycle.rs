@@ -418,8 +418,10 @@ pub fn mem_rule(
     floor_bytes: u64,
 ) -> MemVerdict {
     let host_floor = mem_total_kb.map(|t| {
-        u64::try_from(u128::from(t.saturating_mul(1024)) * u128::from(floor_bps) / 10_000)
-            .unwrap_or(u64::MAX)
+        u64::try_from(
+            u128::from(t.saturating_mul(1024)).saturating_mul(u128::from(floor_bps)) / 10_000,
+        )
+        .unwrap_or(u64::MAX)
     });
     let host_term = match (mem_available_kb, host_floor) {
         (Some(a), Some(f)) => Some(a.saturating_mul(1024).saturating_sub(f)),
@@ -733,13 +735,16 @@ pub fn refuse_stale_rearm_at_startup(
 /// the file. Thresholds are untouched; this proves protection EXECUTES under pressure, not WHEN it fires.
 pub const HARNESS_FORCE_PROTECT_FILE: &str = "data/HARNESS_FORCE_PROTECT";
 
+/// Protective order now working after a forced trigger: (id, intended, filled, trigger code), or a named refusal.
+pub type ForceProtectResult = Result<Option<(u64, u64, u64, u8)>, &'static str>;
+
 /// Handle the forced-trigger file. `harness` false -> `None` and the file is never read or removed. On success the
 /// result carries the protective order now working: (id, intended, filled, trigger code).
 pub fn harness_force_protect_from(
     engine: &mut Engine,
     harness: bool,
     file: &Path,
-) -> Option<(String, Result<Option<(u64, u64, u64, u8)>, &'static str>)> {
+) -> Option<(String, ForceProtectResult)> {
     if !harness {
         return None;
     }

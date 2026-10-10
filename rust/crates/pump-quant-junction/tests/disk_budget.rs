@@ -158,8 +158,9 @@ fn rt(
 
 #[test]
 fn exit_reserve_is_the_drain_at_stress_plus_the_non_stream_allowance() {
-    assert!(EXIT_RESERVE_BYTES >= 962_505 * 1_800 + 500_000_000);
-    assert!(EXIT_RESERVE_BYTES - (962_505 * 1_800 + 500_000_000) < 50_000_000);
+    // compile-time checks (were runtime assert! on constants; same conditions)
+    const _: () = assert!(EXIT_RESERVE_BYTES >= 962_505 * 1_800 + 500_000_000);
+    const _: () = assert!(EXIT_RESERVE_BYTES - (962_505 * 1_800 + 500_000_000) < 50_000_000);
     assert_eq!(EXIT_RESERVE_SECS, 1_800 + 600);
 }
 

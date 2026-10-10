@@ -1876,7 +1876,7 @@ impl Engine {
                     .model_mgmt
                     .orders
                     .get(&mint)
-                    .map_or(true, |o| o.filled > filled_before);
+                    .is_none_or(|o| o.filled > filled_before);
                 if self.model_v2() && booked && self.positions.has(&mint) {
                     // v2: OUR ADD enters the shadow: net SOL into the reserves (venue fees excluded), tokens out.
                     let net_in = match state {
@@ -2818,6 +2818,7 @@ impl Engine {
     ///   trigger re-arms so protection RE-EVALUATES from live data (a level stop that no longer holds is not re-fired).
     ///   Any replacement is a NEW order identity created after this reconciliation.
     /// * record disagrees: stays UNCERTAIN, named `held_state:paper_record_mismatch`.
+    ///
     /// Orders routed to the external executor, orders without a route record (unless operator evidence attests the
     /// writer's lineage, [`Engine::model_attest_paper_route`]), and processes running the external executor are never
     /// reconciled here. Returns how many orders were reconciled.
