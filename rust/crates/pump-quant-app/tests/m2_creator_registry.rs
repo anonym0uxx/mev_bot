@@ -618,3 +618,72 @@ fn a_late_arriving_earlier_launch_never_rewrites_a_count_already_read() {
         .expect("reattach");
     assert_eq!(e2.model_creator_dev_history(&a).creator_past_launches, read);
 }
+
+/// RESTART: a logged launch received AFTER the restored barrier is not applied at startup (the process must not know a
+/// launch before it was available at its clock); the feed re-delivers it causally and it is counted exactly once.
+#[test]
+fn a_restart_defers_logged_launches_after_its_barrier_and_counts_each_once() {
+    let d = dir("defer");
+    let c = key(1, 0xCF);
+    let (mut a, _) = armed();
+    a.model_creator_registry_attach(None, &d.join("log.jsonl"), 0, "a")
+        .expect("attach a");
+    for i in 0..6u32 {
+        a.tick(launch(key(i, 0xAF), c, 1_000_000 + i64::from(i) * 1_000));
+    }
+    drop(a);
+    let barrier = 1_000_000 + 2 * 1_000; // launches 0,1,2 are at/before; 3,4,5 after
+    let (mut b, _) = armed();
+    let st = b
+        .model_creator_registry_attach_through(None, &d.join("log.jsonl"), 0, "b", Some(barrier))
+        .expect("attach b");
+    assert_eq!((st.restored_from_log, st.deferred_after_restart), (3, 3));
+    assert!(
+        !b.model_launch_feed_observed(&key(4, 0xAF)),
+        "not known before its time"
+    );
+    for i in 3..6u32 {
+        b.tick(launch(key(i, 0xAF), c, 1_000_000 + i64::from(i) * 1_000));
+    }
+    for i in 0..6u32 {
+        assert_eq!(
+            b.model_creator_dev_history(&key(i, 0xAF))
+                .creator_past_launches,
+            Some(i64::from(i))
+        );
+    }
+    // Re-delivery appended nothing: the log holds each launch once.
+    let lines = std::fs::read_to_string(d.join("log.jsonl"))
+        .unwrap()
+        .lines()
+        .count();
+    assert_eq!(lines, 1 + 6);
+}
+
+#[test]
+fn a_seed_only_mint_later_observed_live_restores_as_dedup_not_a_second_launch() {
+    // The mint is in the SEED (pre-cutoff) and our feed later observes it (appended once to the log). On restart the
+    // seed inserts it first; the log row must be counted as overlap (dedup), never as a second restored launch.
+    let d = dir("seedlog");
+    let pop = population();
+    write_seed(&d.join("seed.jsonl"), &pop);
+    let sp = spec(&d.join("seed.jsonl"), CUTOFF);
+    let (m0, c0, t0) = pop[0];
+    let (mut a, _) = armed();
+    a.model_creator_registry_attach(Some(&sp), &d.join("log.jsonl"), CUTOFF, "a")
+        .expect("attach a");
+    a.tick(launch(m0, c0, t0));
+    let want = a.model_creator_dev_history(&m0);
+    drop(a);
+    let (mut b, _) = armed();
+    let st = b
+        .model_creator_registry_attach(Some(&sp), &d.join("log.jsonl"), CUTOFF, "b")
+        .expect("attach b");
+    assert_eq!(
+        (st.restored_from_log, st.dedup_overlap),
+        (0, 1),
+        "seed+log overlap counted once, as dedup"
+    );
+    assert_eq!(b.model_creator_dev_history(&m0), want);
+    assert!(b.model_launch_feed_observed(&m0));
+}

@@ -412,6 +412,8 @@ pub struct RegistryStartup {
     pub restored_from_log: u64,
     /// Seed/log rows that named an already-present mint (dedup by mint; counted once).
     pub dedup_overlap: u64,
+    /// RESTART: logged launches received after the durable restart barrier, left for the feed to re-deliver.
+    pub deferred_after_restart: u64,
 }
 
 #[cfg(test)]

@@ -57,6 +57,78 @@ pub struct HeldEntry {
     pub version: u64,
     /// The order that opened the position.
     pub position_order: u64,
+    /// The position's durable LAUNCH IDENTITY (who launched the mint, when, the creator count FROZEN when the launch
+    /// was first inserted, and the tape origin the trained state was built from). `None` = unrecorded (a ledger
+    /// written before this record existed): management then refuses by name, never by inventing one.
+    pub launch: Option<HeldLaunch>,
+}
+
+/// A held mint's launch identity, distinct from the creator registry (which answers creator-count history for every
+/// market). Restored through its own record so a restart can manage the position without the launch being re-observed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeldLaunch {
+    /// Creator wallet.
+    pub creator: [u8; 32],
+    /// Launch receive time (the registry's causal clock).
+    pub launch_unix_ms: i64,
+    /// `creator_past_launches` as frozen at the launch's own insert (`None` = unknown).
+    pub creator_past_launches: Option<i64>,
+    /// `creator_known` at record time.
+    pub creator_known: u8,
+    /// Whether OUR feed observed the launch (else the seed only).
+    pub feed_observed: bool,
+    /// Registry provenance tag the count came from.
+    pub provenance: String,
+    /// Receive time of the first trade the state tape was built from (the trained `age_s` origin). `None` = unknown.
+    pub tape_origin_ms: Option<i64>,
+    /// Tape FLOOR, pinned at the opening fill: receive time of the newest trade on the tape then ...
+    pub tape_through_ms: Option<i64>,
+    /// ... and how many tape trades were strictly before it. A restarted tape must reproduce origin and count exactly
+    /// before a management prompt is cut from it (a truncated tape is never served as the position's history).
+    pub tape_trades_before: Option<u64>,
+}
+
+impl HeldLaunch {
+    fn to_json(&self) -> Value {
+        json!({
+            "creator": hex(&self.creator),
+            "launch_unix_ms": self.launch_unix_ms,
+            "creator_past_launches": self.creator_past_launches,
+            "creator_known": self.creator_known,
+            "feed_observed": self.feed_observed,
+            "provenance": self.provenance,
+            "tape_origin_ms": self.tape_origin_ms,
+            "tape_through_ms": self.tape_through_ms,
+            "tape_trades_before": self.tape_trades_before,
+        })
+    }
+
+    fn from_json(v: &Value) -> Option<Self> {
+        let opt_i64 = |k: &str| -> Option<Option<i64>> {
+            match v.get(k)? {
+                Value::Null => Some(None),
+                x => Some(Some(x.as_i64()?)),
+            }
+        };
+        let known = v.get("creator_known")?.as_u64()?;
+        if known > 1 {
+            return None;
+        }
+        Some(Self {
+            creator: v.get("creator")?.as_str().and_then(unhex)?,
+            launch_unix_ms: v.get("launch_unix_ms")?.as_i64()?,
+            creator_past_launches: opt_i64("creator_past_launches")?,
+            creator_known: known as u8,
+            feed_observed: v.get("feed_observed")?.as_bool()?,
+            provenance: v.get("provenance")?.as_str()?.to_string(),
+            tape_origin_ms: opt_i64("tape_origin_ms")?,
+            tape_through_ms: opt_i64("tape_through_ms")?,
+            tape_trades_before: match v.get("tape_trades_before")? {
+                Value::Null => None,
+                x => Some(x.as_u64()?),
+            },
+        })
+    }
 }
 
 /// One pending order. After a restart its acknowledgement is UNKNOWN, so it restores as uncertain.
@@ -369,6 +441,7 @@ impl HeldLedger {
                 "step": h.step,
                 "version": h.version,
                 "position_order": h.position_order,
+                "launch": h.launch.as_ref().map(HeldLaunch::to_json),
             })).collect::<Vec<_>>(),
             "pending": self.pending.iter().map(|p| { let mut j = json!({
                 "kind": p.kind,
@@ -467,6 +540,11 @@ impl HeldLedger {
                 step: i(h, "step")?,
                 version: u(h, "version")?,
                 position_order: u(h, "position_order")?,
+                // Absent or null = unrecorded (older writer). Present but malformed = untrusted, never guessed.
+                launch: match h.get("launch") {
+                    None | Some(Value::Null) => None,
+                    Some(x) => Some(HeldLaunch::from_json(x).ok_or(bad("held.launch"))?),
+                },
             });
         }
         let mut pending = Vec::new();
@@ -810,6 +888,12 @@ pub struct RestoreReport {
     pub realized_lamports: i128,
     /// Positions whose inventory was never established by a fill (management will refuse them by name).
     pub inventory_unknown: usize,
+    /// Positions whose launch identity was restored from its durable record.
+    pub launch_restored: usize,
+    /// Positions with NO launch-identity record (older writer): management refuses `join_launch_identity_unrecorded`.
+    pub launch_unrecorded: usize,
+    /// Positions whose record contradicts the registry/feed: management refuses `join_launch_identity_conflict`.
+    pub launch_conflict: usize,
 }
 
 #[cfg(test)]
@@ -888,6 +972,17 @@ mod tests {
                 step: 5,
                 version: 3,
                 position_order: 1,
+                launch: Some(HeldLaunch {
+                    creator: [5; 32],
+                    launch_unix_ms: 1_699_999_000_000,
+                    creator_past_launches: Some(3),
+                    creator_known: 1,
+                    feed_observed: true,
+                    provenance: "p".into(),
+                    tape_origin_ms: Some(1_699_999_000_500),
+                    tape_through_ms: Some(1_700_000_000_900),
+                    tape_trades_before: Some(41),
+                }),
             }],
             pending: vec![HeldPending {
                 kind: "reduce".into(),

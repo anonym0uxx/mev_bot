@@ -40,6 +40,7 @@ fn engine() -> Engine {
 }
 
 #[test]
+#[ignore = "host data: needs /training canonical table; run locally with --ignored"]
 fn the_rust_registry_reproduces_all_trained_counts_across_a_restart() {
     let table = std::env::var("PQ_M2_V7_TABLE")
         .unwrap_or_else(|_| "/training/v2/canonical/renormalized_v7/launches.jsonl".into());

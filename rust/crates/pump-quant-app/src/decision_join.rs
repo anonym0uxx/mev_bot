@@ -139,6 +139,25 @@ pub enum JoinRefusal {
     CreatorRegistryUntrusted {
         why: &'static str,
     },
+    /// A RESTORED held position has no durable launch-identity record (ledger written before the record existed).
+    /// Management refuses by this name; nothing is inferred from the feed or the registry.
+    LaunchIdentityUnrecorded,
+    /// A restored held position's launch-identity record contradicts the registry / observed launch / flow creator
+    /// (`why` names which). Evidence kept, nothing served.
+    LaunchIdentityConflict {
+        why: &'static str,
+    },
+    /// A restored held position's state tape does not reproduce the tape pinned at its opening fill (different
+    /// origin, a different number of trades up to the pin, or evicted): the cumulative history is not the position's.
+    HeldTapeDiscontinuous,
+    /// RESTART: the mint launched BEFORE the restart instant and its pre-restart state tape was not rebuilt from a
+    /// capture covering it from launch (no capture, or the capture starts after the launch / ends before the restart
+    /// instant). The tape holds only post-restart prints: serving it would show a different (younger, thinner) market
+    /// than the uninterrupted run saw. Named; lost coverage is reported (`restart_lost_coverage`).
+    TapeTruncatedAtRestart {
+        launch_ms: i64,
+        restart_ms: i64,
+    },
     /// The cache holds a print newer than the decision clock.
     FutureStateInCache {
         newest_ms: i64,
@@ -210,6 +229,10 @@ impl JoinRefusal {
             }
             JoinRefusal::LaunchSeedOnlyNotFeedObserved => "join_launch_seed_only_not_feed_observed",
             JoinRefusal::CreatorRegistryUntrusted { .. } => "join_creator_registry_untrusted",
+            JoinRefusal::LaunchIdentityUnrecorded => "join_launch_identity_unrecorded",
+            JoinRefusal::LaunchIdentityConflict { .. } => "join_launch_identity_conflict",
+            JoinRefusal::HeldTapeDiscontinuous => "join_held_tape_discontinuous",
+            JoinRefusal::TapeTruncatedAtRestart { .. } => "join_tape_truncated_at_restart",
             JoinRefusal::FutureStateInCache { .. } => "join_future_state_in_cache",
             JoinRefusal::State(c) => c.as_str(),
             JoinRefusal::EnrichmentIdentityMissing { .. } => "join_enrichment_identity_missing",
@@ -575,6 +598,29 @@ pub struct DecisionCache {
     /// M2: provenance tag carried on every entry snapshot (decision record), with the
     /// `observed history, not lifetime / complete chain coverage` label.
     creator_provenance: String,
+    /// Per HELD mint: its launch identity (pinned at the opening fill, or restored from the held ledger).
+    held_launch: BTreeMap<[u8; 32], HeldLaunchState>,
+    /// Set only while a restart rebuilds held mints' state tapes from the previous process's durable capture: the
+    /// prints feed the state ledger and enrichment ONLY (the flow reducer is durable and already holds them).
+    rehydrating: bool,
+    /// RESTART floor: `(restart_ms, covered_from_ms)`. A launch strictly before `restart_ms` is served only when the
+    /// previous process's capture was rehydrated from `covered_from_ms <= launch`. `None` = not a restart.
+    restart_floor: Option<(i64, i64)>,
+}
+
+/// Launch identity of one held mint, as the management join sees it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HeldLaunchState {
+    /// The durable record. `verify_tape` = restored from disk and its tape pin not yet matched by the rebuilt tape
+    /// (an uninterrupted position's tape is its own and is never re-checked).
+    Pinned {
+        rec: crate::held_state::HeldLaunch,
+        verify_tape: bool,
+    },
+    /// Restored from a ledger with no record.
+    Unrecorded,
+    /// Restored record contradicts current evidence.
+    Conflict(&'static str),
 }
 
 impl Default for DecisionCache {
@@ -639,7 +685,258 @@ impl DecisionCache {
                 "creator_registry=live_feed_only_unpersisted|{}",
                 crate::creator_registry::PROVENANCE_LABEL
             ),
+            held_launch: BTreeMap::new(),
+            rehydrating: false,
+            restart_floor: None,
         }
+    }
+
+    /// RESTART: declare the restart instant and the start of the rehydrated capture coverage (`covered_from_ms >
+    /// restart_ms` when no capture covered anything). Set once, before the first tick.
+    pub fn set_restart_floor(&mut self, restart_ms: i64, covered_from_ms: i64) {
+        self.restart_floor = Some((restart_ms, covered_from_ms));
+    }
+
+    /// The declared restart floor.
+    #[must_use]
+    pub fn restart_floor(&self) -> Option<(i64, i64)> {
+        self.restart_floor
+    }
+
+    /// Markets whose pre-restart tape is NOT covered (lost coverage): `(mint, launch_ms)` for every feed-observed
+    /// launch strictly before the restart instant that the rehydrated capture does not cover from launch.
+    #[must_use]
+    pub fn restart_lost_coverage(&self) -> Vec<([u8; 32], i64)> {
+        let Some((r, from)) = self.restart_floor else {
+            return Vec::new();
+        };
+        self.launch_ms
+            .iter()
+            .filter(|(_, t)| **t < r && **t < from)
+            .map(|(m, t)| (*m, *t))
+            .collect()
+    }
+
+    /// RESTART: rebuild a held mint's state tape + enrichment from one print of the previous process's durable
+    /// capture. Never touches the flow reducer/cursors (durable on their own). Only mints with a restored pin whose
+    /// tape is not yet verified accept prints, and only prints strictly before the pinned instant.
+    pub fn rehydrate_trade(&mut self, t: &TradeObs) -> Option<Ingest> {
+        // Only prints the previous process applied before the restart instant (its durable flow/held barrier).
+        let (through, _) = self.restart_floor?;
+        if t.recv_unix_ms.is_none_or(|r| r > through) {
+            return None;
+        }
+        self.rehydrating = true;
+        let r = self.observe_trade(t);
+        self.rehydrating = false;
+        Some(r)
+    }
+
+    /// Earliest pinned instant among restored, not-yet-verified held tapes (`None` = nothing to rehydrate).
+    #[must_use]
+    pub fn held_tapes_pending(&self) -> Vec<([u8; 32], i64)> {
+        self.held_launch
+            .iter()
+            .filter_map(|(m, s)| match s {
+                HeldLaunchState::Pinned {
+                    rec,
+                    verify_tape: true,
+                } => rec.tape_through_ms.map(|t| (*m, t)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Build the durable launch-identity record of `mint` NOW (called at the opening fill), with the tape pinned at
+    /// `t_ms`. `None` when no launch is known for the mint (the restart will refuse it by name).
+    #[must_use]
+    pub fn launch_identity_now(
+        &self,
+        mint: &[u8; 32],
+        t_ms: i64,
+    ) -> Option<crate::held_state::HeldLaunch> {
+        let creator = self.flow.creator_of(mint)?;
+        let feed = self.launch_ms.get(mint).copied();
+        let launch_unix_ms = match feed {
+            Some(t) => t,
+            None => self.creators.get(mint)?.launch_unix_ms,
+        };
+        let dev = self.creators.dev_history(mint);
+        let ext = self.ledger.tape_extent(mint, t_ms);
+        Some(crate::held_state::HeldLaunch {
+            creator,
+            launch_unix_ms,
+            creator_past_launches: dev.creator_past_launches,
+            creator_known: u8::from(dev.creator_known == 1),
+            feed_observed: feed.is_some(),
+            provenance: self.creator_provenance.clone(),
+            tape_origin_ms: ext.map(|e| e.0),
+            tape_through_ms: ext.map(|_| t_ms),
+            tape_trades_before: ext.and_then(|e| e.1),
+        })
+    }
+
+    /// Pin a held mint's launch identity (opening fill). A position with no known launch is recorded Unrecorded.
+    pub fn pin_held_launch(&mut self, mint: [u8; 32], t_ms: i64) {
+        let st = match self.launch_identity_now(&mint, t_ms) {
+            Some(rec) => HeldLaunchState::Pinned {
+                rec,
+                verify_tape: false,
+            },
+            None => HeldLaunchState::Unrecorded,
+        };
+        self.held_launch.insert(mint, st);
+    }
+
+    /// The durable record to write for a held mint (`None` = unrecorded).
+    #[must_use]
+    pub fn held_launch_record(&self, mint: &[u8; 32]) -> Option<crate::held_state::HeldLaunch> {
+        match self.held_launch.get(mint) {
+            Some(HeldLaunchState::Pinned { rec, .. }) => Some(rec.clone()),
+            _ => None,
+        }
+    }
+
+    /// The held mint's launch-identity state.
+    #[must_use]
+    pub fn held_launch_state(&self, mint: &[u8; 32]) -> Option<&HeldLaunchState> {
+        self.held_launch.get(mint)
+    }
+
+    /// The position closed: its pin goes with it.
+    pub fn held_launch_forget(&mut self, mint: &[u8; 32]) {
+        self.held_launch.remove(mint);
+    }
+
+    /// Whether the rebuilt tape reproduces a restored pin: same first trade and the same number of trades up to the
+    /// pinned instant. A pin without tape fields (unknown at record time) cannot be verified and never matches.
+    fn held_tape_matches(&self, mint: &[u8; 32], p: &crate::held_state::HeldLaunch) -> bool {
+        let (Some(origin), Some(through), Some(n)) =
+            (p.tape_origin_ms, p.tape_through_ms, p.tape_trades_before)
+        else {
+            return false;
+        };
+        self.ledger
+            .tape_extent(mint, through)
+            .is_some_and(|(first, c)| first == origin && c == Some(n))
+    }
+
+    /// Latch restored pins whose tape now matches (checked on the tick path; later ring eviction cannot un-verify a
+    /// tape that was proven continuous). Returns how many were verified now.
+    pub fn verify_held_tapes(&mut self) -> usize {
+        let todo: Vec<[u8; 32]> = self
+            .held_launch
+            .iter()
+            .filter_map(|(m, s)| match s {
+                HeldLaunchState::Pinned {
+                    rec,
+                    verify_tape: true,
+                } if self.held_tape_matches(m, rec) => Some(*m),
+                _ => None,
+            })
+            .collect();
+        for m in &todo {
+            if let Some(HeldLaunchState::Pinned { verify_tape, .. }) = self.held_launch.get_mut(m) {
+                *verify_tape = false;
+            }
+        }
+        todo.len()
+    }
+
+    /// RESTART: restore a held mint's launch identity from its durable record (or record its absence), verifying it
+    /// against whatever the registry / observed-launch log / flow history already holds. The creator registry and the
+    /// launch identity are separate dependencies: the registry count is reinstated FROZEN as recorded (never recounted
+    /// from a partial history), the observed launch time and creator are restored only from this record.
+    /// Returns the resulting state label: "restored" | "unrecorded" | the conflict name.
+    pub fn restore_held_launch(
+        &mut self,
+        mint: [u8; 32],
+        rec: Option<&crate::held_state::HeldLaunch>,
+    ) -> &'static str {
+        let Some(r) = rec else {
+            self.held_launch.insert(mint, HeldLaunchState::Unrecorded);
+            return "unrecorded";
+        };
+        let creator_id =
+            pump_quant_wallet_graph::tracked_wallet_matcher::wallet_entity_id(&r.creator);
+        let conflict = if let Some(l) = self.creators.get(&mint) {
+            let d = self.creators.dev_history(&mint);
+            (l.creator != creator_id
+                || l.launch_unix_ms != r.launch_unix_ms
+                || d.creator_past_launches != r.creator_past_launches
+                || d.creator_known != i64::from(r.creator_known))
+            .then_some("launch_identity_conflict:registry")
+        } else {
+            None
+        }
+        .or_else(|| {
+            self.launch_ms
+                .get(&mint)
+                .is_some_and(|t| *t != r.launch_unix_ms || !r.feed_observed)
+                .then_some("launch_identity_conflict:observed_launch")
+        })
+        .or_else(|| {
+            self.flow
+                .creator_of(&mint)
+                .is_some_and(|w| w != r.creator)
+                .then_some("launch_identity_conflict:flow_creator")
+        });
+        if let Some(why) = conflict {
+            self.held_launch
+                .insert(mint, HeldLaunchState::Conflict(why));
+            return why;
+        }
+        if self.creators.get(&mint).is_none() {
+            match r.creator_past_launches {
+                Some(n) if r.creator_known == 1 => {
+                    self.creators
+                        .restore_frozen(mint, creator_id, r.launch_unix_ms, n);
+                }
+                // An unknown count is restored as unknown: nothing is inserted, the join keeps refusing by name.
+                _ => {}
+            }
+        }
+        if r.feed_observed {
+            self.launch_ms.insert(mint, r.launch_unix_ms);
+        }
+        self.flow.track_mint(mint);
+        self.flow.set_creator(mint, r.creator);
+        self.held_launch.insert(
+            mint,
+            HeldLaunchState::Pinned {
+                rec: r.clone(),
+                verify_tape: true,
+            },
+        );
+        "restored"
+    }
+
+    /// After a flow-history attach replaced the reducer: re-apply restored held launches' creator/tracking, and
+    /// flag a contradiction with the restored reducer by name.
+    pub fn reapply_held_launches(&mut self) -> usize {
+        let mut conflicts = 0;
+        let mints: Vec<[u8; 32]> = self.held_launch.keys().copied().collect();
+        for m in mints {
+            let Some(HeldLaunchState::Pinned { rec: r, .. }) = self.held_launch.get(&m).cloned()
+            else {
+                continue;
+            };
+            match self.flow.creator_of(&m) {
+                Some(w) if w != r.creator => {
+                    self.held_launch.insert(
+                        m,
+                        HeldLaunchState::Conflict("launch_identity_conflict:flow_creator"),
+                    );
+                    conflicts += 1;
+                }
+                Some(_) => self.flow.track_mint(m),
+                None => {
+                    self.flow.track_mint(m);
+                    self.flow.set_creator(m, r.creator);
+                }
+            }
+        }
+        conflicts
     }
 
     /// M2: seed one launch from the trained table into the creator registry ONLY. It does not mark
@@ -822,9 +1119,12 @@ impl DecisionCache {
             self.counters.out_of_order += 1;
             // With durable flow history, an older corpus row is a LATE event: recorded (dependency-scoped refusal), not
             // silently dropped while history is described as complete. A redelivered id is a proven duplicate.
-            if let (Some(fm), Some(id), true) =
-                (&mut self.flow_meta, t.event_id, t.feature.is_some())
-            {
+            if let (Some(fm), Some(id), true, false) = (
+                &mut self.flow_meta,
+                t.event_id,
+                t.feature.is_some(),
+                self.rehydrating,
+            ) {
                 let mut st = crate::flow_checkpoint::IngestStats::default();
                 fm.record_late(
                     "live",
@@ -949,6 +1249,10 @@ impl DecisionCache {
             _ => mc.identity_missing += 1,
         }
 
+        if self.rehydrating {
+            // The flow reducer and its cursors are durable: their copy of this print is already applied.
+            return Ingest::Accepted;
+        }
         // Flow: wallet + slot + total fee are required by the reducer's event; CU is carried as
         // Option. A print lacking any of them cannot enter the window, and that is counted.
         let flow_ev = match (w_trader, t.slot, t.fee_lamports) {
@@ -1018,6 +1322,8 @@ impl DecisionCache {
         self.flow = reducer;
         self.flow_meta = Some(meta);
         self.flow_rev = self.flow_rev.wrapping_add(1);
+        // Restored held launches were applied to the reducer that was just replaced.
+        self.reapply_held_launches();
     }
 
     /// A persisted flow checkpoint existed but cannot be trusted (`why` is the named reason): refuse every prompt.
@@ -1357,6 +1663,7 @@ impl DecisionCache {
         self.pools.remove(mint);
         self.launch_ms.remove(mint);
         self.chain_launch.remove(mint);
+        self.held_launch.remove(mint);
     }
 
     /// Cut an immutable prompt snapshot for `mint` as of `t_dec_ms`, or name why not.
@@ -1370,9 +1677,47 @@ impl DecisionCache {
         t_dec_ms: i64,
         audience: Audience,
     ) -> Result<Prepared, JoinRefusal> {
+        // A held mint's launch identity is its own dependency: a contradiction or a missing record is named first.
+        match self.held_launch.get(mint) {
+            Some(HeldLaunchState::Conflict(why)) => {
+                return Err(JoinRefusal::LaunchIdentityConflict { why })
+            }
+            Some(HeldLaunchState::Unrecorded) if !self.launch_ms.contains_key(mint) => {
+                return Err(JoinRefusal::LaunchIdentityUnrecorded)
+            }
+            _ => {}
+        }
         let Some(mc) = self.mints.get(mint) else {
             return Err(JoinRefusal::NoMint);
         };
+        // The cumulative state of a held position must be the tape it was opened on, not a truncated rebuild.
+        if let Some(HeldLaunchState::Pinned {
+            rec: p,
+            verify_tape: true,
+        }) = self.held_launch.get(mint)
+        {
+            if !self.held_tape_matches(mint, p) {
+                return Err(JoinRefusal::HeldTapeDiscontinuous);
+            }
+        }
+        // A restored held position whose tape was PROVEN to reproduce its opening pin is its own history.
+        let held_verified = matches!(
+            self.held_launch.get(mint),
+            Some(HeldLaunchState::Pinned {
+                verify_tape: false,
+                ..
+            })
+        );
+        if let (Some(&l), Some((rs, from)), false) =
+            (self.launch_ms.get(mint), self.restart_floor, held_verified)
+        {
+            if l < rs && l < from {
+                return Err(JoinRefusal::TapeTruncatedAtRestart {
+                    launch_ms: l,
+                    restart_ms: rs,
+                });
+            }
+        }
         let Some(&launch) = self.launch_ms.get(mint) else {
             return Err(if self.chain_launch.contains_key(mint) {
                 JoinRefusal::CreatorCountUndefinedChainOnly
@@ -2907,5 +3252,152 @@ mod tests {
             panic!()
         };
         assert_eq!(h2.encode(), newer, "after publication: the new one");
+    }
+    // ── RESTART launch recovery (SCOPE_REARM_LAUNCH B) ─────────────────────────────────────────────────────────
+
+    /// The uninterrupted reference: launch at T0, 40 prints, curve; then the same cache restarted from an empty
+    /// process. `restart` = the restart instant (after print 25).
+    fn restart_ms() -> i64 {
+        T0 + 1_000 + 25 * 2_000
+    }
+
+    /// A restarted process: nothing rehydrated, the overlap feed re-delivers only prints after the restart.
+    fn restarted_without_capture() -> DecisionCache {
+        let mut c = DecisionCache::new();
+        c.set_restart_floor(restart_ms(), i64::MAX);
+        // The launch is re-delivered by the creator log (as the daemon does from the durable log).
+        assert!(c.observe_launch(MINT, CREATOR, T0));
+        for i in 26..40 {
+            assert_eq!(c.observe_trade(&trade(i)), Ingest::Accepted);
+        }
+        assert!(c.observe_curve(MINT, curve()));
+        c
+    }
+
+    #[test]
+    fn a_market_launched_before_the_restart_without_its_capture_refuses_by_name_and_is_reported_lost(
+    ) {
+        let c = restarted_without_capture();
+        match c.snapshot(&MINT, t_dec(40)) {
+            Err(JoinRefusal::TapeTruncatedAtRestart {
+                launch_ms,
+                restart_ms: r,
+            }) => {
+                assert_eq!((launch_ms, r), (T0, restart_ms()));
+            }
+            o => panic!("a truncated tape must never be served: {o:?}"),
+        }
+        assert_eq!(
+            c.snapshot(&MINT, t_dec(40)).unwrap_err().as_str(),
+            "join_tape_truncated_at_restart"
+        );
+        assert_eq!(c.restart_lost_coverage(), vec![(MINT, T0)]);
+    }
+
+    #[test]
+    fn rehydrating_the_pre_restart_capture_restores_exactly_the_uninterrupted_prompt() {
+        let reference = ready(40);
+        let want = reference.snapshot(&MINT, t_dec(40)).expect("reference");
+        let mut c = DecisionCache::new();
+        // Capture covers from the launch: everything up to the restart instant is replayed causally.
+        c.set_restart_floor(restart_ms(), T0);
+        assert!(c.observe_launch(MINT, CREATOR, T0));
+        // The flow reducer is durable on its own: restore it as the uninterrupted run had it at the restart.
+        let mut flow_only = DecisionCache::new();
+        assert!(flow_only.observe_launch(MINT, CREATOR, T0));
+        for i in 0..26 {
+            flow_only.observe_trade(&trade(i));
+        }
+        c.flow = flow_only.flow.clone();
+        for i in 0..26 {
+            assert_eq!(c.rehydrate_trade(&trade(i)), Some(Ingest::Accepted));
+        }
+        // A capture line after the restart instant is not applied (the feed re-delivers it).
+        assert_eq!(c.rehydrate_trade(&trade(30)), None);
+        // Overlap: the live feed re-delivers from print 20, then continues. A re-delivered print is never applied
+        // twice (older ones are refused as out-of-order, the boundary print as a duplicate).
+        for i in 20..40 {
+            let r = c.observe_trade(&trade(i));
+            if i < 26 {
+                assert!(
+                    matches!(r, Ingest::Duplicate | Ingest::OutOfOrder),
+                    "{i}: {r:?}"
+                );
+            } else {
+                assert_eq!(r, Ingest::Accepted);
+            }
+        }
+        assert!(c.observe_curve(MINT, curve()));
+        let got = c.snapshot(&MINT, t_dec(40)).expect("rehydrated");
+        assert_eq!(got.user_prompt, want.user_prompt, "restart equivalence");
+        assert!(c.restart_lost_coverage().is_empty());
+    }
+
+    #[test]
+    fn a_re_delivered_launch_after_restart_never_increments_a_creator_twice() {
+        let mut c = DecisionCache::new();
+        c.set_restart_floor(restart_ms(), T0);
+        let other = [0x44; 32];
+        assert!(c.observe_launch(other, CREATOR, T0 - 10_000));
+        assert!(c.observe_launch(MINT, CREATOR, T0));
+        // The overlap re-delivers both launches.
+        assert!(c.observe_launch(other, CREATOR, T0 - 10_000));
+        assert!(c.observe_launch(MINT, CREATOR, T0));
+        assert_eq!(c.creator_dev_history(&MINT).creator_past_launches, Some(1));
+        assert_eq!(c.creator_dev_history(&other).creator_past_launches, Some(0));
+        // A later-arriving EARLIER launch of the same creator never revises a frozen count.
+        assert!(c.observe_launch([0x45; 32], CREATOR, T0 - 20_000));
+        assert_eq!(c.creator_dev_history(&MINT).creator_past_launches, Some(1));
+    }
+
+    fn pin(c: &DecisionCache) -> crate::held_state::HeldLaunch {
+        c.launch_identity_now(&MINT, T0 + 1_000 + 20 * 2_000)
+            .expect("pin")
+    }
+
+    #[test]
+    fn a_held_pin_restores_launch_identity_and_its_frozen_count_without_re_observation() {
+        let src = ready(40);
+        let rec = pin(&src);
+        assert_eq!(rec.creator_past_launches, Some(0));
+        assert_eq!(rec.tape_trades_before, Some(20));
+        let mut c = DecisionCache::new();
+        assert_eq!(c.restore_held_launch(MINT, Some(&rec)), "restored");
+        assert!(c.launch_known(&MINT));
+        assert_eq!(c.creator_dev_history(&MINT).creator_past_launches, Some(0));
+        // Without the tape it pinned, management refuses by name (never a truncated history).
+        for i in 30..40 {
+            c.observe_trade(&trade(i));
+        }
+        assert!(c.observe_curve(MINT, curve()));
+        assert_eq!(
+            c.snapshot(&MINT, t_dec(40)).unwrap_err().as_str(),
+            "join_held_tape_discontinuous"
+        );
+    }
+
+    #[test]
+    fn a_held_pin_that_contradicts_the_registry_is_a_named_conflict() {
+        let src = ready(40);
+        let mut rec = pin(&src);
+        let mut c = DecisionCache::new();
+        assert!(c.observe_launch(MINT, CREATOR, T0 + 5));
+        assert_eq!(
+            c.restore_held_launch(MINT, Some(&rec)),
+            "launch_identity_conflict:registry"
+        );
+        assert!(matches!(
+            c.snapshot(&MINT, t_dec(40)),
+            Err(JoinRefusal::LaunchIdentityConflict { .. })
+        ));
+        // Unrecorded (older ledger) and no launch known: named, never invented.
+        let mut d = DecisionCache::new();
+        assert_eq!(d.restore_held_launch(MINT, None), "unrecorded");
+        assert_eq!(
+            d.snapshot(&MINT, t_dec(40)).unwrap_err().as_str(),
+            "join_launch_identity_unrecorded"
+        );
+        rec.creator = [1; 32];
+        let _ = rec;
     }
 }

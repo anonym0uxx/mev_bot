@@ -128,6 +128,39 @@ impl CreatorHistory {
         true
     }
 
+    /// Restore ONE launch from a durable per-position launch-identity record (held ledger), with the count that was
+    /// FROZEN when the launch was first inserted. Used only when this registry does not already hold the mint: the
+    /// recorded count is reinstated as-is (never recomputed from whatever subset of history this process happens to
+    /// hold), and the launch time joins the creator's sorted history so later launches still count it.
+    /// Returns `false` (nothing changed) when the mint is already held or the registry is full.
+    pub fn restore_frozen(
+        &mut self,
+        mint: [u8; 32],
+        creator: u64,
+        launch_unix_ms: i64,
+        frozen_prior: i64,
+    ) -> bool {
+        if self.by_mint.contains_key(&mint) {
+            return false;
+        }
+        if self.by_mint.len() >= MAX_TRACKED_LAUNCHES {
+            self.refused += 1;
+            return false;
+        }
+        let times = self.by_creator.entry(creator).or_default();
+        let at = times.partition_point(|&x| x < launch_unix_ms);
+        times.insert(at, launch_unix_ms);
+        self.prior_at_insert.insert(mint, frozen_prior);
+        self.by_mint.insert(
+            mint,
+            Launch {
+                creator,
+                launch_unix_ms,
+            },
+        );
+        true
+    }
+
     /// The held launch record for `mint`, if any (dedup identity is the mint).
     #[must_use]
     pub fn get(&self, mint: &[u8; 32]) -> Option<Launch> {
@@ -168,6 +201,31 @@ mod tests {
         let mut out = [0u8; 32];
         out[0] = b;
         out
+    }
+
+    #[test]
+    fn a_frozen_restore_of_an_already_held_mint_changes_nothing() {
+        // Dedupe on the restore path: a held mint restored again (registry + held record overlap) never inserts a
+        // second launch time, so a later launch of the same creator still counts it ONCE.
+        let mut h = CreatorHistory::new();
+        assert!(h.observe(m(1), 42, 1_000));
+        assert!(!h.restore_frozen(m(1), 42, 1_000, 0), "already held");
+        assert!(h.restore_frozen(m(2), 42, 2_000, 1));
+        assert!(
+            !h.restore_frozen(m(2), 42, 2_000, 1),
+            "re-restore is a no-op"
+        );
+        assert!(h.observe(m(3), 42, 3_000));
+        assert_eq!(
+            h.dev_history(&m(2)).creator_past_launches,
+            Some(1),
+            "frozen as recorded"
+        );
+        assert_eq!(
+            h.dev_history(&m(3)).creator_past_launches,
+            Some(2),
+            "each launch counted once"
+        );
     }
 
     #[test]

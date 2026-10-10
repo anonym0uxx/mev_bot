@@ -85,6 +85,7 @@ impl Engine {
                 step: mp.map_or(0, |m| m.step),
                 version: mp.map_or(1, |m| m.version),
                 position_order: mp.map_or(0, |m| m.position_order),
+                launch: self.model_cache.held_launch_record(&x.mint),
             });
         }
         held.sort_by_key(|h| h.mint);
@@ -657,6 +658,18 @@ impl Engine {
                 },
             );
             self.model_position_order.insert(h.mint, h.position_order);
+            // Launch identity: its own durable record, restored apart from the creator registry.
+            match self
+                .model_cache
+                .restore_held_launch(h.mint, h.launch.as_ref())
+            {
+                "restored" => rep.launch_restored += 1,
+                "unrecorded" => rep.launch_unrecorded += 1,
+                why => {
+                    rep.launch_conflict += 1;
+                    self.mrep(format!("held_state:{why}"));
+                }
+            }
             self.model_mgmt.pos.insert(
                 h.mint,
                 MgmtPos {

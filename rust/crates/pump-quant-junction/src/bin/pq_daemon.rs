@@ -1788,9 +1788,40 @@ fn daemon_write_dests() -> Vec<pump_quant_junction::disk_budget::Dest> {
             p(pump_quant_junction::model_lifecycle::PROTECTIVE_HANDOFF_ACK_FILE),
             p(STATUS_PATH),
             p("data/model_lane_report.json"),
+            // D3 (wire 9beff305): binding log + capture seal are REQUIRED recovery state.
+            p(pump_quant_junction::curve_binding::DEFAULT_CURVE_BINDING_FILE),
+            p(pump_quant_junction::capture_rehydrate::DEFAULT_CAPTURE_SEAL_FILE),
         ],
         23_400,
     )
+}
+
+/// Seal the capture whenever the held ledger became durable at a NEW generation (the seal names the same lineage,
+/// generation and decision clock). The capture writer is flushed first so the sealed prefix holds every event the
+/// engine applied up to that ledger.
+fn capture_seal_if_new(
+    engine: &Engine,
+    w: &mut Option<EventStreamWriter>,
+    s: &mut Option<pump_quant_junction::capture_rehydrate::CaptureSealer>,
+    last: &mut u64,
+) {
+    let g = engine.model_held_generation();
+    if g == 0 || g == *last {
+        return;
+    }
+    if let (Some(w), Some(s)) = (w.as_mut(), s.as_mut()) {
+        let r = w.flush().and_then(|()| {
+            s.seal(
+                engine.model_held_lineage(),
+                g,
+                engine.model_held_through_ms_now(),
+            )
+        });
+        if let Err(e) = r {
+            eprintln!("[pq-daemon] ALERT: capture seal FAILED at held generation {g}: {e} - a restart from here refuses launch recovery by name");
+        }
+        *last = g;
+    }
 }
 
 fn main() -> ExitCode {
@@ -2015,6 +2046,9 @@ fn main() -> ExitCode {
             "[pq-daemon] startup paper check: no keypair, no --live, no submission sink (paper)"
         );
     }
+    // Curve markets the restored sealed capture proves the previous process tracked; their curve-account routing
+    // (pda_to_mint, process-local) is re-installed below so post-restart reserve updates are not dropped.
+    let mut restart_curve_mints: Vec<[u8; 32]> = Vec::new();
     if model_armed {
         // PAPER FILL MODEL (before restore: the held ledger's paper_fill section is validated against it).
         // Unset = `paper_fill_v1_observed` (unchanged behaviour). An unknown label refuses startup by name.
@@ -2162,6 +2196,164 @@ fn main() -> ExitCode {
                     "[pq-daemon] ALERT: flow-history restored with {late} durable late-event records - affected windows refuse by scope"
                 ),
                 _ => {}
+            }
+        }
+        // LAUNCH RECOVERY (SCOPE_REARM_LAUNCH B). Creator-count history and per-market launch evidence are restored
+        // SEPARATELY, both bound to the restored held barrier: (1) the durable observed-launch log (counts frozen in
+        // receive order; records after the barrier are left for the feed to re-deliver); (2) the previous process's
+        // SEALED capture (lineage + barrier + sha256), replayed causally into the decision cache. A failure of either is
+        // named, and every market launched before the restart that is not covered refuses by name (lost coverage listed).
+        {
+            let through = matches!(
+                restore,
+                pump_quant_junction::model_lifecycle::StartupRestore::Restored(_)
+            )
+            .then(|| engine.model_replay_through_ms());
+            let log = std::env::var("PQ_CREATOR_LAUNCH_LOG")
+                .unwrap_or_else(|_| "data/creator_launch_log.jsonl".to_string());
+            let cutoff = std::env::var("PQ_CREATOR_SEED_CUTOFF_MS")
+                .ok()
+                .and_then(|v| v.parse::<i64>().ok())
+                .unwrap_or(0);
+            let seed = std::env::var("PQ_CREATOR_SEED").ok().map(|p| {
+                pump_quant_app::creator_registry::SeedSpec {
+                    path: std::path::PathBuf::from(p),
+                    cutoff_ms: cutoff,
+                    label: std::env::var("PQ_CREATOR_SEED_LABEL")
+                        .unwrap_or_else(|_| "unlabelled".into()),
+                    expect_sha256: std::env::var("PQ_CREATOR_SEED_SHA256").ok(),
+                }
+            });
+            match engine.model_creator_registry_attach_through(
+                seed.as_ref(),
+                std::path::Path::new(&log),
+                cutoff,
+                &pump_quant_junction::model_lifecycle::new_session_id(),
+                through,
+            ) {
+                Ok(st) => eprintln!(
+                    "[pq-daemon] CREATOR-REGISTRY {log}: seeded={} restored_from_log={} dedup_overlap={} deferred_after_restart={} provenance={}",
+                    st.seeded, st.restored_from_log, st.dedup_overlap, st.deferred_after_restart, st.provenance.record_tag()
+                ),
+                Err(e) => eprintln!(
+                    "[pq-daemon] ALERT: CREATOR-REGISTRY REFUSED ({}) for {log}: Qwen entry refuses creator_registry_untrusted by name",
+                    e.as_str()
+                ),
+            }
+            let cap = std::path::Path::new(EVENT_STREAM_PATH);
+            let seal = std::path::Path::new(
+                pump_quant_junction::capture_rehydrate::DEFAULT_CAPTURE_SEAL_FILE,
+            );
+            let out = pump_quant_junction::capture_rehydrate::rehydrate_from_capture(
+                &mut engine,
+                cap,
+                seal,
+            );
+            let lost_s = |lost: &Vec<([u8; 32], i64)>| -> String {
+                let (lo, hi) = lost
+                    .iter()
+                    .fold((i64::MAX, i64::MIN), |a, x| (a.0.min(x.1), a.1.max(x.1)));
+                let ms: Vec<String> = lost
+                    .iter()
+                    .take(50)
+                    .map(|(m, _)| solana_program::pubkey::Pubkey::new_from_array(*m).to_string())
+                    .collect();
+                if lost.is_empty() {
+                    "none".into()
+                } else {
+                    format!(
+                        "{} mints launch_ms=[{lo},{hi}] first50={}",
+                        lost.len(),
+                        ms.join(",")
+                    )
+                }
+            };
+            match &out {
+                pump_quant_junction::capture_rehydrate::RehydrateOutcome::NotARestart => {
+                    // A clean start owns no earlier capture: an existing file is moved aside, never sealed as ours.
+                    if let Some(p) =
+                        pump_quant_junction::capture_rehydrate::set_aside_unverified(cap)
+                    {
+                        eprintln!(
+                            "[pq-daemon] clean start: earlier capture moved aside to {}",
+                            p.display()
+                        );
+                    }
+                    // Same for an earlier binding log: it belongs to no restored ledger.
+                    pump_quant_junction::capture_rehydrate::set_aside_unverified(
+                        std::path::Path::new(
+                            pump_quant_junction::curve_binding::DEFAULT_CURVE_BINDING_FILE,
+                        ),
+                    );
+                }
+                pump_quant_junction::capture_rehydrate::RehydrateOutcome::Applied {
+                    restart_ms,
+                    covered_from_ms,
+                    stats,
+                    lost,
+                } => {
+                    eprintln!(
+                        "[pq-daemon] LAUNCH-RECOVERY applied: restart_ms={restart_ms} capture_covered_from_ms={covered_from_ms} applied={} launches={} prints={} reserves={} after_restart_skipped={} LOST-COVERAGE: {}",
+                        stats.applied, stats.launches, stats.prints, stats.reserves, stats.after_restart_skipped, lost_s(lost)
+                    );
+                    restart_curve_mints = stats.curve_mints.iter().copied().collect();
+                    // D3: durable mint -> curve bindings validated by pump.fun instructions at or before the restart
+                    // instant (sealed with the capture; schema 1 seals carry none and say so by name).
+                    let bpath = std::path::Path::new(
+                        pump_quant_junction::curve_binding::DEFAULT_CURVE_BINDING_FILE,
+                    );
+                    match pump_quant_junction::capture_rehydrate::restore_curve_bindings(
+                        &engine, seal, bpath,
+                    ) {
+                        pump_quant_junction::curve_binding::BindingRestore::Restored {
+                            bindings,
+                            after_restart_skipped,
+                            undated_skipped,
+                        } => {
+                            eprintln!(
+                                "[pq-daemon] CURVE-BINDINGS restored from the sealed log: {} (after_restart_skipped={after_restart_skipped} undated_skipped={undated_skipped})",
+                                bindings.len()
+                            );
+                            let mut seen: std::collections::BTreeSet<[u8; 32]> =
+                                restart_curve_mints.iter().copied().collect();
+                            for b in &bindings {
+                                if seen.insert(b.mint) {
+                                    restart_curve_mints.push(b.mint);
+                                }
+                            }
+                            pump_quant_junction::capture_rehydrate::set_aside_unsealed_binding_tail(
+                                bpath, seal,
+                            );
+                        }
+                        pump_quant_junction::curve_binding::BindingRestore::NotRecordedSchema1 => {
+                            eprintln!("[pq-daemon] ALERT: CURVE-BINDINGS NOT RECORDED (capture seal schema 1): curve markets bound only by an instruction before the restart stay unrouted until a post-restart instruction re-binds them");
+                            pump_quant_junction::capture_rehydrate::set_aside_unverified(bpath);
+                        }
+                        pump_quant_junction::curve_binding::BindingRestore::Refused(why) => {
+                            eprintln!("[pq-daemon] ALERT: CURVE-BINDINGS REFUSED ({why}): nothing restored from the binding log; curve markets bound only by an instruction before the restart stay unrouted until a post-restart instruction re-binds them");
+                            pump_quant_junction::capture_rehydrate::set_aside_unverified(bpath);
+                        }
+                    }
+                    // The sealed prefix is the causal capture; an unsealed tail (written after the last seal, before the
+                    // crash) is moved aside as evidence, never replayed, so the capture stays one causal sequence.
+                    pump_quant_junction::capture_rehydrate::set_aside_unsealed_tail(cap, seal);
+                }
+                pump_quant_junction::capture_rehydrate::RehydrateOutcome::Refused {
+                    why,
+                    restart_ms,
+                    lost,
+                } => {
+                    eprintln!(
+                        "[pq-daemon] ALERT: LAUNCH-RECOVERY REFUSED ({why}) restart_ms={restart_ms}: markets launched before the restart refuse join_tape_truncated_at_restart. LOST-COVERAGE: {}",
+                        lost_s(lost)
+                    );
+                    pump_quant_junction::capture_rehydrate::set_aside_unverified(cap);
+                    pump_quant_junction::capture_rehydrate::set_aside_unverified(
+                        std::path::Path::new(
+                            pump_quant_junction::curve_binding::DEFAULT_CURVE_BINDING_FILE,
+                        ),
+                    );
+                }
             }
         }
         match restore {
@@ -2481,6 +2673,28 @@ fn main() -> ExitCode {
     // STALE_SECS of connection establishment, the connection is declared
     // stale and reconnected — regardless of last_slot_seen.
     let mut helius_conn_established_at = Instant::now();
+    // ── Restart: curve-account routing for every curve market the sealed capture proves was tracked ──
+    // pda_to_mint is process-local. An uninterrupted process installed these PDAs when it first saw the mint (launch
+    // or curve instruction); without this, a restarted process drops their LaserStream account updates until some
+    // post-restart instruction re-installs the PDA. Routing only: nothing is dirtied, subscribed or dispatched here.
+    if !restart_curve_mints.is_empty() {
+        let mut installed = 0usize;
+        for m in &restart_curve_mints {
+            if pda_to_mint.len() >= PDA_MAP_CAP {
+                break;
+            }
+            if pda_to_mint
+                .insert(bonding_curve_pda(m).to_bytes(), *m)
+                .is_none()
+            {
+                installed += 1;
+            }
+        }
+        eprintln!(
+            "[pq-daemon] RESTART-ROUTING curve PDAs re-installed from the sealed capture: {installed}/{}",
+            restart_curve_mints.len()
+        );
+    }
     // ── Restored held positions: re-establish their feeds INDEPENDENTLY of discovery ──
     // A restart that rebuilt held positions (model_lifecycle::restore_held_state) has no live reserve or
     // print feed for them until something subscribes. Do it now: trade prints via PumpPortal, the PDA map
@@ -2814,6 +3028,28 @@ fn main() -> ExitCode {
     // Event stream capture for deterministic replay (§13 paper/live parity).
     // Fail-safe: if the file can't be opened, daemon continues without capture.
     let mut event_stream_writer = EventStreamWriter::open(EVENT_STREAM_PATH);
+    // The capture is SEALED (lineage + held generation + barrier clock + sha256) whenever the held ledger becomes
+    // durable at a new generation, so a restart can rebuild the per-market evidence the uninterrupted run used.
+    let mut capture_sealer = model_armed.then(|| {
+        pump_quant_junction::capture_rehydrate::CaptureSealer::with_bindings(
+            std::path::Path::new(EVENT_STREAM_PATH),
+            std::path::Path::new(pump_quant_junction::capture_rehydrate::DEFAULT_CAPTURE_SEAL_FILE),
+            std::path::Path::new(pump_quant_junction::curve_binding::DEFAULT_CURVE_BINDING_FILE),
+        )
+    });
+    // D3: one durable record per mint -> curve binding validated by a pump.fun instruction (sealed with the capture).
+    let mut curve_binding_writer = if model_armed {
+        let w = pump_quant_junction::curve_binding::BindingWriter::open(std::path::Path::new(
+            pump_quant_junction::curve_binding::DEFAULT_CURVE_BINDING_FILE,
+        ));
+        if w.is_none() {
+            eprintln!("[pq-daemon] ALERT: curve binding log could not be opened: a restart from here cannot restore instruction-only curve routing");
+        }
+        w
+    } else {
+        None
+    };
+    let mut capture_sealed_gen: u64 = u64::MAX;
     eprintln!("[pq-daemon] tape export path: {TAPE_PATH}");
 
     // ─── Cumulative PnL seed (restart-amnesia fix) ──────────────────────
@@ -3259,21 +3495,22 @@ fn main() -> ExitCode {
                     // or PumpPortal create event is needed, and none is pretended (launch history stays a separate,
                     // named input). Bounded; a full map is counted, never silently grown.
                     for c in &classified {
+                        use pump_quant_junction::curve_binding::BindingSource as BS;
                         let m = match c {
                             pump_quant_junction::laserstream::PumpInstruction::Buy {
                                 mint, ..
-                            }
-                            | pump_quant_junction::laserstream::PumpInstruction::Sell {
+                            } => Some((*mint, BS::IxBuy)),
+                            pump_quant_junction::laserstream::PumpInstruction::Sell {
                                 mint,
                                 ..
-                            }
-                            | pump_quant_junction::laserstream::PumpInstruction::Launch {
+                            } => Some((*mint, BS::IxSell)),
+                            pump_quant_junction::laserstream::PumpInstruction::Launch {
                                 mint,
                                 ..
-                            } => Some(*mint),
+                            } => Some((*mint, BS::IxLaunch)),
                             _ => None,
                         };
-                        if let Some(m) = m {
+                        if let Some((m, src)) = m {
                             let pda = bonding_curve_pda(&m).to_bytes();
                             if !pda_to_mint.contains_key(&pda) {
                                 if pda_to_mint.len() >= PDA_MAP_CAP {
@@ -3281,6 +3518,21 @@ fn main() -> ExitCode {
                                 } else {
                                     pda_to_mint.insert(pda, m);
                                     stats.pda_installed_from_tx += 1;
+                                    // The binding is validated here (curve == PDA(mint) from a decoded pump.fun
+                                    // instruction): record it durably with its evidence (D3).
+                                    if let Some(w) = curve_binding_writer.as_mut() {
+                                        let b = pump_quant_junction::curve_binding::CurveBinding {
+                                            mint: m,
+                                            curve: pda,
+                                            source: src,
+                                            signature: tx.signature,
+                                            slot: tx.slot,
+                                            recv_ms: tx.recv_unix_ms,
+                                        };
+                                        if let Err(e) = w.record(&b) {
+                                            eprintln!("[pq-daemon] ALERT: curve binding record write FAILED: {e} - a restart from here may not restore this market's curve routing");
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -4637,6 +4889,13 @@ fn main() -> ExitCode {
                     eprintln!("[pq-daemon] event_stream write error: {}", e);
                 }
             }
+            // An event can make the held ledger durable (e.g. a SAFETY_OFF trip persists it immediately).
+            capture_seal_if_new(
+                &engine,
+                &mut event_stream_writer,
+                &mut capture_sealer,
+                &mut capture_sealed_gen,
+            );
         }
 
         // ── Poll Firecrawl bridge (social intelligence ingest) ──────────
@@ -4822,6 +5081,13 @@ fn main() -> ExitCode {
                     eprintln!("[pq-daemon] event_stream tick write error: {}", e);
                 }
             }
+            // A held write in this tick: seal the capture to it (same generation, same decision clock).
+            capture_seal_if_new(
+                &engine,
+                &mut event_stream_writer,
+                &mut capture_sealer,
+                &mut capture_sealed_gen,
+            );
             next_tick = Instant::now() + tick_period;
             tick_counter += 1;
             // ── OFFLINE PAPER REPLAY barrier: settle the verdicts for the state cut at this source-time clock, apply
@@ -4841,6 +5107,14 @@ fn main() -> ExitCode {
                     let f = engine.model_flow_flush(Duration::from_secs(20));
                     let h = engine.model_held_persist_now();
                     eprintln!("[pq-daemon] replay barrier {barrier_idx}: flow flush durable={f} held persisted={h}");
+                    if h {
+                        capture_seal_if_new(
+                            &engine,
+                            &mut event_stream_writer,
+                            &mut capture_sealer,
+                            &mut capture_sealed_gen,
+                        );
+                    }
                 }
                 // Barrier mode only: the lane's funnel counters as of THIS barrier (the timed health writer is not run
                 // on a barrier schedule, so its copy would be stale).
@@ -5435,6 +5709,12 @@ fn main() -> ExitCode {
                 if let Some(ref mut writer) = event_stream_writer {
                     let _ = writer.flush();
                 }
+                capture_seal_if_new(
+                    &engine,
+                    &mut event_stream_writer,
+                    &mut capture_sealer,
+                    &mut capture_sealed_gen,
+                );
                 last_tape_flush_tick = tick_counter;
             }
 

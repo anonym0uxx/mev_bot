@@ -223,6 +223,10 @@ pub struct MgmtFill {
     /// Sells: gross proceeds and all-in fees of THIS fill (0 on the simulated-price path, which derives them).
     pub gross_lamports: u64,
     pub fee_lamports: u64,
+    /// Submission attempt of the order this fill settled (stable order id, attempt fixed at hand-off).
+    pub attempt: u32,
+    /// Venue of that attempt (`true` = canonical WSOL pool, `false` = bonding curve). Fixed at hand-off.
+    pub pool: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -304,6 +308,9 @@ impl Engine {
         order_id: u64,
     ) {
         self.positions.set_model_managed(&mint);
+        // Pin the position's launch identity + state-tape extent NOW, so a restart restores exactly this evidence.
+        let c = self.model_clock_ms;
+        self.model_cache.pin_held_launch(mint, c);
         if let Some(t) = tokens {
             self.positions.set_inventory_tokens(&mint, t);
         } else {
@@ -688,6 +695,7 @@ impl Engine {
 
     /// Try to fill pending management sells against LANDING state (never the prompt's state).
     pub(super) fn model_mgmt_try_fills(&mut self, clock: i64) {
+        self.model_mgmt_replace_completed_curve();
         self.model_mgmt_begin_submissions(clock);
         let pm: Vec<[u8; 32]> = self.model_mgmt.protect.keys().copied().collect();
         for m in pm {
@@ -731,12 +739,13 @@ impl Engine {
             // (curve: incl. REAL SOL; pool: the landing swap's own fee parts + virtual quote). Requoted on every
             // landing state at the SAME size: the model's quantity is never resized. A refusal leaves the order
             // pending until TTL (state may change) and is counted by name; it never fabricates a settlement.
-            // GRADUATION ROUTING: the sell route is re-resolved at every fill attempt from the CURRENT verified
-            // binding, not frozen at order creation. A held curve position whose curve has completed sells on its
-            // canonical WSOL pool once a verified pool swap is the landing state; inventory, basis and the pending
-            // order (id, intended, filled) are unchanged by the switch. A completed curve with no verified pool
-            // state, or a conflicting pool binding, is a NAMED unavailable route: never priced, never settled.
-            let route_amm = order.amm || self.model_cache.snapshot_venue_is_amm(&mint);
+            // GRADUATION ATTEMPT IDENTITY (SCOPE_WIRE_RECOVERY §3, WIRE_R5_OPERATOR_1115 §3): the venue of a
+            // handed-off attempt is IMMUTABLE. It was fixed at the durable hand-off
+            // (`model_mgmt_begin_submissions`: a provably unsent order may switch to a verified pool there) or by an
+            // explicit pool REPLACEMENT attempt (`model_mgmt_replace_completed_curve`: new attempt number under the
+            // same order id, only after the curve attempt's definitive disposition). It is never re-resolved here, so
+            // a submitted curve attempt can never be priced or settled with pool economics.
+            let route_amm = order.amm;
             if route_amm && self.model_cache.pool_conflicting(&mint) {
                 self.mrep(if order.kind == MgmtKind::Protect {
                     "protect:quote_unavailable:pool_binding_conflict"
@@ -748,9 +757,6 @@ impl Engine {
                     self.mrep("mgmt:order_expired_unfilled");
                 }
                 continue;
-            }
-            if route_amm && !order.amm {
-                self.mrep("mgmt:route:curve_to_pool");
             }
             if !route_amm {
                 if let Some(x) = self.model_curve_mode_exclusion(&mint) {
@@ -1170,6 +1176,8 @@ impl Engine {
             is_add: false,
             gross_lamports: settled.map_or(0, |x| x.0),
             fee_lamports: settled.map_or(0, |x| x.1),
+            attempt: order.attempt,
+            pool: order.amm,
         });
         let ns = if order.kind == MgmtKind::Protect {
             "protect"
@@ -2034,6 +2042,8 @@ impl Engine {
             is_add: true,
             gross_lamports: 0,
             fee_lamports: 0,
+            attempt: order.attempt,
+            pool: order.amm,
         });
         if let Some(mp) = self.model_mgmt.pos.get_mut(&mint) {
             mp.version += 1;
@@ -2738,7 +2748,7 @@ impl Engine {
                 });
                 curve || pool
             };
-        let mut begun: Vec<([u8; 32], bool)> = Vec::new();
+        let mut begun: Vec<([u8; 32], bool, bool)> = Vec::new();
         let cands: Vec<([u8; 32], bool, MgmtOrder)> = self
             .model_mgmt
             .orders
@@ -2751,6 +2761,11 @@ impl Engine {
             if !landing_ok(self, &m, &o) {
                 continue;
             }
+            // UNSENT GRADUATION: a provably unsent sell (durable `Intent`, no executor has seen it) may take the
+            // verified canonical pool route. The switch is part of the hand-off record written below, so it is
+            // durable before any executor can act; the attempt's venue is then fixed for its lifetime.
+            let switch =
+                o.kind != MgmtKind::Add && !o.amm && self.model_cache.snapshot_venue_is_amm(&m);
             let slot = if p {
                 self.model_mgmt.protect.get_mut(&m)
             } else {
@@ -2759,7 +2774,10 @@ impl Engine {
             if let Some(x) = slot {
                 x.submit = SubmitState::Begun;
                 x.attempt += 1;
-                begun.push((m, p));
+                if switch {
+                    x.amm = true;
+                }
+                begun.push((m, p, switch));
             }
         }
         if begun.is_empty() {
@@ -2767,9 +2785,14 @@ impl Engine {
         }
         if self.model_held_durable_now() {
             self.mrep_add("mgmt:submit:begun", begun.len() as u64);
+            let sw = begun.iter().filter(|b| b.2).count() as u64;
+            if sw > 0 {
+                self.mrep_add("mgmt:route:curve_to_pool", sw);
+                self.mrep_add("mgmt:route:unsent_curve_to_pool", sw);
+            }
             return;
         }
-        for (m, p) in begun {
+        for (m, p, switch) in begun {
             let slot = if p {
                 self.model_mgmt.protect.get_mut(&m)
             } else {
@@ -2778,9 +2801,87 @@ impl Engine {
             if let Some(o) = slot {
                 o.submit = SubmitState::Intent;
                 o.attempt -= 1;
+                if switch {
+                    o.amm = false;
+                }
             }
         }
         self.mrep("mgmt:submit_deferred:persist_failed");
+    }
+
+    /// GRADUATION REPLACEMENT ATTEMPT (WIRE_R5_OPERATOR_1115 §3). A handed-off PAPER curve sell attempt whose curve
+    /// has completed is replaced by a pool attempt under the SAME order id, only after the old attempt's DEFINITIVE
+    /// disposition:
+    /// * the attempt is owned by the in-process paper executor (`exec == Paper`) and is not uncertain: its whole
+    ///   state is this process's order (`filled` IS the executor's cumulative record, persisted in the same atomic
+    ///   file), so nothing beyond `filled` executed;
+    /// * the curve is observed COMPLETE (virtual tokens 0): the program refuses every further curve sell
+    ///   (`6005 BondingCurveComplete`, irreversible), so the old attempt can never execute more;
+    /// * the mint's verified canonical WSOL pool is the current venue (a conflicting binding is refused by name on
+    ///   the fill path, never priced).
+    ///
+    /// The replacement keeps id, intended and filled (remaining = intended - filled, the PROVEN remainder), takes the
+    /// pool route and returns to a durable `Intent`; the next hand-off makes it attempt `n + 1`. The switch is written
+    /// to the held ledger before anything else may happen (write failure: unchanged, named). An external, uncertain
+    /// or unrecorded attempt is never replaced here: it stays reserved until authoritative reconciliation. A route
+    /// change alone moves no inventory, cash, cost basis or realized PnL.
+    pub(super) fn model_mgmt_replace_completed_curve(&mut self) {
+        let cands: Vec<([u8; 32], bool, MgmtOrder)> = self
+            .model_mgmt
+            .orders
+            .iter()
+            .map(|(m, o)| (*m, false, *o))
+            .chain(self.model_mgmt.protect.iter().map(|(m, o)| (*m, true, *o)))
+            .filter(|(_, _, o)| {
+                o.submit == SubmitState::Begun
+                    && !o.amm
+                    && !o.uncertain
+                    && o.exec == ExecRoute::Paper
+                    && o.kind != MgmtKind::Add
+                    && o.filled < o.intended
+            })
+            .collect();
+        let mut done: Vec<([u8; 32], bool)> = Vec::new();
+        for (m, p, _) in cands {
+            let complete = self
+                .model_cache
+                .curve_obs(&m)
+                .is_some_and(|c| c.v_tokens == 0);
+            if !complete || !self.model_cache.snapshot_venue_is_amm(&m) {
+                continue;
+            }
+            let slot = if p {
+                self.model_mgmt.protect.get_mut(&m)
+            } else {
+                self.model_mgmt.orders.get_mut(&m)
+            };
+            if let Some(x) = slot {
+                x.amm = true;
+                x.submit = SubmitState::Intent;
+                done.push((m, p));
+            }
+        }
+        if done.is_empty() {
+            return;
+        }
+        if self.model_held_durable_now() {
+            let n = done.len() as u64;
+            self.mrep_add("mgmt:route:curve_to_pool", n);
+            self.mrep_add("mgmt:attempt_replaced:curve_complete_to_pool", n);
+            return;
+        }
+        for (m, p) in done {
+            let slot = if p {
+                self.model_mgmt.protect.get_mut(&m)
+            } else {
+                self.model_mgmt.orders.get_mut(&m)
+            };
+            if let Some(o) = slot {
+                o.amm = false;
+                o.submit = SubmitState::Begun;
+            }
+        }
+        self.mrep("mgmt:replace_deferred:persist_failed");
     }
 
     /// OPERATOR EVIDENCE (set before restore): the process that wrote the held ledger with this `lineage` ran ONLY
@@ -2806,6 +2907,23 @@ impl Engine {
             .chain(self.model_mgmt.protect.get(mint))
             .find(|o| o.id == order_id)
             .map(|o| (o.exec, o.submit, o.attempt, o.uncertain))
+    }
+
+    /// Attempt identity of the working management or protective order `order_id` on `mint`:
+    /// (attempt number, venue is the pool, submission state). The venue of a begun attempt never changes.
+    #[must_use]
+    pub fn model_mgmt_attempt(
+        &self,
+        mint: &[u8; 32],
+        order_id: u64,
+    ) -> Option<(u32, bool, SubmitState)> {
+        self.model_mgmt
+            .orders
+            .get(mint)
+            .into_iter()
+            .chain(self.model_mgmt.protect.get(mint))
+            .find(|o| o.id == order_id)
+            .map(|o| (o.attempt, o.amm, o.submit))
     }
 
     /// RECONCILIATION of an UNCERTAIN order against the PAPER EXECUTOR's durable record (runs once, after restore).

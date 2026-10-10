@@ -470,6 +470,29 @@ impl StateLedger {
                 .sum::<u64>()
     }
 
+    /// The mint's tape origin: receive time of the FIRST trade this ledger accepted for it (the trained `age_s`
+    /// origin). `None` when the mint has no accepted trade.
+    #[must_use]
+    pub fn first_trade_ms(&self, mint: &[u8; 32]) -> Option<i64> {
+        self.mints.get(mint).and_then(|l| l.first_t_ms)
+    }
+
+    /// The mint's tape extent for a continuity check against a pinned instant `t`: (first trade, number of trades
+    /// STRICTLY before `t`). The count is `None` when the ring no longer reaches back to `t` (evicted: unknowable).
+    #[must_use]
+    pub fn tape_extent(&self, mint: &[u8; 32], t: i64) -> Option<(i64, Option<u64>)> {
+        let l = self.mints.get(mint)?;
+        let first = l.first_t_ms?;
+        let at_or_after = l
+            .ring
+            .iter()
+            .rev()
+            .take_while(|x| x.recv_unix_ms >= t)
+            .count() as u64;
+        let covered = l.evicted == 0 || l.ring.front().is_some_and(|f| f.recv_unix_ms < t);
+        Some((first, covered.then(|| l.n_trades - at_or_after)))
+    }
+
     /// Drop a mint's history (used when a mint leaves the watchlist).
     pub fn forget(&mut self, mint: &[u8; 32]) -> bool {
         self.mints.remove(mint).is_some()
