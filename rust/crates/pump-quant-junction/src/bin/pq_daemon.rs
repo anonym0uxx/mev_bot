@@ -2205,6 +2205,12 @@ fn main() -> ExitCode {
                             p.display()
                         );
                     }
+                    // Same for an earlier binding log: it belongs to no restored ledger.
+                    pump_quant_junction::capture_rehydrate::set_aside_unverified(
+                        std::path::Path::new(
+                            pump_quant_junction::curve_binding::DEFAULT_CURVE_BINDING_FILE,
+                        ),
+                    );
                 }
                 pump_quant_junction::capture_rehydrate::RehydrateOutcome::Applied {
                     restart_ms,
@@ -2217,6 +2223,43 @@ fn main() -> ExitCode {
                         stats.applied, stats.launches, stats.prints, stats.reserves, stats.after_restart_skipped, lost_s(lost)
                     );
                     restart_curve_mints = stats.curve_mints.iter().copied().collect();
+                    // D3: durable mint -> curve bindings validated by pump.fun instructions at or before the restart
+                    // instant (sealed with the capture; schema 1 seals carry none and say so by name).
+                    let bpath = std::path::Path::new(
+                        pump_quant_junction::curve_binding::DEFAULT_CURVE_BINDING_FILE,
+                    );
+                    match pump_quant_junction::capture_rehydrate::restore_curve_bindings(
+                        &engine, seal, bpath,
+                    ) {
+                        pump_quant_junction::curve_binding::BindingRestore::Restored {
+                            bindings,
+                            after_restart_skipped,
+                            undated_skipped,
+                        } => {
+                            eprintln!(
+                                "[pq-daemon] CURVE-BINDINGS restored from the sealed log: {} (after_restart_skipped={after_restart_skipped} undated_skipped={undated_skipped})",
+                                bindings.len()
+                            );
+                            let mut seen: std::collections::BTreeSet<[u8; 32]> =
+                                restart_curve_mints.iter().copied().collect();
+                            for b in &bindings {
+                                if seen.insert(b.mint) {
+                                    restart_curve_mints.push(b.mint);
+                                }
+                            }
+                            pump_quant_junction::capture_rehydrate::set_aside_unsealed_binding_tail(
+                                bpath, seal,
+                            );
+                        }
+                        pump_quant_junction::curve_binding::BindingRestore::NotRecordedSchema1 => {
+                            eprintln!("[pq-daemon] ALERT: CURVE-BINDINGS NOT RECORDED (capture seal schema 1): curve markets bound only by an instruction before the restart stay unrouted until a post-restart instruction re-binds them");
+                            pump_quant_junction::capture_rehydrate::set_aside_unverified(bpath);
+                        }
+                        pump_quant_junction::curve_binding::BindingRestore::Refused(why) => {
+                            eprintln!("[pq-daemon] ALERT: CURVE-BINDINGS REFUSED ({why}): nothing restored from the binding log; curve markets bound only by an instruction before the restart stay unrouted until a post-restart instruction re-binds them");
+                            pump_quant_junction::capture_rehydrate::set_aside_unverified(bpath);
+                        }
+                    }
                     // The sealed prefix is the causal capture; an unsealed tail (written after the last seal, before the
                     // crash) is moved aside as evidence, never replayed, so the capture stays one causal sequence.
                     pump_quant_junction::capture_rehydrate::set_aside_unsealed_tail(cap, seal);
@@ -2231,6 +2274,11 @@ fn main() -> ExitCode {
                         lost_s(lost)
                     );
                     pump_quant_junction::capture_rehydrate::set_aside_unverified(cap);
+                    pump_quant_junction::capture_rehydrate::set_aside_unverified(
+                        std::path::Path::new(
+                            pump_quant_junction::curve_binding::DEFAULT_CURVE_BINDING_FILE,
+                        ),
+                    );
                 }
             }
         }
@@ -2845,11 +2893,24 @@ fn main() -> ExitCode {
     // The capture is SEALED (lineage + held generation + barrier clock + sha256) whenever the held ledger becomes
     // durable at a new generation, so a restart can rebuild the per-market evidence the uninterrupted run used.
     let mut capture_sealer = model_armed.then(|| {
-        pump_quant_junction::capture_rehydrate::CaptureSealer::new(
+        pump_quant_junction::capture_rehydrate::CaptureSealer::with_bindings(
             std::path::Path::new(EVENT_STREAM_PATH),
             std::path::Path::new(pump_quant_junction::capture_rehydrate::DEFAULT_CAPTURE_SEAL_FILE),
+            std::path::Path::new(pump_quant_junction::curve_binding::DEFAULT_CURVE_BINDING_FILE),
         )
     });
+    // D3: one durable record per mint -> curve binding validated by a pump.fun instruction (sealed with the capture).
+    let mut curve_binding_writer = if model_armed {
+        let w = pump_quant_junction::curve_binding::BindingWriter::open(std::path::Path::new(
+            pump_quant_junction::curve_binding::DEFAULT_CURVE_BINDING_FILE,
+        ));
+        if w.is_none() {
+            eprintln!("[pq-daemon] ALERT: curve binding log could not be opened: a restart from here cannot restore instruction-only curve routing");
+        }
+        w
+    } else {
+        None
+    };
     let mut capture_sealed_gen: u64 = u64::MAX;
     eprintln!("[pq-daemon] tape export path: {TAPE_PATH}");
 
@@ -3261,21 +3322,22 @@ fn main() -> ExitCode {
                     // or PumpPortal create event is needed, and none is pretended (launch history stays a separate,
                     // named input). Bounded; a full map is counted, never silently grown.
                     for c in &classified {
+                        use pump_quant_junction::curve_binding::BindingSource as BS;
                         let m = match c {
                             pump_quant_junction::laserstream::PumpInstruction::Buy {
                                 mint, ..
-                            }
-                            | pump_quant_junction::laserstream::PumpInstruction::Sell {
+                            } => Some((*mint, BS::IxBuy)),
+                            pump_quant_junction::laserstream::PumpInstruction::Sell {
                                 mint,
                                 ..
-                            }
-                            | pump_quant_junction::laserstream::PumpInstruction::Launch {
+                            } => Some((*mint, BS::IxSell)),
+                            pump_quant_junction::laserstream::PumpInstruction::Launch {
                                 mint,
                                 ..
-                            } => Some(*mint),
+                            } => Some((*mint, BS::IxLaunch)),
                             _ => None,
                         };
-                        if let Some(m) = m {
+                        if let Some((m, src)) = m {
                             let pda = bonding_curve_pda(&m).to_bytes();
                             if !pda_to_mint.contains_key(&pda) {
                                 if pda_to_mint.len() >= PDA_MAP_CAP {
@@ -3283,6 +3345,21 @@ fn main() -> ExitCode {
                                 } else {
                                     pda_to_mint.insert(pda, m);
                                     stats.pda_installed_from_tx += 1;
+                                    // The binding is validated here (curve == PDA(mint) from a decoded pump.fun
+                                    // instruction): record it durably with its evidence (D3).
+                                    if let Some(w) = curve_binding_writer.as_mut() {
+                                        let b = pump_quant_junction::curve_binding::CurveBinding {
+                                            mint: m,
+                                            curve: pda,
+                                            source: src,
+                                            signature: tx.signature,
+                                            slot: tx.slot,
+                                            recv_ms: tx.recv_unix_ms,
+                                        };
+                                        if let Err(e) = w.record(&b) {
+                                            eprintln!("[pq-daemon] ALERT: curve binding record write FAILED: {e} - a restart from here may not restore this market's curve routing");
+                                        }
+                                    }
                                 }
                             }
                         }
