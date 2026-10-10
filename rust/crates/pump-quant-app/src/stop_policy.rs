@@ -25,8 +25,12 @@ pub const RUN_DEADLINE_MS: i64 = 6 * 3_600 * 1_000;
 /// Bounded DRAIN after the deadline (30 min): management + protection continue, then the protective handoff
 /// is requested. The process still terminates only on flat+reconciled or an acknowledged handoff.
 pub const DRAIN_BOUND_MS: i64 = 30 * 60 * 1_000;
-/// Label of the liquidation estimator in use until the shadow slice lands.
-pub const ESTIMATOR_EXEC_QUOTE: &str = "exec_quote_size_specific_v1(placeholder_for_shadow_model)";
+/// Label (valuation METRIC ID) of the liquidation estimator in use until the shadow slice lands. PROVISIONAL: the
+/// size-specific executable quote at the latest reserve state minus one landed exit leg is a stand-in for the shadow
+/// model's net liquidation estimate, not the agreed loss-stop metric. The metric id is pinned at run start
+/// ([`crate::engine::model_stop::StopState::valuation_metric`]) and cannot switch mid-run.
+pub const ESTIMATOR_EXEC_QUOTE: &str =
+    "provisional:exec_quote_size_specific_v1(placeholder_for_shadow_model)";
 /// Label when the shadow model supplies the liquidation estimates.
 pub const ESTIMATOR_SHADOW: &str = "shadow_model_net_liquidation";
 
@@ -39,8 +43,10 @@ pub enum StopTrigger {
     ReconciliationFault,
     /// A durable held-state / safety write failed.
     DurableWriteFailure,
-    /// Free bytes on the durable-state filesystem below the floor (or unmeasurable).
+    /// Free bytes on the durable-state filesystem below the SOFT floor (or unmeasurable).
     DiskHeadroomLow,
+    /// Free bytes on the durable-state filesystem measured below the HARD floor: risk-off latch.
+    DiskHardFloor,
     /// Host available memory below the floor (or unmeasurable).
     RamHeadroomLow,
     /// No feed (slot) progress for longer than the existing stale bound.
@@ -61,11 +67,12 @@ pub enum StopTrigger {
 
 impl StopTrigger {
     /// Every trigger, in table order.
-    pub const ALL: [StopTrigger; 12] = [
+    pub const ALL: [StopTrigger; 13] = [
         Self::EndpointHung,
         Self::ReconciliationFault,
         Self::DurableWriteFailure,
         Self::DiskHeadroomLow,
+        Self::DiskHardFloor,
         Self::RamHeadroomLow,
         Self::FeedGap,
         Self::RpcBudgetLow,
@@ -184,6 +191,13 @@ pub const fn action_for(t: StopTrigger) -> StopAction {
             Block,
             Latch::WhileCondition,
             "ALERT_DISK_HEADROOM_LOW",
+        ),
+        StopTrigger::DiskHardFloor => row(
+            "risk_off_disk_hard_floor_evidence_kept",
+            Block,
+            Block,
+            Latch::SafetyOff("disk_hard_floor"),
+            "ALERT_DISK_HARD_FLOOR",
         ),
         StopTrigger::RamHeadroomLow => row(
             "entry_restricted_ram_headroom",
@@ -493,8 +507,11 @@ impl WindowBudget {
 /// which restricts entries by name like a low reading - never assumed fine).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct OpsInputs {
-    /// Disk headroom ok on the durable-state filesystem.
+    /// Disk headroom at or above the SOFT floor on the durable-state filesystem (`None` = unmeasurable).
     pub disk_ok: Option<bool>,
+    /// Disk headroom at or above the HARD floor. Only a MEASURED `Some(false)` latches; `None` is covered by the
+    /// soft row (unmeasurable restricts new risk).
+    pub disk_hard_ok: Option<bool>,
     /// RAM headroom ok on the host.
     pub ram_ok: Option<bool>,
     /// Feed (slot) progress is within the stale bound.
@@ -513,6 +530,7 @@ impl OpsInputs {
     pub const fn healthy() -> Self {
         Self {
             disk_ok: Some(true),
+            disk_hard_ok: Some(true),
             ram_ok: Some(true),
             feed_ok: true,
             rpc_budget_ok: true,
@@ -547,5 +565,69 @@ pub fn parse_meminfo(text: &str) -> (Option<u64>, Option<u64>) {
     (get("MemTotal:"), get("MemAvailable:"))
 }
 
-/// Host RAM floor: the operator's "keep >= 12% RAM free" rule.
+/// Host RAM floor: the operator's generic "keep >= 12% RAM free" build rule. SUPERSEDED for the run's stop input
+/// by [`RAM_FLOOR_BYTES`] (workload-measured); kept for the parse/threshold helper it pins.
 pub const RAM_FLOOR_BPS: u64 = 1_200;
+
+// ---------------------------------------------------------------------------------------------------------------
+// Resource floors (measured basis: /training/mh_build/proc/RESOURCE_BUDGET.md).
+// ---------------------------------------------------------------------------------------------------------------
+
+/// GiB.
+pub const GIB: u64 = 1 << 30;
+/// Disk SOFT floor on the durable-state filesystem: below it new risk is restricted and ALERT_DISK_HEADROOM_LOW is
+/// raised (clears when space returns). 20 GiB >= the whole 6 h + 30 min run's measured requirement at the max
+/// 1-minute capture rate (event stream 16.0 GB + checkpoints/logs ~1.2 GB), so a run that crosses it still has room
+/// to finish its drain at burst rate without deleting anything.
+pub const DISK_SOFT_FLOOR_BYTES: u64 = 20 * GIB;
+/// Disk HARD floor: measured free bytes below it latch SAFETY_OFF (`disk_hard_floor`). 4 GiB keeps > 30 min of
+/// event stream at the max measured 1-minute rate (41.1 MB/min -> 1.23 GB) + two flow checkpoints + journals, so
+/// required evidence keeps being written while held positions are managed/protected. Nothing is ever deleted.
+pub const DISK_HARD_FLOOR_BYTES: u64 = 4 * GIB;
+/// RAM floor (bytes of memory still AVAILABLE to the daemon, i.e. min(host MemAvailable, cgroup memory.max -
+/// memory.current)): 12 GiB = 2x the daemon's projected 6.5 h VmHWM (5.95 GB, linear fit of a measured offline
+/// replay of 670 s of captured wire). Not host-wide 12%, not the tool's 4 GiB.
+pub const RAM_FLOOR_BYTES: u64 = 12 * GIB;
+
+/// The cgroup memory CEILING that actually applies to this process: the lower of `memory.max` (OOM kill) and
+/// `memory.high` (reclaim throttling, which stalls the event loop before any kill). `None` = both unlimited.
+#[must_use]
+pub fn cgroup_mem_ceiling(max: Option<u64>, high: Option<u64>) -> Option<u64> {
+    match (max, high) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    }
+}
+
+/// Memory available to this process: host `MemAvailable` (kB) capped by its cgroup's remaining room
+/// (`memory.max` - `memory.current`, bytes; `None` max = unlimited). `None` when MemAvailable is unknown.
+#[must_use]
+pub fn mem_available_bytes(
+    mem_available_kb: Option<u64>,
+    cgroup_max: Option<u64>,
+    cgroup_current: Option<u64>,
+) -> Option<u64> {
+    let host = mem_available_kb?.saturating_mul(1024);
+    Some(match cgroup_max {
+        None => host,
+        Some(max) => host.min(max.saturating_sub(cgroup_current?)),
+    })
+}
+
+/// Parse a cgroup v2 `memory.max`-style value: `"max"` -> `Ok(None)` (unlimited), a number -> `Ok(Some(n))`.
+///
+/// # Errors
+/// Unparseable text (the caller treats the reading as unmeasurable).
+pub fn parse_cgroup_limit(text: &str) -> Result<Option<u64>, ()> {
+    let t = text.trim();
+    if t == "max" {
+        return Ok(None);
+    }
+    t.parse::<u64>().map(Some).map_err(|_| ())
+}
+
+/// Whether `available` meets `floor` (`None` = unmeasurable, never assumed fine).
+#[must_use]
+pub fn bytes_ok(available: Option<u64>, floor: u64) -> Option<bool> {
+    available.map(|a| a >= floor)
+}

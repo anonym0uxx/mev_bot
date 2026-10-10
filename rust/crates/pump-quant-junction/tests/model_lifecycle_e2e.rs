@@ -1190,3 +1190,455 @@ fn m1_final_report_after_an_accepted_handoff_preserves_the_acknowledged_exposure
         "durable ledger unchanged by the final report"
     );
 }
+
+/// Item 3 through the DAEMON's own code: the deadline comes from `run_deadline_from` (the env parser pq_daemon uses),
+/// the engine is armed by `arm_paper_model` (production HTTP client), and the handoff uses `request_deadline_handoff`.
+/// During the drain a valid REDUCE executes. The next valid ADD is refused BY THE DEADLINE ROW'S NAME and creates no
+/// order. When the drain bound elapses the handoff sentinel is raised, and the position is not force-closed.
+#[test]
+fn daemon_path_run_deadline_drain_refuses_add_by_name_executes_reduce_and_hands_off_without_closing(
+) {
+    use pump_quant_app::stop_policy::{action_for, OpsInputs, RunPhase, StopTrigger};
+    use pump_quant_junction::model_lifecycle::{request_deadline_handoff, run_deadline_from};
+    let ep = Endpoint::start(|step| match step {
+        0 => REDUCE,
+        1 => ADD,
+        _ => HOLD,
+    });
+    let mut r = rig(&ep, "drain_add");
+    let (d, dr) = run_deadline_from(Some("10000"), Some("5000"));
+    assert_eq!((d, dr), (10_000, 5_000), "an override may only shorten");
+    r.e.model_stop_set_deadline(d, dr);
+    let ev = r.e.model_stop_evaluate(10_000, OpsInputs::healthy());
+    assert_eq!(ev.phase, RunPhase::Drain { ends_at_ms: 15_000 });
+    assert!(r.e.model_entries_blocked() && !r.e.model_safety_blocked());
+    // Step 0: REDUCE over the wire -> order intent -> reconciled fill.
+    r.advance_to_order(120_000);
+    let (id, k, intended, _) =
+        r.e.model_mgmt_pending(&MINT)
+            .expect("REDUCE pending in the drain");
+    assert_eq!(format!("{k:?}"), "Reduce");
+    let inv0 = r.e.model_inventory_tokens(&MINT).unwrap();
+    r.e.model_mgmt_apply_reconciled_fill(MINT, id, intended, 22_000)
+        .unwrap();
+    assert_eq!(r.e.model_inventory_tokens(&MINT), Some(inv0 - intended));
+    // Step 1: ADD over the wire -> refused by the deadline row's name, no order.
+    let label = format!(
+        "mgmt:refuse:add_blocked_stop:{}",
+        action_for(StopTrigger::RunDeadline).name
+    );
+    for _ in 0..60 {
+        if r.rep(&label) >= 1 {
+            break;
+        }
+        r.advance(5_000);
+    }
+    assert!(
+        r.rep(&label) >= 1,
+        "ADD refused by name: {:?}",
+        r.e.model_lane_report()
+    );
+    assert!(
+        r.e.model_mgmt_pending(&MINT).is_none(),
+        "no ADD order in the drain"
+    );
+    assert_eq!(
+        r.e.model_inventory_tokens(&MINT),
+        Some(inv0 - intended),
+        "refused ADD moved nothing"
+    );
+    // Drain bound elapsed: the daemon's handoff sentinel, never a force close.
+    let ev = r.e.model_stop_evaluate(15_000, OpsInputs::healthy());
+    assert!(ev.handoff_due);
+    let stop = r.dir.join("STOP");
+    assert!(request_deadline_handoff(&stop) && stop.exists());
+    assert!(
+        !request_deadline_handoff(&stop),
+        "raised once, never overwritten"
+    );
+    assert!(
+        r.e.model_position_open(&MINT),
+        "the drain hands off; it does not close"
+    );
+}
+
+/// Item 4 through the PRODUCTION client (the serve_term runA shape): the endpoint hangs (12 s). The engine abandons
+/// each ask at its 3 s deadline and the 8 s socket timeout later returns a transport error for the SAME request.
+/// Initial count 0, threshold 3: two asks = 2 failures (deadline), and their two late `endpoint:transport_error`
+/// arrivals add 0. So the latch does not trip, where runA counted 4 for 2 asks and tripped at the 3rd increment.
+/// A third distinct ask trips it.
+#[test]
+fn daemon_path_two_hung_asks_with_socket_timeouts_do_not_trip_a_third_ask_does() {
+    let ep = Endpoint::start(|_| HOLD);
+    let mut r = rig(&ep, "once_per_id");
+    assert_eq!(r.e.model_safety_consecutive_failures(), 0);
+    ep.hang.store(true, Ordering::SeqCst);
+    for _ in 0..80 {
+        if r.rep("mgmt:request_abandoned_deadline") >= 2 {
+            break;
+        }
+        r.advance(5_000);
+    }
+    assert_eq!(
+        r.rep("mgmt:request_abandoned_deadline"),
+        2,
+        "{:?}",
+        r.e.model_lane_report()
+    );
+    assert_eq!(r.e.model_safety_consecutive_failures(), 2);
+    assert!(!r.e.model_safety_blocked());
+    // Hold the feed clock still (no new ask) while the 8 s socket timeouts fire on both workers.
+    for _ in 0..120 {
+        if r.rep("health:late_arrival_already_charged") >= 2 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+        ticks(&mut r.e, 1);
+    }
+    assert_eq!(
+        r.rep("endpoint:transport_error"),
+        2,
+        "{:?}",
+        r.e.model_lane_report()
+    );
+    assert_eq!(r.rep("health:late_arrival_already_charged"), 2);
+    assert_eq!(
+        r.e.model_safety_consecutive_failures(),
+        2,
+        "2 asks count 2, not 4"
+    );
+    assert!(
+        !r.e.model_safety_blocked(),
+        "two asks must not trip a threshold of three"
+    );
+    // A third distinct ask is abandoned -> 3 -> trip.
+    for _ in 0..80 {
+        if r.e.model_safety_blocked() {
+            break;
+        }
+        r.advance(5_000);
+    }
+    assert!(r.e.model_safety_blocked(), "{:?}", r.e.model_lane_report());
+    assert_eq!(r.rep("mgmt:request_abandoned_deadline"), 3);
+    assert!(
+        r.e.model_position_open(&MINT),
+        "tripping never closes the position"
+    );
+}
+
+// ─── Operator re-arm entry point (model_lifecycle::handle_rearm_request) ──────────────────────────────────────────
+
+use pump_quant_app::safety_off::RearmRefusal;
+use pump_quant_junction::model_lifecycle::{
+    handle_rearm_request, harness_force_protect_from, refuse_stale_rearm_at_startup, RearmOutcome,
+    RearmRequestRefusal,
+};
+
+fn rearm_req(r: &Rig, body: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+    let (req, res) = (r.dir.join("REARM.json"), r.dir.join("REARM_RESULT.json"));
+    std::fs::write(&req, body).unwrap();
+    (req, res)
+}
+
+fn refused(o: Option<RearmOutcome>) -> RearmRequestRefusal {
+    match o {
+        Some(RearmOutcome::Refused { why, .. }) => why,
+        other => panic!("expected a refusal: {other:?}"),
+    }
+}
+
+fn safety_file(r: &Rig) -> serde_json::Value {
+    serde_json::from_str(&std::fs::read_to_string(r.dir.join("safety.json")).unwrap()).unwrap()
+}
+
+#[test]
+fn operator_rearm_request_needs_a_named_operator_and_the_current_epoch_and_is_consumed_once() {
+    let ep = Endpoint::start(|_| HOLD);
+    let mut r = rig(&ep, "rearm_req");
+    r.e.model_safety_trip_operator();
+    let epoch = r.e.model_safety_epoch();
+    assert!(r.e.model_safety_blocked() && epoch >= 1);
+    // Each refused request is CONSUMED (removed) and changes nothing; the outcome file names the refusal.
+    let cases: [(String, RearmRequestRefusal); 5] = [
+        ("not json".into(), RearmRequestRefusal::Unreadable),
+        (
+            r#"{"operator":"alon"}"#.into(),
+            RearmRequestRefusal::EpochMissing,
+        ),
+        (
+            format!(r#"{{"operator":"alon","safety_epoch":{}}}"#, epoch + 7),
+            RearmRequestRefusal::EpochMismatch {
+                requested: epoch + 7,
+                current: epoch,
+            },
+        ),
+        (
+            format!(r#"{{"operator":"  ","safety_epoch":{epoch}}}"#),
+            RearmRequestRefusal::Contract(RearmRefusal::NoOperator),
+        ),
+        (
+            format!(r#"{{"safety_epoch":{epoch}}}"#),
+            RearmRequestRefusal::Contract(RearmRefusal::NoOperator),
+        ),
+    ];
+    for (body, want) in cases {
+        let (req, res) = rearm_req(&r, &body);
+        assert_eq!(
+            refused(handle_rearm_request(&mut r.e, &req, &res)),
+            want,
+            "{body}"
+        );
+        assert!(!req.exists(), "a request is consumed even when refused");
+        assert!(
+            r.e.model_safety_blocked(),
+            "refused => the block stands ({body})"
+        );
+        assert_eq!(r.e.model_safety_epoch(), epoch);
+        let out: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&res).unwrap()).unwrap();
+        assert_eq!(out["outcome"], "refused");
+        assert_eq!(out["safety_blocked"], true);
+    }
+    assert_eq!(safety_file(&r)["blocked"], true);
+    // No request file: nothing happens.
+    assert!(handle_rearm_request(&mut r.e, &r.dir.join("absent.json"), &r.dir.join("x")).is_none());
+    // A valid request lifts it, durably, recording who.
+    let (req, res) = rearm_req(
+        &r,
+        &format!(r#"{{"operator":"alon","safety_epoch":{epoch}}}"#),
+    );
+    match handle_rearm_request(&mut r.e, &req, &res) {
+        Some(RearmOutcome::Rearmed {
+            operator,
+            epoch: e2,
+            entries_blocked,
+            restrictions,
+        }) => {
+            assert_eq!(operator, "alon");
+            assert_eq!(e2, epoch + 1);
+            assert!(!entries_blocked && restrictions.is_empty());
+        }
+        other => panic!("valid request must re-arm: {other:?}"),
+    }
+    assert!(!req.exists());
+    assert!(!r.e.model_safety_blocked() && !r.e.model_entries_blocked());
+    let f = safety_file(&r);
+    assert_eq!(
+        (
+            f["blocked"].clone(),
+            f["rearmed_by"].clone(),
+            f["epoch"].as_u64()
+        ),
+        (
+            serde_json::json!(false),
+            serde_json::json!("alon"),
+            Some(epoch + 1)
+        )
+    );
+    // Replaying the SAME request after a new latch cannot lift it (epoch moved on twice: re-arm + trip).
+    r.e.model_safety_trip_operator();
+    let (req, res) = rearm_req(
+        &r,
+        &format!(r#"{{"operator":"alon","safety_epoch":{epoch}}}"#),
+    );
+    assert!(matches!(
+        refused(handle_rearm_request(&mut r.e, &req, &res)),
+        RearmRequestRefusal::EpochMismatch { .. }
+    ));
+    assert!(r.e.model_safety_blocked());
+    // Not blocked -> the contract's NotBlocked.
+    let e3 = r.e.model_safety_epoch();
+    let (req, res) = rearm_req(&r, &format!(r#"{{"operator":"alon","safety_epoch":{e3}}}"#));
+    assert!(matches!(
+        handle_rearm_request(&mut r.e, &req, &res),
+        Some(RearmOutcome::Rearmed { .. })
+    ));
+    let e4 = r.e.model_safety_epoch();
+    let (req, res) = rearm_req(&r, &format!(r#"{{"operator":"alon","safety_epoch":{e4}}}"#));
+    assert_eq!(
+        refused(handle_rearm_request(&mut r.e, &req, &res)),
+        RearmRequestRefusal::Contract(RearmRefusal::NotBlocked)
+    );
+}
+
+#[test]
+fn operator_rearm_with_an_active_resource_restriction_lifts_the_latch_but_entries_stay_blocked() {
+    let ep = Endpoint::start(|_| HOLD);
+    let mut r = rig(&ep, "rearm_restr");
+    // The disk hard floor latches SAFETY_OFF; RAM low is an active while-condition row.
+    let ops = pump_quant_app::stop_policy::OpsInputs {
+        disk_hard_ok: Some(false),
+        ram_ok: Some(false),
+        ..pump_quant_app::stop_policy::OpsInputs::healthy()
+    };
+    r.e.model_stop_evaluate(0, ops);
+    assert!(r.e.model_safety_blocked());
+    assert_eq!(r.e.model_safety_reason(), "disk_hard_floor");
+    // Disk recovered, RAM still low.
+    let ops2 = pump_quant_app::stop_policy::OpsInputs {
+        ram_ok: Some(false),
+        ..pump_quant_app::stop_policy::OpsInputs::healthy()
+    };
+    r.e.model_stop_evaluate(0, ops2);
+    assert!(
+        r.e.model_safety_blocked(),
+        "the latch survives the floor clearing"
+    );
+    let epoch = r.e.model_safety_epoch();
+    let (req, res) = rearm_req(
+        &r,
+        &format!(r#"{{"operator":"alon","safety_epoch":{epoch}}}"#),
+    );
+    match handle_rearm_request(&mut r.e, &req, &res) {
+        Some(RearmOutcome::Rearmed {
+            entries_blocked,
+            restrictions,
+            ..
+        }) => {
+            assert!(entries_blocked, "RAM restriction keeps entries blocked");
+            assert_eq!(restrictions, vec!["RamHeadroomLow".to_string()]);
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(!r.e.model_safety_blocked() && r.e.model_new_risk_blocked());
+    r.e.model_stop_evaluate(0, pump_quant_app::stop_policy::OpsInputs::healthy());
+    assert!(
+        !r.e.model_entries_blocked(),
+        "healthy again -> entries open"
+    );
+}
+
+#[test]
+fn operator_rearm_is_refused_while_a_protective_order_is_uncertain_and_when_it_cannot_persist() {
+    let ep = Endpoint::start(|_| HOLD);
+    let mut r = rig(&ep, "rearm_uncertain");
+    r.e.model_harness_force_protect(&MINT).unwrap();
+    let (id, ..) = r.e.model_protect_pending_order(&MINT).unwrap();
+    assert!(r.e.model_protect_mark_ack_uncertain(&MINT, id));
+    r.e.model_safety_trip_operator();
+    let epoch = r.e.model_safety_epoch();
+    let (req, res) = rearm_req(
+        &r,
+        &format!(r#"{{"operator":"alon","safety_epoch":{epoch}}}"#),
+    );
+    assert_eq!(
+        refused(handle_rearm_request(&mut r.e, &req, &res)),
+        RearmRequestRefusal::Contract(RearmRefusal::UncertainOrderPending)
+    );
+    assert!(r.e.model_safety_blocked());
+    // Unpersistable latch (the safety path is a directory): re-arm refused PersistFailed, block stands.
+    let dir = tmp("rearm_nowrite");
+    let bad = dir.join("safety_is_a_dir");
+    std::fs::create_dir_all(&bad).unwrap();
+    let mut e = Engine::new(cfg(), RunMode::Paper);
+    let _ = arm_paper_model(&mut e, &ep.url, &bad);
+    e.model_safety_trip_operator();
+    let ep2 = e.model_safety_epoch();
+    let req = dir.join("REARM.json");
+    std::fs::write(
+        &req,
+        format!(r#"{{"operator":"alon","safety_epoch":{ep2}}}"#),
+    )
+    .unwrap();
+    assert_eq!(
+        refused(handle_rearm_request(&mut e, &req, &dir.join("RES.json"))),
+        RearmRequestRefusal::Contract(RearmRefusal::PersistFailed)
+    );
+    assert!(e.model_safety_blocked());
+}
+
+#[test]
+fn a_rearm_request_present_at_startup_is_refused_and_removed() {
+    let ep = Endpoint::start(|_| HOLD);
+    let mut r = rig(&ep, "rearm_stale");
+    r.e.model_safety_trip_operator();
+    let epoch = r.e.model_safety_epoch();
+    let (req, res) = rearm_req(
+        &r,
+        &format!(r#"{{"operator":"alon","safety_epoch":{epoch}}}"#),
+    );
+    assert!(refuse_stale_rearm_at_startup(&r.e, &req, &res));
+    assert!(!req.exists());
+    let out: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&res).unwrap()).unwrap();
+    assert_eq!(out["why"], "StaleAtStartup");
+    assert!(r.e.model_safety_blocked());
+    assert!(!refuse_stale_rearm_at_startup(&r.e, &req, &res));
+    assert!(handle_rearm_request(&mut r.e, &req, &res).is_none());
+}
+
+// ─── HARNESS-ONLY forced protective trigger under pressure ───────────────────────────────────────────────────────
+
+#[test]
+fn a_forced_hard_stop_under_safety_off_and_a_resource_restriction_executes_through_the_protective_path(
+) {
+    let ep = Endpoint::start(|_| HOLD);
+    let mut r = rig(&ep, "force_protect");
+    let file = r.dir.join("FORCE");
+    // Not the harness: never read, never removed, nothing queued.
+    std::fs::write(&file, "ab".repeat(32)).unwrap();
+    assert!(harness_force_protect_from(&mut r.e, false, &file).is_none());
+    assert!(file.exists());
+    // Pressure: disk hard floor latches SAFETY_OFF, RAM low restricts.
+    r.e.model_stop_evaluate(
+        0,
+        pump_quant_app::stop_policy::OpsInputs {
+            disk_hard_ok: Some(false),
+            ram_ok: Some(false),
+            ..pump_quant_app::stop_policy::OpsInputs::healthy()
+        },
+    );
+    assert!(r.e.model_safety_blocked() && r.e.model_new_risk_blocked());
+    let inv0 = r.e.model_inventory_tokens(&MINT).unwrap();
+    assert!(inv0 > 0);
+    let (m, res) = harness_force_protect_from(&mut r.e, true, &file).unwrap();
+    assert_eq!(m, "ab".repeat(32));
+    assert!(!file.exists(), "consumed");
+    let (id, intended, filled, code) = res.unwrap().expect("a protective order is working");
+    assert!(id > 0);
+    assert_eq!(
+        (intended, filled, code),
+        (inv0, 0, 2),
+        "whole free inventory, HardStop code"
+    );
+    assert_eq!(r.rep("protect:harness_forced:HardStop"), 1);
+    assert_eq!(r.rep("protect:trigger:HardStop"), 1);
+    assert_eq!(r.rep("protect:order:HardStop"), 1);
+    // A second force while it works is refused by name.
+    std::fs::write(&file, "ab".repeat(32)).unwrap();
+    assert_eq!(
+        harness_force_protect_from(&mut r.e, true, &file).unwrap().1,
+        Err("harness_force_protect_refused:protective_order_working")
+    );
+    // The protective order fills on landing state despite SAFETY_OFF + the RAM restriction: only the fill closes.
+    r.advance(20_000);
+    assert!(r.rep("protect:fill") >= 1, "{:?}", r.e.model_lane_report());
+    assert!(
+        !r.e.model_position_open(&MINT),
+        "protective sell closed the position"
+    );
+    assert!(
+        r.e.model_safety_blocked(),
+        "the latch is untouched by protection"
+    );
+    // Not held now -> named refusal; bad mint -> named refusal.
+    std::fs::write(&file, "ab".repeat(32)).unwrap();
+    assert_eq!(
+        harness_force_protect_from(&mut r.e, true, &file).unwrap().1,
+        Err("harness_force_protect_refused:not_held")
+    );
+    std::fs::write(&file, "zz").unwrap();
+    assert_eq!(
+        harness_force_protect_from(&mut r.e, true, &file).unwrap().1,
+        Err("harness_force_protect_refused:bad_mint")
+    );
+}
+
+#[test]
+fn the_forced_trigger_is_refused_outside_a_paper_model_engine() {
+    let mut e = Engine::new(cfg(), RunMode::Paper);
+    assert_eq!(
+        e.model_harness_force_protect(&MINT),
+        Err("harness_force_protect_refused:not_paper_model")
+    );
+}

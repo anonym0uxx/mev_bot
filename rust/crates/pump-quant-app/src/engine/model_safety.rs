@@ -69,6 +69,13 @@ impl Engine {
         self.model_safety.blocked
     }
 
+    /// The SAFETY_OFF transition counter (monotone, persisted). An operator re-arm request echoes it, so a request
+    /// written for one latch can never lift a later one.
+    #[must_use]
+    pub fn model_safety_epoch(&self) -> u64 {
+        self.model_safety.epoch
+    }
+
     /// The recorded reason.
     #[must_use]
     pub fn model_safety_reason(&self) -> &str {
@@ -257,6 +264,13 @@ impl Engine {
     /// Operator trip.
     pub fn model_safety_trip_operator(&mut self) -> usize {
         self.model_safety_trip(REASON_OPERATOR)
+    }
+
+    /// Endpoint-health failures counted toward the hung-endpoint trip since the last healthy answer
+    /// (each request id at most once). Trips at [`CONSECUTIVE_ABANDONED_TRIP`].
+    #[must_use]
+    pub fn model_safety_consecutive_failures(&self) -> u32 {
+        self.model_safety.consecutive_abandoned
     }
 
     /// Fold one poll's endpoint health into the trip rule: consecutive failures/abandonments.

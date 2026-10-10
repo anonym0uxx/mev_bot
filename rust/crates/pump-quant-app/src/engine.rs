@@ -862,6 +862,10 @@ pub struct Engine {
     model_first_cand: BTreeMap<[u8; 32], i64>,
     model_drift: pump_quant_inference::seam::DriftLedger,
     model_report: BTreeMap<String, u64>,
+    /// Request ids (entry + management) already charged ONCE to endpoint health by deadline abandonment. Their late
+    /// arrival is labelled but never charged again. Bounded: an id leaves when its worker returns, and abandoned ids
+    /// hold request-table capacity until then.
+    model_health_charged: BTreeSet<crate::model_lane::RequestId>,
     /// Stream-discovered markets (curve launches/prints, canonical PumpSwap swaps): registered
     /// BEFORE any legacy priced print or gate, and re-offered to the model only when a genuinely new
     /// observation arrives (`model_dirty`). See `engine/model_admit.rs`.
@@ -1552,6 +1556,7 @@ impl Engine {
             model_orders: BTreeMap::new(),
             model_mgmt: model_manage::MgmtLane::new(),
             model_safety: crate::safety_off::SafetyOff::default(),
+            model_health_charged: BTreeSet::new(),
             model_stop: model_stop::StopState::default(),
             model_last_ask: BTreeMap::new(),
             model_first_cand: BTreeMap::new(),

@@ -161,6 +161,19 @@ impl RequestTable {
         self.inflight.len()
     }
 
+    /// The configured ceiling on outstanding requests (live + abandoned).
+    #[must_use]
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    /// Outstanding requests (live + abandoned) about `mint`. At most one is live (dedupe); abandoned ones count
+    /// against [`Self::capacity`] until their worker returns, so this is bounded by the capacity too.
+    #[must_use]
+    pub fn outstanding_for(&self, mint: &[u8; 32]) -> usize {
+        self.inflight.values().filter(|i| &i.mint == mint).count()
+    }
+
     /// Live (non-abandoned) outstanding requests.
     #[must_use]
     pub fn live(&self) -> usize {

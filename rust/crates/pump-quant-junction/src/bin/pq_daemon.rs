@@ -241,28 +241,25 @@ const PDA_MAP_CAP: usize = 500_000;
 /// Bounded sleep on WS reconnect failures (was 5s which blocked the entire
 /// event loop). 500ms gives the server time to recover without starving
 /// the tick loop.
-const WS_RECONNECT_SLEEP_MS: u64 = 500;
+const WS_RECONNECT_SLEEP_MS: u64 =
+    pump_quant_junction::endpoint_retry::HELIUS_WS_RECONNECT.base_backoff_ms;
 /// Maximum reconnect attempts with exponential backoff before falling back
 /// to graceful degradation. The backoff ladder is: 500ms → 1s → 2s → 4s → 8s
 /// (capped). After MAX_RECONNECT_ATTEMPTS failures, the daemon keeps the old
 /// (broken) connection and continues with PumpPortal/LaserStream — it does
 /// NOT crash. The stale-check watchdog will retry on the next tick.
-const MAX_RECONNECT_ATTEMPTS: u32 = 5;
-/// Backoff cap in milliseconds. The exponential ladder doubles from
-/// WS_RECONNECT_SLEEP_MS (500ms) up to this cap. 10s is long enough to let
-/// a rate-limited server recover but short enough to not starve the tick loop.
-const RECONNECT_BACKOFF_CAP_MS: u64 = 10_000;
-/// Minimum seconds between LaserStream respawn attempts. Without this, a
-/// binary that exits immediately (e.g. wrong subcommand, missing creds)
-/// triggers a tight-loop respawn on every `Disconnected` poll, burning CPU
-/// and spamming logs. 15s is long enough to break the cycle but short
-/// enough to recover when the issue is transient (network blip).
-const LS_RESPAWN_COOLDOWN_SECS: u64 = 15;
+const MAX_RECONNECT_ATTEMPTS: u32 =
+    pump_quant_junction::endpoint_retry::HELIUS_WS_RECONNECT.max_attempts;
+/// The backoff cap (10 s) and the LaserStream respawn cooldown (15 s) are applied inside
+/// `pump_quant_junction::stream_recovery` straight from `endpoint_retry::{HELIUS_WS_RECONNECT, LASERSTREAM_RESPAWN}`.
 /// Maximum LaserStream respawn attempts before giving up and falling back
 /// to Helius WS permanently. Prevents infinite respawn loops against a
 /// fundamentally broken binary (e.g. pq-stream-capture.exe spawned without
 /// a subcommand, or pq-laserstream-grpc.exe with a bad endpoint).
-const LS_MAX_RESPAWN_ATTEMPTS: u32 = 5;
+const LS_MAX_RESPAWN_ATTEMPTS: u32 =
+    pump_quant_junction::endpoint_retry::LASERSTREAM_RESPAWN.max_attempts;
+/// Launch-bootstrap walk page budget (one mint).
+const BOOTSTRAP_MAX_PAGES: u32 = 20;
 
 /// Exit code on emergency stop.
 const EXIT_EMERGENCY: u8 = 99;
@@ -325,12 +322,36 @@ fn spawn_launch_bootstrap(data_dir: &str) -> Option<BootstrapChannels> {
     let (res_tx, res_rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let src = lb::HeliusHttp::new(key, std::time::Duration::from_secs(20));
+        use pump_quant_junction::endpoint_retry as er;
         for mint in req_rx {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
-            let out = lb::bootstrap_one(&cache, &src, &mint, lb::Budget { max_pages: 20 }, now)
-                .map_err(|o| format!("{mint} {o}"));
+            // Named bound: per-page attempts + a per-walk retry budget (fresh per mint walk).
+            let rsrc = er::RetryingPages::new(
+                &src,
+                er::LAUNCH_BOOTSTRAP_PAGE,
+                er::LAUNCH_BOOTSTRAP_WALK_RETRY_BUDGET,
+            );
+            let out = lb::bootstrap_one(
+                &cache,
+                &rsrc,
+                &mint,
+                lb::Budget {
+                    max_pages: BOOTSTRAP_MAX_PAGES,
+                },
+                now,
+            )
+            .map_err(|o| format!("{mint} {o}"));
+            if rsrc.retries.get() > 0 || rsrc.exhausted.get() > 0 {
+                eprintln!(
+                    "[pq-daemon] {}: mint={mint} calls={} retries={} exhausted_pages={}",
+                    er::LAUNCH_BOOTSTRAP_PAGE.name,
+                    rsrc.calls.get(),
+                    rsrc.retries.get(),
+                    rsrc.exhausted.get()
+                );
+            }
             if res_tx.send(out).is_err() {
                 break;
             }
@@ -1738,6 +1759,38 @@ fn construct_live_engine(
 
 // ─── Main ──────────────────────────────────────────────────────────────────
 
+/// Every REQUIRED write destination of this daemon (item 2 of the m1acc follow-up): event stream, journals, flow
+/// checkpoint, held ledger, safety latch, stdout/stderr redirect targets, handoff/report outputs. Same env/defaults
+/// as the code that writes them.
+fn daemon_write_dests() -> Vec<pump_quant_junction::disk_budget::Dest> {
+    let sf = std::env::var("PQ_MODEL_SAFETY_FILE")
+        .unwrap_or_else(|_| pump_quant_junction::model_lifecycle::DEFAULT_SAFETY_FILE.to_string());
+    let hf = std::env::var("PQ_MODEL_HELD_FILE")
+        .unwrap_or_else(|_| pump_quant_junction::model_lifecycle::DEFAULT_HELD_FILE.to_string());
+    let fh = std::env::var("PQ_FLOW_HISTORY_FILE")
+        .unwrap_or_else(|_| "data/flow_history.ckpt".to_string());
+    let p = std::path::Path::new;
+    pump_quant_junction::disk_budget::required_destinations(
+        p(EVENT_STREAM_PATH),
+        &[
+            p(TAPE_PATH),
+            p(SESSION_HISTORY_PATH),
+            p("data/barrier_log.jsonl"),
+        ],
+        p(&fh),
+        p(&hf),
+        p(&sf),
+        &pump_quant_junction::disk_budget::std_redirect_targets(),
+        &[
+            p(pump_quant_junction::model_lifecycle::HANDOFF_REQUEST_FILE),
+            p(pump_quant_junction::model_lifecycle::PROTECTIVE_HANDOFF_ACK_FILE),
+            p(STATUS_PATH),
+            p("data/model_lane_report.json"),
+        ],
+        23_400,
+    )
+}
+
 fn main() -> ExitCode {
     let args = match parse_args() {
         Ok(a) => a,
@@ -1927,6 +1980,19 @@ fn main() -> ExitCode {
                     "[pq-daemon] paper model lane ARMED endpoint={endpoint} safety_file={safety} load={:?} blocked_at_start={}",
                     armed.load, armed.blocked_at_start
                 );
+                // A restart never re-arms: a re-arm request already on disk is refused (named) and removed.
+                if pump_quant_junction::model_lifecycle::refuse_stale_rearm_at_startup(
+                    &engine,
+                    std::path::Path::new(pump_quant_junction::model_lifecycle::OPERATOR_REARM_FILE),
+                    std::path::Path::new(
+                        pump_quant_junction::model_lifecycle::OPERATOR_REARM_RESULT_FILE,
+                    ),
+                ) {
+                    eprintln!(
+                        "[pq-daemon] OPERATOR_REARM refused: StaleAtStartup (request present before this process started; a restart never re-arms) safety_blocked={}",
+                        engine.model_safety_blocked()
+                    );
+                }
             }
         }
     }
@@ -2126,6 +2192,78 @@ fn main() -> ExitCode {
             pump_quant_junction::model_lifecycle::MIN_FREE_BYTES,
         );
         eprintln!("[pq-daemon] durable-state headroom at start: {h:?}");
+        // 6 h paper-run budget against THIS process's actual limits (cgroup memory.max/high, RLIMIT_NOFILE, free
+        // bytes on every written filesystem) and the REAL-TIME event-stream rate range. Reported, never assumed fine.
+        {
+            let hf = std::env::var("PQ_MODEL_HELD_FILE").unwrap_or_else(|_| {
+                pump_quant_junction::model_lifecycle::DEFAULT_HELD_FILE.to_string()
+            });
+            let b = pump_quant_junction::model_lifecycle::run_budget_now(
+                &[
+                    std::path::Path::new(&sf),
+                    std::path::Path::new(&hf),
+                    std::path::Path::new(EVENT_STREAM_PATH),
+                ],
+                23_400,
+            );
+            eprintln!("[pq-daemon] run budget (6h+30m, real-time stream rate): {b:?}");
+            eprintln!(
+                "[pq-daemon] MEMORY_BUDGET state={} host_floor_bytes={:?} host_term_bytes={:?} effective_available_bytes={:?} floor_bytes={} ok={:?} (shared headroom, re-evaluated every runtime check)",
+                pump_quant_junction::model_lifecycle::mem_state_label(&b.mem.state),
+                b.mem.host_floor,
+                b.mem.host_term,
+                b.mem.effective,
+                pump_quant_app::stop_policy::RAM_FLOOR_BYTES,
+                b.mem.ok
+            );
+            eprintln!(
+                "[pq-daemon] NOFILE soft={:?} need={} ok={:?}",
+                b.nofile_soft,
+                pump_quant_junction::model_lifecycle::FD_NEED,
+                b.nofile_ok
+            );
+            // Disk: EVERY required write destination grouped by filesystem (st_dev), need summed per filesystem,
+            // the LIMITING destination named. Need = SCENARIO estimate (~26 min of one day's capture), not a
+            // guaranteed bound. UNKNOWN (an unmeasurable required destination) is never PASS: new exposure is NOT
+            // armed (the stop table's disk row is raised before the first tick) and ALERT_DISK_BUDGET_UNKNOWN fires.
+            let dests = daemon_write_dests();
+            let t = pump_quant_junction::disk_budget::disk_table(
+                &dests,
+                &pump_quant_junction::disk_budget::probe_fs,
+                pump_quant_app::stop_policy::DISK_SOFT_FLOOR_BYTES,
+            );
+            for l in pump_quant_junction::disk_budget::render_table(&t) {
+                eprintln!("[pq-daemon] {l}");
+            }
+            let (startup_disk, alert) =
+                pump_quant_junction::disk_budget::startup_disk_gate(t.verdict);
+            if let Some(a) = alert {
+                eprintln!(
+                    "[pq-daemon] {a}: overall disk verdict {:?} (limiting row {:?}, unmeasurable {:?}); new exposure NOT armed",
+                    t.verdict,
+                    t.limiting.map(|i| &t.rows[i]),
+                    t.unmeasurable
+                );
+            }
+            if startup_disk != Some(true) {
+                // Not armed: the entry table refuses new asks from the first tick. No stop-table evaluation here (a
+                // restored book has no marks yet and must not be valued at startup); the first runtime check (tick 0)
+                // re-measures the same destinations and holds the disk row (BUY + ADD) while it stays short/UNKNOWN.
+                engine.set_model_entries_blocked(true);
+                eprintln!(
+                    "[pq-daemon] startup disk verdict {:?}: new exposure NOT armed (entries blocked)",
+                    t.verdict
+                );
+            }
+            if b.nofile_ok != Some(true) || b.mem_ok != Some(true) {
+                eprintln!("[pq-daemon] ALERT_RUN_BUDGET: a resource is short or unmeasured for the 6 h run: {b:?}");
+            }
+        }
+        // Loss-stop valuation metric: recorded at run start, immutable for the run. PROVISIONAL (exec quote) until
+        // the shadow slice supplies its estimate (a different metric id = a different run).
+        let m = engine
+            .model_stop_pin_valuation_metric(pump_quant_app::stop_policy::ESTIMATOR_EXEC_QUOTE);
+        eprintln!("[pq-daemon] loss-stop valuation metric pinned for this run: {m}");
     }
     let mut model_stop_last_alert = Instant::now() - Duration::from_secs(3600);
     let mut model_stop_session = pump_quant_junction::model_lifecycle::StopSession::new();
@@ -2382,7 +2520,9 @@ fn main() -> ExitCode {
     }
 
     // ─── LaserStream gRPC primary ingest lane ────────────────────────────
-    let (ls_tx, ls_rx) = mpsc::channel::<LaserStreamUpdate>();
+    // BOUNDED (stream_recovery::LS_QUEUE_CAP): a full queue back-pressures the reader thread / child pipe.
+    let (ls_tx, ls_rx) =
+        mpsc::sync_channel::<LaserStreamUpdate>(pump_quant_junction::stream_recovery::LS_QUEUE_CAP);
     let mut ls_child: Option<std::process::Child> = None;
     let ls_bin: Option<String> = std::env::var("PQ_LASERSTREAM_BIN")
         .ok()
@@ -2453,23 +2593,13 @@ fn main() -> ExitCode {
                     }
                 );
                 let stdout = child.stdout.take().expect("piped stdout");
-                let ls_tx_clone = ls_tx.clone();
-                std::thread::spawn(move || {
-                    use std::io::BufRead;
-                    let reader = std::io::BufReader::new(stdout);
-                    for line in reader.lines() {
-                        match line {
-                            Ok(text) => {
-                                if let Some(update) = parse_ndjson_line(&text) {
-                                    if ls_tx_clone.send(update).is_err() {
-                                        break;
-                                    }
-                                }
-                            }
-                            Err(_) => break,
-                        }
-                    }
-                });
+                // Reader thread (stream_recovery::spawn_line_reader): exits on EOF (child killed) or when the
+                // receiver is gone - respawns leak no threads.
+                let _reader = pump_quant_junction::stream_recovery::spawn_line_reader(
+                    stdout,
+                    ls_tx.clone(),
+                    parse_ndjson_line,
+                );
                 Some(child)
             }
             Err(e) => {
@@ -2500,8 +2630,8 @@ fn main() -> ExitCode {
             .push("LaserStream binary not found — Helius WS as fallback".to_string());
     }
     let _ls_state = LaserStreamState::new(); // reserved for future per-slot accounting
-    let mut ls_respawn_count: u32 = 0;
-    let mut ls_last_respawn: Option<Instant> = None;
+                                             // Respawn governor (stream_recovery): cooldown spacing + per-process limit, named exhaustion.
+    let mut ls_gov = pump_quant_junction::stream_recovery::RespawnGovernor::default();
 
     // ─── Firecrawl web-intelligence sidecar ─────────────────────────────────
     // Same sidecar pattern as LaserStream: spawn a child process, read its
@@ -2708,6 +2838,9 @@ fn main() -> ExitCode {
 
     // GAP #14: Track session start time for daemon_health.json uptime reporting.
     let session_start = Instant::now();
+    let disk_dests = daemon_write_dests();
+    let mut disk_monitor = pump_quant_junction::disk_budget::DiskMonitor::default();
+    let mut resource_last_sig = String::new();
 
     // ── GAP E: generate unique session_id ──────────────────────────────
     // A unique per-daemon-restart identifier (PID + start timestamp) so A/B
@@ -2804,6 +2937,27 @@ fn main() -> ExitCode {
 
         let mut did_work = false;
 
+        // ── OPERATOR RE-ARM (model lane): the only daemon path to `model_safety_rearm`. A named operator writes
+        // data/OPERATOR_REARM.json {operator, safety_epoch}; it is consumed once and judged by the existing contract.
+        if model_armed
+            && std::path::Path::new(pump_quant_junction::model_lifecycle::OPERATOR_REARM_FILE)
+                .exists()
+        {
+            if let Some(o) = pump_quant_junction::model_lifecycle::handle_rearm_request(
+                &mut engine,
+                std::path::Path::new(pump_quant_junction::model_lifecycle::OPERATOR_REARM_FILE),
+                std::path::Path::new(
+                    pump_quant_junction::model_lifecycle::OPERATOR_REARM_RESULT_FILE,
+                ),
+            ) {
+                eprintln!(
+                    "[pq-daemon] OPERATOR_REARM {o:?} safety_blocked={} entries_blocked={}",
+                    engine.model_safety_blocked(),
+                    engine.model_entries_blocked()
+                );
+            }
+        }
+
         // ── SUBSCRIPTION CAP RECONNECT (self-healing) ───────────────────
         // If -32006 was detected on the previous iteration, force a full WS
         // reconnect NOW — before any other lane processing. This ensures
@@ -2815,53 +2969,62 @@ fn main() -> ExitCode {
             );
             // Send a proper WS Close frame so Helius immediately frees ALL
             // subscription slots on the old connection.
-            let _ = helius_conn.close();
             stats.helius_reconnects += 1;
             let active_mints_vec = sub_tracker.clear_server_subs();
             stats.sub_cap_errors = 0; // reset after reconnect
             stats.subs_leaked_no_ack = 0; // fresh connection, no leaks
                                           // Re-subscribe with the standard backoff ladder.
-            let mut backoff_ms = WS_RECONNECT_SLEEP_MS;
-            let mut reconnected = false;
-            for _ in 0..MAX_RECONNECT_ATTEMPTS {
-                if !reconnected {
-                    match WsConn::connect(&helius_url) {
-                        Ok(mut c) => {
-                            let _ = c.set_read_timeout(Duration::from_millis(WS_READ_TIMEOUT_MS));
-                            let _ = c.send_text(&helius_ws::slot_subscribe_request());
-                            for mint in &active_mints_vec {
-                                let pda = bonding_curve_pda(mint);
-                                let pda_str = pda.to_string();
-                                let req_id = next_req_id;
-                                next_req_id += 1;
-                                let req = helius_ws::account_subscribe_request(
-                                    req_id,
-                                    &pda_str,
-                                    &args.commitment,
-                                );
-                                let _ = c.send_text(&req);
-                                sub_tracker.record_request(req_id, *mint);
-                            }
-                            helius_conn_established_at = Instant::now();
-                            last_slot_time = Instant::now();
-                            reconnected = true;
-                            helius_conn = c;
-                            eprintln!(
+                                          // Extracted episode (stream_recovery): close old first, capped ladder, sleep after every failure,
+                                          // cancellable by the emergency stop, named exhaustion.
+            let reconnected = match pump_quant_junction::stream_recovery::ws_reconnect_episode(
+                &pump_quant_junction::endpoint_retry::HELIUS_WS_RECONNECT,
+                || {
+                    let _ = helius_conn.close();
+                },
+                || WsConn::connect(&helius_url),
+                |n, b, e| {
+                    eprintln!(
+                        "[pq-daemon] FORCE RECONNECT failed (attempt {n}, backoff={b}ms): {e}"
+                    );
+                    stats.ws_errors += 1;
+                },
+                &mut pump_quant_junction::stream_recovery::RealSleeper {
+                    cancelled: emergency_stop_requested,
+                },
+            ) {
+                pump_quant_junction::stream_recovery::WsOutcome::Connected {
+                    conn: mut c, ..
+                } => {
+                    let _ = c.set_read_timeout(Duration::from_millis(WS_READ_TIMEOUT_MS));
+                    let _ = c.send_text(&helius_ws::slot_subscribe_request());
+                    for mint in &active_mints_vec {
+                        let pda = bonding_curve_pda(mint);
+                        let pda_str = pda.to_string();
+                        let req_id = next_req_id;
+                        next_req_id += 1;
+                        let req = helius_ws::account_subscribe_request(
+                            req_id,
+                            &pda_str,
+                            &args.commitment,
+                        );
+                        let _ = c.send_text(&req);
+                        sub_tracker.record_request(req_id, *mint);
+                    }
+                    helius_conn_established_at = Instant::now();
+                    last_slot_time = Instant::now();
+                    helius_conn = c;
+                    eprintln!(
                                 "[pq-daemon] FORCE RECONNECT succeeded — {} active mints re-subscribed on fresh connection",
                                 sub_tracker.len()
                             );
-                        }
-                        Err(e) => {
-                            eprintln!(
-                                "[pq-daemon] FORCE RECONNECT failed (backoff={backoff_ms}ms): {e}"
-                            );
-                            stats.ws_errors += 1;
-                            std::thread::sleep(Duration::from_millis(backoff_ms));
-                            backoff_ms = (backoff_ms * 2).min(RECONNECT_BACKOFF_CAP_MS);
-                        }
-                    }
+                    true
                 }
-            }
+                pump_quant_junction::stream_recovery::WsOutcome::Cancelled { attempts } => {
+                    eprintln!("[pq-daemon] FORCE RECONNECT CANCELLED by emergency stop after {attempts} attempt(s)");
+                    false
+                }
+                pump_quant_junction::stream_recovery::WsOutcome::Exhausted { .. } => false,
+            };
             if !reconnected {
                 eprintln!(
                     "[pq-daemon] FORCE RECONNECT exhausted — stale-check will retry on next tick"
@@ -3460,77 +3623,54 @@ fn main() -> ExitCode {
                     // fundamentally broken binary (e.g. wrong subcommand,
                     // missing creds, bad endpoint).
                     if stats.ls_spawned {
-                        // Check respawn cooldown + max attempts
-                        let now = Instant::now();
-                        let cooldown_ok = ls_last_respawn
-                            .map(|t| now.duration_since(t).as_secs() >= LS_RESPAWN_COOLDOWN_SECS)
-                            .unwrap_or(true);
-                        if !cooldown_ok {
-                            // Too soon — skip respawn this iteration
-                            break;
-                        }
-                        if ls_respawn_count >= LS_MAX_RESPAWN_ATTEMPTS {
-                            eprintln!(
-                                "[pq-daemon] LaserStream respawn limit reached ({}), \
-                                giving up — Helius WS as permanent fallback",
-                                ls_respawn_count
-                            );
-                            stats.stubbed_or_assumed.push(
-                                "LaserStream exhausted respawns — Helius WS fallback".to_string(),
-                            );
-                            // Mark ls_spawned false so we don't keep trying
-                            stats.ls_spawned = false;
-                            // Rev-30: LS is dead — activate WS fallback.
-                            ls_active = false;
-                            eprintln!(
-                                "[pq-daemon] ls_active=false — WS accountSubscribe now active as fallback data source"
-                            );
-                            break;
-                        }
-                        eprintln!(
-                            "[pq-daemon] LaserStream disconnected — respawn attempt {}/{}",
-                            ls_respawn_count + 1,
-                            LS_MAX_RESPAWN_ATTEMPTS
+                        use pump_quant_junction::stream_recovery::{respawn_step, RespawnDecision};
+                        let now_ms = session_start.elapsed().as_millis() as u64;
+                        let (dec, spawned) = respawn_step(
+                            &mut ls_gov,
+                            &pump_quant_junction::endpoint_retry::LASERSTREAM_RESPAWN,
+                            now_ms,
+                            &mut ls_child,
+                            |old| {
+                                // GAP #12: kill (and reap) the OLD child BEFORE spawning the new one - at most one
+                                // live LaserStream child, no orphan burning credits.
+                                eprintln!(
+                                    "[pq-daemon] killing old LaserStream child (pid={}) before respawn to prevent orphan leak",
+                                    old.id()
+                                );
+                                kill_process_tree(old);
+                            },
+                            || match &ls_bin {
+                                Some(bin_path) => spawn_ls(bin_path),
+                                None => None,
+                            },
                         );
-                        stats.ls_reconnects += 1;
-                        ls_respawn_count += 1;
-                        ls_last_respawn = Some(now);
-                        if let Some(bin_path) = &ls_bin {
-                            match spawn_ls(bin_path) {
-                                Some(child) => {
-                                    // GAP #12 FIX: Kill the OLD LS child before
-                                    // replacing. Without this, Rust's Drop for
-                                    // Child on Windows closes the handle but
-                                    // does NOT kill the process — the old LS
-                                    // survives as an orphan, keeps its gRPC
-                                    // connection to Helius alive, and burns
-                                    // credits while its stdout pipe goes
-                                    // nowhere. This is the root cause of the
-                                    // 2M credit leak.
-                                    if let Some(ref mut old) = ls_child {
-                                        eprintln!(
-                                            "[pq-daemon] killing old LaserStream child (pid={}) before respawn to prevent orphan leak",
-                                            old.id()
-                                        );
-                                        // On Windows, child.kill() calls
-                                        // TerminateProcess which kills only the
-                                        // immediate process. For wsl.exe-spawned
-                                        // LS, we also need taskkill /T to kill
-                                        // the WSL subprocess tree.
-                                        #[cfg(windows)]
-                                        {
-                                            let old_pid = old.id();
-                                            let _ = std::process::Command::new("taskkill")
-                                                .args(["/T", "/F", "/PID", &old_pid.to_string()])
-                                                .stdout(std::process::Stdio::null())
-                                                .stderr(std::process::Stdio::null())
-                                                .status();
-                                        }
-                                        let _ = old.kill();
-                                        let _ = old.wait();
-                                    }
+                        match dec {
+                            RespawnDecision::CooldownWait | RespawnDecision::GaveUp => {}
+                            RespawnDecision::Exhausted => {
+                                eprintln!(
+                                    "[pq-daemon] LaserStream respawn limit reached ({}), \
+                                    giving up — Helius WS as permanent fallback",
+                                    ls_gov.count
+                                );
+                                stats.stubbed_or_assumed.push(
+                                    "LaserStream exhausted respawns — Helius WS fallback"
+                                        .to_string(),
+                                );
+                                stats.ls_spawned = false;
+                                // Rev-30: LS is dead — activate WS fallback.
+                                ls_active = false;
+                                eprintln!(
+                                    "[pq-daemon] ls_active=false — WS accountSubscribe now active as fallback data source"
+                                );
+                            }
+                            RespawnDecision::Attempt(n) => {
+                                eprintln!(
+                                    "[pq-daemon] LaserStream disconnected — respawn attempt {}/{}",
+                                    n, LS_MAX_RESPAWN_ATTEMPTS
+                                );
+                                stats.ls_reconnects += 1;
+                                if spawned == Some(true) {
                                     eprintln!("[pq-daemon] LaserStream respawned");
-                                    ls_child = Some(child);
                                     // Rev-30: LS recovered — re-activate as primary.
                                     ls_active = true;
                                     // Close Helius WS account subscriptions
@@ -3544,8 +3684,7 @@ fn main() -> ExitCode {
                                             active_mints_vec.len()
                                         );
                                     }
-                                }
-                                None => {
+                                } else {
                                     eprintln!("[pq-daemon] LaserStream respawn FAILED");
                                     stats.ws_errors += 1;
                                 }
@@ -4215,7 +4354,6 @@ fn main() -> ExitCode {
                 eprintln!("[pq-daemon] Helius closed: {reason}, reconnecting…");
                 // Send WS Close on the old connection (may already be closed,
                 // but best-effort — ensures server-side subscription release).
-                let _ = helius_conn.close();
                 stats.helius_reconnects += 1;
                 let active_mints_vec = sub_tracker.clear_server_subs();
                 // GAP #11: Exponential backoff reconnect ladder.
@@ -4224,53 +4362,63 @@ fn main() -> ExitCode {
                 // two immediate retries both fail. The backoff ladder doubles
                 // the sleep from 500ms → 1s → 2s → 4s → 8s (capped at 10s),
                 // giving the server progressively more time to recover.
-                let mut backoff_ms = WS_RECONNECT_SLEEP_MS;
-                let mut reconnected = false;
-                for _ in 0..MAX_RECONNECT_ATTEMPTS {
-                    if !reconnected {
-                        match WsConn::connect(&helius_url) {
-                            Ok(mut c) => {
-                                let _ =
-                                    c.set_read_timeout(Duration::from_millis(WS_READ_TIMEOUT_MS));
-                                let _ = c.send_text(&helius_ws::slot_subscribe_request());
-                                // GAP #8: record_request() MUST be called for
-                                // each re-subscription. Without it, the ACK
-                                // from Helius arrives but record_ack() can't
-                                // map req_id → mint because record_request
-                                // never stored it. server_sub_to_mint stays
-                                // empty → all notifications are silently
-                                // dropped → 0 OnchainConfirms after reconnect.
-                                for mint in &active_mints_vec {
-                                    let pda = bonding_curve_pda(mint);
-                                    let pda_str = pda.to_string();
-                                    let req_id = next_req_id;
-                                    next_req_id += 1;
-                                    let req = helius_ws::account_subscribe_request(
-                                        req_id,
-                                        &pda_str,
-                                        &args.commitment,
-                                    );
-                                    let _ = c.send_text(&req);
-                                    // CRITICAL: register the req_id → mint
-                                    // mapping so the ACK can be resolved.
-                                    sub_tracker.record_request(req_id, *mint);
-                                }
-                                helius_conn_established_at = Instant::now();
-                                last_slot_time = Instant::now();
-                                reconnected = true;
-                                helius_conn = c;
-                            }
-                            Err(e) => {
-                                eprintln!(
-                                    "[pq-daemon] Helius reconnect failed (backoff={backoff_ms}ms): {e}"
-                                );
-                                stats.ws_errors += 1;
-                                std::thread::sleep(Duration::from_millis(backoff_ms));
-                                backoff_ms = (backoff_ms * 2).min(RECONNECT_BACKOFF_CAP_MS);
-                            }
+                // Extracted episode (stream_recovery): close old first, capped ladder, sleep after every failure,
+                // cancellable by the emergency stop, named exhaustion.
+                let reconnected = match pump_quant_junction::stream_recovery::ws_reconnect_episode(
+                    &pump_quant_junction::endpoint_retry::HELIUS_WS_RECONNECT,
+                    || {
+                        let _ = helius_conn.close();
+                    },
+                    || WsConn::connect(&helius_url),
+                    |n, b, e| {
+                        eprintln!(
+                            "[pq-daemon] Helius reconnect failed (attempt {n}, backoff={b}ms): {e}"
+                        );
+                        stats.ws_errors += 1;
+                    },
+                    &mut pump_quant_junction::stream_recovery::RealSleeper {
+                        cancelled: emergency_stop_requested,
+                    },
+                ) {
+                    pump_quant_junction::stream_recovery::WsOutcome::Connected {
+                        conn: mut c,
+                        ..
+                    } => {
+                        let _ = c.set_read_timeout(Duration::from_millis(WS_READ_TIMEOUT_MS));
+                        let _ = c.send_text(&helius_ws::slot_subscribe_request());
+                        // GAP #8: record_request() MUST be called for
+                        // each re-subscription. Without it, the ACK
+                        // from Helius arrives but record_ack() can't
+                        // map req_id → mint because record_request
+                        // never stored it. server_sub_to_mint stays
+                        // empty → all notifications are silently
+                        // dropped → 0 OnchainConfirms after reconnect.
+                        for mint in &active_mints_vec {
+                            let pda = bonding_curve_pda(mint);
+                            let pda_str = pda.to_string();
+                            let req_id = next_req_id;
+                            next_req_id += 1;
+                            let req = helius_ws::account_subscribe_request(
+                                req_id,
+                                &pda_str,
+                                &args.commitment,
+                            );
+                            let _ = c.send_text(&req);
+                            // CRITICAL: register the req_id → mint
+                            // mapping so the ACK can be resolved.
+                            sub_tracker.record_request(req_id, *mint);
                         }
+                        helius_conn_established_at = Instant::now();
+                        last_slot_time = Instant::now();
+                        helius_conn = c;
+                        true
                     }
-                }
+                    pump_quant_junction::stream_recovery::WsOutcome::Cancelled { attempts } => {
+                        eprintln!("[pq-daemon] Helius reconnect CANCELLED by emergency stop after {attempts} attempt(s)");
+                        false
+                    }
+                    pump_quant_junction::stream_recovery::WsOutcome::Exhausted { .. } => false,
+                };
                 if !reconnected {
                     eprintln!(
                         "[pq-daemon] Helius reconnect exhausted after {MAX_RECONNECT_ATTEMPTS} attempts — degrading, continuing with LaserStream/PumpPortal"
@@ -4306,51 +4454,58 @@ fn main() -> ExitCode {
                 // Send WS Close on the old connection (best-effort — the TCP
                 // socket may already be dead, but if it's half-open this
                 // accelerates server-side subscription release).
-                let _ = helius_conn.close();
                 stats.ws_errors += 1;
                 stats.helius_reconnects += 1;
                 let active_mints_vec = sub_tracker.clear_server_subs();
-                let mut backoff_ms = WS_RECONNECT_SLEEP_MS;
-                let mut reconnected = false;
-                for _ in 0..MAX_RECONNECT_ATTEMPTS {
-                    if !reconnected {
-                        match WsConn::connect(&helius_url) {
-                            Ok(mut c) => {
-                                let _ =
-                                    c.set_read_timeout(Duration::from_millis(WS_READ_TIMEOUT_MS));
-                                let _ = c.send_text(&helius_ws::slot_subscribe_request());
-                                for mint in &active_mints_vec {
-                                    let pda = bonding_curve_pda(mint);
-                                    let pda_str = pda.to_string();
-                                    let req_id = next_req_id;
-                                    next_req_id += 1;
-                                    let req = helius_ws::account_subscribe_request(
-                                        req_id,
-                                        &pda_str,
-                                        &args.commitment,
-                                    );
-                                    let _ = c.send_text(&req);
-                                    sub_tracker.record_request(req_id, *mint);
-                                }
-                                helius_conn_established_at = Instant::now();
-                                last_slot_time = Instant::now();
-                                reconnected = true;
-                                helius_conn = c;
-                                eprintln!(
-                                    "[pq-daemon] Helius Err-path reconnect succeeded after poll errors"
-                                );
-                            }
-                            Err(err) => {
-                                eprintln!(
-                                    "[pq-daemon] Helius Err-path reconnect failed (backoff={backoff_ms}ms): {err}"
-                                );
-                                stats.ws_errors += 1;
-                                std::thread::sleep(Duration::from_millis(backoff_ms));
-                                backoff_ms = (backoff_ms * 2).min(RECONNECT_BACKOFF_CAP_MS);
-                            }
+                // Extracted episode (stream_recovery): close old first, capped ladder, sleep after every failure,
+                // cancellable by the emergency stop, named exhaustion.
+                let reconnected = match pump_quant_junction::stream_recovery::ws_reconnect_episode(
+                    &pump_quant_junction::endpoint_retry::HELIUS_WS_RECONNECT,
+                    || {
+                        let _ = helius_conn.close();
+                    },
+                    || WsConn::connect(&helius_url),
+                    |n, b, e| {
+                        eprintln!("[pq-daemon] Helius Err-path reconnect failed (attempt {n}, backoff={b}ms): {e}");
+                        stats.ws_errors += 1;
+                    },
+                    &mut pump_quant_junction::stream_recovery::RealSleeper {
+                        cancelled: emergency_stop_requested,
+                    },
+                ) {
+                    pump_quant_junction::stream_recovery::WsOutcome::Connected {
+                        conn: mut c,
+                        ..
+                    } => {
+                        let _ = c.set_read_timeout(Duration::from_millis(WS_READ_TIMEOUT_MS));
+                        let _ = c.send_text(&helius_ws::slot_subscribe_request());
+                        for mint in &active_mints_vec {
+                            let pda = bonding_curve_pda(mint);
+                            let pda_str = pda.to_string();
+                            let req_id = next_req_id;
+                            next_req_id += 1;
+                            let req = helius_ws::account_subscribe_request(
+                                req_id,
+                                &pda_str,
+                                &args.commitment,
+                            );
+                            let _ = c.send_text(&req);
+                            sub_tracker.record_request(req_id, *mint);
                         }
+                        helius_conn_established_at = Instant::now();
+                        last_slot_time = Instant::now();
+                        helius_conn = c;
+                        eprintln!(
+                            "[pq-daemon] Helius Err-path reconnect succeeded after poll errors"
+                        );
+                        true
                     }
-                }
+                    pump_quant_junction::stream_recovery::WsOutcome::Cancelled { attempts } => {
+                        eprintln!("[pq-daemon] Helius Err-path reconnect CANCELLED by emergency stop after {attempts} attempt(s)");
+                        false
+                    }
+                    pump_quant_junction::stream_recovery::WsOutcome::Exhausted { .. } => false,
+                };
                 if !reconnected {
                     eprintln!(
                         "[pq-daemon] Helius Err-path reconnect exhausted after {MAX_RECONNECT_ATTEMPTS} attempts — degrading, stale-check will retry"
@@ -4385,47 +4540,54 @@ fn main() -> ExitCode {
             );
             // Send WS Close on the old connection to accelerate server-side
             // subscription slot release before opening a fresh connection.
-            let _ = helius_conn.close();
             stats.helius_reconnects += 1;
             let active_mints_vec = sub_tracker.clear_server_subs();
             // GAP #11: Same exponential backoff ladder as the Closed/Err paths.
-            let mut backoff_ms = WS_RECONNECT_SLEEP_MS;
-            let mut reconnected = false;
-            for _ in 0..MAX_RECONNECT_ATTEMPTS {
-                if !reconnected {
-                    match WsConn::connect(&helius_url) {
-                        Ok(mut c) => {
-                            let _ = c.set_read_timeout(Duration::from_millis(WS_READ_TIMEOUT_MS));
-                            let _ = c.send_text(&helius_ws::slot_subscribe_request());
-                            for mint in &active_mints_vec {
-                                let pda = bonding_curve_pda(mint);
-                                let pda_str = pda.to_string();
-                                let req_id = next_req_id;
-                                next_req_id += 1;
-                                let req = helius_ws::account_subscribe_request(
-                                    req_id,
-                                    &pda_str,
-                                    &args.commitment,
-                                );
-                                let _ = c.send_text(&req);
-                                sub_tracker.record_request(req_id, *mint);
-                            }
-                            helius_conn_established_at = Instant::now();
-                            last_slot_time = Instant::now();
-                            reconnected = true;
-                            helius_conn = c;
-                        }
-                        Err(e) => {
-                            eprintln!(
-                                "[pq-daemon] Helius stale-reconnect failed (backoff={backoff_ms}ms): {e}"
-                            );
-                            stats.ws_errors += 1;
-                            std::thread::sleep(Duration::from_millis(backoff_ms));
-                            backoff_ms = (backoff_ms * 2).min(RECONNECT_BACKOFF_CAP_MS);
-                        }
+            // Extracted episode (stream_recovery): close old first, capped ladder, sleep after every failure,
+            // cancellable by the emergency stop, named exhaustion.
+            let reconnected = match pump_quant_junction::stream_recovery::ws_reconnect_episode(
+                &pump_quant_junction::endpoint_retry::HELIUS_WS_RECONNECT,
+                || {
+                    let _ = helius_conn.close();
+                },
+                || WsConn::connect(&helius_url),
+                |n, b, e| {
+                    eprintln!("[pq-daemon] Helius stale-reconnect failed (attempt {n}, backoff={b}ms): {e}");
+                    stats.ws_errors += 1;
+                },
+                &mut pump_quant_junction::stream_recovery::RealSleeper {
+                    cancelled: emergency_stop_requested,
+                },
+            ) {
+                pump_quant_junction::stream_recovery::WsOutcome::Connected {
+                    conn: mut c, ..
+                } => {
+                    let _ = c.set_read_timeout(Duration::from_millis(WS_READ_TIMEOUT_MS));
+                    let _ = c.send_text(&helius_ws::slot_subscribe_request());
+                    for mint in &active_mints_vec {
+                        let pda = bonding_curve_pda(mint);
+                        let pda_str = pda.to_string();
+                        let req_id = next_req_id;
+                        next_req_id += 1;
+                        let req = helius_ws::account_subscribe_request(
+                            req_id,
+                            &pda_str,
+                            &args.commitment,
+                        );
+                        let _ = c.send_text(&req);
+                        sub_tracker.record_request(req_id, *mint);
                     }
+                    helius_conn_established_at = Instant::now();
+                    last_slot_time = Instant::now();
+                    helius_conn = c;
+                    true
                 }
-            }
+                pump_quant_junction::stream_recovery::WsOutcome::Cancelled { attempts } => {
+                    eprintln!("[pq-daemon] Helius stale-reconnect CANCELLED by emergency stop after {attempts} attempt(s)");
+                    false
+                }
+                pump_quant_junction::stream_recovery::WsOutcome::Exhausted { .. } => false,
+            };
             if !reconnected {
                 eprintln!(
                     "[pq-daemon] Helius stale-reconnect exhausted after {MAX_RECONNECT_ATTEMPTS} attempts — degrading"
@@ -4448,10 +4610,13 @@ fn main() -> ExitCode {
                 if bootstrap_requested.contains(&m) {
                     continue;
                 }
-                // Discovery spend never eats the held-position reservation (20 pages = one full walk).
+                // Discovery spend never eats the held-position reservation. Charged at the WORST-CASE walk: the page
+                // budget plus the walk's named retry budget (endpoint_retry::bootstrap_walk_cost = 20 + 4).
                 let held_n = engine.model_held_mints().len() as u64;
                 let now_ms = session_start.elapsed().as_millis() as i64;
-                if !rpc_budget.try_discovery(now_ms, held_n, 20) {
+                let cost =
+                    pump_quant_junction::endpoint_retry::bootstrap_walk_cost(BOOTSTRAP_MAX_PAGES);
+                if !rpc_budget.try_discovery(now_ms, held_n, cost) {
                     break;
                 }
                 bootstrap_requested.insert(m);
@@ -4963,21 +5128,65 @@ fn main() -> ExitCode {
                 for ev in evs {
                     engine.tick(ev);
                 }
+                // HARNESS-ONLY forced protective trigger (offline replay only; never live).
+                if let Some((m, res)) =
+                    pump_quant_junction::model_lifecycle::harness_force_protect_from(
+                        &mut engine,
+                        replay_harness,
+                        std::path::Path::new(
+                            pump_quant_junction::model_lifecycle::HARNESS_FORCE_PROTECT_FILE,
+                        ),
+                    )
+                {
+                    eprintln!(
+                        "[pq-daemon] HARNESS_FORCE_PROTECT (harness-only, not a market trigger) mint={m} result(protect_order id,intended,filled,code)={res:?} safety_blocked={} new_risk_blocked={}",
+                        engine.model_safety_blocked(),
+                        engine.model_new_risk_blocked()
+                    );
+                }
             }
             #[allow(clippy::manual_is_multiple_of)] // MSRV 1.85: is_multiple_of stabilised in 1.87
             if model_armed && (tick_counter % 20 == 0 || barrier_fire) {
                 // STOP TABLE: measured conditions -> named actions. Management, protection and reconciliation are
                 // never disabled here; risk rows latch SAFETY_OFF; the deadline drains then hands off.
-                let sf = std::env::var("PQ_MODEL_SAFETY_FILE").unwrap_or_else(|_| {
-                    pump_quant_junction::model_lifecycle::DEFAULT_SAFETY_FILE.to_string()
-                });
                 let held_n = engine.model_held_mints().len() as u64;
+                // Disk: every required destination (daemon_write_dests) sampled through the run AND the drain: bytes
+                // written per destination, free per filesystem, time-to-floor projected from the measured growth.
+                // New exposure stops at the soft floor OR inside the EXIT RESERVE (bytes or time) so reconciliation,
+                // protection, durable writes and the handoff keep room. UNKNOWN restricts (never dropped); only a
+                // MEASURED hard-floor breach latches. RAM: the SAME shared rule as the startup budget (mem_rule).
+                // HARNESS-ONLY simulated pressure (offline replay only) is logged as SIMULATED_PRESSURE next to the
+                // measured values.
+                let sim = pump_quant_junction::model_lifecycle::simulated_pressure(replay_harness);
+                let dr = disk_monitor.sample(
+                    &disk_dests,
+                    session_start.elapsed().as_secs_f64(),
+                    sim.disk_free,
+                    sim.disk_unknown,
+                );
+                let mv = pump_quant_junction::model_lifecycle::mem_verdict_now();
+                if sim.any() {
+                    eprintln!(
+                        "[pq-daemon] SIMULATED_PRESSURE (harness-only, not a measured reading): {sim:?}; MEASURED mem effective={:?} state={}",
+                        mv.effective,
+                        pump_quant_junction::model_lifecycle::mem_state_label(&mv.state)
+                    );
+                }
+                let ram_ok = if sim.ram { Some(false) } else { mv.ok };
+                let disk_ok = dr.soft_ok;
+                let disk_hard_ok = dr.hard_ok;
+                let sig = format!("{disk_ok:?}/{disk_hard_ok:?}/{ram_ok:?}/{}", sim.any());
+                if sig != resource_last_sig || tick_counter % 2_000 == 0 {
+                    eprintln!(
+                        "[pq-daemon] RESOURCE_RUNTIME disk_soft_ok={disk_ok:?} disk_hard_ok={disk_hard_ok:?} ram_ok={ram_ok:?} mem_effective={:?} unmeasurable={:?} fs={:?}",
+                        mv.effective, dr.unmeasurable, dr.fs
+                    );
+                    resource_last_sig = sig;
+                }
                 let ops = pump_quant_app::stop_policy::OpsInputs {
-                    disk_ok: pump_quant_junction::model_lifecycle::disk_headroom_ok(
-                        std::path::Path::new(&sf),
-                        pump_quant_junction::model_lifecycle::MIN_FREE_BYTES,
-                    ),
-                    ram_ok: pump_quant_junction::model_lifecycle::ram_headroom_ok(),
+                    disk_ok,
+                    disk_hard_ok,
+                    ram_ok,
                     feed_ok: last_slot_time.elapsed() <= Duration::from_secs(STALE_SECS),
                     rpc_budget_ok: launch_bootstrap.is_none()
                         || !rpc_budget.discovery_exhausted(held_n),

@@ -763,6 +763,26 @@ impl ScalpLifecycle {
         })
     }
 
+    /// OFFLINE REPLAY HARNESS ONLY (see `Engine::model_harness_force_protect`): queue a protective intent for a held,
+    /// model-managed position exactly as a fired trigger would, through the same routed path. Returns false (nothing
+    /// queued) when protection is not routed or the position is not held / not model-managed.
+    pub fn harness_queue_intent(
+        &mut self,
+        mint: &[u8; 32],
+        reason: ExitReason,
+        price_fp: u64,
+    ) -> bool {
+        if !self.route_protection || !self.is_model_managed(mint) {
+            return false;
+        }
+        self.intents.push(ProtectIntent {
+            mint: *mint,
+            reason,
+            price_fp,
+        });
+        true
+    }
+
     /// Triggers queued since the last call (the position is untouched by them).
     pub fn take_intents(&mut self) -> Vec<ProtectIntent> {
         std::mem::take(&mut self.intents)
@@ -1933,6 +1953,31 @@ mod tests {
         let mut lc = ScalpLifecycle::new(P, 64);
         lc.open([1u8; 32], entry, size, size + P.fixed_lamports_per_leg, 0);
         lc
+    }
+
+    #[test]
+    fn harness_queue_intent_only_for_a_routed_model_managed_held_position() {
+        let m = [1u8; 32];
+        let mut lc = open_one(1_000_000, 1_000_000);
+        // Not routed, not model-managed: nothing queued.
+        assert!(!lc.harness_queue_intent(&m, ExitReason::HardStop, 1));
+        lc.set_route_protection(true);
+        // Routed but NOT model-managed (legacy position): nothing queued.
+        assert!(!lc.harness_queue_intent(&m, ExitReason::HardStop, 1));
+        // Not held: nothing queued.
+        assert!(!lc.harness_queue_intent(&[9u8; 32], ExitReason::HardStop, 1));
+        assert!(lc.take_intents().is_empty());
+        assert!(lc.set_model_managed(&m));
+        assert!(lc.harness_queue_intent(&m, ExitReason::HardStop, 7));
+        assert_eq!(
+            lc.take_intents(),
+            vec![ProtectIntent {
+                mint: m,
+                reason: ExitReason::HardStop,
+                price_fp: 7
+            }]
+        );
+        assert!(lc.has(&m), "queuing an intent never touches the position");
     }
 
     #[test]
