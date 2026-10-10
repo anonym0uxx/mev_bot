@@ -119,6 +119,11 @@ fn curve(e: &mut Engine, ts: i64, slot: u64, vsol: u64, vtok: u64, real_sol: u64
         recv_unix_ms: Some(ts),
         slot,
     });
+    e.tick(AppEvent::CurveModeObserved {
+        mint: mint(),
+        mayhem: false,
+        slot: 0,
+    });
 }
 
 struct Rig {

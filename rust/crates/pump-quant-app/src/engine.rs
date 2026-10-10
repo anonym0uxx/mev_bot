@@ -20,6 +20,7 @@ pub mod model_admit;
 pub mod model_barrier;
 pub mod model_creator;
 pub mod model_manage;
+pub mod model_mayhem;
 pub mod model_protect;
 pub mod model_restore;
 pub mod model_safety;
@@ -945,6 +946,10 @@ pub struct Engine {
     model_swap_ctx: Option<(i64, u64)>,
     /// The last named refusal per registered market (for never-ready reporting).
     model_last_refusal: BTreeMap<[u8; 32], String>,
+    /// Operator decision 2026-10-09 (SKIP Mayhem-mode coins): the decoded `is_mayhem_mode` per market, from
+    /// `AppEvent::CurveModeObserved`. Absent = UNKNOWN (refused). Sticky-true: once a curve was observed in
+    /// Mayhem mode it stays excluded. Bounded by the registry cap. See `model_mayhem`.
+    model_curve_mayhem: BTreeMap<[u8; 32], bool>,
     /// The installed model source, when the lane is armed. `None` in legacy/replay.
     model_source: Option<std::sync::Arc<dyn ModelSource + Send + Sync>>,
     now: u64,
@@ -1590,6 +1595,7 @@ impl Engine {
             model_slot: 0,
             model_swap_ctx: None,
             model_last_refusal: BTreeMap::new(),
+            model_curve_mayhem: BTreeMap::new(),
             model_source: None,
             now: 0,
             numeric: NumericLane::new(),
@@ -2751,6 +2757,11 @@ impl Engine {
                     self.model_register(*mint.as_bytes());
                 }
             }
+            AppEvent::CurveModeObserved { mint, mayhem, slot } => {
+                if self.paper_model_mode {
+                    self.model_observe_curve_mode(*mint.as_bytes(), mayhem, slot);
+                }
+            }
             AppEvent::LaunchFromChain {
                 mint,
                 creator,
@@ -3249,6 +3260,21 @@ impl Engine {
     /// clamping the impossible value would have turned a decoder fault into a
     /// plausible-looking thin market and hidden it forever (§18.2).
     fn confirm(&mut self, mint: [u8; 32], virtual_sol: u64, real_sol: u64) {
+        // MODE GATE (armed model lane only; the legacy/golden path has no mode feed and is unchanged). The
+        // constant-offset cross-check below is valid only for an Ordinary curve. A Mayhem or mode-unknown
+        // confirm is not recorded and is counted by name. It is NOT a decoder fault and NOT a missing trade:
+        // its decoded reserves are legitimate, just unsupported for trading.
+        if self.paper_model_mode {
+            let mode = crate::curve_depth::CurveDepthMode::from_decoded_mayhem(
+                self.model_curve_mode(&mint),
+            );
+            if let Err(r) =
+                crate::curve_depth::CurveDepth::decoded_for_mode(mode, virtual_sol, real_sol)
+            {
+                self.mrep(format!("confirm:{}", r.as_str()));
+                return;
+            }
+        }
         if crate::curve_depth::CurveDepth::decoded(virtual_sol, real_sol).is_unknown() {
             return;
         }

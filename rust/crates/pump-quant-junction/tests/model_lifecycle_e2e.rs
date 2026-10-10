@@ -81,6 +81,11 @@ fn events(n: u32) -> Vec<AppEvent> {
         recv_unix_ms: Some(t_last),
         slot: 2_000,
     });
+    ev.push(AppEvent::CurveModeObserved {
+        mint: mint(),
+        mayhem: false,
+        slot: 0,
+    });
     ev.push(AppEvent::OnchainConfirm {
         mint: mint(),
         virtual_sol_lamports: VSOL,
@@ -106,6 +111,11 @@ fn curve(e: &mut Engine, ts: i64, slot: u64, dsol: u64) {
         recv_unix_ms: Some(ts),
         slot,
     });
+    e.tick(AppEvent::CurveModeObserved {
+        mint: mint(),
+        mayhem: false,
+        slot: 0,
+    });
     ticks(e, 6);
 }
 
@@ -120,6 +130,11 @@ fn curve_quiet(e: &mut Engine, ts: i64, slot: u64) {
         real_tokens: 565_000_000_000_000,
         recv_unix_ms: Some(ts),
         slot,
+    });
+    e.tick(AppEvent::CurveModeObserved {
+        mint: mint(),
+        mayhem: false,
+        slot: 0,
     });
 }
 

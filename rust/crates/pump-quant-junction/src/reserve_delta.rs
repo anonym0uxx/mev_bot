@@ -29,8 +29,138 @@ pub struct ReserveSnapshot {
     pub virtual_sol: u64,
     /// Virtual token reserves (base units) at the last observation.
     pub virtual_token: u64,
+    /// Real SOL reserves (lamports) at the last observation. Only the mode-aware classifier reads it
+    /// (a Mayhem curve's virtual offset moves between trades; its real reserves do not move on a reset).
+    pub real_sol: u64,
+    /// Real token reserves (base units) at the last observation.
+    pub real_token: u64,
     /// Slot at which the snapshot was taken.
     pub slot: u64,
+}
+
+impl ReserveSnapshot {
+    /// The snapshot of a decoded curve at `slot` (all four reserves).
+    #[must_use]
+    pub fn of(curve: &PumpCurve, slot: u64) -> Self {
+        Self {
+            virtual_sol: curve.virtual_sol,
+            virtual_token: curve.virtual_token,
+            real_sol: curve.real_sol,
+            real_token: curve.real_token,
+            slot,
+        }
+    }
+}
+
+/// The curve mode a reserve delta is interpreted under (proc/OFFSET_v4_REPORT.md §1).
+///
+/// The virtual-delta derivation assumes a constant virtual offset (`vsol - real_sol` = 30 SOL). That was
+/// observed ONLY on non-Mayhem, SOL-quoted, 151-byte curves (`Ordinary`). A Mayhem curve's virtual offset
+/// moves between trades, and any other account is `Unknown`. Neither inherits the derivation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeltaMode {
+    /// `classify_pump_curve` = Ordinary: the legacy virtual-delta derivation applies.
+    Ordinary,
+    /// `classify_pump_curve` = Mayhem: no trade is derived from its reserves.
+    Mayhem,
+    /// Unsupported / undecodable account: no trade is derived (fail-closed).
+    Unknown,
+}
+
+impl DeltaMode {
+    /// Classify the raw account bytes with the protocol's verified classifier.
+    #[must_use]
+    pub fn of_account(account_data: &[u8]) -> Self {
+        use pump_quant_protocol::decode::{classify_pump_curve, PumpCurveClass};
+        match classify_pump_curve(account_data) {
+            PumpCurveClass::Ordinary { .. } => DeltaMode::Ordinary,
+            PumpCurveClass::Mayhem { .. } => DeltaMode::Mayhem,
+            PumpCurveClass::Unsupported(_) => DeltaMode::Unknown,
+        }
+    }
+
+    /// Named reason used in counters for a refused (non-Ordinary) derivation.
+    #[must_use]
+    pub const fn refusal(self) -> &'static str {
+        match self {
+            DeltaMode::Ordinary => "ordinary",
+            DeltaMode::Mayhem => "delta_unsupported:mayhem_mode",
+            DeltaMode::Unknown => "delta_unsupported:curve_mode_unknown",
+        }
+    }
+}
+
+/// Mode-aware [`derive_market_trade_from_delta`]: only an `Ordinary` curve derives a trade; a Mayhem or
+/// Unknown curve derives NOTHING (its miss is classified by [`classify_delta_miss_for_mode`]).
+#[must_use]
+pub fn derive_market_trade_from_delta_for_mode(
+    mint_bytes: &[u8; 32],
+    previous: Option<ReserveSnapshot>,
+    current: &PumpCurve,
+    slot: u64,
+    is_live: bool,
+    recv_unix_ms: Option<i64>,
+    mode: DeltaMode,
+) -> Option<ProvenancedEvent> {
+    match mode {
+        DeltaMode::Ordinary => derive_market_trade_from_delta(
+            mint_bytes,
+            previous,
+            current,
+            slot,
+            is_live,
+            recv_unix_ms,
+        ),
+        DeltaMode::Mayhem | DeltaMode::Unknown => None,
+    }
+}
+
+/// Mode-aware [`classify_delta_miss`].
+///
+/// * `Ordinary` -> exactly [`classify_delta_miss`].
+/// * `Mayhem`   -> real reserves unchanged = `NoPrint` (an offset-only reset: nothing traded, NOT a possible
+///   missing trade); real reserves moved = `ModeUnsupported` (a trade happened, not derived from Mayhem reserves).
+/// * `Unknown`  -> nothing moved = `NoPrint`; anything moved = `ModeUnsupported` (fail-closed).
+#[must_use]
+pub fn classify_delta_miss_for_mode(
+    prev: Option<&ReserveSnapshot>,
+    current: &PumpCurve,
+    slot: u64,
+    mode: DeltaMode,
+) -> DeltaMiss {
+    let Some(p) = prev else {
+        return DeltaMiss::NoPrint;
+    };
+    if slot < p.slot {
+        return DeltaMiss::StaleSnapshot;
+    }
+    let real_moved = current.real_sol != p.real_sol || current.real_token != p.real_token;
+    let virt_moved =
+        current.virtual_sol != p.virtual_sol || current.virtual_token != p.virtual_token;
+    match mode {
+        DeltaMode::Ordinary => classify_delta_miss(prev, current, slot),
+        DeltaMode::Mayhem if !real_moved => DeltaMiss::NoPrint,
+        DeltaMode::Unknown if !real_moved && !virt_moved => DeltaMiss::NoPrint,
+        DeltaMode::Mayhem | DeltaMode::Unknown => DeltaMiss::ModeUnsupported,
+    }
+}
+
+/// Mode-aware [`note_curve_snapshot_outcome`] (the daemon's clocked account path).
+#[must_use]
+pub fn note_curve_snapshot_outcome_for_mode(
+    engine: &mut Engine,
+    mint: [u8; 32],
+    prev: Option<&ReserveSnapshot>,
+    current: &PumpCurve,
+    slot: u64,
+    recv_unix_ms: Option<i64>,
+    mode: DeltaMode,
+) -> DeltaMiss {
+    let miss = classify_delta_miss_for_mode(prev, current, slot, mode);
+    if let (Some(kind), Some(ms)) = (miss.missing_kind(), recv_unix_ms) {
+        engine.note_missing_observation(mint, ms, kind, format!("slot:{slot}"));
+    }
+    miss
 }
 
 /// The derivation result: either a trade was observed or the reserves
@@ -223,6 +353,11 @@ pub enum DeltaMiss {
     /// (same-sign move, or a zero token side): a swap-sized move the derivation refused, i.e. a
     /// POSSIBLE missing trade. Not CONFIRMED: only an independent transaction record can confirm.
     UpstreamDropped,
+    /// The curve is NOT Ordinary (Mayhem, or mode Unknown) and its reserves moved by more than an
+    /// offset-only reset: a print happened that the constant-offset derivation must not interpret
+    /// (proc/OFFSET_v4_REPORT.md §1). Refused by name, and recorded fail-closed as a possible missing
+    /// trade (the flow window is missing that print). An offset-only Mayhem reset is `NoPrint`, not this.
+    ModeUnsupported,
 }
 
 impl DeltaMiss {
@@ -233,7 +368,9 @@ impl DeltaMiss {
         match self {
             DeltaMiss::NoPrint | DeltaMiss::StaleSnapshot => None,
             DeltaMiss::InvalidObservation => Some(MissingKind::InvalidObservation),
-            DeltaMiss::UpstreamDropped => Some(MissingKind::PossibleTrade),
+            DeltaMiss::UpstreamDropped | DeltaMiss::ModeUnsupported => {
+                Some(MissingKind::PossibleTrade)
+            }
         }
     }
 }
@@ -314,6 +451,8 @@ mod tests {
         let prev = ReserveSnapshot {
             virtual_sol: 30_000_000_000,
             virtual_token: 1_000_000_000,
+            real_sol: 0,
+            real_token: 0,
             slot: 900,
         };
         // Ordinary no-trade: a small, representable delta.
@@ -338,6 +477,8 @@ mod tests {
         let prev = ReserveSnapshot {
             virtual_sol: 30_000_000_000,
             virtual_token: 1_000_000_000,
+            real_sol: 0,
+            real_token: 0,
             slot: 900,
         };
         let cur = make_curve(u64::MAX, 1_000_000_000);
@@ -356,6 +497,8 @@ mod tests {
         let prev = ReserveSnapshot {
             virtual_sol: big,
             virtual_token: big + 5000,
+            real_sol: 0,
+            real_token: 0,
             slot: 900,
         };
         // Buy: vsol +500, vtoken -10 (both reserves still > i64::MAX)
@@ -382,6 +525,8 @@ mod tests {
         let prev = ReserveSnapshot {
             virtual_sol: big + 500,
             virtual_token: big + 4990,
+            real_sol: 0,
+            real_token: 0,
             slot: 900,
         };
         // Sell: vsol -500, vtoken +10
@@ -424,6 +569,8 @@ mod tests {
         let prev = ReserveSnapshot {
             virtual_sol: 30_000_000_000,
             virtual_token: 1_000_000_000,
+            real_sol: 0,
+            real_token: 0,
             slot: 900,
         };
         // Buy: vsol up, vtoken down
@@ -459,6 +606,8 @@ mod tests {
         let prev = ReserveSnapshot {
             virtual_sol: 35_000_000_000,
             virtual_token: 900_000_000,
+            real_sol: 0,
+            real_token: 0,
             slot: 900,
         };
         // Sell: vsol down, vtoken up
@@ -480,6 +629,8 @@ mod tests {
         let prev = ReserveSnapshot {
             virtual_sol: 30_000_000_000,
             virtual_token: 1_000_000_000,
+            real_sol: 0,
+            real_token: 0,
             slot: 900,
         };
         // Same reserves — only the `complete` flag changed (migration)
@@ -494,6 +645,8 @@ mod tests {
         let prev = ReserveSnapshot {
             virtual_sol: 30_000_000_000,
             virtual_token: 1_000_000_000,
+            real_sol: 0,
+            real_token: 0,
             slot: 900,
         };
         // Both up — not a valid constant-product trade
@@ -514,6 +667,8 @@ mod tests {
         let prev = ReserveSnapshot {
             virtual_sol: 30_000_000_000,
             virtual_token: 1_000_000_000,
+            real_sol: 0,
+            real_token: 0,
             slot: 900,
         };
         // Buy: vsol=31, vtoken=990M → price = 31e9 * 1e9 / 990M
@@ -535,6 +690,8 @@ mod tests {
         let prev = ReserveSnapshot {
             virtual_sol: 30_000_000_000,
             virtual_token: 1_000_000_000,
+            real_sol: 0,
+            real_token: 0,
             slot: 900,
         };
         let curve = make_curve(31_000_000_000, 0);
@@ -550,6 +707,8 @@ mod tests {
         let prev = ReserveSnapshot {
             virtual_sol: 30_000_000_000,
             virtual_token: 1_000_000_000,
+            real_sol: 0,
+            real_token: 0,
             slot: 900,
         };
         let c =
@@ -595,6 +754,8 @@ mod tests {
         let prev = ReserveSnapshot {
             virtual_sol: 30_000_000_000,
             virtual_token: 1_000_000_000,
+            real_sol: 0,
+            real_token: 0,
             slot: 900,
         };
         let cases: [(Option<ReserveSnapshot>, PumpCurve, DeltaMiss); 6] = [

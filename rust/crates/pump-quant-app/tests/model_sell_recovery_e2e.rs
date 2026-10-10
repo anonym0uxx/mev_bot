@@ -148,6 +148,11 @@ fn warm_events(n: u32) -> Vec<AppEvent> {
         recv_unix_ms: Some(t_last),
         slot: 2_000,
     });
+    ev.push(AppEvent::CurveModeObserved {
+        mint: mint(),
+        mayhem: false,
+        slot: 0,
+    });
     ev.push(AppEvent::OnchainConfirm {
         mint: mint(),
         virtual_sol_lamports: VSOL,
@@ -259,6 +264,13 @@ fn fresh(held: &std::path::Path) -> Engine {
         answer: |_| HOLD,
     });
     e.model_held_attach(held);
+    // The curve-mode map is in-memory (not in held.json): a restarted daemon re-learns it from the first decoded
+    // account update, whose CurveModeObserved pq_daemon pushes BEFORE that update's reserves. Model that here.
+    e.tick(AppEvent::CurveModeObserved {
+        mint: mint(),
+        mayhem: false,
+        slot: 0,
+    });
     e
 }
 

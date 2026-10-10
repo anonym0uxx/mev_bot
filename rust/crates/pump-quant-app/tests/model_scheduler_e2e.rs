@@ -95,6 +95,11 @@ fn feed(mint: [u8; 32], start: i64, n: u32, wallets: u32, slot0: u64) -> Vec<App
         recv_unix_ms: Some(start + i64::from(n - 1) * 2_000),
         slot: 2_000 + slot0,
     });
+    ev.push(AppEvent::CurveModeObserved {
+        mint: dm(mint),
+        mayhem: false,
+        slot: 0,
+    });
     ev.push(AppEvent::OnchainConfirm {
         mint: dm(mint),
         virtual_sol_lamports: VSOL,

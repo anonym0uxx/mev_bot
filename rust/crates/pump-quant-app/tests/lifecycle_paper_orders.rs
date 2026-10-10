@@ -79,6 +79,11 @@ fn feed(n: u32) -> Vec<AppEvent> {
         recv_unix_ms: Some(T0 + 1_000 + i64::from(n) * 2_000),
         slot: 2_000,
     });
+    ev.push(AppEvent::CurveModeObserved {
+        mint: mint(),
+        mayhem: false,
+        slot: 0,
+    });
     ev.push(AppEvent::OnchainConfirm {
         mint: mint(),
         virtual_sol_lamports: VSOL,
@@ -127,6 +132,11 @@ fn landing(e: &mut Engine, ts: i64, slot: u64) {
         real_tokens: 565_000_000_000_000,
         recv_unix_ms: Some(ts),
         slot,
+    });
+    e.tick(AppEvent::CurveModeObserved {
+        mint: mint(),
+        mayhem: false,
+        slot: 0,
     });
     pump(e, 4);
 }
@@ -414,6 +424,11 @@ fn lifecycle_o_closed_position_conflict_stays_blocked_with_durable_evidence() {
             recv_unix_ms: Some(ts),
             slot,
         });
+        e.tick(AppEvent::CurveModeObserved {
+            mint: mint(),
+            mayhem: false,
+            slot: 0,
+        });
         pump(&mut e, 2);
         ts += 400;
         slot += 1;
@@ -527,6 +542,11 @@ fn lifecycle_l_held_position_is_monitored_while_new_exposure_on_the_mint_is_bloc
             recv_unix_ms: Some(ts),
             slot,
         });
+        e.tick(AppEvent::CurveModeObserved {
+            mint: mint(),
+            mayhem: false,
+            slot: 0,
+        });
         pump(&mut e, 2);
         ts += 400;
         slot += 1;
@@ -592,6 +612,11 @@ fn lifecycle_f_funnel_counts_unique_markets_including_never_ready() {
         real_tokens: 1,
         recv_unix_ms: Some(T0 + 500),
         slot: 5,
+    });
+    e2.tick(AppEvent::CurveModeObserved {
+        mint: DomainMint::from_bytes([0x77; 32]),
+        mayhem: false,
+        slot: 0,
     });
     pump(&mut e2, 3);
     let f2 = e2.model_funnel();
@@ -714,6 +739,11 @@ fn lifecycle_j_operational_reconciliation_and_protection_are_not_skipped_for_rou
             real_tokens: 900_000_000_000_000,
             recv_unix_ms: Some(ts),
             slot,
+        });
+        e.tick(AppEvent::CurveModeObserved {
+            mint: mint(),
+            mayhem: false,
+            slot: 0,
         });
         pump(&mut e, 2);
         ts += 400;

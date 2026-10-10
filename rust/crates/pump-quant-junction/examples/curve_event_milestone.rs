@@ -337,11 +337,7 @@ fn main() {
                 }
                 tracker.insert(
                     mb,
-                    ReserveSnapshot {
-                        virtual_sol: curve.virtual_sol,
-                        virtual_token: curve.virtual_token,
-                        slot,
-                    },
+                    ReserveSnapshot::of(&curve, slot),
                 );
             }
             _ => {}

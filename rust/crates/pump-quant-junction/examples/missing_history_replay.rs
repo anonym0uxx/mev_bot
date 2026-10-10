@@ -51,6 +51,7 @@ fn main() {
                     DeltaMiss::StaleSnapshot => "stale_snapshot",
                     DeltaMiss::InvalidObservation => "invalid_observation",
                     DeltaMiss::UpstreamDropped => "possible_trade",
+                    DeltaMiss::ModeUnsupported => "mode_unsupported",
                 }
             };
         let _ = writeln!(out, "{pk}\t{sig}\t{slot}\t{ms}\t{outcome}");
@@ -59,6 +60,8 @@ fn main() {
             ReserveSnapshot {
                 virtual_sol: vs,
                 virtual_token: vt,
+                real_sol: 0,
+                real_token: 0,
                 slot,
             },
         );

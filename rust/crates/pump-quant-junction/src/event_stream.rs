@@ -510,6 +510,7 @@ fn event_kind(event: &AppEvent) -> &'static str {
         AppEvent::WalletAction { .. } => "WalletAction",
         AppEvent::OnchainConfirm { .. } => "OnchainConfirm",
         AppEvent::CurveObserved { .. } => "CurveObserved",
+        AppEvent::CurveModeObserved { .. } => "CurveModeObserved",
         AppEvent::AmmSwap { .. } => "AmmSwap",
         AppEvent::CorpusFlowRow { .. } => "CorpusFlowRow",
         AppEvent::LaunchObserved { .. } => "LaunchObserved",
@@ -797,6 +798,10 @@ fn event_fields_json(event: &AppEvent) -> String {
             parts.push(format!(r#""signature":"{}""#, sig_to_hex(signature)));
             parts.push(format!(r#""err_code":{}"#, err_code));
             parts.push(format!(r#""confirm_slot":{}"#, slot));
+        }
+        AppEvent::CurveModeObserved { mayhem, slot, .. } => {
+            parts.push(format!(r#""mayhem":{}"#, mayhem));
+            parts.push(format!(r#""slot":{}"#, slot));
         }
         AppEvent::Tick => {}
     }

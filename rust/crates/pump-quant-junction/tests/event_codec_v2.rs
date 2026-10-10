@@ -95,6 +95,11 @@ fn all_events() -> Vec<AppEvent> {
             recv_unix_ms: Some(-5),
             slot: 9,
         },
+        AppEvent::CurveModeObserved {
+            mint: M,
+            mayhem: true,
+            slot: 10,
+        },
         AppEvent::AmmSwap {
             mint: M,
             pool: [4; 32],
