@@ -377,7 +377,8 @@ impl Engine {
         // Apply.
         for t in &raised {
             if let Latch::SafetyOff(reason) = action_for(*t).latch {
-                if !self.model_safety.blocked {
+                // A NEW latch reason joins an existing block (and bumps the epoch); a repeat is a no-op.
+                if !self.model_safety.blocked || !self.model_safety.reasons.contains(reason) {
                     self.model_safety_trip(reason);
                 }
             }

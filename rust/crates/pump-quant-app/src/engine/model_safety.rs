@@ -118,18 +118,31 @@ impl Engine {
 
     /// Persist the current snapshot (callable periodically by the daemon).
     pub fn model_safety_persist(&mut self) -> bool {
+        // The held-ledger lineage rides in the safety file: an operator re-arm request must echo it.
+        if self.model_held.path.is_some() {
+            self.model_safety.lineage = self.model_held_lineage_or_new();
+        } else {
+            self.model_safety.lineage = self.model_held.lineage.clone();
+        }
         let (h, p) = self.model_safety_records();
         self.model_safety.persist(&h, &p)
     }
 
-    /// Trip SAFETY_OFF. Idempotent: a second trip keeps the first reason and does not bump the epoch.
+    /// Trip SAFETY_OFF. A repeat of an ACTIVE reason is idempotent (no epoch bump). A NEW reason while already blocked
+    /// joins the active reason set and bumps the epoch: a re-arm request validated against the old epoch/reason set
+    /// can never lift the new latch. `reason` (singular) keeps the first reason for labels.
     pub fn model_safety_trip(&mut self, reason: &str) -> usize {
         let first = !self.model_safety.blocked;
         if first {
             self.model_safety.blocked = true;
             self.model_safety.reason = reason.to_string();
+            self.model_safety.reasons.clear();
+            self.model_safety.reasons.insert(reason.to_string());
             self.model_safety.epoch += 1;
             self.mrep(format!("safety:tripped:{reason}"));
+        } else if self.model_safety.reasons.insert(reason.to_string()) {
+            self.model_safety.epoch += 1;
+            self.mrep(format!("safety:latch_added:{reason}"));
         }
         self.model_table.set_entries_blocked(true);
         // Invalidate queued risk-increasing intents; keep uncertain ones for reconciliation.
@@ -151,16 +164,140 @@ impl Engine {
         victims.len() + add_cancelled
     }
 
-    /// Explicit re-arm. Refused while evidence is unresolved, and refused if it cannot be made durable.
+    /// Every ACTIVE latch reason (sorted). Empty when not blocked.
+    #[must_use]
+    pub fn model_safety_reasons(&self) -> Vec<String> {
+        if self.model_safety.blocked {
+            self.model_safety.reasons.iter().cloned().collect()
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Conditions a re-arm can NEVER waive, plus every active stop-table restriction, measured NOW (each entry names
+    /// one blocker; empty = none). Re-checked by every re-arm:
+    /// * `missing_history:*` — startup continuity unknown, untrusted flow state, or any unresolved missing history;
+    /// * `unknown_liquidation:<mint>:<why>` — a held model-managed position with no liquidation value;
+    /// * `execution_unavailable:<mint>:<why>` — nothing executable for a held position (inventory unknown or every
+    ///   remaining token reserved by an unresolved sell);
+    /// * `readiness:<mint>:<why>` — a held position whose management readiness is refused;
+    /// * `condition:<Trigger>` — a latching stop condition still raised at the last evaluation (the hung-endpoint
+    ///   row is derived from the latch itself and is excluded);
+    /// * `restriction:<Trigger>` — an active while-condition / run-phase row (disk, RAM, feed, RPC, deadline).
+    ///
+    /// Reconciliation faults and uncertain orders keep their own named contract refusals.
+    #[must_use]
+    pub fn model_safety_rearm_blockers(&self) -> Vec<String> {
+        let mut out: BTreeSet<String> = BTreeSet::new();
+        let short = |m: &[u8; 32]| {
+            m[..4]
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
+        };
+        if self.model_cache.history_continuity_unknown() {
+            out.insert("missing_history:continuity_unknown".to_string());
+        }
+        if let Some(why) = self.model_cache.flow_untrusted_reason() {
+            out.insert(format!("missing_history:flow_state_untrusted:{why}"));
+        }
+        for (m, _) in self.model_cache.missing_history_records() {
+            out.insert(format!("missing_history:unresolved:{}", short(&m)));
+        }
+        for h in self
+            .positions
+            .held_records()
+            .iter()
+            .filter(|h| h.model_managed)
+        {
+            if let Err(why) = self.model_liquidation_estimate(&h.mint) {
+                out.insert(format!("unknown_liquidation:{}:{why}", short(&h.mint)));
+            }
+        }
+        for st in self.model_held_data_status() {
+            if st.inventory_tokens.is_none() {
+                out.insert(format!(
+                    "execution_unavailable:{}:inventory_unknown",
+                    short(&st.mint)
+                ));
+            } else if model_manage::sell_reservation_gap(&st).is_some() {
+                out.insert(format!(
+                    "execution_unavailable:{}:all_remaining_reserved",
+                    short(&st.mint)
+                ));
+            }
+            if let Err(why) = &st.management_ready {
+                out.insert(format!("readiness:{}:{why}", short(&st.mint)));
+            }
+        }
+        for t in &self.model_stop.raised {
+            if self.model_stop.active.contains(t)
+                || *t == crate::stop_policy::StopTrigger::EndpointHung
+            {
+                continue;
+            }
+            if matches!(
+                crate::stop_policy::action_for(*t).latch,
+                crate::stop_policy::Latch::SafetyOff(_)
+            ) {
+                out.insert(format!("condition:{t:?}"));
+            }
+        }
+        for t in &self.model_stop.active {
+            out.insert(format!("restriction:{t:?}"));
+        }
+        out.into_iter().collect()
+    }
+
+    /// Explicit (unbound) re-arm: the same checks as [`Self::model_safety_rearm_bound`] without the epoch/reason
+    /// binding. Kept for engine-level tests; the daemon only uses the bound form.
     ///
     /// # Errors
     /// [`RearmRefusal`] — the block stands.
     pub fn model_safety_rearm(&mut self, operator: &str) -> Result<(), RearmRefusal> {
+        self.model_safety_rearm_core(operator, None)
+    }
+
+    /// Bound re-arm (the daemon's operator channel): lifts SAFETY_OFF only if the latch is STILL the one the request
+    /// acknowledged (`epoch` and the exact active reason set) and nothing a re-arm cannot waive is present. Everything
+    /// is checked here, at apply time, so a fault that arrived after the request was validated is never lifted.
+    ///
+    /// # Errors
+    /// [`RearmRefusal`] — the block stands.
+    pub fn model_safety_rearm_bound(
+        &mut self,
+        operator: &str,
+        epoch: u64,
+        acknowledged: &[String],
+    ) -> Result<(), RearmRefusal> {
+        self.model_safety_rearm_core(operator, Some((epoch, acknowledged)))
+    }
+
+    fn model_safety_rearm_core(
+        &mut self,
+        operator: &str,
+        bind: Option<(u64, &[String])>,
+    ) -> Result<(), RearmRefusal> {
         if !self.model_safety.blocked {
             return Err(RearmRefusal::NotBlocked);
         }
         if operator.trim().is_empty() {
             return Err(RearmRefusal::NoOperator);
+        }
+        if let Some((epoch, acknowledged)) = bind {
+            if epoch != self.model_safety.epoch {
+                return Err(RearmRefusal::EpochMismatch {
+                    requested: epoch,
+                    current: self.model_safety.epoch,
+                });
+            }
+            let ack: BTreeSet<String> = acknowledged.iter().cloned().collect();
+            if ack.len() != acknowledged.len() || ack != self.model_safety.reasons {
+                return Err(RearmRefusal::ReasonsMismatch {
+                    acknowledged: acknowledged.to_vec(),
+                    active: self.model_safety.reasons.iter().cloned().collect(),
+                });
+            }
         }
         if !self.model_recon_faults.is_empty() || !self.model_sell_faults.is_empty() {
             return Err(RearmRefusal::UnresolvedReconFault);
@@ -174,9 +311,15 @@ impl Engine {
         {
             return Err(RearmRefusal::UncertainOrderPending);
         }
+        let blockers = self.model_safety_rearm_blockers();
+        if !blockers.is_empty() {
+            self.mrep("safety:rearm_refused_active_blockers");
+            return Err(RearmRefusal::ActiveBlockers(blockers));
+        }
         let prev = self.model_safety.clone();
         self.model_safety.blocked = false;
         self.model_safety.reason.clear();
+        self.model_safety.reasons.clear();
         self.model_safety.epoch += 1;
         self.model_safety.rearmed_by = Some(operator.to_string());
         self.model_safety.consecutive_abandoned = 0;

@@ -562,26 +562,96 @@ pub fn simulated_pressure_from(harness: bool, file: &Path) -> SimulatedPressure 
     parse_simulated_pressure(&std::fs::read_to_string(file).unwrap_or_default())
 }
 
-/// OPERATOR RE-ARM entry point (the only daemon path that calls [`Engine::model_safety_rearm`]). A named operator
-/// writes this file as JSON `{"operator": "<name>", "safety_epoch": <epoch copied from the safety file>}` while the
-/// daemon runs. The daemon CONSUMES it (removes it before acting, so it is applied at most once), applies the existing
-/// contract (`model_safety_rearm`: NotBlocked / NoOperator / UnresolvedReconFault / UncertainOrderPending /
-/// PersistFailed), and writes the outcome to [`OPERATOR_REARM_RESULT_FILE`]. The epoch echo binds the request to ONE
-/// latch: a request written for an earlier latch can never lift a later one. A request present at startup is refused
-/// (a restart never re-arms).
-pub const OPERATOR_REARM_FILE: &str = "data/OPERATOR_REARM.json";
+/// OPERATOR RE-ARM channel (the only daemon path that calls [`Engine::model_safety_rearm_bound`]).
+///
+/// LOCAL OPERATOR CHANNEL ONLY. The name `operator` inside a request is an AUDIT LABEL, not authentication: what
+/// restricts the channel is filesystem access. The daemon refuses a request (named) unless:
+/// * [`OPERATOR_CHANNEL_DIR`] is a real directory (not a symlink) that is NOT world-writable;
+/// * the request is a regular file (not a symlink) owned by the daemon's effective uid with mode exactly 0600.
+///
+/// The request is JSON (schema 2):
+/// `{"schema":2, "request_id":"<unique>", "operator":"<audit label>", "lineage":"<held-ledger lineage>",
+///   "safety_epoch":<epoch>, "acknowledged_reasons":["<latch reason>", ...]}`
+/// (lineage, epoch and reasons are copied from the safety file). Everything is validated BEFORE anything is applied;
+/// the file is consumed (removed) before acting; the request_id is claimed durably in [`OPERATOR_REARM_LEDGER_FILE`]
+/// BEFORE the re-arm is attempted and its outcome appended after, so a replayed/duplicate request_id is refused even
+/// after a restart. The engine re-checks epoch, reason set, reconciliation, uncertain orders and every blocker a
+/// re-arm can never waive at APPLY time ([`Engine::model_safety_rearm_bound`]).
+///
+/// This directory is NEVER a model or stream input: nothing on the prompt, inference, event-stream or replay path
+/// reads it (pinned by `operator_channel_is_never_a_model_or_stream_input`). No automatic re-arm: neither Hermes nor
+/// Qwen writes this file during the paper evaluation; no code path in the repository writes the request file.
+pub const OPERATOR_CHANNEL_DIR: &str = "data/operator";
+/// The request file (see [`OPERATOR_CHANNEL_DIR`]).
+pub const OPERATOR_REARM_FILE: &str = "data/operator/OPERATOR_REARM.json";
 /// Outcome of the last operator re-arm request (JSON; overwritten per request).
-pub const OPERATOR_REARM_RESULT_FILE: &str = "data/OPERATOR_REARM_RESULT.json";
+pub const OPERATOR_REARM_RESULT_FILE: &str = "data/operator/OPERATOR_REARM_RESULT.json";
+/// Durable consumed-request ledger (JSONL, append + fsync): request_id -> claim, then outcome. Lives next to the
+/// request file; a ledger that cannot be trusted refuses every re-arm by name.
+pub const OPERATOR_REARM_LEDGER_FILE: &str = "data/operator/OPERATOR_REARM_LEDGER.jsonl";
+/// Ledger file name (sits in the request file's directory).
+const LEDGER_NAME: &str = "OPERATOR_REARM_LEDGER.jsonl";
+/// Request schema version.
+pub const OPERATOR_REARM_SCHEMA: u64 = 2;
 
 /// Why an operator re-arm request did not lift SAFETY_OFF.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RearmRequestRefusal {
+    /// The channel directory is missing, a symlink or not inspectable.
+    ChannelDirUnusable,
+    /// The channel directory is world-writable.
+    ChannelDirWorldWritable {
+        /// Its permission bits.
+        mode: u32,
+    },
+    /// The request is a symlink or not a regular file.
+    NotRegularFile,
+    /// The request is not owned by the daemon's effective uid.
+    NotOwnedByDaemon {
+        /// Owner of the file.
+        file_uid: u32,
+        /// The daemon's effective uid.
+        daemon_uid: u32,
+    },
+    /// The request's permission bits are not exactly 0600.
+    ModeNot0600 {
+        /// Its permission bits.
+        mode: u32,
+    },
+    /// This platform cannot verify ownership/mode: fail closed.
+    PlatformUnsupported,
     /// Not JSON / not an object.
     Unreadable,
     /// The request could not be consumed (removed), so it was not applied.
     ConsumeFailed,
+    /// `schema` is not [`OPERATOR_REARM_SCHEMA`] (e.g. the old `{operator, safety_epoch}` form).
+    SchemaUnsupported,
+    /// No non-empty `request_id`.
+    RequestIdMissing,
+    /// No `lineage`.
+    LineageMissing,
     /// No `safety_epoch` echo.
     EpochMissing,
+    /// No `acknowledged_reasons` list of strings.
+    ReasonsMissing,
+    /// This request_id was already seen (claimed or decided), in this process or before a restart.
+    DuplicateRequestId {
+        /// The replayed id.
+        request_id: String,
+    },
+    /// The durable ledger exists but cannot be trusted (unreadable line, wrong owner/mode): seen ids are unknown.
+    LedgerUntrusted(String),
+    /// The claim could not be made durable, so nothing was applied.
+    LedgerWriteFailed,
+    /// The engine has no held-ledger lineage to bind to.
+    LineageUnavailable,
+    /// The request was written for another ledger lineage (another run).
+    LineageMismatch {
+        /// Echoed by the request.
+        requested: String,
+        /// The engine's held-ledger lineage.
+        current: String,
+    },
     /// The echoed epoch is not the current latch's epoch (written for another latch).
     EpochMismatch {
         /// Echoed by the request.
@@ -589,142 +659,565 @@ pub enum RearmRequestRefusal {
         /// The engine's current epoch.
         current: u64,
     },
+    /// The acknowledged reasons are not exactly the active latch reasons.
+    ReasonsMismatch {
+        /// What the request acknowledged.
+        acknowledged: Vec<String>,
+        /// The active latch reasons (sorted).
+        active: Vec<String>,
+    },
     /// The request was already on disk when the daemon started: a restart never re-arms.
     StaleAtStartup,
-    /// The engine's re-arm contract refused it.
+    /// The engine's re-arm contract refused it at APPLY time (re-checked; includes active blockers).
     Contract(pump_quant_app::safety_off::RearmRefusal),
 }
 
 /// What an operator re-arm request did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RearmOutcome {
-    /// SAFETY_OFF lifted and durably recorded. `entries_blocked` is the RE-DERIVED entry block: an active stop-table
-    /// restriction (`restrictions`) keeps entries blocked after the re-arm.
+    /// SAFETY_OFF lifted and durably recorded. `entries_blocked` is the RE-DERIVED entry block.
     Rearmed {
-        /// Who re-armed.
+        /// Audit label of who asked.
         operator: String,
+        /// The request id (consumed).
+        request_id: String,
         /// The new (persisted) epoch.
         epoch: u64,
         /// Entries still blocked after the re-derivation.
         entries_blocked: bool,
-        /// Active non-latching restrictions (stop-table triggers) at the re-arm.
+        /// Active non-latching restrictions at the re-arm (always empty: an active one refuses the re-arm).
         restrictions: Vec<String>,
     },
     /// Nothing changed; the block stands.
     Refused {
-        /// The operator named by the request, if any.
+        /// The audit label named by the request, if any.
         operator: Option<String>,
+        /// The request id, if one was readable.
+        request_id: Option<String>,
         /// Why.
         why: RearmRequestRefusal,
     },
 }
 
+/// A request that passed every pre-apply check and whose request_id is durably claimed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValidatedRearm {
+    /// Audit label.
+    pub operator: String,
+    /// Unique id (claimed in the ledger).
+    pub request_id: String,
+    /// Held-ledger lineage it binds.
+    pub lineage: String,
+    /// Latch epoch it binds.
+    pub safety_epoch: u64,
+    /// Latch reasons it acknowledges.
+    pub acknowledged: Vec<String>,
+    ledger: PathBuf,
+}
 fn write_rearm_result(
     result_file: &Path,
     outcome: &RearmOutcome,
     epoch_now: u64,
     blocked_now: bool,
+    reasons_now: &[String],
 ) {
     let doc = match outcome {
         RearmOutcome::Rearmed {
             operator,
+            request_id,
             epoch,
             entries_blocked,
             restrictions,
         } => serde_json::json!({
-            "outcome": "rearmed", "operator": operator, "epoch": epoch,
+            "outcome": "rearmed", "operator_audit_label": operator, "request_id": request_id, "epoch": epoch,
             "entries_blocked_after": entries_blocked, "restrictions": restrictions,
-            "safety_blocked": blocked_now,
+            "safety_blocked": blocked_now, "active_reasons": reasons_now,
         }),
-        RearmOutcome::Refused { operator, why } => serde_json::json!({
-            "outcome": "refused", "operator": operator, "why": format!("{why:?}"),
-            "epoch": epoch_now, "safety_blocked": blocked_now,
+        RearmOutcome::Refused {
+            operator,
+            request_id,
+            why,
+        } => serde_json::json!({
+            "outcome": "refused", "operator_audit_label": operator, "request_id": request_id,
+            "why": refusal_label(why), "detail": format!("{why:?}"),
+            "epoch": epoch_now, "safety_blocked": blocked_now, "active_reasons": reasons_now,
         }),
     };
-    let _ = std::fs::write(result_file, doc.to_string());
+    let _ = write_private(result_file, doc.to_string().as_bytes(), false);
 }
 
-/// Handle a pending operator re-arm request, if any (`None` = no request file). See [`OPERATOR_REARM_FILE`].
-pub fn handle_rearm_request(
-    engine: &mut Engine,
+/// Stable short label of a refusal (the variant name).
+#[must_use]
+pub fn refusal_label(why: &RearmRequestRefusal) -> String {
+    let d = format!("{why:?}");
+    let end = d.find([' ', '(', '{']).unwrap_or(d.len());
+    match why {
+        RearmRequestRefusal::Contract(c) => {
+            let cd = format!("{c:?}");
+            let ce = cd.find([' ', '(', '{']).unwrap_or(cd.len());
+            format!("Contract:{}", &cd[..ce])
+        }
+        _ => d[..end].to_string(),
+    }
+}
+
+/// Write (or append) a file created 0600, fsynced.
+fn write_private(path: &Path, body: &[u8], append: bool) -> std::io::Result<()> {
+    use std::io::Write as _;
+    let mut o = std::fs::OpenOptions::new();
+    o.create(true);
+    if append {
+        o.append(true);
+    } else {
+        o.write(true).truncate(true);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        o.mode(0o600);
+    }
+    let mut f = o.open(path)?;
+    f.write_all(body)?;
+    f.sync_all()?;
+    if let Some(d) = path.parent() {
+        if let Ok(d) = std::fs::File::open(d) {
+            let _ = d.sync_all();
+        }
+    }
+    Ok(())
+}
+
+/// Access rule for the local operator channel: directory not a symlink and not world-writable; request a regular
+/// file (not a symlink) owned by the daemon's effective uid with mode exactly 0600.
+///
+/// # Errors
+/// The named refusal.
+pub fn check_operator_channel_access(request_file: &Path) -> Result<(), RearmRequestRefusal> {
+    #[cfg(unix)]
+    {
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        let me = unsafe { libc::geteuid() };
+        check_operator_channel_access_as(request_file, me)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = request_file;
+        Err(RearmRequestRefusal::PlatformUnsupported)
+    }
+}
+
+/// [`check_operator_channel_access`] against an explicit daemon uid (the daemon passes its effective uid; tests use
+/// it to exercise the foreign-owner refusal without privileges).
+///
+/// # Errors
+/// The named refusal.
+#[cfg(unix)]
+pub fn check_operator_channel_access_as(
+    request_file: &Path,
+    me: u32,
+) -> Result<(), RearmRequestRefusal> {
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        let dir = request_file
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        let dm =
+            std::fs::symlink_metadata(dir).map_err(|_| RearmRequestRefusal::ChannelDirUnusable)?;
+        if !dm.file_type().is_dir() {
+            return Err(RearmRequestRefusal::ChannelDirUnusable);
+        }
+        if dm.mode() & 0o002 != 0 {
+            return Err(RearmRequestRefusal::ChannelDirWorldWritable {
+                mode: dm.mode() & 0o7777,
+            });
+        }
+        let fm = std::fs::symlink_metadata(request_file)
+            .map_err(|_| RearmRequestRefusal::NotRegularFile)?;
+        if !fm.file_type().is_file() {
+            return Err(RearmRequestRefusal::NotRegularFile);
+        }
+        if fm.uid() != me {
+            return Err(RearmRequestRefusal::NotOwnedByDaemon {
+                file_uid: fm.uid(),
+                daemon_uid: me,
+            });
+        }
+        if fm.mode() & 0o7777 != 0o600 {
+            return Err(RearmRequestRefusal::ModeNot0600 {
+                mode: fm.mode() & 0o7777,
+            });
+        }
+        Ok(())
+    }
+}
+
+fn ledger_for(request_file: &Path) -> PathBuf {
+    request_file
+        .parent()
+        .unwrap_or(Path::new("."))
+        .join(LEDGER_NAME)
+}
+
+/// Every request_id the durable ledger has seen (claimed or decided). Absent ledger = none. A ledger that cannot be
+/// trusted (wrong owner/mode, symlink, unreadable or malformed line, including a torn last line) is a named refusal:
+/// seen ids are then unknown and nothing may be applied.
+///
+/// # Errors
+/// [`RearmRequestRefusal::LedgerUntrusted`].
+pub fn rearm_ledger_seen(
+    ledger: &Path,
+) -> Result<std::collections::BTreeSet<String>, RearmRequestRefusal> {
+    let mut seen = std::collections::BTreeSet::new();
+    match std::fs::symlink_metadata(ledger) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(seen),
+        Err(_) => return Err(RearmRequestRefusal::LedgerUntrusted("stat_failed".into())),
+        Ok(m) => {
+            if !m.file_type().is_file() {
+                return Err(RearmRequestRefusal::LedgerUntrusted(
+                    "not_regular_file".into(),
+                ));
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt as _;
+                // SAFETY: geteuid has no preconditions and cannot fail.
+                let me = unsafe { libc::geteuid() };
+                if m.uid() != me || m.mode() & 0o077 != 0 {
+                    return Err(RearmRequestRefusal::LedgerUntrusted("owner_or_mode".into()));
+                }
+            }
+        }
+    }
+    let raw = std::fs::read_to_string(ledger)
+        .map_err(|_| RearmRequestRefusal::LedgerUntrusted("unreadable".into()))?;
+    for (i, line) in raw.split_terminator('\n').enumerate() {
+        let id = serde_json::from_str::<serde_json::Value>(line)
+            .ok()
+            .and_then(|v| {
+                v.get("request_id")
+                    .and_then(|x| x.as_str())
+                    .map(str::to_string)
+            })
+            .filter(|s| !s.is_empty());
+        match id {
+            Some(id) => {
+                seen.insert(id);
+            }
+            None => {
+                return Err(RearmRequestRefusal::LedgerUntrusted(format!(
+                    "malformed_line_{}",
+                    i + 1
+                )))
+            }
+        }
+    }
+    if !raw.is_empty() && !raw.ends_with('\n') {
+        return Err(RearmRequestRefusal::LedgerUntrusted(
+            "torn_last_line".into(),
+        ));
+    }
+    Ok(seen)
+}
+
+fn ledger_append(ledger: &Path, v: &serde_json::Value) -> bool {
+    let mut line = v.to_string();
+    line.push('\n');
+    write_private(ledger, line.as_bytes(), true).is_ok()
+}
+
+/// Validate a pending request WITHOUT applying anything (`None` = no request file). Order: access rule, consume,
+/// parse, schema + required fields, durable duplicate check, lineage, epoch, exact reason set; then the request_id is
+/// CLAIMED durably (before any apply). A refusal is fully recorded (ledger + result file) here.
+pub fn validate_rearm_request(
+    engine: &Engine,
     request_file: &Path,
     result_file: &Path,
-) -> Option<RearmOutcome> {
-    let raw = match std::fs::read_to_string(request_file) {
-        Ok(r) => r,
+) -> Option<Result<ValidatedRearm, RearmOutcome>> {
+    match std::fs::symlink_metadata(request_file) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
-        Err(_) => String::new(),
-    };
-    let v: Option<serde_json::Value> = serde_json::from_str(&raw)
-        .ok()
-        .filter(|v: &serde_json::Value| v.is_object());
-    let operator = v
-        .as_ref()
-        .and_then(|v| v.get("operator"))
-        .and_then(|x| x.as_str())
-        .map(str::to_string);
-    let refuse = |why| RearmOutcome::Refused {
-        operator: operator.clone(),
-        why,
-    };
-    // Consume BEFORE acting: a request is applied at most once, never re-applied on a later latch.
-    let outcome = if std::fs::remove_file(request_file).is_err() {
-        refuse(RearmRequestRefusal::ConsumeFailed)
-    } else if let Some(v) = v {
-        let current = engine.model_safety_epoch();
-        match v.get("safety_epoch").and_then(serde_json::Value::as_u64) {
-            None => refuse(RearmRequestRefusal::EpochMissing),
-            Some(requested) if requested != current => {
-                refuse(RearmRequestRefusal::EpochMismatch { requested, current })
+        _ => {}
+    }
+    let ledger = ledger_for(request_file);
+    let finish = |op: Option<String>, id: Option<String>, why: RearmRequestRefusal| {
+        let o = RearmOutcome::Refused {
+            operator: op,
+            request_id: id.clone(),
+            why,
+        };
+        // A readable id is recorded as decided so a replay of it stays refused after a restart.
+        if let (Some(id), RearmOutcome::Refused { why, .. }) = (id, &o) {
+            if !matches!(
+                why,
+                RearmRequestRefusal::DuplicateRequestId { .. }
+                    | RearmRequestRefusal::LedgerUntrusted(_)
+            ) {
+                let _ = ledger_append(
+                    &ledger,
+                    &serde_json::json!({"request_id": id, "phase": "decided", "outcome": "refused",
+                        "why": refusal_label(why)}),
+                );
             }
-            Some(_) => match engine.model_safety_rearm(operator.as_deref().unwrap_or("")) {
-                Ok(()) => RearmOutcome::Rearmed {
-                    operator: operator.clone().unwrap_or_default(),
-                    epoch: engine.model_safety_epoch(),
-                    entries_blocked: engine.model_entries_blocked(),
-                    restrictions: engine
-                        .model_stop_state()
-                        .active
-                        .iter()
-                        .map(|t| format!("{t:?}"))
-                        .collect(),
-                },
-                Err(r) => refuse(RearmRequestRefusal::Contract(r)),
-            },
         }
-    } else {
-        refuse(RearmRequestRefusal::Unreadable)
+        write_rearm_result(
+            result_file,
+            &o,
+            engine.model_safety_epoch(),
+            engine.model_safety_blocked(),
+            &engine.model_safety_reasons(),
+        );
+        Some(Err(o))
     };
+    // Access BEFORE reading: a file the daemon must not trust is not read. It is still removed (consumed).
+    if let Err(why) = check_operator_channel_access(request_file) {
+        let _ = std::fs::remove_file(request_file);
+        return finish(None, None, why);
+    }
+    let raw = std::fs::read_to_string(request_file).unwrap_or_default();
+    // Consume BEFORE acting: a request is applied at most once.
+    if std::fs::remove_file(request_file).is_err() {
+        return finish(None, None, RearmRequestRefusal::ConsumeFailed);
+    }
+    let Some(v) = serde_json::from_str::<serde_json::Value>(&raw)
+        .ok()
+        .filter(serde_json::Value::is_object)
+    else {
+        return finish(None, None, RearmRequestRefusal::Unreadable);
+    };
+    let s = |k: &str| v.get(k).and_then(|x| x.as_str()).map(str::to_string);
+    let op = s("operator");
+    let id = s("request_id").filter(|x| !x.trim().is_empty());
+    if v.get("schema").and_then(serde_json::Value::as_u64) != Some(OPERATOR_REARM_SCHEMA) {
+        return finish(op, id, RearmRequestRefusal::SchemaUnsupported);
+    }
+    let Some(request_id) = id else {
+        return finish(op, None, RearmRequestRefusal::RequestIdMissing);
+    };
+    let rid = Some(request_id.clone());
+    match rearm_ledger_seen(&ledger) {
+        Err(why) => return finish(op, rid, why),
+        Ok(seen) if seen.contains(&request_id) => {
+            return finish(
+                op,
+                rid,
+                RearmRequestRefusal::DuplicateRequestId { request_id },
+            )
+        }
+        Ok(_) => {}
+    }
+    if op.as_deref().is_none_or(|o| o.trim().is_empty()) {
+        return finish(
+            op,
+            rid,
+            RearmRequestRefusal::Contract(pump_quant_app::safety_off::RearmRefusal::NoOperator),
+        );
+    }
+    let Some(lineage) = s("lineage") else {
+        return finish(op, rid, RearmRequestRefusal::LineageMissing);
+    };
+    let Some(epoch) = v.get("safety_epoch").and_then(serde_json::Value::as_u64) else {
+        return finish(op, rid, RearmRequestRefusal::EpochMissing);
+    };
+    let Some(acks) = v
+        .get("acknowledged_reasons")
+        .and_then(|x| x.as_array())
+        .and_then(|a| {
+            a.iter()
+                .map(|x| x.as_str().map(str::to_string))
+                .collect::<Option<Vec<String>>>()
+        })
+    else {
+        return finish(op, rid, RearmRequestRefusal::ReasonsMissing);
+    };
+    if !engine.model_safety_blocked() {
+        return finish(
+            op,
+            rid,
+            RearmRequestRefusal::Contract(pump_quant_app::safety_off::RearmRefusal::NotBlocked),
+        );
+    }
+    let current_lineage = engine.model_held_lineage().to_string();
+    if current_lineage.is_empty() {
+        return finish(op, rid, RearmRequestRefusal::LineageUnavailable);
+    }
+    if lineage != current_lineage {
+        return finish(
+            op,
+            rid,
+            RearmRequestRefusal::LineageMismatch {
+                requested: lineage,
+                current: current_lineage,
+            },
+        );
+    }
+    let current = engine.model_safety_epoch();
+    if epoch != current {
+        return finish(
+            op,
+            rid,
+            RearmRequestRefusal::EpochMismatch {
+                requested: epoch,
+                current,
+            },
+        );
+    }
+    let active = engine.model_safety_reasons();
+    let ack_set: std::collections::BTreeSet<&String> = acks.iter().collect();
+    let act_set: std::collections::BTreeSet<&String> = active.iter().collect();
+    if ack_set.len() != acks.len() || ack_set != act_set {
+        return finish(
+            op,
+            rid,
+            RearmRequestRefusal::ReasonsMismatch {
+                acknowledged: acks,
+                active,
+            },
+        );
+    }
+    // Claim the id durably BEFORE applying: a crash after this point can never let the same id re-arm later.
+    if !ledger_append(
+        &ledger,
+        &serde_json::json!({"request_id": request_id, "phase": "claimed", "epoch": epoch, "lineage": lineage,
+            "acknowledged_reasons": acks, "operator_audit_label": op}),
+    ) {
+        return finish(op, rid, RearmRequestRefusal::LedgerWriteFailed);
+    }
+    Some(Ok(ValidatedRearm {
+        operator: op.unwrap_or_default(),
+        request_id,
+        lineage,
+        safety_epoch: epoch,
+        acknowledged: acks,
+        ledger,
+    }))
+}
+
+/// Apply a validated request. The engine RE-CHECKS everything at this instant (lineage, epoch, exact reason set,
+/// reconciliation, uncertain orders and every blocker a re-arm can never waive), so a fault that arrived after
+/// validation is never lifted. The outcome is appended to the ledger and written to the result file.
+pub fn apply_validated_rearm(
+    engine: &mut Engine,
+    v: &ValidatedRearm,
+    result_file: &Path,
+) -> RearmOutcome {
+    let lineage_now = engine.model_held_lineage().to_string();
+    let res = if lineage_now != v.lineage {
+        Err(RearmRequestRefusal::LineageMismatch {
+            requested: v.lineage.clone(),
+            current: lineage_now,
+        })
+    } else {
+        engine
+            .model_safety_rearm_bound(&v.operator, v.safety_epoch, &v.acknowledged)
+            .map_err(RearmRequestRefusal::Contract)
+    };
+    let outcome = match res {
+        Ok(()) => RearmOutcome::Rearmed {
+            operator: v.operator.clone(),
+            request_id: v.request_id.clone(),
+            epoch: engine.model_safety_epoch(),
+            entries_blocked: engine.model_entries_blocked(),
+            restrictions: engine
+                .model_stop_state()
+                .active
+                .iter()
+                .map(|t| format!("{t:?}"))
+                .collect(),
+        },
+        Err(why) => RearmOutcome::Refused {
+            operator: Some(v.operator.clone()),
+            request_id: Some(v.request_id.clone()),
+            why,
+        },
+    };
+    let (o, why) = match &outcome {
+        RearmOutcome::Rearmed { .. } => ("rearmed", String::new()),
+        RearmOutcome::Refused { why, .. } => ("refused", refusal_label(why)),
+    };
+    let _ = ledger_append(
+        &v.ledger,
+        &serde_json::json!({"request_id": v.request_id, "phase": "decided", "outcome": o, "why": why,
+            "epoch_after": engine.model_safety_epoch()}),
+    );
     write_rearm_result(
         result_file,
         &outcome,
         engine.model_safety_epoch(),
         engine.model_safety_blocked(),
+        &engine.model_safety_reasons(),
     );
-    Some(outcome)
+    outcome
 }
 
-/// At startup: a re-arm request already on disk is refused and removed (a restart never re-arms). Returns whether
-/// one was found.
+/// Handle a pending operator re-arm request, if any (`None` = no request file): validate, then apply.
+pub fn handle_rearm_request(
+    engine: &mut Engine,
+    request_file: &Path,
+    result_file: &Path,
+) -> Option<RearmOutcome> {
+    match validate_rearm_request(engine, request_file, result_file)? {
+        Err(o) => Some(o),
+        Ok(v) => Some(apply_validated_rearm(engine, &v, result_file)),
+    }
+}
+
+/// At startup: a re-arm request already on disk is refused and removed (a restart never re-arms). A readable
+/// request_id is recorded in the ledger as refused, so the same id stays refused later. Returns whether one was found.
 pub fn refuse_stale_rearm_at_startup(
     engine: &Engine,
     request_file: &Path,
     result_file: &Path,
 ) -> bool {
-    if !request_file.exists() {
+    if std::fs::symlink_metadata(request_file).is_err() {
         return false;
     }
+    let id = if check_operator_channel_access(request_file).is_ok() {
+        std::fs::read_to_string(request_file)
+            .ok()
+            .and_then(|r| serde_json::from_str::<serde_json::Value>(&r).ok())
+            .and_then(|v| {
+                v.get("request_id")
+                    .and_then(|x| x.as_str())
+                    .map(str::to_string)
+            })
+            .filter(|s| !s.trim().is_empty())
+    } else {
+        None
+    };
     let _ = std::fs::remove_file(request_file);
+    if let Some(id) = &id {
+        let _ = ledger_append(
+            &ledger_for(request_file),
+            &serde_json::json!({"request_id": id, "phase": "decided", "outcome": "refused",
+                "why": "StaleAtStartup"}),
+        );
+    }
     write_rearm_result(
         result_file,
         &RearmOutcome::Refused {
             operator: None,
+            request_id: id,
             why: RearmRequestRefusal::StaleAtStartup,
         },
         engine.model_safety_epoch(),
         engine.model_safety_blocked(),
+        &engine.model_safety_reasons(),
     );
     true
+}
+
+/// Create the operator channel directory (0700) if absent. The daemon never writes the request file.
+pub fn ensure_operator_channel_dir(dir: &Path) -> std::io::Result<()> {
+    if dir.exists() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
 }
 
 /// HARNESS-ONLY forced protective trigger (offline replay harness; `PQ_OFFLINE_PAPER_REPLAY=1`, never live). The file

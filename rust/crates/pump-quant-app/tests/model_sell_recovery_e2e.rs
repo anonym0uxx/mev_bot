@@ -3079,12 +3079,24 @@ fn stop_rearm_with_an_active_operational_restriction_keeps_entries_blocked() {
             ..OpsInputs::healthy()
         },
     );
-    r.e.model_safety_rearm("alon").unwrap();
+    // SCOPE_REARM_LAUNCH A: re-arm RE-CHECKS resource conditions; an active restriction is a named blocker and the
+    // latch stands (stricter than lifting the latch while entries stay blocked).
+    match r.e.model_safety_rearm("alon") {
+        Err(pump_quant_app::safety_off::RearmRefusal::ActiveBlockers(b)) => {
+            assert!(
+                b.contains(&"restriction:DiskHeadroomLow".to_string()),
+                "{b:?}"
+            )
+        }
+        other => panic!("active disk restriction must refuse the re-arm: {other:?}"),
+    }
+    assert!(r.e.model_safety_blocked() && r.e.model_entries_blocked());
+    r.e.model_stop_evaluate(0, OpsInputs::healthy());
     assert!(
         r.e.model_entries_blocked(),
-        "disk restriction still holds after re-arm"
+        "no auto re-arm when the disk clears"
     );
-    r.e.model_stop_evaluate(0, OpsInputs::healthy());
+    r.e.model_safety_rearm("alon").unwrap();
     assert!(!r.e.model_entries_blocked());
 }
 

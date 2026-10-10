@@ -1783,6 +1783,8 @@ fn daemon_write_dests() -> Vec<pump_quant_junction::disk_budget::Dest> {
             p(pump_quant_junction::model_lifecycle::PROTECTIVE_HANDOFF_ACK_FILE),
             p(STATUS_PATH),
             p("data/model_lane_report.json"),
+            p(pump_quant_junction::model_lifecycle::OPERATOR_REARM_LEDGER_FILE),
+            p(pump_quant_junction::model_lifecycle::OPERATOR_REARM_RESULT_FILE),
         ],
         23_400,
     )
@@ -1977,6 +1979,14 @@ fn main() -> ExitCode {
                     "[pq-daemon] paper model lane ARMED endpoint={endpoint} safety_file={safety} load={:?} blocked_at_start={}",
                     armed.load, armed.blocked_at_start
                 );
+                // Local operator channel (0700, never a model/stream input). The daemon never writes the request.
+                if let Err(e) = pump_quant_junction::model_lifecycle::ensure_operator_channel_dir(
+                    std::path::Path::new(
+                        pump_quant_junction::model_lifecycle::OPERATOR_CHANNEL_DIR,
+                    ),
+                ) {
+                    eprintln!("[pq-daemon] OPERATOR_REARM channel dir unavailable: {e} (every re-arm request is refused by name)");
+                }
                 // A restart never re-arms: a re-arm request already on disk is refused (named) and removed.
                 if pump_quant_junction::model_lifecycle::refuse_stale_rearm_at_startup(
                     &engine,
@@ -2909,11 +2919,13 @@ fn main() -> ExitCode {
 
         let mut did_work = false;
 
-        // ── OPERATOR RE-ARM (model lane): the only daemon path to `model_safety_rearm`. A named operator writes
-        // data/OPERATOR_REARM.json {operator, safety_epoch}; it is consumed once and judged by the existing contract.
+        // ── OPERATOR RE-ARM (model lane): the only daemon path to `model_safety_rearm_bound`. Local operator channel
+        // data/operator/OPERATOR_REARM.json (owner = daemon uid, mode 0600, dir not world-writable; schema 2 binding
+        // request_id + lineage + safety_epoch + acknowledged_reasons). Validated, consumed once, request_id durably
+        // claimed, re-checked at apply. The operator name is an audit label, not authentication.
         if model_armed
-            && std::path::Path::new(pump_quant_junction::model_lifecycle::OPERATOR_REARM_FILE)
-                .exists()
+            && std::fs::symlink_metadata(pump_quant_junction::model_lifecycle::OPERATOR_REARM_FILE)
+                .is_ok()
         {
             if let Some(o) = pump_quant_junction::model_lifecycle::handle_rearm_request(
                 &mut engine,

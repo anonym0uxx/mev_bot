@@ -40,18 +40,58 @@ floor), 2dce403b4c6394ad5045cc7dc1553441a006b90a (test hardening). Branch task/s
 | RunDeadline (6 h) | deadline_stop_entries_drain_then_handoff | Block for the rest of the run (sticky); ADD during the drain refused as `mgmt:refuse:add_blocked_stop:deadline_stop_entries_drain_then_handoff` | management and protection through the drain and after it | run phase (not SAFETY_OFF) | ALERT_RUN_DEADLINE_DRAIN | stop_run_deadline_stops_entries_drains_with_management_and_protection_then_requests_handoff_without_closing; stop_run_deadline_drain_refuses_add_by_name_while_reduce_executes; stop_run_phase_boundaries_and_default_bounds; run_deadline_defaults_to_6h_plus_30min_and_an_override_may_only_shorten; deadline_handoff_raises_the_existing_stop_sentinel_once_and_never_overwrites |
 | LiveCapabilityPresent (`--live`, keypair, non-paper sink, non-Paper engine) | refuse_start_live_capability | n/a | n/a | refuse start (exit 95) | FATAL_LIVE_CAPABILITY_PRESENT | stop_startup_refuses_any_live_signing_or_submission_capability; startup_refuses_live_flag_keypair_and_non_paper_engine |
 
-### Re-arm
-- An explicit operator re-arm (`model_safety_rearm`) re-derives the entry block from the table.
-- Any active operational restriction keeps entries blocked after a re-arm (`stop_rearm_with_an_active_operational_restriction_keeps_entries_blocked`).
-- Daemon entry point (the ONLY non-test caller): a named operator writes `data/OPERATOR_REARM.json`
-  `{"operator": "<name>", "safety_epoch": <epoch from the safety file>}` while the daemon runs
-  (`model_lifecycle::handle_rearm_request`). The daemon consumes the file before acting (applied at most once), logs
-  `OPERATOR_REARM <outcome>` and writes `data/OPERATOR_REARM_RESULT.json`. Refusals, each leaving the block in place:
-  `Unreadable`, `ConsumeFailed`, `EpochMissing`, `EpochMismatch{requested,current}` (a request written for an earlier
-  latch never lifts a later one), and the contract's `NotBlocked` / `NoOperator` / `UnresolvedReconFault` /
-  `UncertainOrderPending` / `PersistFailed`. A request already on disk at startup is refused `StaleAtStartup` and
-  removed (a restart never re-arms). A successful re-arm reports the re-derived `entries_blocked` and the active
-  restrictions. Tests: `model_lifecycle_e2e::operator_rearm_*`, `a_rearm_request_present_at_startup_is_refused_and_removed`.
+### Re-arm (SCOPE_REARM_LAUNCH §A)
+- **The `operator` name in a request is an AUDIT LABEL, not authentication.** The only thing restricting the channel is
+  local filesystem access (below). Anyone who can write a 0600 file as the daemon's uid in that directory can re-arm.
+- **Local operator channel only:** `data/operator/OPERATOR_REARM.json`. The daemon creates `data/operator/` 0700 and
+  refuses (named, file consumed, latch untouched) unless the directory is a real directory that is NOT world-writable
+  (`ChannelDirUnusable`, `ChannelDirWorldWritable{mode}`) and the request is a regular file, not a symlink
+  (`NotRegularFile`), owned by the daemon's effective uid (`NotOwnedByDaemon{file_uid,daemon_uid}`) with mode exactly
+  0600 (`ModeNot0600{mode}`). Ownership/mode are checked BEFORE the file is read.
+- **Never a model or stream input:** nothing on the prompt, inference, event-stream or replay path reads `data/operator/`;
+  only `model_lifecycle.rs` (channel) and `pq_daemon.rs` (two call sites) name it
+  (`operator_channel_is_never_a_model_or_stream_input_and_no_code_path_writes_the_request`, runtime + static).
+- **No automatic re-arm:** neither Hermes nor Qwen re-arms during the paper evaluation. No code path writes the request
+  file (pinned by the same test); only a human operator does, by hand.
+- **Request (schema 2), all fields required, copied from the safety file:**
+  `{"schema":2, "request_id":"<unique>", "operator":"<audit label>", "lineage":"<safety file lineage>",
+  "safety_epoch":<safety file epoch>, "acknowledged_reasons":[<exactly the safety file reasons>]}`.
+  The safety file now records `reasons` (every ACTIVE latch reason) and `lineage` (the held-ledger lineage). A NEW
+  latch reason while already blocked joins the set and bumps the epoch; a repeat of an active reason does not.
+- **Validate everything BEFORE applying** (`validate_rearm_request`): access -> consume (remove) -> parse
+  (`Unreadable`, `ConsumeFailed`) -> `SchemaUnsupported` (incl. the old `{operator,safety_epoch}` form) ->
+  `RequestIdMissing` -> durable duplicate check (`DuplicateRequestId`, `LedgerUntrusted(why)`) -> `NoOperator` ->
+  `LineageMissing` / `EpochMissing` / `ReasonsMissing` -> `NotBlocked` -> `LineageUnavailable` /
+  `LineageMismatch{requested,current}` -> `EpochMismatch{requested,current}` ->
+  `ReasonsMismatch{acknowledged,active}` (any difference, incl. duplicates or an empty list). Then the request_id is
+  CLAIMED durably in `data/operator/OPERATOR_REARM_LEDGER.jsonl` (0600, append + fsync; `LedgerWriteFailed`) BEFORE
+  anything is applied.
+- **Consume once, durable across restart:** every readable request_id is recorded (claimed, then decided with its
+  outcome). A replayed/duplicate id is refused `DuplicateRequestId` in-process and after a restart; a claimed id whose
+  process died before apply stays spent. A ledger that is torn, malformed, a symlink or not 0600/daemon-owned is
+  `LedgerUntrusted` (no re-arm until an operator repairs it). A request on disk at startup is refused `StaleAtStartup`,
+  removed, and its id recorded as spent.
+- **Apply re-checks at that instant** (`apply_validated_rearm` -> `Engine::model_safety_rearm_bound`): lineage, epoch,
+  exact reason set, then `UnresolvedReconFault`, `UncertainOrderPending`, then `ActiveBlockers([...])`, then
+  `PersistFailed`. A fault arriving between validate and apply therefore refuses the re-arm (latching fault ->
+  `Contract:EpochMismatch`, the new latch survives; non-latching blocker -> `Contract:ActiveBlockers`).
+- **Never waived** (`Engine::model_safety_rearm_blockers`, each listed by name in the refusal):
+  `missing_history:{continuity_unknown|flow_state_untrusted:<why>|unresolved:<mint>}`,
+  `unknown_liquidation:<mint>:<why>`, `execution_unavailable:<mint>:{inventory_unknown|all_remaining_reserved}`,
+  `readiness:<mint>:<why>`, `condition:<LatchingTrigger>` (the latching condition is still measured, e.g. the disk
+  hard floor), `restriction:<Trigger>` (active disk/RAM/feed/RPC/deadline row). Reconciliation faults and uncertain
+  orders keep their own named refusals. Change vs before: an active resource restriction now REFUSES the re-arm
+  (previously the latch lifted and entries stayed blocked).
+- Outcome: logged `OPERATOR_REARM <outcome>`; `data/operator/OPERATOR_REARM_RESULT.json` carries `why` (stable label),
+  `detail`, `request_id`, `operator_audit_label`, epoch, `safety_blocked`, `active_reasons`.
+- Tests (`model_lifecycle_e2e`): `operator_rearm_request_binds_lineage_epoch_id_and_reasons_and_each_refusal_is_named`,
+  `operator_channel_access_is_owner_0600_and_a_non_world_writable_dir_or_a_named_refusal`,
+  `a_replayed_request_id_is_refused_in_process_and_after_a_restart_and_a_claimed_id_survives_a_crash`,
+  `a_new_fault_between_validate_and_apply_refuses_the_rearm_and_the_new_latch_survives`,
+  `rearm_never_waives_active_blockers_and_lists_each_one`,
+  `operator_rearm_is_refused_when_it_cannot_persist_and_without_a_lineage`,
+  `operator_channel_is_never_a_model_or_stream_input_and_no_code_path_writes_the_request`; engine:
+  `model_sell_recovery_e2e::stop_rearm_with_an_active_operational_restriction_keeps_entries_blocked`.
 - HARNESS-ONLY forced protective trigger (offline replay, `PQ_OFFLINE_PAPER_REPLAY=1`, never live): `data/HARNESS_FORCE_PROTECT`
   (64-hex mint) fires the agreed HARD-STOP on a held model-managed position through the normal protective path
   (`Engine::model_harness_force_protect`; counted `protect:harness_forced:HardStop`, logged HARNESS_FORCE_PROTECT). It

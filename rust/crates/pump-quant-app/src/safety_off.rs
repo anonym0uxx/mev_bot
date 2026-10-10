@@ -84,7 +84,7 @@ pub enum SafetyLoad {
 }
 
 /// Why a re-arm was refused.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RearmRefusal {
     /// Not blocked.
     NotBlocked,
@@ -96,6 +96,24 @@ pub enum RearmRefusal {
     UncertainOrderPending,
     /// The re-arm could not be made durable, so it did not happen.
     PersistFailed,
+    /// Bound re-arm: the latch epoch moved since the request was validated (a new latch arrived): refused, the new
+    /// latch survives.
+    EpochMismatch {
+        /// Epoch the request was validated against.
+        requested: u64,
+        /// The engine's epoch at apply time.
+        current: u64,
+    },
+    /// Bound re-arm: the acknowledged latch reasons are not exactly the active ones.
+    ReasonsMismatch {
+        /// What the request acknowledged (sorted).
+        acknowledged: Vec<String>,
+        /// The active latch reasons at apply time (sorted).
+        active: Vec<String>,
+    },
+    /// A condition a re-arm can NEVER waive (missing history, unknown liquidation, unavailable execution) or an
+    /// active stop-table restriction (resource/feed/deadline) is present now. Each entry names one blocker.
+    ActiveBlockers(Vec<String>),
 }
 
 /// In-memory safety state.
@@ -103,12 +121,18 @@ pub enum RearmRefusal {
 pub struct SafetyOff {
     /// Entries blocked.
     pub blocked: bool,
-    /// Why.
+    /// Why (the FIRST latch reason; kept for labels).
     pub reason: String,
+    /// Every ACTIVE latch reason (sorted, deduplicated). A latch with a NEW reason while already blocked adds it and
+    /// bumps the epoch, so a re-arm request validated against the old set/epoch can never lift the new latch.
+    pub reasons: std::collections::BTreeSet<String>,
     /// Transition counter (monotone, persisted).
     pub epoch: u64,
     /// Who re-armed last, if anyone.
     pub rearmed_by: Option<String>,
+    /// Held-ledger lineage at the last persist (written for the operator's re-arm request; "" = none yet). Never
+    /// read back as authority: the engine's own lineage is what a request is checked against.
+    pub lineage: String,
     /// Where it persists.
     pub path: Option<PathBuf>,
     /// Persist attempts that failed.
@@ -184,6 +208,22 @@ impl SafetyOff {
         st.reason = v["reason"].as_str().unwrap_or("").to_string();
         st.rearmed_by = v["rearmed_by"].as_str().map(str::to_string);
         if blocked {
+            // Reasons: the persisted set, or (older file) the single recorded reason. Never empty while blocked.
+            st.reasons = v["reasons"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
+            if st.reasons.is_empty() {
+                st.reasons.insert(if st.reason.is_empty() {
+                    REASON_UNREADABLE.to_string()
+                } else {
+                    st.reason.clone()
+                });
+            }
             let held = v["held"].as_array().map_or(0, Vec::len);
             let pending = v["pending"].as_array().map_or(0, Vec::len);
             (
@@ -203,6 +243,7 @@ impl SafetyOff {
     fn untrusted(mut st: SafetyOff) -> (SafetyLoad, SafetyOff) {
         st.blocked = true;
         st.reason = REASON_UNREADABLE.to_string();
+        st.reasons = [REASON_UNREADABLE.to_string()].into_iter().collect();
         (
             SafetyLoad::Blocked {
                 reason: REASON_UNREADABLE.to_string(),
@@ -223,8 +264,10 @@ impl SafetyOff {
             "schema": 1,
             "blocked": self.blocked,
             "reason": self.reason,
+            "reasons": self.reasons.iter().collect::<Vec<_>>(),
             "epoch": self.epoch,
             "rearmed_by": self.rearmed_by,
+            "lineage": self.lineage,
             "written_wall_ms": wall_ms(),
             "held": held.iter().map(|h| json!({
                 "mint": hex(&h.mint),

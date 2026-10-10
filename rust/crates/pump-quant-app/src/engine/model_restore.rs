@@ -317,7 +317,12 @@ impl Engine {
             Err(_) => {
                 self.model_held.failures += 1;
                 self.mrep("held_state:persist_failed");
-                if exposure && !self.model_safety.blocked {
+                if exposure
+                    && !self
+                        .model_safety
+                        .reasons
+                        .contains("held_state_unpersistable")
+                {
                     self.model_safety_trip("held_state_unpersistable");
                 }
             }
@@ -378,7 +383,7 @@ impl Engine {
     }
 
     /// The lineage to stamp on the next write: inherited, or created once (fresh engine, first write).
-    fn model_held_lineage_or_new(&mut self) -> String {
+    pub(super) fn model_held_lineage_or_new(&mut self) -> String {
         if self.model_held.lineage.is_empty() {
             let ns = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

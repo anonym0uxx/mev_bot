@@ -1308,18 +1308,53 @@ fn daemon_path_two_hung_asks_with_socket_timeouts_do_not_trip_a_third_ask_does()
     );
 }
 
-// ─── Operator re-arm entry point (model_lifecycle::handle_rearm_request) ──────────────────────────────────────────
+// ─── Operator re-arm channel (model_lifecycle::{validate_rearm_request, apply_validated_rearm}) ──────────────────
+// SCOPE_REARM_LAUNCH §A: local channel (owner = daemon uid, 0600, dir not world-writable), request binds lineage +
+// safety_epoch + unique request_id + acknowledged latch reasons, consumed once, request_id durable across restarts,
+// re-check at apply, never waives blockers.
 
 use pump_quant_app::safety_off::RearmRefusal;
 use pump_quant_junction::model_lifecycle::{
-    handle_rearm_request, harness_force_protect_from, refuse_stale_rearm_at_startup, RearmOutcome,
-    RearmRequestRefusal,
+    apply_validated_rearm, check_operator_channel_access, check_operator_channel_access_as,
+    handle_rearm_request, harness_force_protect_from, refuse_stale_rearm_at_startup,
+    validate_rearm_request, RearmOutcome, RearmRequestRefusal,
 };
+use std::os::unix::fs::PermissionsExt as _;
 
-fn rearm_req(r: &Rig, body: &str) -> (std::path::PathBuf, std::path::PathBuf) {
-    let (req, res) = (r.dir.join("REARM.json"), r.dir.join("REARM_RESULT.json"));
-    std::fs::write(&req, body).unwrap();
-    (req, res)
+/// The channel dir (0700) and request/result paths under the rig's dir.
+fn chan(r: &Rig) -> (std::path::PathBuf, std::path::PathBuf) {
+    chan_in(&r.dir)
+}
+
+fn chan_in(dir: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
+    let d = dir.join("operator");
+    std::fs::create_dir_all(&d).unwrap();
+    std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o700)).unwrap();
+    (
+        d.join("OPERATOR_REARM.json"),
+        d.join("OPERATOR_REARM_RESULT.json"),
+    )
+}
+
+/// Write a request as the operator would: 0600, owned by us.
+fn put(req: &std::path::Path, body: &str) {
+    std::fs::write(req, body).unwrap();
+    std::fs::set_permissions(req, std::fs::Permissions::from_mode(0o600)).unwrap();
+}
+
+fn body(id: &str, lineage: &str, epoch: u64, reasons: &[&str]) -> String {
+    serde_json::json!({"schema": 2, "request_id": id, "operator": "alon", "lineage": lineage,
+        "safety_epoch": epoch, "acknowledged_reasons": reasons})
+    .to_string()
+}
+
+/// Attach a held ledger so the engine has a lineage to bind; returns it.
+fn bind_ledger(e: &mut Engine, dir: &std::path::Path) -> String {
+    e.model_held_attach(&dir.join("held.json"));
+    assert!(e.model_held_persist_now());
+    let l = e.model_held_lineage().to_string();
+    assert!(!l.is_empty());
+    l
 }
 
 fn refused(o: Option<RearmOutcome>) -> RearmRequestRefusal {
@@ -1329,224 +1364,613 @@ fn refused(o: Option<RearmOutcome>) -> RearmRequestRefusal {
     }
 }
 
+fn result_json(res: &std::path::Path) -> serde_json::Value {
+    serde_json::from_str(&std::fs::read_to_string(res).unwrap()).unwrap()
+}
+
 fn safety_file(r: &Rig) -> serde_json::Value {
     serde_json::from_str(&std::fs::read_to_string(r.dir.join("safety.json")).unwrap()).unwrap()
 }
 
 #[test]
-fn operator_rearm_request_needs_a_named_operator_and_the_current_epoch_and_is_consumed_once() {
+fn operator_rearm_request_binds_lineage_epoch_id_and_reasons_and_each_refusal_is_named() {
     let ep = Endpoint::start(|_| HOLD);
-    let mut r = rig(&ep, "rearm_req");
+    let mut r = rig(&ep, "rearm_bind");
+    let lin = bind_ledger(&mut r.e, &r.dir.clone());
     r.e.model_safety_trip_operator();
     let epoch = r.e.model_safety_epoch();
-    assert!(r.e.model_safety_blocked() && epoch >= 1);
-    // Each refused request is CONSUMED (removed) and changes nothing; the outcome file names the refusal.
-    let cases: [(String, RearmRequestRefusal); 5] = [
+    assert_eq!(r.e.model_safety_reasons(), vec!["operator".to_string()]);
+    // The safety file carries what the operator must echo.
+    let f = safety_file(&r);
+    assert_eq!(
+        (f["lineage"].as_str(), f["epoch"].as_u64()),
+        (Some(lin.as_str()), Some(epoch))
+    );
+    let (req, res) = chan(&r);
+    let old_form = format!(r#"{{"operator":"alon","safety_epoch":{epoch}}}"#);
+    let cases: Vec<(String, RearmRequestRefusal)> = vec![
         ("not json".into(), RearmRequestRefusal::Unreadable),
+        (old_form, RearmRequestRefusal::SchemaUnsupported),
         (
-            r#"{"operator":"alon"}"#.into(),
+            r#"{"schema":2,"operator":"alon"}"#.into(),
+            RearmRequestRefusal::RequestIdMissing,
+        ),
+        (
+            serde_json::json!({"schema":2,"request_id":"r-noop","lineage":lin,"safety_epoch":epoch,
+                "acknowledged_reasons":["operator"]}).to_string(),
+            RearmRequestRefusal::Contract(RearmRefusal::NoOperator),
+        ),
+        (
+            serde_json::json!({"schema":2,"request_id":"r-nolin","operator":"alon","safety_epoch":epoch,
+                "acknowledged_reasons":["operator"]}).to_string(),
+            RearmRequestRefusal::LineageMissing,
+        ),
+        (
+            serde_json::json!({"schema":2,"request_id":"r-noep","operator":"alon","lineage":lin,
+                "acknowledged_reasons":["operator"]}).to_string(),
             RearmRequestRefusal::EpochMissing,
         ),
         (
-            format!(r#"{{"operator":"alon","safety_epoch":{}}}"#, epoch + 7),
+            serde_json::json!({"schema":2,"request_id":"r-norsn","operator":"alon","lineage":lin,
+                "safety_epoch":epoch}).to_string(),
+            RearmRequestRefusal::ReasonsMissing,
+        ),
+        (
+            body("r-lin", "deadbeef", epoch, &["operator"]),
+            RearmRequestRefusal::LineageMismatch {
+                requested: "deadbeef".into(),
+                current: lin.clone(),
+            },
+        ),
+        (
+            body("r-ep", &lin, epoch + 7, &["operator"]),
             RearmRequestRefusal::EpochMismatch {
                 requested: epoch + 7,
                 current: epoch,
             },
         ),
         (
-            format!(r#"{{"operator":"  ","safety_epoch":{epoch}}}"#),
-            RearmRequestRefusal::Contract(RearmRefusal::NoOperator),
+            body("r-rsn-extra", &lin, epoch, &["operator", "disk_hard_floor"]),
+            RearmRequestRefusal::ReasonsMismatch {
+                acknowledged: vec!["operator".into(), "disk_hard_floor".into()],
+                active: vec!["operator".into()],
+            },
         ),
         (
-            format!(r#"{{"safety_epoch":{epoch}}}"#),
-            RearmRequestRefusal::Contract(RearmRefusal::NoOperator),
+            body("r-rsn-none", &lin, epoch, &[]),
+            RearmRequestRefusal::ReasonsMismatch {
+                acknowledged: vec![],
+                active: vec!["operator".into()],
+            },
+        ),
+        (
+            body("r-rsn-dup", &lin, epoch, &["operator", "operator"]),
+            RearmRequestRefusal::ReasonsMismatch {
+                acknowledged: vec!["operator".into(), "operator".into()],
+                active: vec!["operator".into()],
+            },
         ),
     ];
-    for (body, want) in cases {
-        let (req, res) = rearm_req(&r, &body);
+    for (b, want) in cases {
+        put(&req, &b);
         assert_eq!(
             refused(handle_rearm_request(&mut r.e, &req, &res)),
             want,
-            "{body}"
+            "{b}"
         );
-        assert!(!req.exists(), "a request is consumed even when refused");
-        assert!(
-            r.e.model_safety_blocked(),
-            "refused => the block stands ({body})"
-        );
+        assert!(!req.exists(), "consumed even when refused");
+        assert!(r.e.model_safety_blocked(), "refused => block stands ({b})");
         assert_eq!(r.e.model_safety_epoch(), epoch);
-        let out: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&res).unwrap()).unwrap();
+        let out = result_json(&res);
         assert_eq!(out["outcome"], "refused");
         assert_eq!(out["safety_blocked"], true);
+        assert!(!out["why"].as_str().unwrap().is_empty(), "named");
     }
-    assert_eq!(safety_file(&r)["blocked"], true);
-    // No request file: nothing happens.
-    assert!(handle_rearm_request(&mut r.e, &r.dir.join("absent.json"), &r.dir.join("x")).is_none());
-    // A valid request lifts it, durably, recording who.
-    let (req, res) = rearm_req(
-        &r,
-        &format!(r#"{{"operator":"alon","safety_epoch":{epoch}}}"#),
+    assert!(handle_rearm_request(&mut r.e, &req.with_file_name("absent.json"), &res).is_none());
+    // A refused id is decided: it can never be used again, even with a now-correct body.
+    put(&req, &body("r-ep", &lin, epoch, &["operator"]));
+    assert_eq!(
+        refused(handle_rearm_request(&mut r.e, &req, &res)),
+        RearmRequestRefusal::DuplicateRequestId {
+            request_id: "r-ep".into()
+        }
     );
+    // A correct, fresh request lifts it, durably, with the audit label recorded.
+    put(&req, &body("r-ok", &lin, epoch, &["operator"]));
     match handle_rearm_request(&mut r.e, &req, &res) {
         Some(RearmOutcome::Rearmed {
             operator,
+            request_id,
             epoch: e2,
             entries_blocked,
             restrictions,
         }) => {
-            assert_eq!(operator, "alon");
+            assert_eq!((operator.as_str(), request_id.as_str()), ("alon", "r-ok"));
             assert_eq!(e2, epoch + 1);
             assert!(!entries_blocked && restrictions.is_empty());
         }
-        other => panic!("valid request must re-arm: {other:?}"),
+        other => panic!(
+            "valid request must re-arm: {other:?} blockers={:?}",
+            r.e.model_safety_rearm_blockers()
+        ),
     }
-    assert!(!req.exists());
     assert!(!r.e.model_safety_blocked() && !r.e.model_entries_blocked());
     let f = safety_file(&r);
     assert_eq!(
-        (
-            f["blocked"].clone(),
-            f["rearmed_by"].clone(),
-            f["epoch"].as_u64()
-        ),
-        (
-            serde_json::json!(false),
-            serde_json::json!("alon"),
-            Some(epoch + 1)
-        )
+        (f["blocked"].clone(), f["rearmed_by"].clone()),
+        (serde_json::json!(false), serde_json::json!("alon"))
     );
-    // Replaying the SAME request after a new latch cannot lift it (epoch moved on twice: re-arm + trip).
-    r.e.model_safety_trip_operator();
-    let (req, res) = rearm_req(
-        &r,
-        &format!(r#"{{"operator":"alon","safety_epoch":{epoch}}}"#),
-    );
-    assert!(matches!(
-        refused(handle_rearm_request(&mut r.e, &req, &res)),
-        RearmRequestRefusal::EpochMismatch { .. }
-    ));
-    assert!(r.e.model_safety_blocked());
-    // Not blocked -> the contract's NotBlocked.
-    let e3 = r.e.model_safety_epoch();
-    let (req, res) = rearm_req(&r, &format!(r#"{{"operator":"alon","safety_epoch":{e3}}}"#));
-    assert!(matches!(
-        handle_rearm_request(&mut r.e, &req, &res),
-        Some(RearmOutcome::Rearmed { .. })
-    ));
-    let e4 = r.e.model_safety_epoch();
-    let (req, res) = rearm_req(&r, &format!(r#"{{"operator":"alon","safety_epoch":{e4}}}"#));
+    // Not blocked -> NotBlocked (named).
+    put(&req, &body("r-nb", &lin, e2_of(&r), &[]));
     assert_eq!(
         refused(handle_rearm_request(&mut r.e, &req, &res)),
         RearmRequestRefusal::Contract(RearmRefusal::NotBlocked)
     );
 }
 
+fn e2_of(r: &Rig) -> u64 {
+    r.e.model_safety_epoch()
+}
+
 #[test]
-fn operator_rearm_with_an_active_resource_restriction_lifts_the_latch_but_entries_stay_blocked() {
+fn operator_channel_access_is_owner_0600_and_a_non_world_writable_dir_or_a_named_refusal() {
     let ep = Endpoint::start(|_| HOLD);
-    let mut r = rig(&ep, "rearm_restr");
-    // The disk hard floor latches SAFETY_OFF; RAM low is an active while-condition row.
+    let mut r = rig(&ep, "rearm_access");
+    let lin = bind_ledger(&mut r.e, &r.dir.clone());
+    r.e.model_safety_trip_operator();
+    let epoch = r.e.model_safety_epoch();
+    let (req, res) = chan(&r);
+    let good = body("a-1", &lin, epoch, &["operator"]);
+    // Group/world readable request.
+    std::fs::write(&req, &good).unwrap();
+    std::fs::set_permissions(&req, std::fs::Permissions::from_mode(0o644)).unwrap();
+    assert_eq!(
+        refused(handle_rearm_request(&mut r.e, &req, &res)),
+        RearmRequestRefusal::ModeNot0600 { mode: 0o644 }
+    );
+    assert!(!req.exists() && r.e.model_safety_blocked());
+    // Owner-only but executable/other bits.
+    std::fs::write(&req, &good).unwrap();
+    std::fs::set_permissions(&req, std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(
+        refused(handle_rearm_request(&mut r.e, &req, &res)),
+        RearmRequestRefusal::ModeNot0600 { mode: 0o700 }
+    );
+    // A symlink is never followed.
+    let target = r.dir.join("elsewhere.json");
+    put(&target, &good);
+    std::os::unix::fs::symlink(&target, &req).unwrap();
+    assert_eq!(
+        refused(handle_rearm_request(&mut r.e, &req, &res)),
+        RearmRequestRefusal::NotRegularFile
+    );
+    assert!(target.exists(), "the symlink target is untouched");
+    // Another uid owns it (checked through the uid-injectable form; the daemon uses its effective uid).
+    put(&req, &good);
+    let me = unsafe { libc::geteuid() };
+    assert_eq!(
+        check_operator_channel_access_as(&req, me.wrapping_add(1)),
+        Err(RearmRequestRefusal::NotOwnedByDaemon {
+            file_uid: me,
+            daemon_uid: me.wrapping_add(1)
+        })
+    );
+    assert_eq!(check_operator_channel_access(&req), Ok(()));
+    let _ = std::fs::remove_file(&req);
+    // World-writable directory.
+    let d = req.parent().unwrap().to_path_buf();
+    std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o777)).unwrap();
+    put(&req, &good);
+    assert_eq!(
+        refused(handle_rearm_request(&mut r.e, &req, &res)),
+        RearmRequestRefusal::ChannelDirWorldWritable { mode: 0o777 }
+    );
+    assert!(
+        r.e.model_safety_blocked(),
+        "no access refusal ever lifts the latch"
+    );
+    std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o700)).unwrap();
+    // The id of an access-refused request was never read, so it is still usable from a proper file.
+    put(&req, &good);
+    assert!(
+        matches!(
+            handle_rearm_request(&mut r.e, &req, &res),
+            Some(RearmOutcome::Rearmed { .. })
+        ),
+        "blockers={:?}",
+        r.e.model_safety_rearm_blockers()
+    );
+}
+
+#[test]
+fn a_replayed_request_id_is_refused_in_process_and_after_a_restart_and_a_claimed_id_survives_a_crash(
+) {
+    let ep = Endpoint::start(|_| HOLD);
+    let mut r = rig(&ep, "rearm_replay");
+    let dir = r.dir.clone();
+    let lin = bind_ledger(&mut r.e, &dir);
+    r.e.model_safety_trip_operator();
+    let (req, res) = chan(&r);
+    put(
+        &req,
+        &body("x-1", &lin, r.e.model_safety_epoch(), &["operator"]),
+    );
+    assert!(matches!(
+        handle_rearm_request(&mut r.e, &req, &res),
+        Some(RearmOutcome::Rearmed { .. })
+    ));
+    // A new latch; the same request_id with a now-correct epoch is a replay.
+    r.e.model_safety_trip_operator();
+    let ep2 = r.e.model_safety_epoch();
+    put(&req, &body("x-1", &lin, ep2, &["operator"]));
+    assert_eq!(
+        refused(handle_rearm_request(&mut r.e, &req, &res)),
+        RearmRequestRefusal::DuplicateRequestId {
+            request_id: "x-1".into()
+        }
+    );
+    assert!(r.e.model_safety_blocked());
+    // Validate-only (claim) and then "crash" before apply: the claimed id is spent.
+    put(&req, &body("x-2", &lin, ep2, &["operator"]));
+    let v = validate_rearm_request(&r.e, &req, &res)
+        .unwrap()
+        .expect("valid");
+    assert_eq!(v.request_id, "x-2");
+    assert!(r.e.model_safety_blocked(), "validation applies nothing");
+    assert!(r.e.model_held_persist_now());
+    drop(v);
+    drop(r);
+    // Restart: a brand-new engine adopts the same safety file and ledger.
+    let mut e = Engine::new(cfg(), RunMode::Paper);
+    let armed = arm_paper_model(&mut e, &ep.url, &dir.join("safety.json"));
+    assert!(armed.blocked_at_start, "a restart never re-arms");
+    match restore_held_state(&mut e, &dir.join("held.json")) {
+        StartupRestore::Restored(_) => {}
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(e.model_held_lineage(), lin, "same lineage after restart");
+    let epn = e.model_safety_epoch();
+    assert_eq!(epn, ep2, "epoch persisted");
+    for id in ["x-1", "x-2"] {
+        put(&req, &body(id, &lin, epn, &["operator"]));
+        assert_eq!(
+            refused(handle_rearm_request(&mut e, &req, &res)),
+            RearmRequestRefusal::DuplicateRequestId {
+                request_id: id.into()
+            },
+            "{id} stays spent across a restart"
+        );
+        assert!(e.model_safety_blocked());
+    }
+    // The same request on disk at startup: StaleAtStartup; its id is then spent too.
+    put(&req, &body("x-3", &lin, epn, &["operator"]));
+    assert!(refuse_stale_rearm_at_startup(&e, &req, &res));
+    assert!(!req.exists());
+    assert_eq!(result_json(&res)["why"], "StaleAtStartup");
+    put(&req, &body("x-3", &lin, epn, &["operator"]));
+    assert_eq!(
+        refused(handle_rearm_request(&mut e, &req, &res)),
+        RearmRequestRefusal::DuplicateRequestId {
+            request_id: "x-3".into()
+        }
+    );
+    // A torn ledger is untrusted: no re-arm until an operator repairs it.
+    let ledger = req.with_file_name("OPERATOR_REARM_LEDGER.jsonl");
+    let mut raw = std::fs::read_to_string(&ledger).unwrap();
+    raw.push_str("{\"request_id\":\"half");
+    std::fs::write(&ledger, &raw).unwrap();
+    put(&req, &body("x-4", &lin, epn, &["operator"]));
+    assert!(matches!(
+        refused(handle_rearm_request(&mut e, &req, &res)),
+        RearmRequestRefusal::LedgerUntrusted(_)
+    ));
+    assert!(e.model_safety_blocked());
+}
+
+#[test]
+fn a_new_fault_between_validate_and_apply_refuses_the_rearm_and_the_new_latch_survives() {
+    let ep = Endpoint::start(|_| HOLD);
+    let mut r = rig(&ep, "rearm_race");
+    let lin = bind_ledger(&mut r.e, &r.dir.clone());
+    r.e.model_safety_trip_operator();
+    let (req, res) = chan(&r);
+    // (1) A new LATCHING fault after validation: epoch + reason set move; apply refuses; both latches stand.
+    put(
+        &req,
+        &body("n-1", &lin, r.e.model_safety_epoch(), &["operator"]),
+    );
+    let v = validate_rearm_request(&r.e, &req, &res)
+        .unwrap()
+        .expect("valid");
+    r.e.model_stop_evaluate(
+        0,
+        pump_quant_app::stop_policy::OpsInputs {
+            disk_hard_ok: Some(false),
+            ..pump_quant_app::stop_policy::OpsInputs::healthy()
+        },
+    );
+    assert_eq!(
+        r.e.model_safety_reasons(),
+        vec!["disk_hard_floor".to_string(), "operator".to_string()]
+    );
+    match apply_validated_rearm(&mut r.e, &v, &res) {
+        RearmOutcome::Refused {
+            why: RearmRequestRefusal::Contract(RearmRefusal::EpochMismatch { .. }),
+            ..
+        } => {}
+        other => panic!("{other:?}"),
+    }
+    assert!(r.e.model_safety_blocked());
+    assert_eq!(result_json(&res)["why"], "Contract:EpochMismatch");
+    // Acknowledging only the old reason (at the new epoch) is a reasons mismatch.
+    r.e.model_stop_evaluate(0, pump_quant_app::stop_policy::OpsInputs::healthy());
+    put(
+        &req,
+        &body("n-2", &lin, r.e.model_safety_epoch(), &["operator"]),
+    );
+    assert!(matches!(
+        refused(handle_rearm_request(&mut r.e, &req, &res)),
+        RearmRequestRefusal::ReasonsMismatch { .. }
+    ));
+    // (2) A new NON-latching blocker after validation (missing history appears): apply re-checks and refuses.
+    let epn = r.e.model_safety_epoch();
+    put(
+        &req,
+        &body("n-3", &lin, epn, &["disk_hard_floor", "operator"]),
+    );
+    let v = validate_rearm_request(&r.e, &req, &res)
+        .unwrap()
+        .expect("valid");
+    let _ = r.e.model_restore_missing_history(&[], false);
+    match apply_validated_rearm(&mut r.e, &v, &res) {
+        RearmOutcome::Refused {
+            why: RearmRequestRefusal::Contract(RearmRefusal::ActiveBlockers(b)),
+            ..
+        } => assert!(
+            b.contains(&"missing_history:continuity_unknown".to_string()),
+            "{b:?}"
+        ),
+        other => panic!("{other:?}"),
+    }
+    assert!(r.e.model_safety_blocked() && r.e.model_entries_blocked());
+    assert_eq!(result_json(&res)["why"], "Contract:ActiveBlockers");
+}
+
+#[test]
+fn rearm_never_waives_active_blockers_and_lists_each_one() {
+    let ep = Endpoint::start(|_| HOLD);
+    // Resource restriction active (RAM low) after a disk-hard-floor latch: refused, listing it.
+    let mut r = rig(&ep, "rearm_blockers");
+    let lin = bind_ledger(&mut r.e, &r.dir.clone());
     let ops = pump_quant_app::stop_policy::OpsInputs {
         disk_hard_ok: Some(false),
         ram_ok: Some(false),
         ..pump_quant_app::stop_policy::OpsInputs::healthy()
     };
     r.e.model_stop_evaluate(0, ops);
-    assert!(r.e.model_safety_blocked());
     assert_eq!(r.e.model_safety_reason(), "disk_hard_floor");
-    // Disk recovered, RAM still low.
-    let ops2 = pump_quant_app::stop_policy::OpsInputs {
-        ram_ok: Some(false),
-        ..pump_quant_app::stop_policy::OpsInputs::healthy()
-    };
-    r.e.model_stop_evaluate(0, ops2);
-    assert!(
-        r.e.model_safety_blocked(),
-        "the latch survives the floor clearing"
-    );
-    let epoch = r.e.model_safety_epoch();
-    let (req, res) = rearm_req(
-        &r,
-        &format!(r#"{{"operator":"alon","safety_epoch":{epoch}}}"#),
-    );
-    match handle_rearm_request(&mut r.e, &req, &res) {
-        Some(RearmOutcome::Rearmed {
-            entries_blocked,
-            restrictions,
-            ..
-        }) => {
-            assert!(entries_blocked, "RAM restriction keeps entries blocked");
-            assert_eq!(restrictions, vec!["RamHeadroomLow".to_string()]);
+    let (req, res) = chan(&r);
+    let epn = r.e.model_safety_epoch();
+    // The hard floor is still measured: the latching condition itself is a blocker.
+    put(&req, &body("b-1", &lin, epn, &["disk_hard_floor"]));
+    match refused(handle_rearm_request(&mut r.e, &req, &res)) {
+        RearmRequestRefusal::Contract(RearmRefusal::ActiveBlockers(b)) => {
+            assert!(b.contains(&"condition:DiskHardFloor".to_string()), "{b:?}");
+            assert!(
+                b.contains(&"restriction:RamHeadroomLow".to_string()),
+                "{b:?}"
+            );
         }
         other => panic!("{other:?}"),
     }
-    assert!(!r.e.model_safety_blocked() && r.e.model_new_risk_blocked());
-    r.e.model_stop_evaluate(0, pump_quant_app::stop_policy::OpsInputs::healthy());
-    assert!(
-        !r.e.model_entries_blocked(),
-        "healthy again -> entries open"
+    // Disk recovers, RAM still low.
+    r.e.model_stop_evaluate(
+        0,
+        pump_quant_app::stop_policy::OpsInputs {
+            ram_ok: Some(false),
+            ..pump_quant_app::stop_policy::OpsInputs::healthy()
+        },
     );
+    put(&req, &body("b-2", &lin, epn, &["disk_hard_floor"]));
+    match refused(handle_rearm_request(&mut r.e, &req, &res)) {
+        RearmRequestRefusal::Contract(RearmRefusal::ActiveBlockers(b)) => {
+            assert_eq!(b, vec!["restriction:RamHeadroomLow".to_string()])
+        }
+        other => panic!("{other:?}"),
+    }
+    let out = result_json(&res);
+    assert!(
+        out["detail"].as_str().unwrap().contains("RamHeadroomLow"),
+        "named in the outcome: {out}"
+    );
+    assert!(r.e.model_safety_blocked());
+    // Missing history (continuity unknown) is never waived.
+    r.e.model_stop_evaluate(0, pump_quant_app::stop_policy::OpsInputs::healthy());
+    let _ = r.e.model_restore_missing_history(&[], false);
+    put(&req, &body("b-3", &lin, epn, &["disk_hard_floor"]));
+    match refused(handle_rearm_request(&mut r.e, &req, &res)) {
+        RearmRequestRefusal::Contract(RearmRefusal::ActiveBlockers(b)) => {
+            assert!(
+                b.contains(&"missing_history:continuity_unknown".to_string()),
+                "{b:?}"
+            )
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(r.e.model_safety_blocked());
+
+    // Unknown liquidation (stale mark on a held position) is never waived.
+    let mut r2 = rig(&ep, "rearm_unknown_liq");
+    let lin2 = bind_ledger(&mut r2.e, &r2.dir.clone());
+    r2.e.model_safety_trip_operator();
+    let t = r2.clock + pump_quant_app::curve_annotation::PRICING_BUDGET_MS + 5_000;
+    print(&mut r2.e, 999, t, r2.slot + 50);
+    ticks(&mut r2.e, 1);
+    let (req2, res2) = chan(&r2);
+    put(
+        &req2,
+        &body("u-1", &lin2, r2.e.model_safety_epoch(), &["operator"]),
+    );
+    match refused(handle_rearm_request(&mut r2.e, &req2, &res2)) {
+        RearmRequestRefusal::Contract(RearmRefusal::ActiveBlockers(b)) => {
+            assert!(
+                b.iter().any(|x| x.starts_with("unknown_liquidation:")),
+                "{b:?}"
+            )
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(r2.e.model_safety_blocked());
+
+    // Unavailable execution: every remaining token reserved by an unresolved (uncertain) sell. The uncertain order
+    // is its own named refusal first; the blocker list also names the execution gap.
+    let mut r3 = rig(&ep, "rearm_exec");
+    let lin3 = bind_ledger(&mut r3.e, &r3.dir.clone());
+    r3.e.model_harness_force_protect(&MINT).unwrap();
+    let (id, ..) = r3.e.model_protect_pending_order(&MINT).unwrap();
+    assert!(r3.e.model_protect_mark_ack_uncertain(&MINT, id));
+    ticks(&mut r3.e, 2); // reservations are re-derived from the order book on the next event
+    r3.e.model_safety_trip_operator();
+    assert!(
+        r3.e.model_safety_rearm_blockers()
+            .iter()
+            .any(|x| x.starts_with("execution_unavailable:")),
+        "{:?}",
+        r3.e.model_safety_rearm_blockers()
+    );
+    let (req3, res3) = chan(&r3);
+    put(
+        &req3,
+        &body("e-1", &lin3, r3.e.model_safety_epoch(), &["operator"]),
+    );
+    assert_eq!(
+        refused(handle_rearm_request(&mut r3.e, &req3, &res3)),
+        RearmRequestRefusal::Contract(RearmRefusal::UncertainOrderPending)
+    );
+    assert!(r3.e.model_safety_blocked());
 }
 
 #[test]
-fn operator_rearm_is_refused_while_a_protective_order_is_uncertain_and_when_it_cannot_persist() {
+fn operator_rearm_is_refused_when_it_cannot_persist_and_without_a_lineage() {
     let ep = Endpoint::start(|_| HOLD);
-    let mut r = rig(&ep, "rearm_uncertain");
-    r.e.model_harness_force_protect(&MINT).unwrap();
-    let (id, ..) = r.e.model_protect_pending_order(&MINT).unwrap();
-    assert!(r.e.model_protect_mark_ack_uncertain(&MINT, id));
-    r.e.model_safety_trip_operator();
-    let epoch = r.e.model_safety_epoch();
-    let (req, res) = rearm_req(
-        &r,
-        &format!(r#"{{"operator":"alon","safety_epoch":{epoch}}}"#),
-    );
-    assert_eq!(
-        refused(handle_rearm_request(&mut r.e, &req, &res)),
-        RearmRequestRefusal::Contract(RearmRefusal::UncertainOrderPending)
-    );
-    assert!(r.e.model_safety_blocked());
-    // Unpersistable latch (the safety path is a directory): re-arm refused PersistFailed, block stands.
     let dir = tmp("rearm_nowrite");
     let bad = dir.join("safety_is_a_dir");
     std::fs::create_dir_all(&bad).unwrap();
     let mut e = Engine::new(cfg(), RunMode::Paper);
     let _ = arm_paper_model(&mut e, &ep.url, &bad);
     e.model_safety_trip_operator();
-    let ep2 = e.model_safety_epoch();
-    let req = dir.join("REARM.json");
-    std::fs::write(
+    let (req, res) = chan_in(&dir);
+    // No held ledger attached: nothing to bind.
+    put(
         &req,
-        format!(r#"{{"operator":"alon","safety_epoch":{ep2}}}"#),
-    )
-    .unwrap();
+        &body("p-0", "", e.model_safety_epoch(), &["operator"]),
+    );
     assert_eq!(
-        refused(handle_rearm_request(&mut e, &req, &dir.join("RES.json"))),
+        refused(handle_rearm_request(&mut e, &req, &res)),
+        RearmRequestRefusal::LineageUnavailable
+    );
+    let lin = bind_ledger(&mut e, &dir);
+    // The unreadable safety path latched `state_file_unreadable`; the operator trip joined it.
+    assert_eq!(
+        e.model_safety_reasons(),
+        vec!["operator".to_string(), "state_file_unreadable".to_string()]
+    );
+    put(
+        &req,
+        &body(
+            "p-1",
+            &lin,
+            e.model_safety_epoch(),
+            &["operator", "state_file_unreadable"],
+        ),
+    );
+    assert_eq!(
+        refused(handle_rearm_request(&mut e, &req, &res)),
         RearmRequestRefusal::Contract(RearmRefusal::PersistFailed)
     );
     assert!(e.model_safety_blocked());
 }
 
 #[test]
-fn a_rearm_request_present_at_startup_is_refused_and_removed() {
+fn operator_channel_is_never_a_model_or_stream_input_and_no_code_path_writes_the_request() {
+    // Runtime: a request's contents never reach a model prompt.
     let ep = Endpoint::start(|_| HOLD);
-    let mut r = rig(&ep, "rearm_stale");
+    let mut r = rig(&ep, "rearm_isolation");
+    let lin = bind_ledger(&mut r.e, &r.dir.clone());
     r.e.model_safety_trip_operator();
-    let epoch = r.e.model_safety_epoch();
-    let (req, res) = rearm_req(
-        &r,
-        &format!(r#"{{"operator":"alon","safety_epoch":{epoch}}}"#),
+    let (req, res) = chan(&r);
+    let marker = "OPCHAN_MARKER_7f3a";
+    put(
+        &req,
+        &serde_json::json!({"schema":2,"request_id":marker,"operator":marker,"lineage":lin,
+            "safety_epoch":r.e.model_safety_epoch(),"acknowledged_reasons":["operator"]})
+        .to_string(),
     );
-    assert!(refuse_stale_rearm_at_startup(&r.e, &req, &res));
-    assert!(!req.exists());
-    let out: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&res).unwrap()).unwrap();
-    assert_eq!(out["why"], "StaleAtStartup");
-    assert!(r.e.model_safety_blocked());
-    assert!(!refuse_stale_rearm_at_startup(&r.e, &req, &res));
-    assert!(handle_rearm_request(&mut r.e, &req, &res).is_none());
+    let _ = handle_rearm_request(&mut r.e, &req, &res);
+    r.advance(30_000);
+    assert!(
+        !ep.bodies.lock().unwrap().iter().any(|b| b.contains(marker)),
+        "operator channel content reached a model request"
+    );
+    // Static: only the channel module and the daemon's two call sites name the channel; model, prompt, inference,
+    // stream and replay code never does, and no Rust code writes the request file.
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let mut hits = Vec::new();
+    let mut stack = vec![root.clone()];
+    while let Some(d) = stack.pop() {
+        for ent in std::fs::read_dir(&d).unwrap().flatten() {
+            let p = ent.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p.extension().and_then(|x| x.to_str()) == Some("rs") {
+                let t = std::fs::read_to_string(&p).unwrap_or_default();
+                let rel = p.strip_prefix(&root).unwrap().to_string_lossy().to_string();
+                if rel.contains("/tests/") {
+                    continue;
+                }
+                for (i, l) in t.lines().enumerate() {
+                    if l.contains("OPERATOR_REARM")
+                        || l.contains("OPERATOR_CHANNEL")
+                        || l.contains("data/operator")
+                    {
+                        hits.push((rel.clone(), i + 1, l.trim().to_string()));
+                    }
+                }
+            }
+        }
+    }
+    let allowed = |f: &str| {
+        f.ends_with("pump-quant-junction/src/model_lifecycle.rs")
+            || f.ends_with("pump-quant-junction/src/bin/pq_daemon.rs")
+    };
+    let bad: Vec<_> = hits.iter().filter(|(f, ..)| !allowed(f)).collect();
+    assert!(
+        bad.is_empty(),
+        "operator channel referenced outside the channel/daemon: {bad:?}"
+    );
+    let daemon: Vec<_> = hits
+        .iter()
+        .filter(|(f, ..)| f.ends_with("pq_daemon.rs"))
+        .map(|(_, _, l)| l.clone())
+        .collect();
+    assert!(!daemon.is_empty());
+    for l in &daemon {
+        assert!(
+            !l.contains("write(") && !l.contains("File::create") && !l.contains("OpenOptions"),
+            "the daemon never writes the request: {l}"
+        );
+    }
+    // In the channel section of the module, the request file is only ever read, inspected or removed.
+    let src =
+        std::fs::read_to_string(root.join("pump-quant-junction/src/model_lifecycle.rs")).unwrap();
+    let a = src.find("pub const OPERATOR_CHANNEL_DIR").unwrap();
+    let b = src.find("pub const HARNESS_FORCE_PROTECT_FILE").unwrap();
+    for l in src[a..b].lines() {
+        if l.contains("request_file") && (l.contains("write_private(") || l.contains("fs::write("))
+        {
+            panic!("channel code writes the request file: {l}");
+        }
+    }
 }
 
 // ─── HARNESS-ONLY forced protective trigger under pressure ───────────────────────────────────────────────────────

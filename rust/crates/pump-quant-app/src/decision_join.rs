@@ -946,6 +946,12 @@ impl DecisionCache {
         self.flow_state_untrusted = Some(why);
     }
 
+    /// The named reason the persisted flow state is untrusted, if it is.
+    #[must_use]
+    pub fn flow_untrusted_reason(&self) -> Option<&'static str> {
+        self.flow_state_untrusted
+    }
+
     /// Declare the live feed resumes at `resume_ms` after a restore: an interval no source can account for becomes a
     /// named gap (every later prompt refuses by scope until the interval is reconstructed into the state). Returns the report.
     pub fn flow_restore_resume(
