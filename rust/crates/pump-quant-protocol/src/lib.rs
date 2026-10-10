@@ -53,6 +53,7 @@ pub mod curve;
 pub mod curve_sell_quote;
 pub mod decode;
 pub mod errors;
+pub mod fee_schedule;
 pub mod ix;
 pub mod layout;
 pub mod message;
