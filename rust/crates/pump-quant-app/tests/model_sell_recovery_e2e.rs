@@ -3397,9 +3397,11 @@ fn stop_hung_endpoint_management_asks_stay_bounded_and_protection_still_orders()
             l.bindings <= cap,
             "request bindings never outgrow the table {l:?}"
         );
+        // conc C3: a slot is re-used ONLY from a request that expired in the LOCAL queue (never sent).
+        let local_mgmt = rep_sum(&r.e, "local:queue_expired|mgmt");
         assert!(
-            l.counters.submitted <= cap as u64,
-            "no slot is ever re-used while hung {l:?}"
+            l.counters.submitted <= cap as u64 + local_mgmt,
+            "no SENT slot is ever re-used while hung {l:?} local={local_mgmt}"
         );
         assert!(
             r.e.model_mgmt_pending(&MINT).is_none(),
@@ -3408,24 +3410,25 @@ fn stop_hung_endpoint_management_asks_stay_bounded_and_protection_still_orders()
         max_out = max_out.max(l.outstanding);
     }
     let l = r.e.model_mgmt_request_load(&MINT);
-    assert_eq!(
-        max_out, cap,
-        "the bound is reached (the test exercises it): {l:?}"
-    );
-    assert_eq!(
-        l.live, 0,
-        "every hung ask was abandoned at its deadline: {l:?}"
-    );
-    assert_eq!(l.counters.abandoned, cap as u64);
+    // conc C3/C4 (behaviour change, reported): with both workers wedged, further asks wait in the LOCAL queue and
+    // expire there unsent; their slots are released exactly once, so the table never fills (max = 2 hung + 1 live)
+    // and nothing further reaches the endpoint. The sent asks are abandoned at their deadline as before.
+    let workers = r.e.model_workers();
+    assert!(max_out <= cap, "{l:?}");
+    assert!(max_out > workers, "the hung asks plus a queued one: {l:?}");
     assert!(
-        l.counters.refused_capacity >= 10,
-        "further asks refused, not queued: {l:?}"
+        rep_sum(&r.e, "local:queue_expired|mgmt") >= 10,
+        "further asks expire in the local queue, never sent: {:?}",
+        r.e.model_lane_report()
     );
-    assert!(rep_sum(&r.e, "mgmt:refuse:submit:AtCapacity") >= 10);
-    assert!(rep_sum(&r.e, "mgmt:request_abandoned_deadline") >= cap as u64);
+    assert_eq!(
+        rep_sum(&r.e, "mgmt:request_abandoned_deadline"),
+        workers as u64,
+        "only the SENT asks are endpoint abandonments"
+    );
     assert!(
-        mgmt_calls.load(Ordering::SeqCst) <= cap,
-        "the endpoint never saw more than the bound"
+        mgmt_calls.load(Ordering::SeqCst) <= workers,
+        "the endpoint never saw more than the workers"
     );
     // Protection is independent of the endpoint: a collapse print still creates the protective order.
     let inv0 = r.e.model_inventory_tokens(&MINT).unwrap();
@@ -3449,9 +3452,15 @@ fn stop_hung_endpoint_management_asks_stay_bounded_and_protection_still_orders()
         (0, 0),
         "slots and bindings freed: {l:?}"
     );
-    assert_eq!(l.counters.discarded_abandoned, cap as u64, "{l:?}");
-    assert_eq!(rep_sum(&r.e, "mgmt:discard:abandoned"), cap as u64);
-    assert_eq!(l.counters.accepted, 0, "no late verdict accepted");
+    let sent = mgmt_calls.load(Ordering::SeqCst) as u64;
+    assert!(l.counters.discarded_abandoned >= workers as u64, "{l:?}");
+    assert!(rep_sum(&r.e, "mgmt:discard:abandoned") >= workers as u64);
+    // A still-queued ask that a freed worker sends inside its deadline may be accepted (a timely answer); it cannot
+    // order, because the protective order is pending.
+    assert!(
+        l.counters.accepted <= sent.saturating_sub(workers as u64) + 1,
+        "{l:?}"
+    );
     assert!(
         r.e.model_mgmt_pending(&MINT).is_none(),
         "no management order from a late verdict"

@@ -455,17 +455,30 @@ impl Engine {
             ) {
                 Ok(id) => id,
                 Err(e) => {
+                    if e == crate::model_lane::SubmitRefusal::AtCapacity {
+                        self.mrep("local:capacity_overload|mgmt");
+                    }
                     self.mrep(format!("mgmt:refuse:submit:{e:?}"));
                     continue;
                 }
             };
+            let deadline_ms = clock + CHAMPION_MAX_DECISION_AGE_MS as i64;
             let job = Job {
                 id,
                 mint,
                 system: snap.system_prompt.clone(),
                 user: snap.user_prompt.clone(),
                 session: self.model_session,
+                kind: crate::model_worker::JobKind::Mgmt,
+                deadline_ms,
             };
+            self.model_rec_open(
+                id,
+                crate::model_worker::JobKind::Mgmt,
+                mint,
+                clock,
+                deadline_ms,
+            );
             self.barrier_log_dispatch("mgmt", &mint, &job.user);
             let dispatched = self
                 .model_pool
@@ -474,6 +487,11 @@ impl Engine {
                 .unwrap_or(Err(DispatchRefusal::PoolClosed));
             if let Err(e) = dispatched {
                 self.model_mgmt.table.release(id);
+                if e == DispatchRefusal::QueueFull {
+                    // C4: LOCAL refusal, never endpoint evidence.
+                    self.mrep("local:capacity_overload|mgmt");
+                    self.model_rec_outcome(id, clock, "local_capacity_overload");
+                }
                 self.mrep(format!("mgmt:refuse:dispatch:{e:?}"));
                 continue;
             }
@@ -508,7 +526,23 @@ impl Engine {
     /// A management verdict arrived. Everything is revalidated against CURRENT state.
     pub(super) fn model_mgmt_accept(&mut self, v: crate::model_worker::Verdict, clock: i64) {
         let meta = self.model_mgmt.meta.remove(&v.id);
-        let entry = match self.model_mgmt.table.accept(v.id, &v.mint, clock) {
+        let accepted = self.model_mgmt.table.accept(v.id, &v.mint, clock);
+        self.model_rec_outcome(
+            v.id,
+            clock,
+            match &accepted {
+                Ok(_) => "accepted",
+                Err(crate::model_lane::AcceptRefusal::Unknown) => {
+                    "mgmt:discard:unknown_or_duplicate"
+                }
+                Err(crate::model_lane::AcceptRefusal::DeadlineExceeded { .. }) => {
+                    "mgmt:discard:late"
+                }
+                Err(crate::model_lane::AcceptRefusal::Abandoned) => "mgmt:discard:abandoned",
+                Err(crate::model_lane::AcceptRefusal::EntriesBlocked) => "mgmt:discard:blocked",
+            },
+        );
+        let entry = match accepted {
             Ok(e) => e,
             Err(e) => {
                 self.mrep(match e {

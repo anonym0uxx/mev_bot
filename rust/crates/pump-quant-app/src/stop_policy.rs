@@ -39,6 +39,9 @@ pub const ESTIMATOR_SHADOW: &str = "shadow_model_net_liquidation";
 pub enum StopTrigger {
     /// Consecutive abandoned/failed model requests (existing SAFETY_OFF rule).
     EndpointHung,
+    /// Consecutive requests expired in the LOCAL queue (never sent): local service is inadequate. Same row semantics
+    /// as `EndpointHung`; separate cause, never endpoint evidence.
+    LocalModelOverload,
     /// An unresolved entry reconciliation fault or management-sell fault exists.
     ReconciliationFault,
     /// A durable held-state / safety write failed.
@@ -67,8 +70,9 @@ pub enum StopTrigger {
 
 impl StopTrigger {
     /// Every trigger, in table order.
-    pub const ALL: [StopTrigger; 13] = [
+    pub const ALL: [StopTrigger; 14] = [
         Self::EndpointHung,
+        Self::LocalModelOverload,
         Self::ReconciliationFault,
         Self::DurableWriteFailure,
         Self::DiskHeadroomLow,
@@ -170,6 +174,13 @@ pub const fn action_for(t: StopTrigger) -> StopAction {
             Block,
             Latch::SafetyOff(crate::safety_off::REASON_ENDPOINT_HUNG),
             "ALERT_MODEL_ENDPOINT_HUNG",
+        ),
+        StopTrigger::LocalModelOverload => row(
+            "entry_asks_stopped_local_overload_management_continues",
+            Block,
+            Block,
+            Latch::SafetyOff(crate::safety_off::REASON_LOCAL_OVERLOAD),
+            "ALERT_MODEL_LOCAL_OVERLOAD",
         ),
         StopTrigger::ReconciliationFault => row(
             "risk_off_reconcile_continues",

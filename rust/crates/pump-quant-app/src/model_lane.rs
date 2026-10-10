@@ -167,6 +167,12 @@ impl RequestTable {
         self.capacity
     }
 
+    /// Re-bound the table (min 1). Used once when the lane is armed with its worker count; never shrinks below
+    /// what is outstanding in effect (a submit is simply refused until enough requests resolve).
+    pub fn set_capacity(&mut self, capacity: usize) {
+        self.capacity = capacity.max(1);
+    }
+
     /// Outstanding requests (live + abandoned) about `mint`. At most one is live (dedupe); abandoned ones count
     /// against [`Self::capacity`] until their worker returns, so this is bounded by the capacity too.
     #[must_use]

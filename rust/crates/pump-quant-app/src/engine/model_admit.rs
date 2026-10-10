@@ -37,9 +37,18 @@ use crate::model_lane::{AcceptRefusal, SubmitRefusal};
 use crate::model_worker::{DispatchRefusal, Job};
 use crate::portfolio::PortfolioCap;
 
-/// Worker threads and queue depth: a hard ceiling on concurrent model calls.
+/// Default worker threads: a hard ceiling on concurrent model calls (C2: a construction parameter, default 2).
 pub(super) const MODEL_WORKERS: usize = 2;
-pub(super) const MODEL_QUEUE: usize = 4;
+/// Worker counts the lane may be armed with (operator scope: {2, 4, 6}).
+pub const MODEL_WORKERS_ALLOWED: [usize; 3] = [2, 4, 6];
+/// THE bound formula (C2): queue depth (total and per lane) = entry table capacity = management table capacity = 2n.
+/// n = 2 gives 4/4/4, the previous constants.
+#[must_use]
+pub const fn model_bound(workers: usize) -> usize {
+    2 * workers
+}
+/// Bound on the per-request record ring (C1).
+const REQ_RECORD_CAP: usize = 100_000;
 /// A verdict older than this (feed clock) is late. Equal to the freshness limit the authority applies.
 const MODEL_DEADLINE_MS: i64 = CHAMPION_MAX_DECISION_AGE_MS as i64;
 /// Minimum feed-clock gap between asking about the same mint again.
@@ -779,7 +788,86 @@ impl Engine {
     pub(super) fn model_note_clock(&mut self, ms: i64) {
         if ms > self.model_clock_ms {
             self.model_clock_ms = ms;
+            // The workers' dequeue deadline check reads THIS clock (C3), never a wall clock.
+            if let Some(p) = &self.model_pool {
+                p.publish_clock(ms);
+            }
         }
+    }
+
+    /// C1: open the per-request record at submit (the engine start point; the deadline is the table's).
+    pub(super) fn model_rec_open(
+        &mut self,
+        id: crate::model_lane::RequestId,
+        kind: crate::model_worker::JobKind,
+        mint: [u8; 32],
+        created_ms: i64,
+        deadline_ms: i64,
+    ) {
+        if self.model_req_records.len() >= REQ_RECORD_CAP {
+            if let Some(k) = self.model_req_records.keys().next().copied() {
+                self.model_req_records.remove(&k);
+            }
+        }
+        self.model_req_records.insert(
+            id.0,
+            crate::model_worker::RequestRecord {
+                id: id.0,
+                kind: kind.as_str(),
+                mint,
+                created_ms,
+                deadline_ms,
+                ..Default::default()
+            },
+        );
+    }
+
+    /// C1: the FIRST terminal outcome of a request (later events are kept as `late`).
+    pub(super) fn model_rec_outcome(
+        &mut self,
+        id: crate::model_lane::RequestId,
+        clock: i64,
+        outcome: &'static str,
+    ) {
+        if let Some(r) = self.model_req_records.get_mut(&id.0) {
+            if r.outcome.is_none() {
+                r.outcome = Some(outcome);
+                r.resolved_ms = Some(clock);
+            } else if r.late.is_none() {
+                r.late = Some(outcome);
+            }
+        }
+    }
+
+    /// C1: the worker's stamps and the parsed action of the completion, if any.
+    fn model_rec_verdict(&mut self, v: &crate::model_worker::Verdict) {
+        if let Some(r) = self.model_req_records.get_mut(&v.id.0) {
+            r.enqueue_ms = v.stamps.enqueue_ms;
+            r.worker_start_ms = v.stamps.worker_start_ms;
+            r.http_send_ms = v.stamps.http_send_ms;
+            r.completion_ms = v.stamps.completion_ms;
+            r.sent = !v.local_expired;
+            if let Ok(c) = &v.result {
+                r.finish_reason = c.finish_reason.clone();
+                r.action = pump_quant_inference::seam::parse_decision_payload(&c.text)
+                    .ok()
+                    .map(|d| d.action.as_str());
+            }
+        }
+    }
+
+    /// Outstanding entry requests (live + abandoned) in the entry request table.
+    #[must_use]
+    pub fn model_entry_outstanding(&self) -> usize {
+        self.model_table.outstanding()
+    }
+
+    /// C1: every per-request record (entry + management), ordered by creation then id.
+    #[must_use]
+    pub fn model_request_records(&self) -> Vec<crate::model_worker::RequestRecord> {
+        let mut v: Vec<_> = self.model_req_records.values().cloned().collect();
+        v.sort_by_key(|r| (r.created_ms, r.id));
+        v
     }
 
     fn model_live_mints(&self) -> BTreeSet<[u8; 32]> {
@@ -843,8 +931,9 @@ impl Engine {
     /// * lane backpressure (request table / pool queue full) or a lane-wide block stops entry starts for the
     ///   tick and leaves the rest queued.
     ///
-    /// Held-position management has its OWN request table and runs BEFORE this in the tick, so an entry
-    /// backlog cannot take its slots. Legacy watchlist state is never read here.
+    /// Held-position management has its OWN request table, is scheduled BEFORE this in the tick, and its jobs
+    /// are taken FIRST from the local queue (`model_worker`, bounded anti-starvation), so an entry backlog cannot
+    /// take its slots or delay it. Legacy watchlist state is never read here.
     pub(super) fn model_stream_schedule(&mut self) {
         let clock = self.model_clock_ms;
         let mut order: Vec<(i64, [u8; 32])> = self
@@ -1223,6 +1312,9 @@ impl Engine {
                     SubmitRefusal::AtCapacity => "refuse:request_capacity",
                     SubmitRefusal::EntriesBlocked => "refuse:entries_blocked",
                 });
+                if e == SubmitRefusal::AtCapacity {
+                    self.mrep("local:capacity_overload|entry");
+                }
                 return match e {
                     SubmitRefusal::AtCapacity => Admit::Backpressure,
                     SubmitRefusal::DuplicateForMint => Admit::Ineligible,
@@ -1236,7 +1328,16 @@ impl Engine {
             system: snap.system_prompt.clone(),
             user: snap.user_prompt.clone(),
             session: self.model_session,
+            kind: crate::model_worker::JobKind::Entry,
+            deadline_ms: clock + MODEL_DEADLINE_MS,
         };
+        self.model_rec_open(
+            id,
+            crate::model_worker::JobKind::Entry,
+            mint,
+            clock,
+            clock + MODEL_DEADLINE_MS,
+        );
         self.barrier_log_dispatch("entry", &mint, &job.user);
         let dispatched = self
             .model_pool
@@ -1245,6 +1346,13 @@ impl Engine {
             .unwrap_or(Err(DispatchRefusal::PoolClosed));
         if let Err(e) = dispatched {
             self.model_table.release(id);
+            if e == DispatchRefusal::QueueFull {
+                // C4: a LOCAL refusal (never sent), named apart from endpoint health and never charged to it.
+                self.mrep("local:capacity_overload|entry");
+                self.model_rec_outcome(id, clock, "local_capacity_overload");
+            } else {
+                self.model_rec_outcome(id, clock, "refuse:dispatch_pool_closed");
+            }
             self.mrep(match e {
                 DispatchRefusal::QueueFull => "refuse:dispatch_queue_full",
                 DispatchRefusal::PoolClosed => "refuse:dispatch_pool_closed",
@@ -1307,6 +1415,25 @@ impl Engine {
         // timeout's Err, or a truncated / malformed / valid body) keeps its own labelled counter
         // (`endpoint:transport_error`, ...) but adds NOTHING to the trip rule - neither a failure nor a
         // reset - so one slow ask can never count twice (deadline + socket) toward the hung threshold.
+        // C3/C4: a request a worker refused UNSENT (dequeued past its engine deadline) is LOCAL queue expiry: it is
+        // never endpoint evidence (neither a failure nor a reset), and its table slot is released exactly once here.
+        let mut local_n = 0u32;
+        let mut rest = Vec::with_capacity(done.len());
+        for v in done {
+            if v.session == self.model_session {
+                self.model_rec_verdict(&v);
+            }
+            if v.local_expired && v.session == self.model_session {
+                if let Some(p) = &self.model_pool {
+                    p.forget_expired(v.id);
+                }
+                self.model_local_expired_release(v.id, v.kind, clock);
+                local_n += 1;
+                continue;
+            }
+            rest.push(v);
+        }
+        let done = rest;
         for v in &done {
             if v.session == self.model_session && self.model_health_charged.remove(&v.id) {
                 self.mrep("health:late_arrival_already_charged");
@@ -1344,19 +1471,54 @@ impl Engine {
         for v in done {
             self.model_route_verdict(v, clock);
         }
-        for id in self.model_table.expire(clock) {
-            self.mrep("request_abandoned_deadline");
-            if self.model_health_charged.insert(id) {
-                bad_n += 1;
-            }
-        }
-        for id in self.model_mgmt.table.expire(clock) {
-            self.mrep("mgmt:request_abandoned_deadline");
-            if self.model_health_charged.insert(id) {
-                bad_n += 1;
+        // Deadline expiry. Where the request is inside the pool decides the class (C4):
+        //   still queued      -> removed from the queue now, never sent: local_queue_expired, slot released once now;
+        //   refused unsent    -> its local_expired verdict releases it (counted there, above or in a later poll);
+        //   started (sent)    -> a real endpoint wait: abandoned and charged to endpoint health once, as before.
+        for (mgmt, ids) in [
+            (false, self.model_table.expire(clock)),
+            (true, self.model_mgmt.table.expire(clock)),
+        ] {
+            for id in ids {
+                let st = self
+                    .model_pool
+                    .as_ref()
+                    .map_or(crate::model_worker::LocalStatus::Started, |p| {
+                        p.local_status(id)
+                    });
+                let kind = if mgmt {
+                    crate::model_worker::JobKind::Mgmt
+                } else {
+                    crate::model_worker::JobKind::Entry
+                };
+                match st {
+                    crate::model_worker::LocalStatus::CancelledQueued => {
+                        self.model_local_expired_release(id, kind, clock);
+                        local_n += 1;
+                    }
+                    crate::model_worker::LocalStatus::ExpiredUnsent => {
+                        // The worker refused it unsent; the verdict is on its way. Not endpoint evidence. Keep the
+                        // mark so the verdict path recognises it, and leave the (abandoned) slot for that verdict.
+                        if let Some(p) = &self.model_pool {
+                            p.remark_expired(id);
+                        }
+                    }
+                    crate::model_worker::LocalStatus::Started => {
+                        self.mrep(if mgmt {
+                            "mgmt:request_abandoned_deadline"
+                        } else {
+                            "request_abandoned_deadline"
+                        });
+                        self.model_rec_outcome(id, clock, "abandoned_deadline");
+                        if self.model_health_charged.insert(id) {
+                            bad_n += 1;
+                        }
+                    }
+                }
             }
         }
         self.model_safety_note_endpoint(ok_n, bad_n);
+        self.model_safety_note_local_expired(local_n);
         self.model_try_fills(clock);
         self.model_mgmt_try_fills(clock);
     }
@@ -1380,6 +1542,13 @@ impl Engine {
                 text: text.to_string(),
                 finish_reason: Some("stop".to_string()),
             }),
+            local_expired: false,
+            stamps: crate::model_worker::Stamps::default(),
+            kind: if id >= super::model_manage::MGMT_ID_BASE {
+                crate::model_worker::JobKind::Mgmt
+            } else {
+                crate::model_worker::JobKind::Entry
+            },
         };
         self.model_route_verdict(v, clock);
     }
@@ -1406,21 +1575,49 @@ impl Engine {
         self.model_session
     }
 
+    /// Release ONE local-queue-expired request (never sent): its table slot and its binding, exactly once, and count
+    /// it under the local class. Never touches endpoint health.
+    fn model_local_expired_release(
+        &mut self,
+        id: crate::model_lane::RequestId,
+        kind: crate::model_worker::JobKind,
+        clock: i64,
+    ) {
+        let released = if id.0 >= super::model_manage::MGMT_ID_BASE {
+            self.model_mgmt.meta.remove(&id);
+            self.model_mgmt.table.release(id)
+        } else {
+            self.model_meta.remove(&id);
+            self.model_table.release(id)
+        };
+        self.barrier.outstanding.remove(&id.0);
+        if released {
+            self.mrep(format!("local:queue_expired|{}", kind.as_str()));
+            self.mrep("local_queue_expired");
+            self.model_rec_outcome(id, clock, "local_queue_expired");
+        } else {
+            self.mrep("local:queue_expired_already_released");
+        }
+    }
+
     fn model_accept(&mut self, v: crate::model_worker::Verdict, clock: i64) {
         let meta = self.model_meta.remove(&v.id);
         let accepted = self.model_table.accept(v.id, &v.mint, clock);
         let entry = match accepted {
             Ok(e) => e,
             Err(e) => {
-                self.mrep(match e {
+                let label = match e {
                     AcceptRefusal::Unknown => "discard:unknown_or_duplicate",
                     AcceptRefusal::DeadlineExceeded { .. } => "discard:late",
                     AcceptRefusal::Abandoned => "discard:abandoned",
                     AcceptRefusal::EntriesBlocked => "discard:entries_blocked",
-                });
+                };
+                self.mrep(label);
+                self.model_rec_outcome(v.id, clock, label);
                 return;
             }
         };
+        self.model_rec_outcome(v.id, clock, "accepted");
         let Some(meta) = meta else {
             self.mrep("discard:no_binding");
             return;

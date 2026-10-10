@@ -387,6 +387,8 @@ struct DaemonArgs {
     wallet_address: String,
     /// M2: resolve launch-unknown markets from chain history (read-only RPC). Off by default.
     launch_bootstrap: bool,
+    /// Model worker threads (C2): `--model-workers N` or `PQ_MODEL_WORKERS`, N in {2, 4, 6}; default 2.
+    model_workers: usize,
 }
 
 /// OFFLINE PAPER REPLAY BARRIERS ONLY. Next LaserStream update, except that an update whose wire receive time is at or
@@ -439,7 +441,17 @@ fn parse_args() -> Result<DaemonArgs, u8> {
         live_mode: false,
         wallet_address: String::new(),
         launch_bootstrap: false,
+        model_workers: pump_quant_junction::model_lifecycle::DEFAULT_MODEL_WORKERS,
     };
+    if let Ok(v) = std::env::var("PQ_MODEL_WORKERS") {
+        match pump_quant_junction::model_lifecycle::parse_model_workers(&v) {
+            Ok(n) => a.model_workers = n,
+            Err(r) => {
+                eprintln!("[pq-daemon] FATAL: PQ_MODEL_WORKERS={v:?}: {r} (allowed: 2, 4, 6)");
+                return Err(2);
+            }
+        }
+    }
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -455,6 +467,19 @@ fn parse_args() -> Result<DaemonArgs, u8> {
                 ) {
                     eprintln!("bad --commitment {:?}", a.commitment);
                     return Err(2);
+                }
+                i += 2;
+            }
+            "--model-workers" if i + 1 < args.len() => {
+                match pump_quant_junction::model_lifecycle::parse_model_workers(&args[i + 1]) {
+                    Ok(n) => a.model_workers = n,
+                    Err(r) => {
+                        eprintln!(
+                            "[pq-daemon] FATAL: --model-workers {:?}: {r} (allowed: 2, 4, 6)",
+                            args[i + 1]
+                        );
+                        return Err(2);
+                    }
                 }
                 i += 2;
             }
@@ -1998,11 +2023,13 @@ fn main() -> ExitCode {
                 let safety = std::env::var("PQ_MODEL_SAFETY_FILE").unwrap_or_else(|_| {
                     pump_quant_junction::model_lifecycle::DEFAULT_SAFETY_FILE.to_string()
                 });
-                let armed = pump_quant_junction::model_lifecycle::arm_paper_model(
+                let armed = pump_quant_junction::model_lifecycle::arm_paper_model_with_workers(
                     &mut engine,
                     &endpoint,
                     std::path::Path::new(&safety),
-                );
+                    args.model_workers,
+                )
+                .expect("model_workers validated at argument parsing");
                 model_armed = true;
                 // The event path supplies corpus-definition rows for PumpSwap: the AMM swap's own print must not
                 // also feed the trained windows (double count).
@@ -2010,8 +2037,8 @@ fn main() -> ExitCode {
                     std::env::var("PQ_CURVE_TRADE_SOURCE").as_deref() != Ok("snapshot_delta"),
                 );
                 eprintln!(
-                    "[pq-daemon] paper model lane ARMED endpoint={endpoint} safety_file={safety} load={:?} blocked_at_start={}",
-                    armed.load, armed.blocked_at_start
+                    "[pq-daemon] paper model lane ARMED endpoint={endpoint} safety_file={safety} load={:?} blocked_at_start={} model_workers={} bounds(entry,mgmt,queue)={:?}",
+                    armed.load, armed.blocked_at_start, engine.model_workers(), engine.model_bounds()
                 );
                 // A restart never re-arms: a re-arm request already on disk is refused (named) and removed.
                 if pump_quant_junction::model_lifecycle::refuse_stale_rearm_at_startup(

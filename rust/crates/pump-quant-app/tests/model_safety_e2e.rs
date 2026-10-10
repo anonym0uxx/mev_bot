@@ -367,10 +367,20 @@ fn a_hung_endpoint_trips_safety_off_without_stalling_the_engine() {
         "the engine kept ticking while the endpoint hung"
     );
     assert!(e.model_safety_blocked(), "{:?}", e.model_lane_report());
-    assert_eq!(
-        e.model_safety_reason(),
-        pump_quant_app::safety_off::REASON_ENDPOINT_HUNG
-    );
+    // conc C4 (behaviour change, reported): the two SENT asks are abandoned at their deadline (endpoint evidence, 2);
+    // every further ask waits behind the 2 wedged workers and expires in the LOCAL queue unsent. Three of those latch
+    // the named local-overload block (same row as the hung endpoint) before a third sent ask exists. Queue wait is
+    // never charged to the endpoint.
+    let rep = |k: &str| e.model_lane_report().get(k).copied().unwrap_or(0);
+    let reason = e.model_safety_reason().to_string();
+    if reason == pump_quant_app::safety_off::REASON_LOCAL_OVERLOAD {
+        assert!(e.model_local_expired_streak() >= 3);
+        assert!(e.model_safety_consecutive_failures() < 3);
+        assert!(rep("local_queue_expired") >= 3);
+    } else {
+        assert_eq!(reason, pump_quant_app::safety_off::REASON_ENDPOINT_HUNG);
+        assert!(rep("request_abandoned_deadline") >= 3);
+    }
     // Durable: a fresh engine on the same file starts blocked.
     let (mut e2, _c) = fresh_engine(|_| HOLD);
     e2.model_safety_attach(&p);

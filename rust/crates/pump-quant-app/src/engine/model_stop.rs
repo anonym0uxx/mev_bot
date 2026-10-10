@@ -352,6 +352,11 @@ impl Engine {
         {
             raised.insert(StopTrigger::EndpointHung);
         }
+        if self.model_safety.blocked
+            && self.model_safety.reason == crate::safety_off::REASON_LOCAL_OVERLOAD
+        {
+            raised.insert(StopTrigger::LocalModelOverload);
+        }
         // While-condition rows. An unmeasurable reading restricts like a low one.
         let mut active: BTreeSet<StopTrigger> = BTreeSet::new();
         if ops.disk_ok != Some(true) {

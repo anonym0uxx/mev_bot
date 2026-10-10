@@ -854,6 +854,10 @@ pub struct Engine {
     /// the coverage report. All inert unless the lane is armed (see `engine/model_admit.rs`).
     model_table: crate::model_lane::RequestTable,
     model_pool: Option<crate::model_worker::InferencePool>,
+    /// Model worker threads (C2; default 2). Queue depth and both request-table capacities are `2 * model_workers`.
+    model_workers: usize,
+    /// Per-request engine-clock timeline (C1), keyed by request id; bounded (oldest evicted).
+    model_req_records: BTreeMap<u64, crate::model_worker::RequestRecord>,
     model_meta: BTreeMap<crate::model_lane::RequestId, model_admit::ModelReqMeta>,
     model_orders: BTreeMap<[u8; 32], model_admit::ModelOrder>,
     /// Model-managed position lane (HOLD/REDUCE/EXIT). Inert unless the paper-model lane is armed.
@@ -1413,16 +1417,58 @@ impl Engine {
     where
         S: ModelSource + Send + Sync + 'static,
     {
+        self.enable_paper_model_with_workers(source, model_admit::MODEL_WORKERS)
+            .expect("the default worker count is allowed");
+    }
+
+    /// [`Self::enable_paper_model`] with an explicit worker count `n` in [`model_admit::MODEL_WORKERS_ALLOWED`]
+    /// ({2, 4, 6}). Bounds derived from it (C2): queue depth (total and per lane) = 2n, entry request-table capacity
+    /// = 2n, management request-table capacity = 2n; so at most n model calls run, at most 2n jobs wait, and at most
+    /// 4n requests are outstanding. n = 2 reproduces the previous constants (2 workers, queue 4, tables 4/4).
+    ///
+    /// # Errors
+    /// `"model_workers_not_allowed"` — nothing is armed.
+    pub fn enable_paper_model_with_workers<S>(
+        &mut self,
+        source: S,
+        workers: usize,
+    ) -> Result<(), &'static str>
+    where
+        S: ModelSource + Send + Sync + 'static,
+    {
+        if !model_admit::MODEL_WORKERS_ALLOWED.contains(&workers) {
+            return Err("model_workers_not_allowed");
+        }
         let src: std::sync::Arc<dyn ModelSource + Send + Sync> = std::sync::Arc::new(source);
-        self.model_pool = Some(crate::model_worker::InferencePool::new(
-            std::sync::Arc::clone(&src),
-            model_admit::MODEL_WORKERS,
-            model_admit::MODEL_QUEUE,
-        ));
+        let bound = model_admit::model_bound(workers);
+        self.model_workers = workers;
+        self.model_table.set_capacity(bound);
+        self.model_mgmt.table.set_capacity(bound);
+        let pool =
+            crate::model_worker::InferencePool::new(std::sync::Arc::clone(&src), workers, bound);
+        pool.publish_clock(self.model_clock_ms);
+        self.model_pool = Some(pool);
         self.paper_model_mode = true;
         // Protective triggers on a model-managed position execute and settle through the shared order machinery.
         self.positions.set_route_protection(true);
         self.model_source = Some(src);
+        Ok(())
+    }
+
+    /// Model worker threads in use (C2).
+    #[must_use]
+    pub fn model_workers(&self) -> usize {
+        self.model_workers
+    }
+
+    /// (entry, management) request-table capacities and the pool queue depth: `(cap_entry, cap_mgmt, queue)`.
+    #[must_use]
+    pub fn model_bounds(&self) -> (usize, usize, usize) {
+        (
+            self.model_table.capacity(),
+            self.model_mgmt.table.capacity(),
+            self.model_pool.as_ref().map_or(0, |p| p.queue_depth()),
+        )
     }
 
     /// Declare that corpus-definition trade rows arrive as `CorpusFlowRow` (set by the daemon with the event path).
@@ -1557,6 +1603,8 @@ impl Engine {
             creator_log_deferred: BTreeMap::new(),
             model_table: crate::model_lane::RequestTable::default(),
             model_pool: None,
+            model_workers: model_admit::MODEL_WORKERS,
+            model_req_records: BTreeMap::new(),
             model_meta: BTreeMap::new(),
             model_orders: BTreeMap::new(),
             model_mgmt: model_manage::MgmtLane::new(),
