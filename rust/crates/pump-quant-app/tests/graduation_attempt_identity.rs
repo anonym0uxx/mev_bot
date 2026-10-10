@@ -750,3 +750,279 @@ fn a_restart_after_publication_keeps_one_settlement_and_late_old_attempt_reports
     assert_eq!(e2.model_settlement().unwrap().cash, cash);
     assert_eq!(e2.model_inventory_tokens(&MINT), None);
 }
+
+// ---------------------------------------------------------------------------------------------------------
+// 6. OPERATOR 12:45: restart with an UNRESOLVED submitted curve attempt; restart between the replacement record
+//    and its fill. Attempt identity, partial quantity, late-report attribution and reservations survive.
+// ---------------------------------------------------------------------------------------------------------
+fn reserved_of(e: &Engine) -> u64 {
+    e.model_held_data_status()
+        .into_iter()
+        .find(|s| s.mint == MINT)
+        .map_or(0, |s| s.sell_reserved_tokens)
+}
+
+fn pending_in_file(hp: &std::path::Path, id: u64) -> Option<serde_json::Value> {
+    let v: serde_json::Value = serde_json::from_slice(&std::fs::read(hp).unwrap()).unwrap();
+    v["pending"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|x| x["id"] == id)
+        .cloned()
+}
+
+fn settled_sell_tokens(e: &Engine, id: u64) -> u64 {
+    e.model_settlement()
+        .unwrap()
+        .cumulative(&MINT, pump_quant_app::shadow_pool::LegKind::Sell, id)
+        .0
+}
+
+/// A SUBMITTED curve attempt that is not definitively resolved (external executor, partial fill evidenced) survives
+/// a restart with its attempt identity (attempt 1, curve, begun), partial quantity and reservation. Graduation after
+/// the restart does not let a pool replacement execute; an older report changes nothing; the late terminal report of
+/// the old attempt is attributed to the CURVE attempt and books only its increment.
+#[test]
+fn a_restart_keeps_an_unresolved_partial_curve_attempt_reserved_through_graduation_and_attributes_its_late_report(
+) {
+    let hp = tmp("restart_uncertain_partial");
+    let mut r = rig(|s| if s == 0 { EXIT } else { HOLD }, true, Some(&hp));
+    r.e.model_set_external_execution(true);
+    let inv = r.e.model_inventory_tokens(&MINT).unwrap();
+    let end = r.clock + 180_000;
+    while r.clock < end && r.e.model_mgmt_pending(&MINT).is_none() {
+        r.clock += 1_000;
+        r.n += 1;
+        let (n, c, s) = (r.n, r.clock, r.slot);
+        trade_px(&mut r.e, n, c, s, 45_300 + i128::from(n % 7), true);
+        ticks(&mut r.e, 2);
+    }
+    let (id, _, intended, _) = r.e.model_mgmt_pending(&MINT).expect("EXIT pending");
+    assert_eq!(
+        r.e.model_mgmt_attempt(&MINT, id),
+        Some((1, false, SubmitState::Begun))
+    );
+    let part = intended / 3;
+    let (g1, f1) = (40_000_000u64, 400_000u64);
+    assert!(matches!(
+        r.e.model_mgmt_ingest_evidence(MINT, id, MgmtKind::Exit, intended, part, g1, f1),
+        SellReportResult::Applied { .. }
+    ));
+    assert!(r.e.model_held_persist_now());
+    let p = pending_in_file(&hp, id).expect("working attempt in the ledger");
+    assert_eq!(
+        (
+            p["submit"].as_str(),
+            p["exec"].as_str(),
+            p["attempt"].as_u64(),
+            p["amm"].as_bool(),
+            p["filled"].as_u64()
+        ),
+        (
+            Some("begun"),
+            Some("external"),
+            Some(1),
+            Some(false),
+            Some(part)
+        )
+    );
+    let cash_before = r.e.model_settlement().unwrap().cash;
+    let (mut clock, mut slot) = (r.clock, r.slot);
+    drop(r);
+
+    let mut e2 = restart(&hp);
+    // The reservation is derived from the order book at the start of every event (before any protective path can
+    // act), so it is checked after the first post-restart event.
+    e2.tick(AppEvent::Tick);
+    assert_eq!(
+        e2.model_mgmt_submit_state(&MINT, id),
+        Some((
+            pump_quant_app::engine::model_manage::ExecRoute::External,
+            SubmitState::Begun,
+            1,
+            true
+        )),
+        "restored UNCERTAIN with its attempt identity"
+    );
+    assert_eq!(
+        e2.model_mgmt_pending(&MINT).map(|x| (x.0, x.2, x.3)),
+        Some((id, intended, part))
+    );
+    assert_eq!(e2.model_inventory_tokens(&MINT), Some(inv - part));
+    assert_eq!(
+        reserved_of(&e2),
+        intended - part,
+        "remainder reserved after restart"
+    );
+    assert_eq!(e2.model_settlement().unwrap().cash, cash_before);
+    assert_eq!(settled_sell_tokens(&e2, id), part);
+    // Graduation AFTER the restart: curve completes, migration, verified pool swaps.
+    clock += 1_000;
+    slot += 1;
+    curve(&mut e2, clock, slot, 0, 0, 0);
+    e2.tick(AppEvent::Migration { mint: mint(), slot });
+    ticks(&mut e2, 2);
+    for k in 1..=2u64 {
+        pool_swap(&mut e2, clock + 1_000 * k as i64, slot + 5 * k);
+    }
+    assert_eq!(
+        e2.model_mgmt_attempt(&MINT, id),
+        Some((1, false, SubmitState::Begun)),
+        "no replacement while the curve attempt is unresolved"
+    );
+    assert_eq!(
+        e2.model_lane_report()
+            .get("mgmt:attempt_replaced:curve_complete_to_pool")
+            .copied()
+            .unwrap_or(0),
+        0
+    );
+    no_pool_fill_for(&e2, id);
+    assert!(
+        e2.model_mgmt_fills().iter().all(|f| !f.pool),
+        "{:?}",
+        e2.model_mgmt_fills()
+    );
+    assert_eq!(reserved_of(&e2), intended - part);
+    assert_eq!(e2.model_inventory_tokens(&MINT), Some(inv - part));
+    // An OLDER report (the pre-restart partial) changes nothing.
+    let old = e2.model_mgmt_ingest_evidence(MINT, id, MgmtKind::Exit, intended, part, g1, f1);
+    assert!(matches!(old, SellReportResult::Duplicate), "{old:?}");
+    assert_eq!(e2.model_inventory_tokens(&MINT), Some(inv - part));
+    // The late terminal report of the OLD attempt: attributed to attempt 1 on the curve, books the increment only.
+    let (g, fee) = (130_000_000u64, 1_300_000u64);
+    assert!(matches!(
+        e2.model_mgmt_ingest_evidence(MINT, id, MgmtKind::Exit, intended, intended, g, fee),
+        SellReportResult::Applied { .. }
+    ));
+    let f = *e2.model_mgmt_fills().last().unwrap();
+    assert_eq!(
+        (f.order_id, f.tokens, f.attempt, f.pool),
+        (id, intended - part, 1, false)
+    );
+    assert_eq!(
+        f.gross_lamports,
+        g - g1,
+        "increment over the pre-restart partial"
+    );
+    assert_eq!(e2.model_inventory_tokens(&MINT), None);
+    assert_eq!(settled_sell_tokens(&e2, id), intended);
+    let rec = e2.model_sell_rec(id).expect("terminal record");
+    assert_eq!(
+        (rec.filled, rec.state, rec.gross),
+        (intended, SellState::Completed, g)
+    );
+}
+
+/// Crash after the pool REPLACEMENT was durably handed off (same id, attempt 2, pool, begun, over a reconciled curve
+/// partial) and before its fill was persisted. The restored ledger keeps that identity and the curve partial; the
+/// paper record proves the remainder did not execute, so reconciliation ends the order at exactly the curve partial
+/// and releases the reservation. The curve partial is settled once, with curve economics.
+/// (v1 fill model: a price-only reconciled curve partial is refused by name by the v2 settlement ledger,
+/// `price_only_report_has_no_proceeds`, exactly as the in-memory partial test above uses v1.)
+#[test]
+fn a_restart_between_the_replacement_hand_off_and_its_fill_keeps_attempt_two_and_the_curve_partial()
+{
+    let hp = tmp("restart_repl_unfilled");
+    let mut r = rig(|s| if s == 0 { EXIT } else { HOLD }, false, Some(&hp));
+    let inv = r.e.model_inventory_tokens(&MINT).unwrap();
+    let (id, intended) = r.to_order();
+    r.begin_on_curve_refused(id);
+    let part = intended / 3;
+    r.e.model_mgmt_apply_reconciled_fill(MINT, id, part, 22_000_000)
+        .unwrap();
+    let curve_fill = *r.e.model_mgmt_fills().last().unwrap();
+    assert_eq!(
+        (
+            curve_fill.order_id,
+            curve_fill.tokens,
+            curve_fill.attempt,
+            curve_fill.pool
+        ),
+        (id, part, 1, false)
+    );
+    r.complete_curve();
+    assert!(r.e.model_held_persist_now());
+    // One verified pool swap: the replacement is handed off (durable record first), then priced in-process.
+    r.clock += 1_000;
+    r.slot += 5;
+    r.e.tick(AppEvent::AmmSwap {
+        mint: mint(),
+        pool: POOL,
+        pool_is_canonical: true,
+        quote_is_wsol: true,
+        token_reserve_pre: BRES,
+        quote_reserve_pre: QRES,
+        fee_bps: Some(2 + 93 + 30),
+        fee_parts: Some((2, 93, 30)),
+        virtual_quote: Some(VQ),
+        cashback: CashbackField::NotRecorded,
+        is_buy: true,
+        token_amount: 1_000_000_000,
+        quote_lamports: 50_000,
+        trader: [7u8; 32],
+        fee_lamports: Some(5_000),
+        cu_consumed: Some(1),
+        recv_unix_ms: Some(r.clock),
+        slot: r.slot,
+    });
+    // The process dies HERE: the file holds the hand-off record, not the fill.
+    let p = pending_in_file(&hp, id).expect("replacement hand-off record durable");
+    assert_eq!(
+        (
+            p["submit"].as_str(),
+            p["exec"].as_str(),
+            p["attempt"].as_u64(),
+            p["amm"].as_bool(),
+            p["filled"].as_u64()
+        ),
+        (
+            Some("begun"),
+            Some("paper"),
+            Some(2),
+            Some(true),
+            Some(part)
+        ),
+        "the replacement record: same id, attempt 2, pool, the curve partial"
+    );
+    drop(r);
+
+    let mut e2 = engine(|_| HOLD, false, Some(&hp));
+    e2.model_held_restore()
+        .expect("restore ok")
+        .expect("ledger present");
+    e2.tick(AppEvent::Tick);
+    assert_eq!(
+        e2.model_lane_report()
+            .get("mgmt:recon:paper_record_remainder_not_executed")
+            .copied(),
+        Some(1),
+        "{:?}",
+        e2.model_lane_report()
+    );
+    let rec = e2.model_sell_rec(id).expect("terminal record");
+    assert_eq!(
+        (rec.filled, rec.intended, rec.state),
+        (part, intended, SellState::EndedPartial)
+    );
+    assert!(e2.model_mgmt_pending(&MINT).is_none());
+    assert_eq!(e2.model_inventory_tokens(&MINT), Some(inv - part));
+    assert_eq!(
+        reserved_of(&e2),
+        0,
+        "reservation released by definitive evidence"
+    );
+    assert!(
+        e2.model_mgmt_fills()
+            .iter()
+            .all(|f| f.order_id != id || !f.pool),
+        "{:?}",
+        e2.model_mgmt_fills()
+    );
+    // Later verified pool swaps cannot re-run the ended attempt.
+    let (c, s) = (1_900_000_000_000i64, 9_000u64);
+    pool_swap(&mut e2, c, s);
+    assert!(e2.model_mgmt_fills().iter().all(|f| f.order_id != id));
+    assert_eq!(e2.model_inventory_tokens(&MINT), Some(inv - part));
+}
