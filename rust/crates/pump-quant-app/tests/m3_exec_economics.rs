@@ -443,6 +443,8 @@ fn graduate(r: &mut Rig) {
 
 /// A held CURVE position whose curve completes sells through its verified canonical WSOL pool. The pending EXIT
 /// keeps its id and quantity; inventory/basis are untouched by the switch; the fill is priced by the pool quote.
+/// The curve attempt was already handed off (the complete-curve observation is its landing state), so the pool
+/// fill is a REPLACEMENT attempt (attempt 2) under the same id, never the relabelled curve attempt (W1.2).
 #[test]
 fn a_held_curve_position_graduates_and_its_exit_routes_to_the_verified_pool() {
     let mut r = rig(|s| if s == 0 { EXIT } else { HOLD });
@@ -478,6 +480,7 @@ fn a_held_curve_position_graduates_and_its_exit_routes_to_the_verified_pool() {
             .expect("exit filled on the pool");
     assert_eq!(f.order_id, id);
     assert_eq!(f.tokens, intended);
+    assert_eq!((f.attempt, f.pool), (2, true), "pool replacement attempt");
     let eff = u128::from(qres) + u128::from(VQ);
     let g = eff * u128::from(intended) / (u128::from(bres) + u128::from(intended));
     let venue = (g * 2).div_ceil(10_000) + (g * 93).div_ceil(10_000) + (g * 30).div_ceil(10_000);
