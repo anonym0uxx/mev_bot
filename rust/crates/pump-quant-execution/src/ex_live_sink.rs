@@ -290,6 +290,22 @@ impl OutboundSink for LiveOutboundSink {
             // This is the authority rule applied to the order's bound: the model decides the
             // worst price it will pay, and Rust resolves that into a `min_tokens_out` rather
             // than substituting its own.
+            //
+            // W3: a limit that is PRESENT but cannot be turned into a token count (overflow — e.g. a
+            // SOL-per-raw-token unit mistake — or rounds to zero) is a named refusal, exactly as the
+            // paper fill refuses it (`fill_none:limit_unusable`). Substituting the slippage count here
+            // would replace the brain's expressed bound with Rust's own: the fallback is ONLY for a
+            // completion that carried no limit at all.
+            if let Some(limit) = record.price_limit_lamports_per_raw_token {
+                if let Err(e) =
+                    crate::price_anchor::min_tokens_from_price_limit(record.size_lamports, limit)
+                {
+                    return OutboundOutcome::Construction(format!(
+                        "price_limit_unusable: {e:?} (limit {limit} lamports/raw token, size {} lamports)",
+                        record.size_lamports
+                    ));
+                }
+            }
             let (min_tokens, min_tokens_source) = crate::price_anchor::resolve_min_tokens_out(
                 record.size_lamports,
                 record.price_limit_lamports_per_raw_token,
@@ -705,6 +721,43 @@ mod tests {
         match outcome {
             OutboundOutcome::Accepted { signature, .. } => assert!(signature == [0u8; 64]),
             _ => panic!("noop sink must accept with zero signature"),
+        }
+    }
+
+    /// W3: a PRESENT limit that cannot become a token count is refused by name before any build, never
+    /// replaced by the slippage fallback. The empty registry makes any build that IS reached refuse with
+    /// "tx_build refused", so the message tells which branch ran. Overflow is the SOL-per-raw-token unit
+    /// mistake (1e-9 x the lamports price); Unusable is a NaN/negative from a caller that skipped the parser.
+    /// (RoundsToZero is unreachable for a positive size: ceil of a positive quotient is >= 1.)
+    #[test]
+    fn a_present_but_unconvertible_limit_is_refused_not_replaced_by_slippage() {
+        let sink = sell_test_sink();
+        let buy = |limit: Option<f64>| AdmitRecord {
+            mint: [1u8; 32],
+            user: [0u8; 32],
+            is_buy: true,
+            size_lamports: 500_000_000,
+            entry_price: 0,
+            max_slippage_bps: 500,
+            price_limit_lamports_per_raw_token: limit,
+        };
+        for (limit, want) in [(2.0e-13, "Overflow"), (f64::NAN, "Unusable"), (-1.0, "Unusable")] {
+            match sink.on_admit(&buy(Some(limit))) {
+                OutboundOutcome::Construction(m) => assert!(
+                    m.starts_with("price_limit_unusable") && m.contains(want),
+                    "{limit}: {m}"
+                ),
+                o => panic!("{limit}: expected a named refusal, got {o:?}"),
+            }
+        }
+        // A usable limit, and no limit, both reach the (gated) build.
+        for limit in [Some(2.0e-4), None] {
+            match sink.on_admit(&buy(limit)) {
+                OutboundOutcome::Construction(m) => {
+                    assert!(m.contains("tx_build refused"), "{limit:?}: {m}")
+                }
+                o => panic!("{limit:?}: {o:?}"),
+            }
         }
     }
 
