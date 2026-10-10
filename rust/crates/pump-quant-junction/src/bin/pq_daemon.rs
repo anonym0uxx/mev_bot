@@ -3574,7 +3574,9 @@ fn main() -> ExitCode {
                                 // join refuses any 300 s flow window that would otherwise be
                                 // served as complete or quietly idle; an ordinary no-trade
                                 // (`NoPrint`) is left alone.
-                                if delta_mode != pump_quant_junction::reserve_delta::DeltaMode::Ordinary {
+                                if delta_mode
+                                    != pump_quant_junction::reserve_delta::DeltaMode::Ordinary
+                                {
                                     stats.delta_mode_unsupported += 1;
                                 }
                                 let _ =
@@ -3588,10 +3590,7 @@ fn main() -> ExitCode {
                                         delta_mode,
                                     );
                             }
-                            reserve_tracker.insert(
-                                mb,
-                                ReserveSnapshot::of(&curve, slot),
-                            );
+                            reserve_tracker.insert(mb, ReserveSnapshot::of(&curve, slot));
                             // C1: publish these reserves into the curve cache. The hot path (and the
                             // outbound sink's state fetch) then answers from the stream instead of paying a
                             // cold 4-RTT fetch. Returns false for a mint whose ctx was never learned — the
@@ -4147,10 +4146,8 @@ fn main() -> ExitCode {
 
                                                 }
                                             }
-                                            reserve_tracker.insert(
-                                                mb,
-                                                ReserveSnapshot::of(&curve, slot),
-                                            );
+                                            reserve_tracker
+                                                .insert(mb, ReserveSnapshot::of(&curve, slot));
                                             // C1: publish these reserves into the curve cache. The hot path (and the
                                             // outbound sink's state fetch) then answers from the stream instead of paying a
                                             // cold 4-RTT fetch. Returns false for a mint whose ctx was never learned — the
@@ -4269,10 +4266,8 @@ fn main() -> ExitCode {
 
                                                     }
                                                 }
-                                                reserve_tracker.insert(
-                                                    mb,
-                                                    ReserveSnapshot::of(&curve, slot),
-                                                );
+                                                reserve_tracker
+                                                    .insert(mb, ReserveSnapshot::of(&curve, slot));
                                                 // C1: publish these reserves into the curve cache. The hot path (and the
                                                 // outbound sink's state fetch) then answers from the stream instead of paying a
                                                 // cold 4-RTT fetch. Returns false for a mint whose ctx was never learned — the

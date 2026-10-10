@@ -335,10 +335,7 @@ fn main() {
                         _ => {}
                     }
                 }
-                tracker.insert(
-                    mb,
-                    ReserveSnapshot::of(&curve, slot),
-                );
+                tracker.insert(mb, ReserveSnapshot::of(&curve, slot));
             }
             _ => {}
         }

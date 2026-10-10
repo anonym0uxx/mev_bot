@@ -790,10 +790,8 @@ fn main() -> ExitCode {
                                                 }
                                             }
                                             // Update the snapshot for next delta.
-                                            reserve_tracker.insert(
-                                                mb,
-                                                ReserveSnapshot::of(&curve, slot),
-                                            );
+                                            reserve_tracker
+                                                .insert(mb, ReserveSnapshot::of(&curve, slot));
                                         }
                                     }
                                 }
@@ -870,10 +868,8 @@ fn main() -> ExitCode {
                                                     }
                                                 }
                                                 // Update the snapshot for next delta.
-                                                reserve_tracker.insert(
-                                                    mb,
-                                                    ReserveSnapshot::of(&curve, slot),
-                                                );
+                                                reserve_tracker
+                                                    .insert(mb, ReserveSnapshot::of(&curve, slot));
                                             } else {
                                                 // Discriminator mismatch — log loudly
                                                 if account_data.len() >= 8 {

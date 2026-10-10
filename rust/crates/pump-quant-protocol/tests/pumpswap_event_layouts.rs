@@ -7,7 +7,8 @@
 use pump_quant_protocol::pumpswap_event::{
     buy_exact_quote_in_cb, buy_layout_ix_name, cashback_field, cashback_field_of_event,
     cashback_fields, pre_cashback_tail_end, swap_event_payload, swap_layout_semantics_ok,
-    virtual_quote_offset, CashbackField, BUY_IX_NAME_OFFSET, CASHBACK_BPS_MAX, SWAP_EVENT_FIXED_LEN,
+    virtual_quote_offset, CashbackField, BUY_IX_NAME_OFFSET, CASHBACK_BPS_MAX,
+    SWAP_EVENT_FIXED_LEN,
 };
 use pump_quant_protocol::pumpswap_fees::{sell_net_quote_cb, Fees};
 use serde_json::Value;
@@ -264,7 +265,8 @@ fn every_captured_event_passes_layout_semantics() {
         assert!(swap_layout_semantics_ok(buy, p), "{}", v["key"]);
         if buy {
             assert_eq!(
-                &p[BUY_IX_NAME_OFFSET + 4..BUY_IX_NAME_OFFSET + 4 + buy_layout_ix_name(p.len()).unwrap().len()],
+                &p[BUY_IX_NAME_OFFSET + 4
+                    ..BUY_IX_NAME_OFFSET + 4 + buy_layout_ix_name(p.len()).unwrap().len()],
                 buy_layout_ix_name(p.len()).unwrap(),
                 "{}",
                 v["key"]
@@ -295,7 +297,10 @@ fn same_length_payload_with_other_layout_semantics_is_unsupported_not_known() {
         let buy = v["buy"].as_bool().unwrap();
         let key = v["key"].as_str().unwrap();
         let p = swap_event_payload(&data, buy).unwrap().to_vec();
-        assert!(matches!(cashback_field(buy, &p), CashbackField::Known { .. }));
+        assert!(matches!(
+            cashback_field(buy, &p),
+            CashbackField::Known { .. }
+        ));
         let vo = virtual_quote_offset(buy, p.len()).unwrap();
         let cb_at = if buy { vo - 32 } else { 352 };
         // (a) rate that is not a rate (> 100%).
@@ -340,7 +345,10 @@ fn a_buy_payload_padded_to_an_exact_in_length_is_unsupported() {
     let data = hex(v["data_hex"].as_str().unwrap());
     let mut q = swap_event_payload(&data, true).unwrap().to_vec();
     q.resize(496, 0);
-    assert!(virtual_quote_offset(true, q.len()).is_some(), "496 is a known length");
+    assert!(
+        virtual_quote_offset(true, q.len()).is_some(),
+        "496 is a known length"
+    );
     assert_eq!(
         cashback_field(true, &q),
         CashbackField::Unsupported { layout_len: 496 }
