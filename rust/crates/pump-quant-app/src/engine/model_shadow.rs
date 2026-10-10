@@ -50,6 +50,10 @@ pub struct PaperFillState {
     /// forgotten, persisted in the held ledger and restored exactly. Bounded ([`DIVERGENCE_LOG_CAP`]); the count of
     /// records dropped by the bound is kept too. Evidence only: nothing reads it to decide or to clear a divergence.
     pub divergences: Vec<DivergenceRecord>,
+    /// Venue-fee configuration policy for every model-path quote. Default `Pinned` (latest captured read, slot
+    /// ignored, labelled) so synthetic-slot rigs keep pricing; the daemon arms `BySlot` (the configuration in
+    /// force at the landing slot, or a named refusal).
+    pub fee_sel: pump_quant_protocol::fee_schedule::FeeSelection,
     /// Records dropped by the bound.
     pub divergences_dropped: u64,
 }
@@ -155,6 +159,33 @@ impl Engine {
     #[must_use]
     pub fn model_paper_fill(&self) -> PaperFillVersion {
         self.model_pf.version
+    }
+
+    /// Select how venue-fee configurations are chosen for model-path quotes (daemon: `BySlot`).
+    pub fn model_set_fee_selection(
+        &mut self,
+        sel: pump_quant_protocol::fee_schedule::FeeSelection,
+    ) {
+        self.model_pf.fee_sel = sel;
+    }
+
+    /// The venue-fee selection policy in use.
+    #[must_use]
+    pub fn model_fee_selection(&self) -> pump_quant_protocol::fee_schedule::FeeSelection {
+        self.model_pf.fee_sel
+    }
+
+    /// The fee context for a quote on state observed at `slot`.
+    pub(super) fn model_fee_ctx(&self, slot: u64) -> crate::exec_quote::FeeCtx {
+        crate::exec_quote::FeeCtx::new(slot, self.model_pf.fee_sel)
+    }
+
+    /// Count the fee configuration/tier that priced one fill (report key `fee_stamp:<label>`).
+    pub(super) fn model_note_fee_stamp(
+        &mut self,
+        st: &pump_quant_protocol::fee_schedule::FeeStamp,
+    ) {
+        self.mrep(format!("fee_stamp:{}", st.label()));
     }
 
     pub(super) fn model_v2(&self) -> bool {
@@ -526,10 +557,14 @@ impl Engine {
             }
             ObservedVenue::Curve(curve_base(&o))
         };
+        let slot = match &obs {
+            ObservedVenue::Curve(c) => c.slot,
+            ObservedVenue::Pool(p, ..) => p.slot,
+        };
         let net = self
             .model_pf
             .shadow
-            .net_liquidation_estimate(mint, Some(&obs), inv)
+            .net_liquidation_estimate_at(self.model_fee_ctx(slot), mint, Some(&obs), inv)
             .ok_or("shadow_quote_unavailable")?;
         Ok(net - i128::from(self.cfg.exit_tip_lamports))
     }

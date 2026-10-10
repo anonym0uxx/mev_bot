@@ -2030,6 +2030,11 @@ fn main() -> ExitCode {
             "[pq-daemon] paper fill model: {}",
             engine.model_paper_fill().label()
         );
+        // FEES: every model-path quote is priced with the venue-fee configuration IN FORCE AT THE LANDING SLOT
+        // (pump_quant_protocol::fee_schedule): labelled provenance, or a named refusal when the slot predates
+        // every captured read / evidence window. Never today's config silently applied to history.
+        engine.model_set_fee_selection(pump_quant_protocol::fee_schedule::FeeSelection::BySlot);
+        eprintln!("[pq-daemon] venue fee selection: by_slot");
         let held_file = std::env::var("PQ_MODEL_HELD_FILE").unwrap_or_else(|_| {
             pump_quant_junction::model_lifecycle::DEFAULT_HELD_FILE.to_string()
         });

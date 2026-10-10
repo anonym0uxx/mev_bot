@@ -24,8 +24,8 @@
 use pump_quant_protocol::curve_sell_quote::{
     curve_buy_exact_in, curve_sell_from_reserves, CurveSellRefusal,
 };
-use pump_quant_protocol::pumpswap_event::CashbackField;
 use pump_quant_protocol::fee_schedule::{self, FeeScheduleRefusal, FeeSelection, FeeStamp};
+use pump_quant_protocol::pumpswap_event::CashbackField;
 use pump_quant_protocol::pumpswap_fees::{sell_net_quote, sell_net_quote_cb, Fees};
 
 /// Measured p50 network+priority fee of one landed leg (`FEE_QUANTILES_C16.json`, `meta.fee`).
@@ -65,6 +65,36 @@ pub fn curve_fees() -> Option<(u64, u64)> {
     curve_rates_for(1, 1, CURVE_FEE_CONFIG_SLOT, FeeSelection::Pinned)
         .ok()
         .map(|(p, c, _)| (p, c))
+}
+
+/// Which fee configuration prices a quote: the trade's slot and the selection policy. The daemon prices
+/// [`FeeSelection::BySlot`] (the configuration in force at the landing slot, with labelled provenance or a
+/// named refusal); synthetic-slot test rigs use [`FeeCtx::PINNED`] (latest read, labelled `pinned_slot_ignored`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FeeCtx {
+    pub slot: u64,
+    pub sel: FeeSelection,
+}
+
+impl FeeCtx {
+    /// Latest captured read, slot ignored (labelled). The legacy un-slotted quote functions use this.
+    pub const PINNED: Self = Self {
+        slot: CURVE_FEE_CONFIG_SLOT,
+        sel: FeeSelection::Pinned,
+    };
+    /// The configuration in force at `slot`.
+    #[must_use]
+    pub const fn by_slot(slot: u64) -> Self {
+        Self {
+            slot,
+            sel: FeeSelection::BySlot,
+        }
+    }
+    /// `slot` under policy `sel`.
+    #[must_use]
+    pub const fn new(slot: u64, sel: FeeSelection) -> Self {
+        Self { slot, sel }
+    }
 }
 
 /// One executed BUY leg: all-in venue spend (fees inside), the fee components, tokens delivered.
@@ -144,7 +174,9 @@ impl QuoteRefusal {
                 FeeScheduleRefusal::RatesNotInSchedule { .. } => {
                     "quote_unavailable:fee_rates_not_in_schedule"
                 }
-                FeeScheduleRefusal::MarketCapUndefined => "quote_unavailable:fee_market_cap_undefined",
+                FeeScheduleRefusal::MarketCapUndefined => {
+                    "quote_unavailable:fee_market_cap_undefined"
+                }
                 FeeScheduleRefusal::Overflow => "quote_unavailable:fee_overflow",
             },
             Self::CurveRealSolInsufficient { .. } => {
@@ -161,39 +193,76 @@ impl QuoteRefusal {
     }
 }
 
-/// Curve BUY with an all-in spend of `spend` lamports (`buy_exact_sol_in` arithmetic).
+/// Curve BUY with an all-in spend of `spend` lamports (`buy_exact_sol_in` arithmetic), fees from the pinned
+/// (latest) configuration. Synthetic-slot callers only; the engine prices [`curve_buy_at`].
 pub fn curve_buy(
     vsol: u64,
     vtok: u64,
     real_tok: u64,
     spend: u64,
 ) -> Result<BuyQuote, QuoteRefusal> {
+    curve_buy_at(FeeCtx::PINNED, vsol, vtok, real_tok, spend).map(|(q, _)| q)
+}
+
+/// Curve BUY priced with the fee configuration `ctx` selects (by the landing slot in the daemon). Returns the
+/// [`FeeStamp`] (config version, provenance, tier, bp) that priced it.
+///
+/// # Errors
+/// Named [`QuoteRefusal`]s; a fee configuration unknown at the slot is `FeeSchedule(..)`, never a default rate.
+pub fn curve_buy_at(
+    ctx: FeeCtx,
+    vsol: u64,
+    vtok: u64,
+    real_tok: u64,
+    spend: u64,
+) -> Result<(BuyQuote, FeeStamp), QuoteRefusal> {
     if vtok == 0 {
         return Err(QuoteRefusal::CurveComplete);
     }
-    let (p, c) = curve_fees().ok_or(QuoteRefusal::CurveFeeConfigUnsupported)?;
+    let (p, c, stamp) = curve_rates_for(vsol, vtok, ctx.slot, ctx.sel)?;
     let q =
         curve_buy_exact_in(vsol, vtok, real_tok, spend, p, c).ok_or(QuoteRefusal::Unpriceable)?;
     let fees = q.protocol_fee + q.creator_fee;
     let used = q.net_in + fees;
-    Ok(BuyQuote {
-        spend: u64::try_from(used).map_err(|_| QuoteRefusal::Unpriceable)?,
-        net_in: u64::try_from(q.net_in).map_err(|_| QuoteRefusal::Unpriceable)?,
-        venue_fees: u64::try_from(fees).map_err(|_| QuoteRefusal::Unpriceable)?,
-        // Creator vs cashback recipient is not carried on the curve path (open item); never an entitlement here.
-        cashback_entitlement: 0,
-        tokens: u64::try_from(q.tokens_out).map_err(|_| QuoteRefusal::Unpriceable)?,
-    })
+    Ok((
+        BuyQuote {
+            spend: u64::try_from(used).map_err(|_| QuoteRefusal::Unpriceable)?,
+            net_in: u64::try_from(q.net_in).map_err(|_| QuoteRefusal::Unpriceable)?,
+            venue_fees: u64::try_from(fees).map_err(|_| QuoteRefusal::Unpriceable)?,
+            // Creator vs cashback recipient is not carried on the curve path (open item); never an entitlement here.
+            cashback_entitlement: 0,
+            tokens: u64::try_from(q.tokens_out).map_err(|_| QuoteRefusal::Unpriceable)?,
+        },
+        stamp,
+    ))
 }
 
-/// Curve SELL of exactly `tokens` against landing reserves incl. the curve's REAL SOL.
+/// Curve SELL of exactly `tokens` against landing reserves incl. the curve's REAL SOL (pinned configuration;
+/// the engine prices [`curve_sell_at`]).
 pub fn curve_sell(
     vsol: u64,
     vtok: u64,
     real_sol: u64,
     tokens: u64,
 ) -> Result<SellQuote, QuoteRefusal> {
-    let (p, c) = curve_fees().ok_or(QuoteRefusal::CurveFeeConfigUnsupported)?;
+    curve_sell_at(FeeCtx::PINNED, vsol, vtok, real_sol, tokens).map(|(q, _)| q)
+}
+
+/// Curve SELL priced with the fee configuration `ctx` selects, with its [`FeeStamp`].
+///
+/// # Errors
+/// Named [`QuoteRefusal`]s.
+pub fn curve_sell_at(
+    ctx: FeeCtx,
+    vsol: u64,
+    vtok: u64,
+    real_sol: u64,
+    tokens: u64,
+) -> Result<(SellQuote, FeeStamp), QuoteRefusal> {
+    if vtok == 0 {
+        return Err(QuoteRefusal::CurveComplete);
+    }
+    let (p, c, stamp) = curve_rates_for(vsol, vtok, ctx.slot, ctx.sel)?;
     let f = Fees {
         lp_bps: 0,
         protocol_bps: p,
@@ -202,14 +271,17 @@ pub fn curve_sell(
     match curve_sell_from_reserves(vsol, vtok, real_sol, tokens, f) {
         Ok(q) => {
             let fees = q.protocol_fee + q.creator_fee;
-            Ok(SellQuote {
-                gross: u64::try_from(q.gross).map_err(|_| QuoteRefusal::Unpriceable)?,
-                venue_fees: u64::try_from(fees).map_err(|_| QuoteRefusal::Unpriceable)?,
-                // Creator vs cashback recipient is not observable from reserves; the 30 bp leaves the
-                // seller either way. A cashback credit is never counted as proceeds here.
-                cashback_withheld: 0,
-                net: u64::try_from(q.net).map_err(|_| QuoteRefusal::Unpriceable)?,
-            })
+            Ok((
+                SellQuote {
+                    gross: u64::try_from(q.gross).map_err(|_| QuoteRefusal::Unpriceable)?,
+                    venue_fees: u64::try_from(fees).map_err(|_| QuoteRefusal::Unpriceable)?,
+                    // Creator vs cashback recipient is not observable from reserves; the 30 bp leaves the
+                    // seller either way. A cashback credit is never counted as proceeds here.
+                    cashback_withheld: 0,
+                    net: u64::try_from(q.net).map_err(|_| QuoteRefusal::Unpriceable)?,
+                },
+                stamp,
+            ))
         }
         Err(CurveSellRefusal::RealSolInsufficient { max_tokens }) => {
             Err(QuoteRefusal::CurveRealSolInsufficient { max_tokens })
@@ -333,6 +405,64 @@ pub fn amm_sell(
         cashback_withheld: u64::try_from(cb).map_err(|_| QuoteRefusal::Unpriceable)?,
         net: u64::try_from(q.net).map_err(|_| QuoteRefusal::Unpriceable)?,
     })
+}
+
+/// The pool rates a landing event reported, VALIDATED against the PumpSwap configuration in force at
+/// `ctx` ([`fee_schedule::pool_rates_from_event`]): they must be one tier of that table (cashback coins carry the
+/// tier's creator share as cashback). An all-zero event, another venue's rates or a non-tier stack is refused
+/// `fee_rates_not_in_schedule`, never priced. Cashback-unknown is refused first, exactly as [`amm_buy`].
+///
+/// # Errors
+/// Named [`QuoteRefusal`]s.
+pub fn amm_rates_for(
+    ctx: FeeCtx,
+    parts: Option<(u32, u32, u32)>,
+    cashback: CashbackField,
+) -> Result<FeeStamp, QuoteRefusal> {
+    let (f, cb_bps) = amm_parts(parts, cashback)?;
+    let cb = cashback.known().map(|_| cb_bps);
+    let (_, stamp) = fee_schedule::pool_rates_from_event(
+        (f.lp_bps, f.protocol_bps, f.creator_bps),
+        cb,
+        ctx.slot,
+        ctx.sel,
+    )
+    .map_err(QuoteRefusal::FeeSchedule)?;
+    Ok(stamp)
+}
+
+/// Pool BUY ([`amm_buy`] arithmetic) whose event rates are first validated by [`amm_rates_for`].
+///
+/// # Errors
+/// Named [`QuoteRefusal`]s.
+pub fn amm_buy_at(
+    ctx: FeeCtx,
+    base: u64,
+    quote: u64,
+    vq: Option<u64>,
+    parts: Option<(u32, u32, u32)>,
+    cashback: CashbackField,
+    spend: u64,
+) -> Result<(BuyQuote, FeeStamp), QuoteRefusal> {
+    let stamp = amm_rates_for(ctx, parts, cashback)?;
+    Ok((amm_buy(base, quote, vq, parts, cashback, spend)?, stamp))
+}
+
+/// Pool SELL ([`amm_sell`] arithmetic) whose event rates are first validated by [`amm_rates_for`].
+///
+/// # Errors
+/// Named [`QuoteRefusal`]s.
+pub fn amm_sell_at(
+    ctx: FeeCtx,
+    base: u64,
+    quote: u64,
+    vq: Option<u64>,
+    parts: Option<(u32, u32, u32)>,
+    cashback: CashbackField,
+    tokens: u64,
+) -> Result<(SellQuote, FeeStamp), QuoteRefusal> {
+    let stamp = amm_rates_for(ctx, parts, cashback)?;
+    Ok((amm_sell(base, quote, vq, parts, cashback, tokens)?, stamp))
 }
 
 /// Per-leg network + tip lamports for a landed transaction (booked once per landed leg).

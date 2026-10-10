@@ -771,7 +771,13 @@ impl Engine {
                 }
             }
             let quoted: Option<
-                Result<crate::exec_quote::SellQuote, crate::exec_quote::QuoteRefusal>,
+                Result<
+                    (
+                        crate::exec_quote::SellQuote,
+                        pump_quant_protocol::fee_schedule::FeeStamp,
+                    ),
+                    crate::exec_quote::QuoteRefusal,
+                >,
             > = if route_amm {
                 self.model_cache
                     .amm_obs(&mint)
@@ -793,13 +799,19 @@ impl Engine {
                             ) {
                                 None => Err(crate::exec_quote::QuoteRefusal::ShadowStateInvalid),
                                 Some((fb, fq)) => {
-                                    let q = crate::exec_quote::amm_sell(
-                                        fb, fq, vq, parts, cashback, tokens,
+                                    let q = crate::exec_quote::amm_sell_at(
+                                        self.model_fee_ctx(o.slot),
+                                        fb,
+                                        fq,
+                                        vq,
+                                        parts,
+                                        cashback,
+                                        tokens,
                                     );
                                     match q {
                                         Ok(x)
                                             if self.model_v2()
-                                                && u128::from(x.gross)
+                                                && u128::from(x.0.gross)
                                                     > self.model_shadow_capacity(
                                                         &mint,
                                                         o.quote_reserves_lamports,
@@ -824,11 +836,16 @@ impl Engine {
                         // v2: observed + our carried delta, capped by conserved capacity (v1: observed).
                         None => Err(crate::exec_quote::QuoteRefusal::ShadowStateInvalid),
                         Some(s) => {
-                            match crate::exec_quote::curve_sell(s.vsol, s.vtok, s.real_sol, tokens)
-                            {
+                            match crate::exec_quote::curve_sell_at(
+                                self.model_fee_ctx(o.slot),
+                                s.vsol,
+                                s.vtok,
+                                s.real_sol,
+                                tokens,
+                            ) {
                                 Ok(x)
                                     if self.model_v2()
-                                        && u128::from(x.gross)
+                                        && u128::from(x.0.gross)
                                             > self.model_shadow_capacity(
                                                 &mint,
                                                 o.real_sol_lamports,
@@ -853,12 +870,14 @@ impl Engine {
                             o.ts_ms >= landing && o.ts_ms <= clock && o.slot > order.created_slot
                         })
                         .map(|o| {
-                            crate::exec_quote::curve_sell(
+                            crate::exec_quote::curve_sell_at(
+                                self.model_fee_ctx(o.slot),
                                 o.v_sol_lamports,
                                 o.v_tokens,
                                 o.real_sol_lamports,
                                 tokens,
                             )
+                            .map(|x| x.0)
                         })
                 };
                 match ext {
@@ -875,7 +894,10 @@ impl Engine {
                 "mgmt:fill_curve"
             };
             let priced = match quoted {
-                Some(Ok(q)) => Some(q),
+                Some(Ok((q, st))) => {
+                    self.model_note_fee_stamp(&st);
+                    Some(q)
+                }
                 Some(Err(r)) => {
                     let l = format!("mgmt:{}", r.label());
                     if order.kind == MgmtKind::Protect {
@@ -1562,6 +1584,8 @@ enum AddState {
         vsol: u64,
         vtok: u64,
         real_tok: u64,
+        /// Venue-fee configuration that prices this curve buy (the landing slot under `BySlot`).
+        fee: crate::exec_quote::FeeCtx,
     },
     Amm {
         base: u64,
@@ -1572,6 +1596,8 @@ enum AddState {
         cr: u32,
         /// Cashback bps from the landing event's layout (known; 0 = known zero).
         cb: u64,
+        /// The validated fee configuration/tier these event rates belong to.
+        stamp: pump_quant_protocol::fee_schedule::FeeStamp,
     },
 }
 
@@ -1604,9 +1630,10 @@ impl AddState {
                 vsol,
                 vtok,
                 real_tok,
-            } => crate::exec_quote::curve_buy(vsol, vtok, real_tok, n)
+                fee,
+            } => crate::exec_quote::curve_buy_at(fee, vsol, vtok, real_tok, n)
                 .ok()
-                .map(|q| q.tokens),
+                .map(|q| q.0.tokens),
             AddState::Amm {
                 base,
                 quote,
@@ -1615,6 +1642,7 @@ impl AddState {
                 pr,
                 cr,
                 cb,
+                ..
             } => {
                 let f = pump_quant_protocol::pumpswap_event::buy_exact_quote_in_cb(
                     u128::from(base),
@@ -1627,6 +1655,25 @@ impl AddState {
                 u64::try_from(f.base_out).ok()
             }
         }
+    }
+}
+
+/// ADD refusal label for a venue-fee refusal (named; never priced at a default rate).
+fn add_fee_refusal(r: crate::exec_quote::QuoteRefusal) -> &'static str {
+    use crate::exec_quote::QuoteRefusal as Q;
+    use pump_quant_protocol::fee_schedule::FeeScheduleRefusal as F;
+    match r {
+        Q::FeeSchedule(F::HistoricalConfigUnknown { .. }) => {
+            "mgmt:refuse:add_quote_unavailable:fee_config_unknown_at_slot"
+        }
+        Q::FeeSchedule(F::ConfigChangedBetweenReads { .. }) => {
+            "mgmt:refuse:add_quote_unavailable:fee_config_changed_between_reads"
+        }
+        Q::FeeSchedule(F::RatesNotInSchedule { .. }) => {
+            "mgmt:refuse:add_quote_unavailable:fee_rates_not_in_schedule"
+        }
+        Q::AmmCashbackUnknown => "mgmt:refuse:add_amm_cashback_unknown",
+        _ => "mgmt:refuse:add_quote_unavailable:fee_schedule",
     }
 }
 
@@ -1697,6 +1744,13 @@ impl Engine {
                 None if cr == 0 => return Err("mgmt:refuse:add_amm_cashback_unknown"),
                 None => 0,
             };
+            // FEES: the landing event's rates must be a tier of the PumpSwap config in force at its slot.
+            let stamp = crate::exec_quote::amm_rates_for(
+                self.model_fee_ctx(o.slot),
+                Some((lp, pr, cr)),
+                cashback,
+            )
+            .map_err(add_fee_refusal)?;
             let Some((fb, fq)) = self.model_fill_pool(
                 mint,
                 o.base_reserves_raw,
@@ -1714,6 +1768,7 @@ impl Engine {
                 pr,
                 cr,
                 cb,
+                stamp,
             })
         } else {
             if self.model_curve_mode_exclusion(mint).is_some() {
@@ -1731,10 +1786,15 @@ impl Engine {
             let Some(s) = self.model_fill_curve(mint, &o) else {
                 return Err("mgmt:refuse:add_quote_unavailable:shadow_state_invalid");
             };
+            // FEES: the curve config in force at the landing slot must be known (named refusal otherwise).
+            let fee = self.model_fee_ctx(o.slot);
+            crate::exec_quote::curve_rates_for(s.vsol, s.vtok, fee.slot, fee.sel)
+                .map_err(add_fee_refusal)?;
             Ok(AddState::Curve {
                 vsol: s.vsol,
                 vtok: s.vtok,
                 real_tok: s.real_tok,
+                fee,
             })
         }
     }
@@ -1863,6 +1923,17 @@ impl Engine {
                 } else {
                     "mgmt:fill_curve_buy"
                 });
+                let stamp = match state {
+                    AddState::Amm { stamp, .. } => Some(stamp),
+                    AddState::Curve {
+                        vsol, vtok, fee, ..
+                    } => crate::exec_quote::curve_rates_for(vsol, vtok, fee.slot, fee.sel)
+                        .ok()
+                        .map(|x| x.2),
+                };
+                if let Some(st) = stamp {
+                    self.model_note_fee_stamp(&st);
+                }
                 let px =
                     (u128::from(plan.n) * 1_000_000_000).div_ceil(u128::from(plan.tokens.max(1)));
                 let px = u64::try_from(px).unwrap_or(u64::MAX);
@@ -1884,9 +1955,10 @@ impl Engine {
                             vsol,
                             vtok,
                             real_tok,
-                        } => crate::exec_quote::curve_buy(vsol, vtok, real_tok, plan.n)
+                            fee,
+                        } => crate::exec_quote::curve_buy_at(fee, vsol, vtok, real_tok, plan.n)
                             .ok()
-                            .map(|q| q.net_in),
+                            .map(|q| q.0.net_in),
                         AddState::Amm {
                             base,
                             quote,
@@ -1895,6 +1967,7 @@ impl Engine {
                             pr,
                             cr,
                             cb,
+                            ..
                         } => pump_quant_protocol::pumpswap_event::buy_exact_quote_in_cb(
                             u128::from(base),
                             u128::from(quote),
@@ -2972,6 +3045,7 @@ mod add_planner_tests {
             vsol,
             vtok: 849_000_000_000_000,
             real_tok: 569_000_000_000_000,
+            fee: crate::exec_quote::FeeCtx::PINNED,
         }
     }
 

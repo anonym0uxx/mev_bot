@@ -1612,8 +1612,14 @@ impl Engine {
                     self.mrep("fill_none:quote_unavailable:shadow_state_invalid");
                     continue;
                 };
-                let q = match crate::exec_quote::amm_buy(fb, fq, vq, parts, cashback, size) {
-                    Ok(q) => q,
+                // FEES: the landing event's rates must be a tier of the PumpSwap config in force at its slot.
+                let fee = self.model_fee_ctx(obs.slot);
+                let q = match crate::exec_quote::amm_buy_at(fee, fb, fq, vq, parts, cashback, size)
+                {
+                    Ok((q, st)) => {
+                        self.model_note_fee_stamp(&st);
+                        q
+                    }
                     Err(r) => {
                         self.mrep(format!("fill_none:{}", r.label()));
                         continue;
@@ -1670,16 +1676,24 @@ impl Engine {
                     self.mrep("fill_none:quote_unavailable:shadow_state_invalid");
                     continue;
                 };
-                let q = match crate::exec_quote::curve_buy(fc.vsol, fc.vtok, fc.real_tok, size) {
-                    Ok(q) => q,
-                    Err(r) => {
-                        self.mrep(format!("fill_none:{}", r.label()));
-                        continue;
-                    }
-                };
+                // FEES: the curve config in force at the landing slot (BySlot in the daemon), tier by market cap.
+                let fee = self.model_fee_ctx(obs.slot);
+                let q =
+                    match crate::exec_quote::curve_buy_at(fee, fc.vsol, fc.vtok, fc.real_tok, size)
+                    {
+                        Ok((q, st)) => {
+                            self.model_note_fee_stamp(&st);
+                            q
+                        }
+                        Err(r) => {
+                            self.mrep(format!("fill_none:{}", r.label()));
+                            continue;
+                        }
+                    };
                 if self.model_v2() {
                     // External-liquidity benchmark: the same size on the observed state alone, reported apart.
-                    if let Ok(x) = crate::exec_quote::curve_buy(
+                    if let Ok((x, _)) = crate::exec_quote::curve_buy_at(
+                        fee,
                         obs.v_sol_lamports,
                         obs.v_tokens,
                         obs.real_tokens,
