@@ -594,8 +594,11 @@ fn exit_on_pool(qres: u64, parts: (u32, u32, u32)) -> serde_json::Value {
     let fees = r.rep("econ:exit_venue_fees_lamports");
     // PROMPT after (v2), from the same authority at the same slot and pool state.
     let ec = exec_costs(
+        // SYNTHETIC fixture: live supply stated as 1e15 (the fixture's pool is built at that supply).
         ExecMarket::Pool {
-            mcap_lamports: mcap(qres),
+            effective_quote: u128::from(qres) + u128::from(VQ),
+            base_reserve: u128::from(BRES),
+            mint_supply: Some(1_000_000_000_000_000),
         },
         FeeCtx::by_slot(landing_slot),
         0,
@@ -659,6 +662,67 @@ fn f5_synthetic_pool_tier_crossing_prompt_quote_settlement_agree() {
     // The tier difference is actually exercised: different stamps, different charged rate.
     assert_ne!(rows[0]["quote_stamp"], rows[1]["quote_stamp"]);
     if let Ok(p) = std::env::var("PQ_F5_OUT") {
+        std::fs::write(p, out).unwrap();
+    }
+}
+
+// ---- SCOPE_FEES_R6 T3: protocol tier at a REAL threshold of the pinned config, checked by an independent decoder ----
+// Points: immediately below / exactly at / immediately above the tier-10/11 threshold (34,380 SOL), one point inside
+// the old +-5% band where the band and the protocol differ (35,000 SOL: band 75, protocol 70), and the live-supply
+// case that explains the measured "next-higher-rate" events (0.98e15 supply). Rows go to `$PQ_T3_OUT` for
+// `proc/fees_r6_tier_decoder.py`, which parses the pinned bytes and selects the tier itself.
+#[test]
+fn t3_protocol_tier_at_a_real_threshold_rows_for_the_independent_decoder() {
+    const SOL: u128 = 1_000_000_000;
+    const FULL: u128 = 1_000_000_000_000_000;
+    let th = 34_380 * SOL;
+    // (label, effective quote, base reserve, live supply, expected tier, expected bp)
+    let pts: [(&str, u128, u128, u128, u16, u64); 7] = [
+        ("below", th - 1, FULL, FULL, 10, 75),
+        ("at", th, FULL, FULL, 11, 70),
+        ("above", th + 1, FULL, FULL, 11, 70),
+        ("inside_old_band_35000", 35_000 * SOL, FULL, FULL, 11, 70),
+        (
+            "live_supply_0p98",
+            35_000 * SOL,
+            FULL,
+            FULL / 100 * 98,
+            10,
+            75,
+        ),
+        ("first_threshold_below", 420 * SOL - 1, FULL, FULL, 0, 125),
+        ("first_threshold_at", 420 * SOL, FULL, FULL, 1, 120),
+    ];
+    let mut out = String::new();
+    for (label, q, b, s, tier, bp) in pts {
+        let ec = exec_costs(
+            ExecMarket::Pool {
+                effective_quote: q,
+                base_reserve: b,
+                mint_supply: Some(s),
+            },
+            FeeCtx::by_slot(454_754_100),
+            0,
+            0,
+        )
+        .unwrap();
+        assert_eq!(ec.venue_bp_per_side, bp, "{label}");
+        assert_eq!(
+            ec.fee_stamp,
+            format!("pumpswap@454754100:read_at_slot:tier{tier}:{bp}bp"),
+            "{label}"
+        );
+        let mcap = pump_quant_app::exec_costs_v2::pool_market_cap(q, b, Some(s)).unwrap();
+        out.push_str(
+            &serde_json::json!({
+                "label": label, "effective_quote": q.to_string(), "base_reserve": b.to_string(),
+                "mint_supply": s.to_string(), "rust_mcap": mcap.to_string(), "rust_tier": tier, "rust_bp": bp,
+            })
+            .to_string(),
+        );
+        out.push('\n');
+    }
+    if let Ok(p) = std::env::var("PQ_T3_OUT") {
         std::fs::write(p, out).unwrap();
     }
 }

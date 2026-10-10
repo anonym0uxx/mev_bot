@@ -360,6 +360,37 @@ fn v2_changes_only_the_cost_block_on_every_fixture_row() {
     assert!(n >= 140, "{n}");
 }
 
+/// R6 T4: the same property with a PumpSwap cost block (the protocol tier statement exec_costs_v2 now produces at
+/// the tier-11 side of the 34,380 SOL threshold): only the cost block differs, on every fixture row.
+#[test]
+fn v2_pool_cost_block_changes_only_the_cost_block_on_every_fixture_row() {
+    let c = v2::ExecCosts {
+        venue_bp_per_side: 70,
+        fee_stamp: "pumpswap@454754100:read_at_slot:tier11:70bp".to_string(),
+        network_lamports_per_leg: 10_000,
+        tip_lamports_per_leg: 10_000,
+        rent_unrefunded_lamports: 5_000,
+    };
+    let hdr = "SIZE OPTIONS (choose one on BUY;";
+    let nd = run_v2("tests/fixtures/decision.jsonl", |input| {
+        let b = decision_bundle(input);
+        let (a, z) = (render_decision(&b), v2::render_decision_v2(&b, &c));
+        assert_eq!(a[..a.rfind(hdr).unwrap()], z[..z.rfind(hdr).unwrap()]);
+        assert!(z.contains("[pumpswap@454754100:read_at_slot:tier11:70bp]"));
+    });
+    let nm = run_v2("tests/fixtures/management.jsonl", |input| {
+        let m = management_bundle(input);
+        let (a, z) = (render_management(&m), v2::render_management_v2(&m, &c));
+        let (la, lz): (Vec<_>, Vec<_>) = (a.lines().collect(), z.lines().collect());
+        assert_eq!(la.len(), lz.len());
+        let diff: Vec<_> = la.iter().zip(&lz).filter(|(x, y)| x != y).collect();
+        assert_eq!(diff.len(), 1, "exactly the cost line differs");
+        assert!(diff[0].1.contains("execution fee (70 bp/side"));
+    });
+    println!("T4_ROWS decision={nd} management={nm} total={}", nd + nm);
+    assert_eq!(nd + nm, 312, "every fixture row");
+}
+
 fn run_v2(path: &str, f: impl Fn(&Value)) -> usize {
     let raw = std::fs::read_to_string(path).unwrap();
     let mut n = 0;
