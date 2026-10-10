@@ -1972,6 +1972,9 @@ fn main() -> ExitCode {
             "[pq-daemon] startup paper check: no keypair, no --live, no submission sink (paper)"
         );
     }
+    // Curve markets the restored sealed capture proves the previous process tracked; their curve-account routing
+    // (pda_to_mint, process-local) is re-installed below so post-restart reserve updates are not dropped.
+    let mut restart_curve_mints: Vec<[u8; 32]> = Vec::new();
     if model_armed {
         // PAPER FILL MODEL (before restore: the held ledger's paper_fill section is validated against it).
         // Unset = `paper_fill_v1_observed` (unchanged behaviour). An unknown label refuses startup by name.
@@ -2213,6 +2216,7 @@ fn main() -> ExitCode {
                         "[pq-daemon] LAUNCH-RECOVERY applied: restart_ms={restart_ms} capture_covered_from_ms={covered_from_ms} applied={} launches={} prints={} reserves={} after_restart_skipped={} LOST-COVERAGE: {}",
                         stats.applied, stats.launches, stats.prints, stats.reserves, stats.after_restart_skipped, lost_s(lost)
                     );
+                    restart_curve_mints = stats.curve_mints.iter().copied().collect();
                     // The sealed prefix is the causal capture; an unsealed tail (written after the last seal, before the
                     // crash) is moved aside as evidence, never replayed, so the capture stays one causal sequence.
                     pump_quant_junction::capture_rehydrate::set_aside_unsealed_tail(cap, seal);
@@ -2475,6 +2479,28 @@ fn main() -> ExitCode {
     // STALE_SECS of connection establishment, the connection is declared
     // stale and reconnected — regardless of last_slot_seen.
     let mut helius_conn_established_at = Instant::now();
+    // ── Restart: curve-account routing for every curve market the sealed capture proves was tracked ──
+    // pda_to_mint is process-local. An uninterrupted process installed these PDAs when it first saw the mint (launch
+    // or curve instruction); without this, a restarted process drops their LaserStream account updates until some
+    // post-restart instruction re-installs the PDA. Routing only: nothing is dirtied, subscribed or dispatched here.
+    if !restart_curve_mints.is_empty() {
+        let mut installed = 0usize;
+        for m in &restart_curve_mints {
+            if pda_to_mint.len() >= PDA_MAP_CAP {
+                break;
+            }
+            if pda_to_mint
+                .insert(bonding_curve_pda(m).to_bytes(), *m)
+                .is_none()
+            {
+                installed += 1;
+            }
+        }
+        eprintln!(
+            "[pq-daemon] RESTART-ROUTING curve PDAs re-installed from the sealed capture: {installed}/{}",
+            restart_curve_mints.len()
+        );
+    }
     // ── Restored held positions: re-establish their feeds INDEPENDENTLY of discovery ──
     // A restart that rebuilt held positions (model_lifecycle::restore_held_state) has no live reserve or
     // print feed for them until something subscribes. Do it now: trade prints via PumpPortal, the PDA map

@@ -24,6 +24,12 @@ pub struct RehydrateStats {
     pub launches: u64,
     pub prints: u64,
     pub reserves: u64,
+    /// Pump.fun CURVE markets whose curve-account routing the applied prefix PROVES the previous process had: a launch
+    /// (every launch source installs the PDA) or a decoded curve account observation (only routed accounts decode).
+    /// A curve print alone proves nothing (some print sources never install the PDA), so it is not included: routing
+    /// more than the uninterrupted process would admit reserve updates it dropped. The daemon re-installs exactly this
+    /// set at restart, so a reserve update after the restart is not dropped merely because the process-local map was lost.
+    pub curve_mints: std::collections::BTreeSet<[u8; 32]>,
 }
 
 impl Engine {
@@ -86,6 +92,7 @@ impl Engine {
                 launch_unix_ms,
             } => {
                 st.launches += 1;
+                st.curve_mints.insert(*mint.as_bytes());
                 self.model_cache
                     .observe_launch(*mint.as_bytes(), creator, launch_unix_ms);
                 self.model_registry.insert(*mint.as_bytes());
@@ -181,6 +188,7 @@ impl Engine {
                 ..
             } => {
                 st.reserves += 1;
+                st.curve_mints.insert(*mint.as_bytes());
                 self.model_registry.insert(*mint.as_bytes());
                 self.model_cache.observe_curve(
                     *mint.as_bytes(),
@@ -224,6 +232,9 @@ impl Engine {
                     self.model_other_pools.entry(m).or_default().insert(pool);
                     return true;
                 }
+                // Same registration as the live path (`model_on_amm_swap` -> `model_register`): a canonical WSOL pool
+                // swap registers its market whether or not the observation is applied.
+                self.model_registry.insert(m);
                 let pool_s = pool.iter().map(|b| format!("{b:02x}")).collect::<String>();
                 self.model_cache.bind_pool(m, &pool_s);
                 let others = self.model_other_pools.get(&m).map_or(0, |s| s.len());

@@ -333,6 +333,156 @@ fn an_absent_seal_is_refused_by_name() {
     refused(&mut e, &cap, &seal, "capture_seal_absent");
 }
 
+const POOL_MINT: [u8; 32] = [0x74; 32];
+const LAUNCH_ONLY: [u8; 32] = [0x76; 32];
+const CURVE_ONLY: [u8; 32] = [0x77; 32];
+const PRINT_ONLY: [u8; 32] = [0x78; 32];
+
+/// One pump.fun curve market per evidence kind: a launch alone, a curve reserve observation alone, a curve print alone.
+fn per_kind_curve_evidence() -> Vec<AppEvent> {
+    let mut p = trade(3);
+    if let AppEvent::MarketTrade { mint, .. } = &mut p {
+        *mint = DomainMint::from_bytes(PRINT_ONLY);
+    }
+    let mut c = curve(T0 + 20_000);
+    if let AppEvent::CurveObserved { mint, .. } = &mut c {
+        *mint = DomainMint::from_bytes(CURVE_ONLY);
+    }
+    vec![
+        AppEvent::LaunchObserved {
+            mint: DomainMint::from_bytes(LAUNCH_ONLY),
+            creator: CREATOR,
+            launch_unix_ms: T0 + 500,
+        },
+        p,
+        c,
+    ]
+}
+
+fn pool_swap(t: i64) -> AppEvent {
+    AppEvent::AmmSwap {
+        mint: DomainMint::from_bytes(POOL_MINT),
+        pool: [0x75; 32],
+        pool_is_canonical: true,
+        quote_is_wsol: true,
+        token_reserve_pre: 200_000_000_000_000,
+        quote_reserve_pre: 85_000_000_000,
+        fee_bps: Some(125),
+        fee_parts: Some((2, 93, 30)),
+        virtual_quote: Some(85_000_000_000),
+        cashback: pump_quant_protocol::pumpswap_event::CashbackField::NotRecorded,
+        is_buy: true,
+        token_amount: 1_000_000_000,
+        quote_lamports: 425_000,
+        trader: [7u8; 32],
+        fee_lamports: Some(5_000),
+        cu_consumed: Some(90_000),
+        recv_unix_ms: Some(t),
+        slot: 3_000,
+    }
+}
+
+fn market_lines(e: &Engine) -> Vec<String> {
+    e.barrier_state_lines()
+        .into_iter()
+        .filter(|l| l.starts_with("market "))
+        .collect()
+}
+
+/// W1.1b defects D1/D2 (daemon pair wR5r0 vs wR5b2 on binary 823b156f): a canonical WSOL pool market seen only through
+/// `AmmSwap` before the restart must be REGISTERED after rehydration exactly as in the uninterrupted process, and the
+/// rehydration must name the pump.fun CURVE markets it proved were tracked (the daemon re-installs their curve-account
+/// routing from that set) and never a pool-only market.
+#[test]
+fn a_rehydrated_pool_market_is_registered_and_curve_markets_are_named_for_routing() {
+    let d = dir("poolreg");
+    let held = d.join("held.json");
+    let cap = d.join("event_stream.jsonl");
+    let seal = d.join("capture_seal.json");
+    let evs: Vec<AppEvent> = std::iter::once(launch())
+        .chain((0..10).map(trade))
+        .chain(per_kind_curve_evidence())
+        .chain(std::iter::once(pool_swap(T0 + 25_000)))
+        // A scheduler pass examines the queued markets, so they are NOT dirty at the durable write (as the 179
+        // pool markets of the daemon pair were): only the rehydration can re-register them.
+        .chain(std::iter::once(AppEvent::Tick))
+        .collect();
+    let reference = {
+        let r = dir("poolreg_ref");
+        let mut e = engine(&r.join("held.json"));
+        flow_attach(&mut e, &r);
+        for ev in &evs {
+            e.tick(*ev);
+        }
+        market_lines(&e)
+    };
+    assert_eq!(
+        reference.len(),
+        5,
+        "uninterrupted registers the curve markets and the pool market: {reference:?}"
+    );
+    let pool_hex: String = POOL_MINT
+        .iter()
+        .take(6)
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    assert!(
+        reference
+            .iter()
+            .any(|l| l.starts_with(&format!("market {pool_hex} ")) && l.ends_with("dirty=false")),
+        "the pool market is registered but not dirty at the durable write: {reference:?}"
+    );
+    {
+        let mut e = engine(&held);
+        flow_attach(&mut e, &d);
+        let mut w = EventStreamWriter::open(&cap).unwrap();
+        let mut s = CaptureSealer::new(&cap, &seal);
+        for ev in &evs {
+            e.tick(*ev);
+            w.write_event(ev, 0).unwrap();
+        }
+        assert!(e.model_held_persist_now());
+        assert!(e.model_flow_flush(std::time::Duration::from_secs(5)));
+        w.flush().unwrap();
+        s.seal(
+            e.model_held_lineage(),
+            e.model_held_generation(),
+            e.model_held_through_ms_now(),
+        )
+        .unwrap();
+    }
+    let mut e = restarted(&held);
+    match rehydrate_from_capture(&mut e, &cap, &seal) {
+        RehydrateOutcome::Applied { stats, .. } => {
+            for (m, why) in [
+                (MINT, "launch + prints"),
+                (LAUNCH_ONLY, "launch only"),
+                (CURVE_ONLY, "curve reserve only"),
+            ] {
+                assert!(
+                    stats.curve_mints.contains(&m),
+                    "curve market ({why}) named for routing"
+                );
+            }
+            assert!(
+                !stats.curve_mints.contains(&POOL_MINT),
+                "a pool-only market is never routed as a curve"
+            );
+            assert!(
+                !stats.curve_mints.contains(&PRINT_ONLY),
+                "a curve print alone does not prove the previous process routed the curve account"
+            );
+            assert_eq!(stats.curve_mints.len(), 3);
+        }
+        o => panic!("must apply: {o:?}"),
+    }
+    assert_eq!(
+        market_lines(&e),
+        reference,
+        "restart registry == uninterrupted registry"
+    );
+}
+
 #[test]
 fn a_clean_start_never_rehydrates() {
     let d = dir("clean");
