@@ -319,6 +319,10 @@ pub struct MgmtSnapshot {
     pub mark_price_lamports_per_raw_token: f64,
     pub prompt_digest: u64,
     pub marker: StateMarker,
+    /// The management-side ENRICHED / DEV HISTORY / LIVE FLOW state computed for this decision,
+    /// as `key=value` lines. A RECORD field only: the c12 management prompt does not render it
+    /// (`pump_quant_proposal::management::render_management_state`).
+    pub state_record: String,
 }
 
 /// The corpus's mint label (base58). Hex is NOT it: the prompt carries the base58 address.
@@ -1662,6 +1666,7 @@ impl DecisionCache {
             flow_no_prior: false,
         };
         let user_prompt = pump_quant_proposal::render_management(&bundle);
+        let state_record = pump_quant_proposal::management::render_management_state(&bundle);
         Ok(MgmtSnapshot {
             mint: *mint,
             t_dec_ms,
@@ -1675,6 +1680,7 @@ impl DecisionCache {
                 last_recv_ms,
                 n_accepted,
             },
+            state_record,
         })
     }
 }
@@ -2068,6 +2074,93 @@ mod tests {
             mfe_bp: 10.0,
             mae_bp: -5.0,
         }
+    }
+
+    /// SCOPE_MGMT_RENDER R5(c): the management prompt follows the c12 contract (none of the three
+    /// blocks, no trailing newline) while the enriched / dev / flow state is still COMPUTED from
+    /// the same producers as the entry prompt and RECORDED on the snapshot. The entry prompt for
+    /// the same mint and clock still renders all three blocks.
+    #[test]
+    fn management_state_is_computed_and_recorded_but_not_rendered() {
+        let mut c = ready(80);
+        let t = t_dec(80);
+        let mut fresh = curve();
+        fresh.ts_ms = t - 5_000;
+        fresh.slot = 2_000;
+        assert!(c.observe_curve(MINT, fresh));
+        let m = c
+            .management_snapshot(&MINT, t, &mgmt_inputs())
+            .expect("management snapshot");
+        for k in ["ENRICHED CANDIDATE STATE", "DEV HISTORY", "LIVE FLOW STATE"] {
+            assert!(
+                !m.user_prompt.contains(k),
+                "{k} rendered: {}",
+                m.user_prompt
+            );
+        }
+        assert!(m.user_prompt.ends_with(
+            "Choose exactly one action: HOLD, ADD, REDUCE, EXIT. Answer in the fixed format."
+        ));
+        assert_eq!(m.prompt_digest, fnv1a(&m.user_prompt));
+        // Recorded: every enriched / dev / flow key, with the producer's values.
+        let lines: Vec<&str> = m.state_record.lines().collect();
+        assert_eq!(lines.len(), 3, "{}", m.state_record);
+        assert!(lines[0].starts_with("ENRICHED CANDIDATE STATE: holders_at_t="));
+        for k in [
+            "holders_at_t=",
+            "top1_float_share=",
+            "holder_hhi=",
+            "bundle_wallets=",
+            "round_trip_wallets=",
+            "creator_past_launches=0",
+            "creator_known=True",
+            "wash_ratio=",
+        ] {
+            assert!(lines[0].contains(k), "enriched missing {k}: {}", lines[0]);
+        }
+        assert_eq!(
+            lines[1],
+            {
+                let w = lines[0]
+                    .split(' ')
+                    .find(|kv| kv.starts_with("wash_ratio="))
+                    .unwrap();
+                let b = lines[0]
+                    .split(' ')
+                    .find(|kv| kv.starts_with("bundle_wallets="))
+                    .unwrap();
+                format!("DEV HISTORY: creator_past_launches=0 creator_known=True {b} {w}")
+            },
+            "dev history comes from the same producers as the enriched line"
+        );
+        assert!(
+            lines[2].starts_with("LIVE FLOW STATE: entrants_60s="),
+            "{}",
+            lines[2]
+        );
+        for k in [
+            "entrants_300s=",
+            "net_flow_sol_300s=",
+            "entrant_fee_p90_lamports=",
+            "entrant_cu_p50=",
+        ] {
+            assert!(lines[2].contains(k), "flow missing {k}: {}", lines[2]);
+        }
+        // The entry prompt at the same mint/clock still renders all three blocks, and its flow
+        // line is the same producer output the management record carries.
+        let e = c.snapshot(&MINT, t).expect("entry snapshot");
+        assert!(e
+            .user_prompt
+            .contains("ENRICHED CANDIDATE STATE (strictly causal at t_dec): "));
+        assert!(e
+            .user_prompt
+            .contains("DEV HISTORY: creator_past_launches=0 creator_known=1\n"));
+        assert!(
+            e.user_prompt.contains(&format!("{}\n", lines[2])),
+            "entry flow line == recorded management flow line\n{}\n{}",
+            e.user_prompt,
+            lines[2]
+        );
     }
 
     #[test]

@@ -12,6 +12,11 @@
 //! tests in `cost.rs`. For the management family the corpus records the exact depth in
 //! the row's meta and that value is used directly.
 //!
+//! The MANAGEMENT fixture is drawn from the c12 corpus (the one the served model was trained
+//! on): no enriched / dev / flow lines, no trailing newline. The previous c11 fixture is kept as
+//! `management_c11.jsonl` and the renderer must NOT reproduce it (see
+//! `management_renderer_no_longer_reproduces_the_c11_corpus`).
+//!
 //! Fixtures are LF-friendly JSON with CRLF line endings (repo convention); each line is
 //! one self-contained JSON object, so a trailing `\r` is trimmed before parsing.
 
@@ -281,6 +286,24 @@ fn management_bundle(v: &Value) -> ManagementBundle {
     }
 }
 
+/// Count fixture rows whose rendered prompt equals `expected` byte for byte.
+fn count_matches(path: &str, render: impl Fn(&Value) -> String) -> (usize, usize) {
+    let raw = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+    let (mut n, mut eq) = (0usize, 0usize);
+    for line in raw.lines() {
+        let line = line.trim_end_matches('\r');
+        if line.trim().is_empty() {
+            continue;
+        }
+        let row: Value = serde_json::from_str(line).expect("bad json");
+        n += 1;
+        if render(&row["input"]) == row["expected"].as_str().expect("expected string") {
+            eq += 1;
+        }
+    }
+    (n, eq)
+}
+
 fn run_fixtures(path: &str, render: impl Fn(&Value) -> String) -> usize {
     let raw = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
     let mut n = 0usize;
@@ -318,4 +341,40 @@ fn management_prompts_are_byte_identical_to_the_corpus() {
         render_management(&management_bundle(input))
     });
     assert!(n >= 140, "expected the full fixture set, ran {n}");
+}
+
+/// The c11 management rows carry the three blocks and a trailing newline; the c12 renderer must
+/// reproduce NONE of them (the fixture is kept as evidence of the contract change).
+#[test]
+fn management_renderer_no_longer_reproduces_the_c11_corpus() {
+    let (n, eq) = count_matches("tests/fixtures/management_c11.jsonl", |input| {
+        render_management(&management_bundle(input))
+    });
+    assert!(n >= 140, "expected the full c11 fixture set, ran {n}");
+    assert_eq!(eq, 0, "{eq}/{n} c11 rows still reproduced");
+}
+
+/// The management change does not touch the ENTRY prompt: every rendered decision fixture row
+/// still carries all three blocks (and still equals the corpus, see the parity test above).
+#[test]
+fn entry_prompts_still_render_all_three_blocks() {
+    let raw = std::fs::read_to_string("tests/fixtures/decision.jsonl").expect("read");
+    let mut n = 0usize;
+    for line in raw.lines() {
+        let line = line.trim_end_matches('\r');
+        if line.trim().is_empty() {
+            continue;
+        }
+        let row: Value = serde_json::from_str(line).expect("bad json");
+        let got = render_decision(&decision_bundle(&row["input"]));
+        for k in [
+            "\nENRICHED CANDIDATE STATE (strictly causal at t_dec): ",
+            "\nDEV HISTORY: ",
+            "\nLIVE FLOW STATE: ",
+        ] {
+            assert!(got.contains(k), "entry prompt lost {k:?}: {got}");
+        }
+        n += 1;
+    }
+    assert!(n >= 150, "ran {n}");
 }
