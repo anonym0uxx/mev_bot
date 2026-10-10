@@ -146,6 +146,13 @@ fn engine(v: Option<PaperFillVersion>, answer: fn(i64) -> &'static str) -> Engin
     if let Some(v) = v {
         e.model_set_paper_fill(v);
     }
+    // Canonical (non-Mayhem) curve: pq_daemon pushes CurveModeObserved from the decoded account before its
+    // reserves; the mode map is in-memory, so every engine here (incl. restarted ones) re-learns it (offset merge).
+    e.tick(AppEvent::CurveModeObserved {
+        mint: mint(),
+        mayhem: false,
+        slot: 0,
+    });
     e
 }
 

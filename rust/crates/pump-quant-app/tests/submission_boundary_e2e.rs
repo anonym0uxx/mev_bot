@@ -154,6 +154,13 @@ fn engine(answer: fn(i64) -> &'static str, hp: &std::path::Path) -> Engine {
     });
     e.model_set_paper_fill(PaperFillVersion::V2Shadow);
     e.model_held_attach(hp);
+    // Canonical (non-Mayhem) curve: pq_daemon pushes CurveModeObserved from the decoded account before its
+    // reserves; the mode map is in-memory, so every engine here (incl. restarted ones) re-learns it (offset merge).
+    e.tick(AppEvent::CurveModeObserved {
+        mint: mint(),
+        mayhem: false,
+        slot: 0,
+    });
     e
 }
 
