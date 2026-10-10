@@ -21,6 +21,7 @@ pub mod model_barrier;
 pub mod model_creator;
 pub mod model_manage;
 pub mod model_protect;
+pub mod model_rehydrate;
 pub mod model_restore;
 pub mod model_safety;
 pub mod model_shadow;
@@ -845,6 +846,9 @@ pub struct Engine {
     creator_log: Option<crate::creator_registry::LaunchLog>,
     /// M2: session label written with each appended launch.
     creator_log_session: String,
+    /// RESTART: durable log records deferred past the restored barrier (mint -> (creator, launch ms)). An exact
+    /// re-delivery by the feed is already durable and is not appended again.
+    creator_log_deferred: BTreeMap<[u8; 32], ([u8; 32], i64)>,
     /// Model-lane request discipline, worker pool, per-request bindings, pending paper orders and
     /// the coverage report. All inert unless the lane is armed (see `engine/model_admit.rs`).
     model_table: crate::model_lane::RequestTable,
@@ -1541,6 +1545,7 @@ impl Engine {
             model_cache: crate::decision_join::DecisionCache::new(),
             creator_log: None,
             creator_log_session: String::new(),
+            creator_log_deferred: BTreeMap::new(),
             model_table: crate::model_lane::RequestTable::default(),
             model_pool: None,
             model_meta: BTreeMap::new(),
@@ -3292,6 +3297,9 @@ impl Engine {
         // Model lane: collect finished verdicts / expire deadlines / try simulated fills. Non-blocking
         // by construction, and a no-op when the lane is not armed.
         if self.paper_model_mode {
+            if self.model_cache.verify_held_tapes() > 0 {
+                self.mrep("held_launch:tape_verified");
+            }
             self.model_poll();
             self.model_stream_schedule();
             self.model_mgmt_schedule();

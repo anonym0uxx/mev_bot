@@ -26,7 +26,22 @@ impl Engine {
         cutoff_ms: i64,
         session: &str,
     ) -> Result<RegistryStartup, RegistryRefusal> {
-        let r = self.creator_registry_attach_inner(seed, log_path, cutoff_ms, session);
+        self.model_creator_registry_attach_through(seed, log_path, cutoff_ms, session, None)
+    }
+
+    /// As [`Self::model_creator_registry_attach`], for a RESTART: logged launches received AFTER `through_ms` (the
+    /// durable barrier the held ledger and flow checkpoint are bound to) are NOT applied at startup. The feed re-delivers
+    /// them in causal order (dedup by mint); applying them now would let the process know a launch before it was
+    /// available at this clock. They are counted in `deferred_after_restart`.
+    pub fn model_creator_registry_attach_through(
+        &mut self,
+        seed: Option<&SeedSpec>,
+        log_path: &std::path::Path,
+        cutoff_ms: i64,
+        session: &str,
+        through_ms: Option<i64>,
+    ) -> Result<RegistryStartup, RegistryRefusal> {
+        let r = self.creator_registry_attach_inner(seed, log_path, cutoff_ms, session, through_ms);
         match &r {
             Ok(st) => {
                 self.model_cache
@@ -34,6 +49,10 @@ impl Engine {
                 self.mrep_add("creator_registry:seeded", st.seeded);
                 self.mrep_add("creator_registry:restored_from_log", st.restored_from_log);
                 self.mrep_add("creator_registry:dedup_overlap", st.dedup_overlap);
+                self.mrep_add(
+                    "creator_registry:deferred_after_restart",
+                    st.deferred_after_restart,
+                );
             }
             Err(e) => {
                 self.model_cache.set_creator_registry_refusal(e.as_str());
@@ -49,6 +68,7 @@ impl Engine {
         log_path: &std::path::Path,
         cutoff_ms: i64,
         session: &str,
+        through_ms: Option<i64>,
     ) -> Result<RegistryStartup, RegistryRefusal> {
         let mut st = RegistryStartup {
             provenance: Provenance::unseeded(cutoff_ms),
@@ -56,6 +76,7 @@ impl Engine {
             seed_rows_at_or_after_cutoff: 0,
             restored_from_log: 0,
             dedup_overlap: 0,
+            deferred_after_restart: 0,
         };
         if let Some(spec) = seed {
             if spec.cutoff_ms != cutoff_ms {
@@ -86,6 +107,13 @@ impl Engine {
         }
         let (log, records) = LaunchLog::open(log_path, &st.provenance)?;
         for (i, r) in records.iter().enumerate() {
+            if through_ms.is_some_and(|t| r.recv_unix_ms > t) {
+                st.deferred_after_restart += 1;
+                self.creator_log_deferred
+                    .entry(r.mint)
+                    .or_insert((r.creator, r.recv_unix_ms));
+                continue;
+            }
             if self.model_cache.creator_launch_held(&r.mint) {
                 // A logged mint was only appended when it was NOT held, so a held mint here is
                 // either an exact replay (harmless) or a contradiction (refuse by name).
@@ -122,8 +150,11 @@ impl Engine {
     ) {
         // Append when OUR FEED has not yet observed this mint (a seed-only mint observed live is
         // logged once, so a restart still knows the feed saw it); a re-delivery appends nothing.
+        let durable = self.creator_log_deferred.remove(&mint) == Some((creator, launch_unix_ms));
         let fresh = !self.model_cache.launch_known(&mint);
-        if fresh {
+        if fresh && durable {
+            self.mrep("creator_registry:deferred_record_redelivered");
+        } else if fresh {
             if let Some(log) = self.creator_log.as_mut() {
                 let row = LaunchRow {
                     mint,

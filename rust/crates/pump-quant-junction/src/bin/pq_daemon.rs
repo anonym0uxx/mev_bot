@@ -1735,6 +1735,34 @@ fn construct_live_engine(
 
 // ─── Main ──────────────────────────────────────────────────────────────────
 
+/// Seal the capture whenever the held ledger became durable at a NEW generation (the seal names the same lineage,
+/// generation and decision clock). The capture writer is flushed first so the sealed prefix holds every event the
+/// engine applied up to that ledger.
+fn capture_seal_if_new(
+    engine: &Engine,
+    w: &mut Option<EventStreamWriter>,
+    s: &mut Option<pump_quant_junction::capture_rehydrate::CaptureSealer>,
+    last: &mut u64,
+) {
+    let g = engine.model_held_generation();
+    if g == 0 || g == *last {
+        return;
+    }
+    if let (Some(w), Some(s)) = (w.as_mut(), s.as_mut()) {
+        let r = w.flush().and_then(|()| {
+            s.seal(
+                engine.model_held_lineage(),
+                g,
+                engine.model_held_through_ms_now(),
+            )
+        });
+        if let Err(e) = r {
+            eprintln!("[pq-daemon] ALERT: capture seal FAILED at held generation {g}: {e} - a restart from here refuses launch recovery by name");
+        }
+        *last = g;
+    }
+}
+
 fn main() -> ExitCode {
     let args = match parse_args() {
         Ok(a) => a,
@@ -2091,6 +2119,115 @@ fn main() -> ExitCode {
                     "[pq-daemon] ALERT: flow-history restored with {late} durable late-event records - affected windows refuse by scope"
                 ),
                 _ => {}
+            }
+        }
+        // LAUNCH RECOVERY (SCOPE_REARM_LAUNCH B). Creator-count history and per-market launch evidence are restored
+        // SEPARATELY, both bound to the restored held barrier: (1) the durable observed-launch log (counts frozen in
+        // receive order; records after the barrier are left for the feed to re-deliver); (2) the previous process's
+        // SEALED capture (lineage + barrier + sha256), replayed causally into the decision cache. A failure of either is
+        // named, and every market launched before the restart that is not covered refuses by name (lost coverage listed).
+        {
+            let through = matches!(
+                restore,
+                pump_quant_junction::model_lifecycle::StartupRestore::Restored(_)
+            )
+            .then(|| engine.model_replay_through_ms());
+            let log = std::env::var("PQ_CREATOR_LAUNCH_LOG")
+                .unwrap_or_else(|_| "data/creator_launch_log.jsonl".to_string());
+            let cutoff = std::env::var("PQ_CREATOR_SEED_CUTOFF_MS")
+                .ok()
+                .and_then(|v| v.parse::<i64>().ok())
+                .unwrap_or(0);
+            let seed = std::env::var("PQ_CREATOR_SEED").ok().map(|p| {
+                pump_quant_app::creator_registry::SeedSpec {
+                    path: std::path::PathBuf::from(p),
+                    cutoff_ms: cutoff,
+                    label: std::env::var("PQ_CREATOR_SEED_LABEL")
+                        .unwrap_or_else(|_| "unlabelled".into()),
+                    expect_sha256: std::env::var("PQ_CREATOR_SEED_SHA256").ok(),
+                }
+            });
+            match engine.model_creator_registry_attach_through(
+                seed.as_ref(),
+                std::path::Path::new(&log),
+                cutoff,
+                &pump_quant_junction::model_lifecycle::new_session_id(),
+                through,
+            ) {
+                Ok(st) => eprintln!(
+                    "[pq-daemon] CREATOR-REGISTRY {log}: seeded={} restored_from_log={} dedup_overlap={} deferred_after_restart={} provenance={}",
+                    st.seeded, st.restored_from_log, st.dedup_overlap, st.deferred_after_restart, st.provenance.record_tag()
+                ),
+                Err(e) => eprintln!(
+                    "[pq-daemon] ALERT: CREATOR-REGISTRY REFUSED ({}) for {log}: Qwen entry refuses creator_registry_untrusted by name",
+                    e.as_str()
+                ),
+            }
+            let cap = std::path::Path::new(EVENT_STREAM_PATH);
+            let seal = std::path::Path::new(
+                pump_quant_junction::capture_rehydrate::DEFAULT_CAPTURE_SEAL_FILE,
+            );
+            let out = pump_quant_junction::capture_rehydrate::rehydrate_from_capture(
+                &mut engine,
+                cap,
+                seal,
+            );
+            let lost_s = |lost: &Vec<([u8; 32], i64)>| -> String {
+                let (lo, hi) = lost
+                    .iter()
+                    .fold((i64::MAX, i64::MIN), |a, x| (a.0.min(x.1), a.1.max(x.1)));
+                let ms: Vec<String> = lost
+                    .iter()
+                    .take(50)
+                    .map(|(m, _)| solana_program::pubkey::Pubkey::new_from_array(*m).to_string())
+                    .collect();
+                if lost.is_empty() {
+                    "none".into()
+                } else {
+                    format!(
+                        "{} mints launch_ms=[{lo},{hi}] first50={}",
+                        lost.len(),
+                        ms.join(",")
+                    )
+                }
+            };
+            match &out {
+                pump_quant_junction::capture_rehydrate::RehydrateOutcome::NotARestart => {
+                    // A clean start owns no earlier capture: an existing file is moved aside, never sealed as ours.
+                    if let Some(p) =
+                        pump_quant_junction::capture_rehydrate::set_aside_unverified(cap)
+                    {
+                        eprintln!(
+                            "[pq-daemon] clean start: earlier capture moved aside to {}",
+                            p.display()
+                        );
+                    }
+                }
+                pump_quant_junction::capture_rehydrate::RehydrateOutcome::Applied {
+                    restart_ms,
+                    covered_from_ms,
+                    stats,
+                    lost,
+                } => {
+                    eprintln!(
+                        "[pq-daemon] LAUNCH-RECOVERY applied: restart_ms={restart_ms} capture_covered_from_ms={covered_from_ms} applied={} launches={} prints={} reserves={} after_restart_skipped={} LOST-COVERAGE: {}",
+                        stats.applied, stats.launches, stats.prints, stats.reserves, stats.after_restart_skipped, lost_s(lost)
+                    );
+                    // The sealed prefix is the causal capture; an unsealed tail (written after the last seal, before the
+                    // crash) is moved aside as evidence, never replayed, so the capture stays one causal sequence.
+                    pump_quant_junction::capture_rehydrate::set_aside_unsealed_tail(cap, seal);
+                }
+                pump_quant_junction::capture_rehydrate::RehydrateOutcome::Refused {
+                    why,
+                    restart_ms,
+                    lost,
+                } => {
+                    eprintln!(
+                        "[pq-daemon] ALERT: LAUNCH-RECOVERY REFUSED ({why}) restart_ms={restart_ms}: markets launched before the restart refuse join_tape_truncated_at_restart. LOST-COVERAGE: {}",
+                        lost_s(lost)
+                    );
+                    pump_quant_junction::capture_rehydrate::set_aside_unverified(cap);
+                }
             }
         }
         match restore {
@@ -2679,6 +2816,15 @@ fn main() -> ExitCode {
     // Event stream capture for deterministic replay (§13 paper/live parity).
     // Fail-safe: if the file can't be opened, daemon continues without capture.
     let mut event_stream_writer = EventStreamWriter::open(EVENT_STREAM_PATH);
+    // The capture is SEALED (lineage + held generation + barrier clock + sha256) whenever the held ledger becomes
+    // durable at a new generation, so a restart can rebuild the per-market evidence the uninterrupted run used.
+    let mut capture_sealer = model_armed.then(|| {
+        pump_quant_junction::capture_rehydrate::CaptureSealer::new(
+            std::path::Path::new(EVENT_STREAM_PATH),
+            std::path::Path::new(pump_quant_junction::capture_rehydrate::DEFAULT_CAPTURE_SEAL_FILE),
+        )
+    });
+    let mut capture_sealed_gen: u64 = u64::MAX;
     eprintln!("[pq-daemon] tape export path: {TAPE_PATH}");
 
     // ─── Cumulative PnL seed (restart-amnesia fix) ──────────────────────
@@ -4439,6 +4585,13 @@ fn main() -> ExitCode {
                     eprintln!("[pq-daemon] event_stream write error: {}", e);
                 }
             }
+            // An event can make the held ledger durable (e.g. a SAFETY_OFF trip persists it immediately).
+            capture_seal_if_new(
+                &engine,
+                &mut event_stream_writer,
+                &mut capture_sealer,
+                &mut capture_sealed_gen,
+            );
         }
 
         // ── Poll Firecrawl bridge (social intelligence ingest) ──────────
@@ -4624,6 +4777,13 @@ fn main() -> ExitCode {
                     eprintln!("[pq-daemon] event_stream tick write error: {}", e);
                 }
             }
+            // A held write in this tick: seal the capture to it (same generation, same decision clock).
+            capture_seal_if_new(
+                &engine,
+                &mut event_stream_writer,
+                &mut capture_sealer,
+                &mut capture_sealed_gen,
+            );
             next_tick = Instant::now() + tick_period;
             tick_counter += 1;
             // ── OFFLINE PAPER REPLAY barrier: settle the verdicts for the state cut at this source-time clock, apply
@@ -4643,6 +4803,14 @@ fn main() -> ExitCode {
                     let f = engine.model_flow_flush(Duration::from_secs(20));
                     let h = engine.model_held_persist_now();
                     eprintln!("[pq-daemon] replay barrier {barrier_idx}: flow flush durable={f} held persisted={h}");
+                    if h {
+                        capture_seal_if_new(
+                            &engine,
+                            &mut event_stream_writer,
+                            &mut capture_sealer,
+                            &mut capture_sealed_gen,
+                        );
+                    }
                 }
                 // Barrier mode only: the lane's funnel counters as of THIS barrier (the timed health writer is not run
                 // on a barrier schedule, so its copy would be stale).
@@ -5193,6 +5361,12 @@ fn main() -> ExitCode {
                 if let Some(ref mut writer) = event_stream_writer {
                     let _ = writer.flush();
                 }
+                capture_seal_if_new(
+                    &engine,
+                    &mut event_stream_writer,
+                    &mut capture_sealer,
+                    &mut capture_sealed_gen,
+                );
                 last_tape_flush_tick = tick_counter;
             }
 

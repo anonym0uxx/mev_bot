@@ -1888,6 +1888,7 @@ impl Engine {
     /// maps to an order. Settled history is not touched.
     pub(super) fn model_on_position_closed(&mut self, mint: &[u8; 32]) {
         self.model_mgmt_forget(mint);
+        self.model_cache.held_launch_forget(mint);
         self.model_shadow_forget(mint);
         if let Some(id) = self.model_position_order.remove(mint) {
             if let Some(rec) = self.model_order_log.get_mut(&id) {

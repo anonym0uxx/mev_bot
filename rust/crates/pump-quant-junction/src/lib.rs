@@ -114,6 +114,7 @@ pub struct OverflowStats {
 
 pub mod async_sink;
 pub mod autonomous_bridge;
+pub mod capture_rehydrate;
 #[cfg(test)]
 mod chaos_tests;
 pub mod corpus_rows;

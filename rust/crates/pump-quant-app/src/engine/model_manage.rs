@@ -281,6 +281,9 @@ impl Engine {
         order_id: u64,
     ) {
         self.positions.set_model_managed(&mint);
+        // Pin the position's launch identity + state-tape extent NOW, so a restart restores exactly this evidence.
+        let c = self.model_clock_ms;
+        self.model_cache.pin_held_launch(mint, c);
         if let Some(t) = tokens {
             self.positions.set_inventory_tokens(&mint, t);
         } else {
