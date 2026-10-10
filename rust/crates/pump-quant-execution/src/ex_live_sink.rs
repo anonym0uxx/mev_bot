@@ -741,7 +741,11 @@ mod tests {
             max_slippage_bps: 500,
             price_limit_lamports_per_raw_token: limit,
         };
-        for (limit, want) in [(2.0e-13, "Overflow"), (f64::NAN, "Unusable"), (-1.0, "Unusable")] {
+        for (limit, want) in [
+            (2.0e-13, "Overflow"),
+            (f64::NAN, "Unusable"),
+            (-1.0, "Unusable"),
+        ] {
             match sink.on_admit(&buy(Some(limit))) {
                 OutboundOutcome::Construction(m) => assert!(
                     m.starts_with("price_limit_unusable") && m.contains(want),

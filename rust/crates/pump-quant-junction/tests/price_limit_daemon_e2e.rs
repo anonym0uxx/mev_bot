@@ -163,9 +163,13 @@ fn serve(answer: Answer) -> String {
                     return;
                 };
                 let req: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
-                let user = req["messages"][1]["content"].as_str().unwrap_or("").to_string();
+                let user = req["messages"][1]["content"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string();
                 let content = answer(&user);
-                let choice = serde_json::json!({"message": {"content": content}, "finish_reason": "stop"});
+                let choice =
+                    serde_json::json!({"message": {"content": content}, "finish_reason": "stop"});
                 let out = serde_json::json!({ "choices": [choice] }).to_string();
                 let _ = write!(
                     s,
@@ -250,7 +254,10 @@ fn run(name: &str, answer: Answer, dec: Pool, land: Pool, v2: bool) -> Run {
             order_id = Some(id);
             break;
         }
-        if e.model_lane_report().keys().any(|k| k.starts_with("notrade:")) {
+        if e.model_lane_report()
+            .keys()
+            .any(|k| k.starts_with("notrade:"))
+        {
             break;
         }
     }
@@ -271,20 +278,28 @@ fn run(name: &str, answer: Answer, dec: Pool, land: Pool, v2: bool) -> Run {
                 e.tick(AppEvent::Tick);
             }
             if e.model_position_open(&MINT)
-                || e.model_lane_report().keys().any(|k| k.starts_with("fill_none:"))
+                || e.model_lane_report()
+                    .keys()
+                    .any(|k| k.starts_with("fill_none:"))
             {
                 break;
             }
         }
     }
     let rep = e.model_lane_report().clone();
-    let clip = order_id.and_then(|id| e.model_order_rec(id)).map(|r| r.clip_lamports);
+    let clip = order_id
+        .and_then(|id| e.model_order_rec(id))
+        .map(|r| r.clip_lamports);
     let open = e.model_position_open(&MINT);
     let _ = std::fs::remove_dir_all(&dir);
     Run {
         open,
         pending: e.model_pending_orders(),
-        tokens: if open { e.model_inventory_tokens(&MINT) } else { None },
+        tokens: if open {
+            e.model_inventory_tokens(&MINT)
+        } else {
+            None
+        },
         rep,
         clip,
     }
@@ -316,10 +331,21 @@ fn absent_limit_is_accepted_and_fills_at_full_size() {
     let p = pool(DEC);
     let r = run("absent", fixed(buy("FULL", None)), p, p, false);
     assert!(r.verdict_buy(), "{:?}", r.rep);
-    assert!(r.open, "an absent limit must not block the fill: {:?}", r.rep);
+    assert!(
+        r.open,
+        "an absent limit must not block the fill: {:?}",
+        r.rep
+    );
     let (clip, tok) = (r.clip.unwrap(), r.tokens.unwrap());
-    assert_eq!(tok, quote_tokens(p, clip), "filled at the actual clip's quote");
-    eprintln!("absent FULL: clip={clip} tokens={tok} avg={:.12}", avg(clip, tok));
+    assert_eq!(
+        tok,
+        quote_tokens(p, clip),
+        "filled at the actual clip's quote"
+    );
+    eprintln!(
+        "absent FULL: clip={clip} tokens={tok} avg={:.12}",
+        avg(clip, tok)
+    );
 }
 
 /// Literal "unavailable" text and every unusable number: refused AT THE PARSER, by name, before any
@@ -328,9 +354,25 @@ fn absent_limit_is_accepted_and_fills_at_full_size() {
 fn literal_and_invalid_limits_are_named_parser_refusals_with_no_order() {
     let p = pool(DEC);
     let cases = [
-        "unavailable", "n/a", "absent", "NONE", "", // literal / empty text
-        "-0.0002", "0", "0.0", "-0", "NaN", "nan", "inf", "-inf", "1e400", // non-positive / non-finite
-        "0x1A", "1,5", "0.0002 lamports", "abc", "0.0002.1", // garbage / unit-suffixed
+        "unavailable",
+        "n/a",
+        "absent",
+        "NONE",
+        "", // literal / empty text
+        "-0.0002",
+        "0",
+        "0.0",
+        "-0",
+        "NaN",
+        "nan",
+        "inf",
+        "-inf",
+        "1e400", // non-positive / non-finite
+        "0x1A",
+        "1,5",
+        "0.0002 lamports",
+        "abc",
+        "0.0002.1", // garbage / unit-suffixed
     ];
     for tok in cases {
         let name = format!("inv{}", tok.len());
@@ -368,9 +410,19 @@ fn a_limit_copied_from_the_prompt_is_accepted_by_admission_but_is_not_executable
     let copy: Answer = Arc::new(|u: &str| buy("FULL", Some(&supplied_token(u))));
     for v2 in [false, true] {
         let r = run(&format!("copy{v2}"), Arc::clone(&copy), p, p, v2);
-        assert!(r.verdict_buy(), "v2={v2}: admission must accept the copied limit: {:?}", r.rep);
-        let clip = r.clip.expect("an order was created at the authority's clip");
-        assert!(!r.open, "v2={v2}: a copied prompt price filled: {:?}", r.rep);
+        assert!(
+            r.verdict_buy(),
+            "v2={v2}: admission must accept the copied limit: {:?}",
+            r.rep
+        );
+        let clip = r
+            .clip
+            .expect("an order was created at the authority's clip");
+        assert!(
+            !r.open,
+            "v2={v2}: a copied prompt price filled: {:?}",
+            r.rep
+        );
         assert_eq!(r.pending, 0);
         assert!(r.has("fill_none:limit_not_met"), "v2={v2}: {:?}", r.rep);
         let supplied = spot_fp(p) as f64 / 1e9;
@@ -392,13 +444,20 @@ fn the_limit_is_enforced_at_the_actual_clip_impact_and_fees_inclusive() {
     let p = pool(DEC);
     let (small, full) = (clip_for("SMALL", p), clip_for("FULL", p));
     assert!(full > small, "FULL {full} vs SMALL {small}");
-    let (a_s, a_f) = (avg(small, quote_tokens(p, small)), avg(full, quote_tokens(p, full)));
+    let (a_s, a_f) = (
+        avg(small, quote_tokens(p, small)),
+        avg(full, quote_tokens(p, full)),
+    );
     assert!(a_f > a_s, "impact: the bigger clip pays a worse average");
     let mid = format!("{}", (a_s + a_f) / 2.0);
     let rs = run("midS", fixed(buy("SMALL", Some(&mid))), p, p, false);
     assert!(rs.open, "SMALL under the limit must fill: {:?}", rs.rep);
     let rf = run("midF", fixed(buy("FULL", Some(&mid))), p, p, false);
-    assert!(rf.verdict_buy() && !rf.open, "FULL over the limit filled: {:?}", rf.rep);
+    assert!(
+        rf.verdict_buy() && !rf.open,
+        "FULL over the limit filled: {:?}",
+        rf.rep
+    );
     assert!(rf.has("fill_none:limit_not_met"), "{:?}", rf.rep);
     // Boundary at FULL.
     let tok = quote_tokens(p, full);
@@ -468,10 +527,22 @@ fn unit_mistakes_are_accepted_by_the_parser_and_fail_or_pass_only_at_execution()
     assert!(sol_raw.verdict_buy() && !sol_raw.open, "{:?}", sol_raw.rep);
     assert!(sol_raw.has("fill_none:limit_unusable"), "{:?}", sol_raw.rep);
     let sol_whole = run("uSolWhole", scaled(1e-3), p, p, false);
-    assert!(sol_whole.verdict_buy() && !sol_whole.open, "{:?}", sol_whole.rep);
-    assert!(sol_whole.has("fill_none:limit_not_met"), "{:?}", sol_whole.rep);
+    assert!(
+        sol_whole.verdict_buy() && !sol_whole.open,
+        "{:?}",
+        sol_whole.rep
+    );
+    assert!(
+        sol_whole.has("fill_none:limit_not_met"),
+        "{:?}",
+        sol_whole.rep
+    );
     let lam_whole = run("uLamWhole", scaled(1e6), p, p, false);
-    assert!(lam_whole.open, "a 1e6-loose limit is non-binding and fills: {:?}", lam_whole.rep);
+    assert!(
+        lam_whole.open,
+        "a 1e6-loose limit is non-binding and fills: {:?}",
+        lam_whole.rep
+    );
     // Scientific notation as rendered: a cheaper pool whose supplied price is < 1e-4 (MID keeps own impact
     // under the 90 bp cap on the thinner pool).
     let cheap = pool(50_000_000_000);
@@ -485,8 +556,21 @@ fn unit_mistakes_are_accepted_by_the_parser_and_fail_or_pass_only_at_execution()
     });
     let r = run("uSci", sci, cheap, cheap, false);
     let tok = seen.lock().unwrap().clone();
-    assert!(tok.contains("e-"), "the supplied price renders in scientific form: {tok}");
+    assert!(
+        tok.contains("e-"),
+        "the supplied price renders in scientific form: {tok}"
+    );
     assert!(r.open, "{:?}", r.rep);
-    let r = run("uSciCopy", fixed(buy("MID", Some(&tok))), cheap, cheap, false);
-    assert!(r.verdict_buy() && !r.open && r.has("fill_none:limit_not_met"), "{:?}", r.rep);
+    let r = run(
+        "uSciCopy",
+        fixed(buy("MID", Some(&tok))),
+        cheap,
+        cheap,
+        false,
+    );
+    assert!(
+        r.verdict_buy() && !r.open && r.has("fill_none:limit_not_met"),
+        "{:?}",
+        r.rep
+    );
 }
