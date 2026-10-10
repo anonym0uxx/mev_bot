@@ -52,11 +52,13 @@ use std::sync::Arc;
 use crate::ex_live_io_traits::{LiveSigner, LiveStateFetcher, LiveSubmitter};
 use crate::ex_outbound_sink::{AdmitRecord, OutboundOutcome, OutboundSink};
 
-use pump_quant_protocol::ix::{BuyParams, SellParams};
+use pump_quant_protocol::curve_sell_quote::curve_buy_exact_in;
+use pump_quant_protocol::ix::{BuyExactSolInParams, SellParams};
 use pump_quant_protocol::layout::LayoutRegistry;
 use pump_quant_protocol::message::{assemble_transaction, MessageError};
 use pump_quant_protocol::tx_build::{
-    build_pump_buy_message, build_pump_sell_message, BuildEnv, ComputePlan, TipPlan, TxBuildError,
+    build_pump_buy_exact_sol_in_message, build_pump_sell_message, BuildEnv, ComputePlan, TipPlan,
+    TxBuildError,
 };
 use pump_quant_protocol::venue_accounts::FeeTail;
 
@@ -73,6 +75,10 @@ pub struct LiveSinkConfig {
     pub fee_tail: FeeTail,
     /// Max slippage in basis points for the buy instruction's min_tokens_out.
     pub max_slippage_bps: u16,
+    /// Curve venue fee rates `(protocol_bps, creator_bps)` the BUY quote is priced with — the same
+    /// rates the paper fill uses (`pump_quant_app::exec_quote::curve_fees`). `None` refuses every
+    /// BUY by name (`quote_unavailable`): a buy is never built without a quote for its clip.
+    pub curve_buy_fee_bps: Option<(u64, u64)>,
     /// Rev-36: TOCTOU mcap band re-validation at execution time.
     /// When true, `on_admit` re-checks the mcap band using the FRESH vsol
     /// fetched from on-chain state at buy time — closing the gap where the
@@ -267,10 +273,10 @@ impl OutboundSink for LiveOutboundSink {
         };
 
         let compiled_msg = if record.is_buy {
-            // Buy: compute min_tokens_out from the FRESH curve reserves and
-            // max_slippage_bps — NOT the gate's entry_price, which would be a stale
-            // TOCTOU source. expected = size_lamports * vtokens / vsol, then
-            // min_tokens_out = expected * (10000 - bps) / 10000.
+            // W3/R5 (PLIM_CONTRACT.md): the live curve BUY is `buy_exact_sol_in` — spend EXACTLY the
+            // clip the authority sized (fees inside), accept no fewer than `min_tokens_out`. The
+            // legacy exact-OUT `buy` is no longer built for an entry: its `amount` is the token count
+            // bought, so any bound written there re-sized the trade.
             let vtokens = state.virtual_token_reserves;
             let vsol = state.virtual_sol_reserves;
             if vsol == 0 {
@@ -278,49 +284,58 @@ impl OutboundSink for LiveOutboundSink {
                     "virtual_sol_reserves is zero — cannot compute min_tokens".to_string(),
                 );
             }
-            // expected_tokens = sol_in * vtokens / vsol  (u128 to prevent overflow)
-            let expected_tokens =
-                (record.size_lamports as u128).saturating_mul(vtokens as u128) / (vsol as u128);
-            // Apply slippage: min_tokens = expected_tokens * (10000 - bps) / 10000
+            // The clip's quote on the FRESH state, with the same arithmetic and fee rates the paper
+            // fill uses (`curve_buy_exact_in`). No rates configured => no quote => named refusal.
+            let Some((protocol_bps, creator_bps)) = self.config.curve_buy_fee_bps else {
+                return OutboundOutcome::Construction(
+                    "quote_unavailable: curve buy fee rates not configured".to_string(),
+                );
+            };
+            // `LiveCurveState` carries no real-token reserve, so the cap is not applied here (the
+            // program's own `min_tokens_out` check still binds on chain). PLIM_CONTRACT.md §S5 gap.
+            let Some(quote) = curve_buy_exact_in(
+                vsol,
+                vtokens,
+                u64::MAX,
+                record.size_lamports,
+                protocol_bps,
+                creator_bps,
+            ) else {
+                return OutboundOutcome::Construction(format!(
+                    "quote_unavailable: curve buy of {} lamports is unpriceable",
+                    record.size_lamports
+                ));
+            };
+            let quoted_tokens = u64::try_from(quote.tokens_out).unwrap_or(u64::MAX);
+            // No limit (68% of trained BUYs): the slippage floor off the clip's OWN quote.
             let slippage_factor = 10_000u32.saturating_sub(self.config.max_slippage_bps as u32);
             let slippage_min_tokens =
-                (expected_tokens * slippage_factor as u128 / 10_000u128) as u64;
-            // The brain's own PRICE LIMIT governs when the completion carried one; the
-            // slippage count is the fallback for the 68% of trained BUYs that carry none.
-            // This is the authority rule applied to the order's bound: the model decides the
-            // worst price it will pay, and Rust resolves that into a `min_tokens_out` rather
-            // than substituting its own.
-            //
-            // W3: a limit that is PRESENT but cannot be turned into a token count (overflow — e.g. a
-            // SOL-per-raw-token unit mistake — or rounds to zero) is a named refusal, exactly as the
-            // paper fill refuses it (`fill_none:limit_unusable`). Substituting the slippage count here
-            // would replace the brain's expressed bound with Rust's own: the fallback is ONLY for a
-            // completion that carried no limit at all.
-            if let Some(limit) = record.price_limit_lamports_per_raw_token {
-                if let Err(e) =
-                    crate::price_anchor::min_tokens_from_price_limit(record.size_lamports, limit)
-                {
+                (u128::from(quoted_tokens) * slippage_factor as u128 / 10_000u128) as u64;
+            // The brain's PRICE LIMIT is a floor on tokens for THIS clip. A present-but-unconvertible
+            // limit, or a quote below the floor, is a named refusal — never a smaller clip, a widened
+            // limit, the slippage count, or a fallback instruction.
+            let plan = match crate::price_anchor::plan_curve_buy(
+                record.size_lamports,
+                record.price_limit_lamports_per_raw_token,
+                Some(quoted_tokens),
+                slippage_min_tokens,
+            ) {
+                Ok(p) => p,
+                Err(r) => {
                     return OutboundOutcome::Construction(format!(
-                        "price_limit_unusable: {e:?} (limit {limit} lamports/raw token, size {} lamports)",
+                        "price_{}: {r:?} (limit {:?} lamports/raw token, size {} lamports)",
+                        r.label(),
+                        record.price_limit_lamports_per_raw_token,
                         record.size_lamports
                     ));
                 }
-            }
-            let (min_tokens, min_tokens_source) = crate::price_anchor::resolve_min_tokens_out(
-                record.size_lamports,
-                record.price_limit_lamports_per_raw_token,
-                slippage_min_tokens,
-            );
-            // max_sol_cost = size_lamports (the engine already sized this)
-            let max_sol_cost = record.size_lamports;
-            let _ = min_tokens_source;
-
-            let params = BuyParams {
-                min_tokens_out: min_tokens,
-                max_sol_cost,
+            };
+            let params = BuyExactSolInParams {
+                spendable_sol_in: plan.spendable_sol_in,
+                min_tokens_out: plan.min_tokens_out,
             };
 
-            match build_pump_buy_message(&state.curve_ctx, params, &build_env) {
+            match build_pump_buy_exact_sol_in_message(&state.curve_ctx, params, &build_env) {
                 Ok(msg) => msg,
                 Err(e) => return OutboundOutcome::Construction(build_err_str(&e)),
             }
@@ -634,6 +649,7 @@ mod tests {
                 tip: None,
                 fee_tail: FeeTail::None,
                 max_slippage_bps: 500,
+                curve_buy_fee_bps: Some((95, 30)),
                 mcap_band_enable: false, // test sink: no TOCTOU re-check
                 mcap_band_lo_lamports: 0,
                 mcap_band_hi_lamports: u64::MAX,
@@ -754,8 +770,9 @@ mod tests {
                 o => panic!("{limit}: expected a named refusal, got {o:?}"),
             }
         }
-        // A usable limit, and no limit, both reach the (gated) build.
-        for limit in [Some(2.0e-4), None] {
+        // A usable limit the clip's quote meets, and no limit, both reach the (gated) build. The
+        // test curve's spot is 0.05 lamports/raw token; a 0.5 SOL clip averages ~0.0511 all-in.
+        for limit in [Some(0.06), None] {
             match sink.on_admit(&buy(limit)) {
                 OutboundOutcome::Construction(m) => {
                     assert!(m.contains("tx_build refused"), "{limit:?}: {m}")
@@ -789,6 +806,7 @@ mod tests {
                 tip: None,
                 fee_tail: FeeTail::None,
                 max_slippage_bps: 500,
+                curve_buy_fee_bps: Some((95, 30)),
                 mcap_band_enable: false,
                 mcap_band_lo_lamports: 0,
                 mcap_band_hi_lamports: u64::MAX,
@@ -848,5 +866,291 @@ mod tests {
             OutboundOutcome::Accepted { .. } => {}
             _ => panic!("a meetable sell must not be refused by the preflight"),
         }
+    }
+
+    // ───────────── W3/R5: buy_exact_sol_in construction (no transaction is ever sent) ─────────────
+
+    use std::sync::Mutex;
+
+    /// Fetcher with settable reserves and a non-zero BuybackVault list (so the buy is 18 accounts).
+    struct CurveFetcher {
+        vsol: u64,
+        vtok: u64,
+    }
+
+    fn bv(i: u8) -> [u8; 32] {
+        let mut k = [0x60u8; 32];
+        k[0] = i;
+        k
+    }
+
+    impl LiveStateFetcher for CurveFetcher {
+        fn fetch_state_hot(
+            &self,
+            _mint: &[u8; 32],
+            _user: &[u8; 32],
+        ) -> Result<LiveCurveState, StateFetchError> {
+            let mut st = TestStateFetcher {
+                blockhash: test_blockhash(),
+            }
+            .fetch_state_hot(_mint, _user)?;
+            st.virtual_sol_reserves = self.vsol;
+            st.virtual_token_reserves = self.vtok;
+            st.buyback_fee_recipients = core::array::from_fn(|i| bv(i as u8 + 1));
+            Ok(st)
+        }
+        fn prefetch_state(
+            &self,
+            m: &[u8; 32],
+            u: &[u8; 32],
+        ) -> Result<LiveCurveState, StateFetchError> {
+            self.fetch_state_hot(m, u)
+        }
+        fn latest_blockhash(&self) -> Result<LiveBlockhash, StateFetchError> {
+            Ok(test_blockhash())
+        }
+        fn fetch_ata_balance(
+            &self,
+            _m: &[u8; 32],
+            _u: &[u8; 32],
+            _t: &[u8; 32],
+        ) -> Result<u64, StateFetchError> {
+            Ok(0)
+        }
+    }
+
+    fn test_blockhash() -> LiveBlockhash {
+        let mut blockhash = [0u8; 32];
+        blockhash[0] = 0x42;
+        LiveBlockhash {
+            blockhash,
+            slot: 440_000_000,
+            last_valid_block_height: 440_000_150,
+        }
+    }
+
+    /// Records the message bytes it is asked to sign. Nothing is submitted anywhere: the paired
+    /// submitter below refuses, so a build that is reached ends as `Submit` — never on a wire.
+    struct CapturingSigner {
+        pk: [u8; 32],
+        seen: Arc<Mutex<Vec<Vec<u8>>>>,
+    }
+    impl LiveSigner for CapturingSigner {
+        fn sign(&self, m: &[u8]) -> Result<[u8; 64], SignError> {
+            self.seen.lock().unwrap().push(m.to_vec());
+            Ok([7u8; 64])
+        }
+        fn public_key(&self) -> [u8; 32] {
+            self.pk
+        }
+    }
+    struct RefusingSubmitter;
+    impl LiveSubmitter for RefusingSubmitter {
+        fn submit(&self, _w: &[u8], _b: bool) -> Result<[u8; 64], SubmitError> {
+            Err(SubmitError::EndpointRejected(
+                "test: submission is disabled".to_string(),
+            ))
+        }
+    }
+
+    fn verified_buy_registry() -> LayoutRegistry {
+        use pump_quant_protocol::layout::{LayoutKey, Side, Variant, Venue, VerifiedLayout};
+        let mut r = LayoutRegistry::new();
+        let mut sig = [0u8; 64];
+        for (i, b) in sig.iter_mut().enumerate() {
+            *b = ((i as u32 * 37 + 11) % 256) as u8;
+        }
+        r.record_verified(VerifiedLayout {
+            key: LayoutKey {
+                venue: Venue::PumpFun,
+                side: Side::Buy,
+                variant: Variant::plain(),
+            },
+            account_count: 18,
+            verifying_slot: 448_249_388,
+            verifying_signature: sig,
+        })
+        .unwrap();
+        r
+    }
+
+    fn capture_sink(vsol: u64, vtok: u64) -> (LiveOutboundSink, Arc<Mutex<Vec<Vec<u8>>>>) {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let mut pk = [0u8; 32];
+        pk[0] = 2; // == the fetched ctx's user
+        let sink = LiveOutboundSink::new(
+            LiveSinkConfig {
+                compute: ComputePlan {
+                    unit_limit: 200_000,
+                    unit_price_micro_lamports: 100_000,
+                },
+                tip: None,
+                fee_tail: FeeTail::None,
+                max_slippage_bps: 500,
+                curve_buy_fee_bps: Some((95, 30)),
+                mcap_band_enable: false,
+                mcap_band_lo_lamports: 0,
+                mcap_band_hi_lamports: u64::MAX,
+            },
+            Arc::new(verified_buy_registry()),
+            Arc::new(CurveFetcher { vsol, vtok }),
+            Arc::new(CapturingSigner {
+                pk,
+                seen: Arc::clone(&seen),
+            }),
+            Arc::new(RefusingSubmitter),
+        );
+        (sink, seen)
+    }
+
+    fn buy_rec(size: u64, limit: Option<f64>) -> AdmitRecord {
+        AdmitRecord {
+            mint: [1u8; 32],
+            user: [0u8; 32],
+            is_buy: true,
+            size_lamports: size,
+            entry_price: 0,
+            max_slippage_bps: 500,
+            price_limit_lamports_per_raw_token: limit,
+        }
+    }
+
+    /// The pump instruction's 25-byte data inside a signed message: located by discriminator.
+    fn pump_data(msg: &[u8]) -> [u8; 25] {
+        use pump_quant_protocol::ix::BUY_EXACT_SOL_IN_DISCRIMINATOR as D;
+        let at = msg
+            .windows(8)
+            .position(|w| w == D)
+            .expect("buy_exact_sol_in discriminator in the message");
+        assert!(
+            !msg.windows(8)
+                .any(|w| w == pump_quant_protocol::ix::BUY_DISCRIMINATOR),
+            "the exact-OUT `buy` must never be built for an entry"
+        );
+        msg[at..at + 25].try_into().unwrap()
+    }
+
+    fn args(d: &[u8; 25]) -> (u64, u64, u8) {
+        (
+            u64::from_le_bytes(d[8..16].try_into().unwrap()),
+            u64::from_le_bytes(d[16..24].try_into().unwrap()),
+            d[24],
+        )
+    }
+
+    /// The exact bytes `on_admit` hands the signer for a BUY are the protocol builder's
+    /// `buy_exact_sol_in` message with spend = the clip and min_tokens_out = the exact floor.
+    #[test]
+    fn the_live_buy_is_buy_exact_sol_in_spending_the_clip_with_the_limit_as_a_floor() {
+        use pump_quant_protocol::tx_build::build_pump_buy_exact_sol_in_message;
+        let (vsol, vtok) = (80_000_000_000u64, 402_375_000_000_000u64);
+        let (sink, seen) = capture_sink(vsol, vtok);
+        let clip = 500_000_000u64;
+        let limit = 0.000_21; // above the FULL all-in average 0.0002025...
+        match sink.on_admit(&buy_rec(clip, Some(limit))) {
+            OutboundOutcome::Sender(m) => assert!(m.contains("disabled"), "{m}"),
+            o => panic!("expected the build to be reached and submission refused: {o:?}"),
+        }
+        let msgs = seen.lock().unwrap().clone();
+        assert_eq!(msgs.len(), 1);
+        let d = pump_data(&msgs[0]);
+        let floor = crate::price_anchor::min_tokens_from_price_limit(clip, limit).unwrap();
+        assert_eq!(args(&d), (clip, floor, 0));
+        // Byte-identical to the protocol builder on the same ctx/env/params.
+        let st = CurveFetcher { vsol, vtok }
+            .fetch_state_hot(&[1u8; 32], &[2u8; 32])
+            .unwrap();
+        let reg = verified_buy_registry();
+        let want = build_pump_buy_exact_sol_in_message(
+            &st.curve_ctx,
+            BuyExactSolInParams {
+                spendable_sol_in: clip,
+                min_tokens_out: floor,
+            },
+            &BuildEnv {
+                compute: ComputePlan {
+                    unit_limit: 200_000,
+                    unit_price_micro_lamports: 100_000,
+                },
+                tip: None,
+                recent_blockhash: test_blockhash().blockhash,
+                registry: &reg,
+                fee_tail: FeeTail::BuybackVault(bv(1 + (st.curve_ctx.mint[0] % 8))),
+            },
+        )
+        .unwrap();
+        assert_eq!(msgs[0], want.bytes);
+    }
+
+    /// No limit: still exact-SOL-in, spend = clip, floor = the clip's OWN quote less the slippage
+    /// budget (not the old linear `size*vtok/vsol`, which ignored fees and impact).
+    #[test]
+    fn an_absent_limit_spends_the_clip_with_a_quote_based_slippage_floor() {
+        let (vsol, vtok) = (80_000_000_000u64, 402_375_000_000_000u64);
+        let (sink, seen) = capture_sink(vsol, vtok);
+        let clip = 500_000_000u64;
+        let _ = sink.on_admit(&buy_rec(clip, None));
+        let d = pump_data(&seen.lock().unwrap()[0]);
+        let q = curve_buy_exact_in(vsol, vtok, u64::MAX, clip, 95, 30).unwrap();
+        let want = (q.tokens_out * 9_500 / 10_000) as u64;
+        assert_eq!(args(&d), (clip, want, 0));
+    }
+
+    /// S4: the +187.5 bp case. A limit equal to the marginal (prompt) price cannot be met by the FULL
+    /// clip; the sink refuses by name and NOTHING is signed — no smaller clip, no widened limit, no
+    /// slippage count, no exact-OUT fallback.
+    #[test]
+    fn a_limit_the_clip_cannot_meet_is_refused_by_name_and_nothing_is_signed() {
+        let (vsol, vtok) = (80_000_000_000u64, 402_375_000_000_000u64);
+        let (sink, seen) = capture_sink(vsol, vtok);
+        let supplied = 198_819e-9;
+        match sink.on_admit(&buy_rec(500_000_000, Some(supplied))) {
+            OutboundOutcome::Construction(m) => {
+                assert!(m.starts_with("price_limit_not_met"), "{m}");
+                assert!(
+                    m.contains("2468558269818") && m.contains("2514850190375"),
+                    "{m}"
+                );
+            }
+            o => panic!("{o:?}"),
+        }
+        assert!(seen.lock().unwrap().is_empty(), "nothing may be signed");
+        // A missing fee configuration is a named refusal too, never an unquoted build.
+        let mut s2 = capture_sink(vsol, vtok).0;
+        s2.config.curve_buy_fee_bps = None;
+        match s2.on_admit(&buy_rec(500_000_000, None)) {
+            OutboundOutcome::Construction(m) => assert!(m.starts_with("quote_unavailable"), "{m}"),
+            o => panic!("{o:?}"),
+        }
+    }
+
+    /// Reserves moving between the decision and the build: the floor is a function of (clip, limit)
+    /// only, so it is the same bytes on every state; the FRESH quote decides build vs named refusal.
+    /// On chain, a move after the build is caught by the program's own `min_tokens_out` (6042).
+    #[test]
+    fn reserves_moving_before_the_build_keep_the_floor_and_refuse_by_name() {
+        let k = 30_000_000_000u128 * 1_073_000_000_000_000u128;
+        let pool = |vsol: u64| (vsol, (k / u128::from(vsol)) as u64);
+        let clip = 500_000_000u64;
+        let limit = 198_819e-9 * 1.05;
+        let floor = crate::price_anchor::min_tokens_from_price_limit(clip, limit).unwrap();
+        let mut built = Vec::new();
+        for vsol in [80_000_000_000u64, 76_000_000_000] {
+            let (vs, vt) = pool(vsol);
+            let (sink, seen) = capture_sink(vs, vt);
+            let _ = sink.on_admit(&buy_rec(clip, Some(limit)));
+            let d = pump_data(&seen.lock().unwrap()[0]);
+            built.push(args(&d));
+        }
+        assert_eq!(built, vec![(clip, floor, 0), (clip, floor, 0)]);
+        let (vs, vt) = pool(84_000_000_000);
+        let (sink, seen) = capture_sink(vs, vt);
+        match sink.on_admit(&buy_rec(clip, Some(limit))) {
+            OutboundOutcome::Construction(m) => {
+                assert!(m.starts_with("price_limit_not_met"), "{m}")
+            }
+            o => panic!("{o:?}"),
+        }
+        assert!(seen.lock().unwrap().is_empty());
     }
 }

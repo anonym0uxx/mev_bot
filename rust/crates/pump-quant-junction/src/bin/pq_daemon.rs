@@ -1680,6 +1680,8 @@ fn construct_live_engine(
         tip,
         fee_tail,
         max_slippage_bps: 500,
+        // W3/R5: the live BUY quotes its clip with the SAME pinned curve fee rates as the paper fill.
+        curve_buy_fee_bps: pump_quant_app::exec_quote::curve_fees(),
         // Rev-36: pass the mcap band config to the live sink for TOCTOU
         // re-validation at execution time. Uses the SAME values the gate
         // uses (from the loaded CHAMPION_CONFIG.txt).
