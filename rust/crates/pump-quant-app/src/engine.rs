@@ -891,6 +891,13 @@ pub struct Engine {
     model_sell_prefix: BTreeMap<u64, Vec<(u64, u64, u64)>>,
     model_sell_faults: BTreeMap<u64, model_manage::SellFault>,
     model_sell_floor: u64,
+    /// SCOPE_FEES_R6 E4: price-only management reports (`model_mgmt_apply_reconciled_fill` /
+    /// `model_mgmt_ingest_report`) carry no gross and no fee. They book ONLY in this explicit, labelled legacy
+    /// replay-compatibility mode (default off; the daemon's report inbox always carries cumulative gross + fees).
+    model_legacy_price_only: bool,
+    /// SCOPE_FEES_R6 E3: durable record of every fill whose venue fee was NOT evidenced (price-only legacy fills):
+    /// the modelled estimate is kept here, by name, never as settled economics. Persisted in held.json.
+    model_fee_unresolved: Vec<crate::held_state::HeldFeeUnresolved>,
     /// Fired protective triggers waiting for a protective order (deferred, or the last order ended with exposure left).
     model_protect_pending: BTreeMap<[u8; 32], model_protect::PendingTrigger>,
     /// Offline replay harness: an external executor (the report inbox) owns execution, so a new REDUCE/EXIT/protective
@@ -1576,6 +1583,8 @@ impl Engine {
             model_external_exec: false,
             model_paper_route_attest: None,
             model_sell_floor: 0,
+            model_legacy_price_only: false,
+            model_fee_unresolved: Vec::new(),
             model_order_floor: 0,
             model_session: new_session_id(),
             model_settled_order_cap: None,

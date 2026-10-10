@@ -211,6 +211,9 @@ fn rig_with_source<S: ModelSource + Send + Sync + 'static>(
 ) -> Rig {
     FEED_LOG.with(|l| l.borrow_mut().clear());
     let mut e = Engine::new(cfg(), RunMode::Paper);
+
+    // SCOPE_FEES_R6 E4: these fixtures drive PRICE-ONLY management reports: explicit labelled legacy replay mode.
+    e.model_set_legacy_price_only_reports(true);
     e.enable_paper_model(src);
     e.model_held_attach(held);
     if let Some(f) = flow {
@@ -269,6 +272,9 @@ impl Rig {
 
 fn fresh(held: &std::path::Path) -> Engine {
     let mut e = Engine::new(cfg(), RunMode::Paper);
+
+    // SCOPE_FEES_R6 E4: these fixtures drive PRICE-ONLY management reports: explicit labelled legacy replay mode.
+    e.model_set_legacy_price_only_reports(true);
     e.enable_paper_model(Script {
         calls: Arc::new(AtomicUsize::new(0)),
         answer: |_| HOLD,
@@ -2529,6 +2535,9 @@ fn m1_inference_disarmed_engine_restoring_model_exposure_never_force_closes_it()
     drop(r);
     // A restart WITHOUT the model lane armed: ownership travels with the record, not with arming.
     let mut e = Engine::new(cfg(), RunMode::Paper);
+
+    // SCOPE_FEES_R6 E4: these fixtures drive PRICE-ONLY management reports: explicit labelled legacy replay mode.
+    e.model_set_legacy_price_only_reports(true);
     e.model_held_attach(&hp);
     e.model_held_restore().unwrap().unwrap();
     assert!(!e.paper_model_enabled());
@@ -3741,4 +3750,117 @@ fn an_invalid_management_answer_is_no_valid_verdict_never_a_hold_and_protection_
         r.e.model_protect_pending_order(&MINT)
             .expect("protection orders after an invalid management answer");
     assert_eq!(q, inv0);
+}
+
+// ---- SCOPE_FEES_R6 E2/E3/E5: executed-fill accounting across restart + duplicates; expected books by hand ----
+/// A REDUCE settles in two executor reports, each with cumulative tokens, gross and all-in fee.
+/// Expected books are hand-derived from the report numbers and the restored cost basis (not read back from the
+/// engine's arithmetic): realized moves by (gross - fee) - pro-rata cost per increment. A process restart and
+/// duplicate reports change nothing. A later price-only report in legacy mode is recorded as an UNRESOLVED fee
+/// that survives restart.
+#[test]
+fn r6_e5_executed_totals_book_exactly_once_across_restart_and_duplicates() {
+    let hp = held_path("r6_e5");
+    let mut r = rig(|step| if step == 0 { REDUCE } else { HOLD }, &hp);
+    r.advance_to_order(120_000);
+    let (id, _, intended, _) = r.e.model_mgmt_pending(&MINT).expect("REDUCE pending");
+    let inv0 = r.e.model_inventory_tokens(&MINT).unwrap();
+    let v0 = r.e.model_accounting_view(&MINT);
+    let (realized0, cost0) = (v0.realized, u128::from(v0.remaining_cost_basis.unwrap()));
+    // Report A: t1 tokens for gross 2,000,000 lamports, all-in fee 25,000.
+    let t1 = intended / 4;
+    let (g1, f1) = (2_000_000_u64, 25_000_u64);
+    assert_eq!(
+        r.e.model_mgmt_ingest_evidence(MINT, id, MgmtKind::Reduce, intended, t1, g1, f1),
+        SellReportResult::Applied { delta: t1 }
+    );
+    // Hand-derived: frac_bps = floor(t1 * 10_000 / inv0); cost share = floor(cost0 * frac / 10_000).
+    let fr1 = u128::from(t1) * 10_000 / u128::from(inv0);
+    let exp1 = i128::from(g1) - i128::from(f1) - (cost0 * fr1 / 10_000) as i128;
+    assert_eq!(r.e.model_accounting_view(&MINT).realized - realized0, exp1);
+    assert!(r.e.model_held_persist_now());
+    drop(r);
+
+    // Restart: the books restore, never replay.
+    let mut e2 = fresh(&hp);
+    e2.model_held_restore().unwrap().unwrap();
+    let r1 = e2.model_accounting_view(&MINT).realized;
+    assert_eq!(r1 - realized0, exp1, "restored, not replayed");
+    // Duplicate report A after restart: nothing moves.
+    assert_eq!(
+        e2.model_mgmt_ingest_evidence(MINT, id, MgmtKind::Reduce, intended, t1, g1, f1),
+        SellReportResult::Duplicate
+    );
+    assert_eq!(e2.model_accounting_view(&MINT).realized, r1);
+    // Report B (cumulative): t1 + t2 tokens, gross g1 + 1,500,000, fee f1 + 18,000. Only the increment books,
+    // and it books the REPORTED increment exactly: no model fee is added on top.
+    let t2 = intended / 4;
+    let (g2, f2) = (1_500_000_u64, 18_000_u64);
+    let inv1 = inv0 - t1;
+    assert_eq!(e2.model_inventory_tokens(&MINT), Some(inv1));
+    let rem1 = 10_000 - fr1;
+    let fr2 = u128::from(t2) * rem1 / u128::from(inv1);
+    let exp2 = i128::from(g2) - i128::from(f2) - (cost0 * fr2 / 10_000) as i128;
+    assert_eq!(
+        e2.model_mgmt_ingest_evidence(
+            MINT,
+            id,
+            MgmtKind::Reduce,
+            intended,
+            t1 + t2,
+            g1 + g2,
+            f1 + f2
+        ),
+        SellReportResult::Applied { delta: t2 }
+    );
+    assert_eq!(e2.model_accounting_view(&MINT).realized - r1, exp2);
+    let fills = e2.model_mgmt_fills().to_vec();
+    assert_eq!(
+        (
+            fills.last().unwrap().gross_lamports,
+            fills.last().unwrap().fee_lamports
+        ),
+        (g2, f2),
+        "the reported increment, exactly"
+    );
+    assert_eq!(
+        e2.model_lane_report()
+            .get("fee:executed_fill_fee_modelled_default")
+            .copied()
+            .unwrap_or(0),
+        0
+    );
+    assert!(e2.model_fee_unresolved().is_empty(), "fees were evidenced");
+
+    // A price-only report for the remainder (no gross, no fee) in the labelled legacy mode: the execution books
+    // and the missing fee is recorded DURABLY with a named estimate; settled fill economics stay zero.
+    let t3 = intended - t1 - t2;
+    assert_eq!(
+        e2.model_mgmt_ingest_report(MINT, id, intended, 22_000),
+        SellReportResult::Applied { delta: t3 }
+    );
+    assert_eq!(e2.model_inventory_tokens(&MINT), Some(inv0 - intended));
+    let u = e2.model_fee_unresolved().to_vec();
+    assert_eq!(u.len(), 1, "{u:?}");
+    assert_eq!(
+        (u[0].order_id, u[0].tokens, u[0].price_fp),
+        (id, t3, 22_000)
+    );
+    assert!(u[0].estimate_fee_lamports > 0);
+    let last = *e2.model_mgmt_fills().last().unwrap();
+    assert_eq!((last.gross_lamports, last.fee_lamports), (0, 0));
+    let r3 = e2.model_accounting_view(&MINT).realized;
+    assert!(e2.model_held_persist_now());
+    drop(e2);
+    // Second restart: the unresolved-fee record survives; a duplicate of every report changes nothing.
+    let mut e3 = fresh(&hp);
+    e3.model_held_restore().unwrap().unwrap();
+    assert_eq!(e3.model_fee_unresolved(), &u[..], "durable, restart-safe");
+    assert_eq!(e3.model_accounting_view(&MINT).realized, r3);
+    assert_eq!(
+        e3.model_mgmt_ingest_report(MINT, id, intended, 22_000),
+        SellReportResult::Duplicate
+    );
+    assert_eq!(e3.model_accounting_view(&MINT).realized, r3);
+    assert_eq!(e3.model_fee_unresolved().len(), 1, "never double-recorded");
 }

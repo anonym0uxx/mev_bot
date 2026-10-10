@@ -220,6 +220,9 @@ fn rig_cfg(
     c.floor_fraction_bps = floor_bps;
     tweak(&mut c);
     let mut e = Engine::new(c, RunMode::Paper);
+
+    // SCOPE_FEES_R6 E4: these fixtures drive PRICE-ONLY management reports: explicit labelled legacy replay mode.
+    e.model_set_legacy_price_only_reports(true);
     e.enable_paper_model(Script {
         prompts: Arc::clone(&prompts),
         calls: Arc::clone(&calls),
@@ -692,6 +695,9 @@ fn sent_state_age_measures_the_observation_inside_the_prompt_not_the_cut_instant
     // arrives 1.5 s after the newest print, so the state that is SENT is at least that old.
     let prompts = Arc::new(Mutex::new(Vec::new()));
     let mut e = Engine::new(cfg(), RunMode::Paper);
+
+    // SCOPE_FEES_R6 E4: these fixtures drive PRICE-ONLY management reports: explicit labelled legacy replay mode.
+    e.model_set_legacy_price_only_reports(true);
     e.enable_paper_model(Script {
         prompts,
         calls: Arc::new(AtomicUsize::new(0)),
@@ -984,6 +990,9 @@ fn fresh_engine(bankroll: u64, held: &std::path::Path) -> Engine {
     c.bankroll_initial_lamports = bankroll;
     c.floor_fraction_bps = 2_500;
     let mut e = Engine::new(c, RunMode::Paper);
+
+    // SCOPE_FEES_R6 E4: these fixtures drive PRICE-ONLY management reports: explicit labelled legacy replay mode.
+    e.model_set_legacy_price_only_reports(true);
     e.enable_paper_model(Script {
         prompts: Arc::new(Mutex::new(Vec::new())),
         calls: Arc::new(AtomicUsize::new(0)),
@@ -1066,6 +1075,9 @@ fn a_restored_position_is_still_managed_by_the_model_and_still_closes_only_throu
     let mut c = cfg();
     c.floor_fraction_bps = 2_500;
     let mut e2 = Engine::new(c, RunMode::Paper);
+
+    // SCOPE_FEES_R6 E4: these fixtures drive PRICE-ONLY management reports: explicit labelled legacy replay mode.
+    e2.model_set_legacy_price_only_reports(true);
     e2.enable_paper_model(Script {
         prompts: Arc::new(Mutex::new(Vec::new())),
         calls: Arc::clone(&calls),
@@ -1802,6 +1814,9 @@ fn pending_entry_world(tag: &str) -> (std::path::PathBuf, u64, u64) {
     c.bankroll_initial_lamports = 2_000_000_000;
     c.floor_fraction_bps = 2_500;
     let mut e = Engine::new(c, RunMode::Paper);
+
+    // SCOPE_FEES_R6 E4: these fixtures drive PRICE-ONLY management reports: explicit labelled legacy replay mode.
+    e.model_set_legacy_price_only_reports(true);
     e.enable_paper_model(Script {
         prompts,
         calls,
@@ -1943,6 +1958,9 @@ fn gated_engine(
     c.bankroll_initial_lamports = 2_000_000_000;
     c.floor_fraction_bps = 2_500;
     let mut e = Engine::new(c, RunMode::Paper);
+
+    // SCOPE_FEES_R6 E4: these fixtures drive PRICE-ONLY management reports: explicit labelled legacy replay mode.
+    e.model_set_legacy_price_only_reports(true);
     e.enable_paper_model(Gated {
         open: Arc::clone(open),
         calls: Arc::clone(calls),

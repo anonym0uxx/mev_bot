@@ -511,8 +511,31 @@ fn f4_simulated_fill_refuses_without_authoritative_fees_but_an_executed_fill_sti
     );
     assert_eq!(r.rep("fee:executed_fill_fee_modelled_default"), 0);
     let (id, _, intended, _) = r.e.model_mgmt_pending(&MINT).expect("EXIT still pending");
+    // R6 E4: outside the explicit legacy replay mode a price-only report (no gross, no fee) is refused by name.
+    assert_eq!(
+        r.e.model_mgmt_apply_reconciled_fill(MINT, id, intended, 22_000),
+        Err("price_only_report_outside_legacy_mode")
+    );
+    assert_eq!(r.e.model_inventory_tokens(&MINT), Some(inv));
+    r.e.model_set_legacy_price_only_reports(true);
     r.e.model_mgmt_apply_reconciled_fill(MINT, id, intended, 22_000)
-        .expect("an executed fill books");
+        .expect("an executed fill books (legacy mode)");
+    // R6 E3: the unresolved fee is a DURABLE record carrying the modelled estimate by name.
+    let u = r.e.model_fee_unresolved().to_vec();
+    assert_eq!(u.len(), 1, "{u:?}");
+    assert_eq!(
+        (u[0].order_id, u[0].tokens, u[0].price_fp),
+        (id, intended, 22_000)
+    );
+    assert!(u[0].estimate_fee_lamports > 0 && u[0].basis.starts_with("legacy_price_only:"));
+    assert_eq!(
+        (
+            r.e.model_mgmt_fills()[0].gross_lamports,
+            r.e.model_mgmt_fills()[0].fee_lamports
+        ),
+        (0, 0),
+        "no estimate is shown as settled economics"
+    );
     assert_eq!(
         r.e.model_mgmt_fills().len(),
         1,

@@ -1018,6 +1018,21 @@ impl Engine {
         }
     }
 
+    /// SCOPE_FEES_R6 E4: enable the explicit, labelled LEGACY replay-compatibility mode in which a price-only
+    /// management report (no gross, no fee) still books, its fee modelled and recorded as unresolved. Off by default.
+    pub fn model_set_legacy_price_only_reports(&mut self, on: bool) {
+        self.model_legacy_price_only = on;
+        if on {
+            self.mrep("mode:legacy_price_only_reports");
+        }
+    }
+
+    /// SCOPE_FEES_R6 E3: executed fills whose venue fee was not evidenced (durable; estimates by name).
+    #[must_use]
+    pub fn model_fee_unresolved(&self) -> &[crate::held_state::HeldFeeUnresolved] {
+        &self.model_fee_unresolved
+    }
+
     /// Apply a RECONCILED fill (full or partial) reported for a pending management order. The order is
     /// matched by id and the quantity is checked against what is still pending: a stale or duplicate
     /// report changes nothing.
@@ -1043,6 +1058,12 @@ impl Engine {
         if tokens == 0 || tokens > order.intended - order.filled {
             self.mrep("mgmt:recon:rejected:quantity");
             return Err("quantity");
+        }
+        // SCOPE_FEES_R6 E4: a price-only report has no gross and no fee. Outside the explicit legacy replay mode it
+        // is refused by name (the executor must report cumulative gross + fees: `model_mgmt_ingest_evidence`).
+        if !self.model_legacy_price_only {
+            self.mrep("mgmt:recon:rejected:price_only_report_outside_legacy_mode");
+            return Err("price_only_report_outside_legacy_mode");
         }
         self.model_mgmt_clear_uncertain(&mint);
         self.model_mgmt_book(mint, order, tokens, price_fp, None);
@@ -1090,6 +1111,15 @@ impl Engine {
         let reason = PosExit::from_code(order.protect)
             .filter(|_| order.kind == MgmtKind::Protect)
             .unwrap_or(PosExit::ModelManaged);
+        // SCOPE_FEES_R6 E3: the legacy price-only path's modelled (gross, all-in fee), captured BEFORE booking by the
+        // same pure function the price-based sell books with, so the durable estimate is exactly what moved.
+        let legacy_estimate = if settled.is_none() {
+            self.positions
+                .simulate_sell_settlement(&mint, tokens, price_fp)
+                .ok()
+        } else {
+            None
+        };
         let sold = match settled {
             Some(gf) => self
                 .positions
@@ -1117,6 +1147,19 @@ impl Engine {
         // settlement: they are priced by the fee_schedule quote or refused by name before booking.
         if settled.is_none() {
             self.mrep("fee:executed_fill_fee_modelled_default");
+            // SCOPE_FEES_R6 E3: the unresolved fee component is recorded DURABLY (held.json `fee_unresolved`), the
+            // modelled estimate kept under its own name: never shown as settled economics.
+            self.model_fee_unresolved
+                .push(crate::held_state::HeldFeeUnresolved {
+                    order_id: order.id,
+                    mint,
+                    tokens,
+                    price_fp,
+                    estimate_gross_lamports: legacy_estimate.map_or(0, |e| e.0),
+                    estimate_fee_lamports: legacy_estimate.map_or(0, |e| e.1),
+                    basis: "legacy_price_only:cost_model_venue_fee_bps_per_leg+fixed_leg"
+                        .to_string(),
+                });
         }
         // Partial sell: free the sold share of the committed entry cost so cash reflects proceeds.
         if !exit.closed && inv_before > 0 {
