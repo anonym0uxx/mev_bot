@@ -66,11 +66,146 @@ pub fn min_tokens_from_price_limit(
     if !quotient.is_finite() || quotient > u64::MAX as f64 {
         return Err(PriceLimitError::Overflow);
     }
-    let tokens = quotient.ceil();
-    if tokens < 1.0 {
-        return Err(PriceLimitError::RoundsToZero);
+    // The float quotient is only a starting point: `size / limit` is rounded to nearest, and in ~45%
+    // of realistic (clip, limit) pairs it rounds DOWN past an integer, so `quotient.ceil()` came out
+    // one token short and admitted an average a hair ABOVE the limit (R5 finding, PLIM_CONTRACT.md
+    // §S3.4). The count is settled in exact integer arithmetic on the limit's own binary value:
+    // the smallest `t >= 1` with `t * limit >= size`.
+    let mut t = (quotient.ceil() as u64).max(1);
+    while !covers(t, size_lamports, price_limit_lamports_per_raw_token) {
+        t = t.checked_add(1).ok_or(PriceLimitError::Overflow)?;
     }
-    Ok(tokens as u64)
+    while t > 1 && covers(t - 1, size_lamports, price_limit_lamports_per_raw_token) {
+        t -= 1;
+    }
+    Ok(t)
+}
+
+/// `tokens * limit >= size`, EXACTLY, for a finite positive `limit` (no float rounding).
+///
+/// A finite positive f64 is `m * 2^e` with integer `m < 2^53`; `tokens * m < 2^117` fits a u128, so the
+/// comparison is exact integer arithmetic on both sides.
+fn covers(tokens: u64, size: u64, limit: f64) -> bool {
+    let bits = limit.to_bits();
+    let exp = ((bits >> 52) & 0x7ff) as i32;
+    let frac = bits & ((1u64 << 52) - 1);
+    let (m, e) = if exp == 0 {
+        (frac, -1074)
+    } else {
+        (frac | (1u64 << 52), exp - 1075)
+    };
+    let lhs = u128::from(tokens) * u128::from(m);
+    if lhs == 0 {
+        return size == 0;
+    }
+    if e >= 0 {
+        // lhs * 2^e >= size. lhs >= 1 and size < 2^64, so a shift of 64+ always covers.
+        let e = e as u32;
+        if e >= 64 || lhs > (u128::MAX >> e) {
+            return true;
+        }
+        (lhs << e) >= u128::from(size)
+    } else {
+        // lhs >= size * 2^s. lhs < 2^117: if size * 2^s needs more than 117 bits it cannot be covered.
+        let s = (-e) as u32;
+        if size == 0 {
+            return true;
+        }
+        let size_bits = 64 - size.leading_zeros();
+        if size_bits + s > 127 {
+            return false;
+        }
+        lhs >= (u128::from(size) << s)
+    }
+}
+
+/// The ONE curve-buy plan the paper fill and the live builder both use (W3/R5, `PLIM_CONTRACT.md`).
+///
+/// * The spend is the clip, always (`spendable_sol_in = clip`). Nothing here can shrink or grow it:
+///   the PRICE LIMIT is a constraint on the clip the authority chose, never a size.
+/// * With a limit: `min_tokens_out` is the exact smallest count with `clip / count <= limit`.
+/// * Without one (68% of trained BUYs): the caller's slippage floor (`fallback_min_tokens`) stands.
+/// * When the caller has a quote for THIS clip on THIS state (`quoted_tokens`), a quote below the floor
+///   is a named refusal here — never a smaller clip, a widened limit, the slippage count, or the
+///   exact-out instruction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CurveBuyPlan {
+    /// `buy_exact_sol_in.spendable_sol_in`: the whole clip, venue fees inside.
+    pub spendable_sol_in: u64,
+    /// `buy_exact_sol_in.min_tokens_out`: a floor, never a size.
+    pub min_tokens_out: u64,
+    /// Which bound produced the floor.
+    pub source: MinTokensSource,
+}
+
+/// Why a curve buy plan was refused. Each maps to one named outcome on both paths.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuyPlanRefusal {
+    /// A PRESENT limit that cannot become a token count (paper `fill_none:limit_unusable`,
+    /// live `price_limit_unusable`).
+    LimitUnusable(PriceLimitError),
+    /// The clip's quote delivers fewer tokens than the limit's floor (paper `fill_none:limit_not_met`,
+    /// live `price_limit_not_met`).
+    LimitNotMet {
+        /// Tokens the quote delivers for the full clip.
+        quoted_tokens: u64,
+        /// The floor the limit requires.
+        min_tokens_out: u64,
+    },
+    /// No limit, and the clip's quote is below the slippage floor (live `slippage_floor_not_met`).
+    SlippageFloorNotMet {
+        /// Tokens the quote delivers for the full clip.
+        quoted_tokens: u64,
+        /// The slippage floor.
+        min_tokens_out: u64,
+    },
+}
+
+impl BuyPlanRefusal {
+    /// The stable name both paths report.
+    #[must_use]
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::LimitUnusable(_) => "limit_unusable",
+            Self::LimitNotMet { .. } => "limit_not_met",
+            Self::SlippageFloorNotMet { .. } => "slippage_floor_not_met",
+        }
+    }
+}
+
+/// Plan a curve buy of exactly `clip` lamports. See [`CurveBuyPlan`].
+pub fn plan_curve_buy(
+    clip: u64,
+    price_limit: Option<f64>,
+    quoted_tokens: Option<u64>,
+    fallback_min_tokens: u64,
+) -> Result<CurveBuyPlan, BuyPlanRefusal> {
+    let (min_tokens_out, source) = match price_limit {
+        Some(limit) => (
+            min_tokens_from_price_limit(clip, limit).map_err(BuyPlanRefusal::LimitUnusable)?,
+            MinTokensSource::ModelPriceLimit,
+        ),
+        None => (fallback_min_tokens, MinTokensSource::SlippageFallback),
+    };
+    if let Some(q) = quoted_tokens {
+        if q < min_tokens_out {
+            return Err(match source {
+                MinTokensSource::ModelPriceLimit => BuyPlanRefusal::LimitNotMet {
+                    quoted_tokens: q,
+                    min_tokens_out,
+                },
+                MinTokensSource::SlippageFallback => BuyPlanRefusal::SlippageFloorNotMet {
+                    quoted_tokens: q,
+                    min_tokens_out,
+                },
+            });
+        }
+    }
+    Ok(CurveBuyPlan {
+        spendable_sol_in: clip,
+        min_tokens_out,
+        source,
+    })
 }
 
 /// Resolve the `min_tokens_out` that ships.
@@ -184,6 +319,94 @@ mod tests {
         );
     }
 
+    /// R5 rounding: the float quotient rounds DOWN past an integer in ~45% of realistic pairs, so
+    /// `quotient.ceil()` was one token short (achieved average above the limit). Three such pairs, found
+    /// by an exact-rational sweep, where the limit is the f64 nearest `clip / tokens`.
+    #[test]
+    fn the_count_is_exact_where_the_float_quotient_rounds_down() {
+        for (clip, tokens) in [
+            (657_892_279u64, 3_401_114_873_424u64),
+            (4_616_078_771, 6_626_141_166_123),
+            (4_554_070_773, 15_108_579_399_925),
+        ] {
+            let limit = clip as f64 / tokens as f64;
+            // The f64 limit sits just BELOW clip/tokens, so `tokens` tokens are an average above it.
+            assert_eq!(
+                (clip as f64 / limit).ceil() as u64,
+                tokens,
+                "the old float count"
+            );
+            let t = min_tokens_from_price_limit(clip, limit).unwrap();
+            assert_eq!(t, tokens + 1, "{clip}/{tokens}");
+            assert!(covers(t, clip, limit) && !covers(t - 1, clip, limit));
+        }
+        // A limit whose f64 equals clip/tokens exactly needs exactly `tokens`.
+        assert_eq!(min_tokens_from_price_limit(1 << 20, 0.25).unwrap(), 1 << 22);
+        assert_eq!(min_tokens_from_price_limit(3, 0.5).unwrap(), 6);
+        // Limits above 1 lamport/raw token and sub-normal-free extremes stay exact.
+        assert_eq!(min_tokens_from_price_limit(10, 3.0).unwrap(), 4);
+        assert_eq!(min_tokens_from_price_limit(9, 3.0).unwrap(), 3);
+        assert_eq!(min_tokens_from_price_limit(1, 1e300).unwrap(), 1);
+    }
+
+    /// The shared plan: the spend is ALWAYS the clip; a limit is a floor on tokens; a short quote is a
+    /// named refusal; absent limits keep the caller's slippage floor.
+    #[test]
+    fn the_plan_spends_the_clip_and_refuses_a_short_quote_by_name() {
+        let clip = 500_000_000u64;
+        let limit = 198_819e-9;
+        let min = min_tokens_from_price_limit(clip, limit).unwrap();
+        assert_eq!(min, 2_514_850_190_375);
+        let ok = plan_curve_buy(clip, Some(limit), Some(min), 7).unwrap();
+        assert_eq!(
+            ok,
+            CurveBuyPlan {
+                spendable_sol_in: clip,
+                min_tokens_out: min,
+                source: MinTokensSource::ModelPriceLimit
+            }
+        );
+        // +187.5 bp fixture: the FULL clip's all-in quote on the 80-SOL pool.
+        assert_eq!(
+            plan_curve_buy(clip, Some(limit), Some(2_468_558_269_818), 7),
+            Err(BuyPlanRefusal::LimitNotMet {
+                quoted_tokens: 2_468_558_269_818,
+                min_tokens_out: min
+            })
+        );
+        assert_eq!(
+            plan_curve_buy(clip, Some(limit), Some(min - 1), 7)
+                .unwrap_err()
+                .label(),
+            "limit_not_met"
+        );
+        assert_eq!(
+            plan_curve_buy(clip, Some(f64::NAN), Some(u64::MAX), 7),
+            Err(BuyPlanRefusal::LimitUnusable(PriceLimitError::Unusable))
+        );
+        assert_eq!(
+            plan_curve_buy(clip, Some(1e-20), None, 7),
+            Err(BuyPlanRefusal::LimitUnusable(PriceLimitError::Overflow))
+        );
+        // No limit: the fallback floor, the clip unchanged, and a short quote refused by its own name.
+        let f = plan_curve_buy(clip, None, Some(100), 100).unwrap();
+        assert_eq!((f.spendable_sol_in, f.min_tokens_out), (clip, 100));
+        assert_eq!(f.source, MinTokensSource::SlippageFallback);
+        assert_eq!(
+            plan_curve_buy(clip, None, Some(99), 100)
+                .unwrap_err()
+                .label(),
+            "slippage_floor_not_met"
+        );
+        // Without a quote, the floor is still built (the chain enforces it).
+        assert_eq!(
+            plan_curve_buy(clip, Some(limit), None, 7)
+                .unwrap()
+                .min_tokens_out,
+            min
+        );
+    }
+
     #[test]
     fn the_models_limit_governs_and_slippage_is_only_the_fallback() {
         let size = 666_666_666u64;
@@ -194,7 +417,9 @@ mod tests {
         assert_eq!(tokens, 27_258_274_802);
         assert_eq!(source, MinTokensSource::ModelPriceLimit);
         let (tokens, source) = resolve_min_tokens_out(size, Some(0.03), slippage);
-        assert_eq!(tokens, 22222222200);
+        // R5: was pinned at 22_222_222_200 (float ceil). f64(0.03) = 0.029999999999999998889…, so
+        // 22_222_222_200 tokens average a hair ABOVE the limit; the exact floor is one more.
+        assert_eq!(tokens, 22_222_222_201);
         assert_eq!(source, MinTokensSource::ModelPriceLimit);
         assert!(
             tokens < slippage,

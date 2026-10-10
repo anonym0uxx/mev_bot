@@ -1708,17 +1708,18 @@ impl Engine {
                 )
             };
             // THE MODEL'S OWN BOUND, converted by the same authority the live sink uses.
-            if let Some(limit) = order.price_limit {
-                match pump_quant_execution::price_anchor::min_tokens_from_price_limit(size, limit) {
-                    Ok(min_tokens) if tokens_out < min_tokens => {
-                        self.mrep("fill_none:limit_not_met");
-                        continue;
-                    }
-                    Ok(_) => {}
-                    Err(_) => {
-                        self.mrep("fill_none:limit_unusable");
-                        continue;
-                    }
+            // W3/R5: the SAME plan the live builder ships (`price_anchor::plan_curve_buy`): spend the
+            // whole clip, limit = exact token floor for that clip, a short quote is a named refusal.
+            // Paper has no slippage floor of its own (fallback 0), so an absent limit never refuses.
+            if order.price_limit.is_some() {
+                if let Err(r) = pump_quant_execution::price_anchor::plan_curve_buy(
+                    size,
+                    order.price_limit,
+                    Some(tokens_out),
+                    0,
+                ) {
+                    self.mrep(format!("fill_none:{}", r.label()));
+                    continue;
                 }
             }
             self.model_open_filled(

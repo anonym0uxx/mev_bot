@@ -46,7 +46,7 @@
 //! * criterion 77/113 — the output is the byte surface the construction gate
 //!   fixtures; nothing here can reach a chain without passing it.
 
-use crate::ix::{self, BuyParams, SellParams};
+use crate::ix::{self, BuyExactSolInParams, BuyParams, SellParams};
 use crate::layout::{LayoutError, LayoutKey, LayoutRegistry, Side, Variant, Venue};
 use crate::message::{self, compile_message, CompiledMessage, Instruction, MessageError};
 use crate::venue_accounts::{
@@ -152,6 +152,16 @@ pub fn build_buy_data_with_volume_flag(params: BuyParams) -> Vec<u8> {
     data
 }
 
+/// `buy_exact_sol_in` data blob with the explicit `track_volume = false` byte (25 bytes), the same
+/// OptionBool convention as [`build_buy_data_with_volume_flag`]. The pinned IDL (pump-sdk 2.0.0) has
+/// exactly three args; the newer public IDL appends an optional `partial_fill` (mayhem coins only)
+/// that "may be left off the end", so it is not emitted.
+pub fn build_buy_exact_sol_in_data_with_volume_flag(params: BuyExactSolInParams) -> Vec<u8> {
+    let mut data = ix::build_buy_exact_sol_in_ix(params);
+    data.push(0u8); // OptionBool(false): decline volume tracking, fail-closed.
+    data
+}
+
 /// `sell` data blob — 24 bytes (discriminator + 2 u64 args).
 ///
 /// Rev-29 (2026-08-20): The sell IDL has only 2 args (`amount`, `min_sol_output`)
@@ -187,6 +197,33 @@ pub fn build_pump_buy_message(
     params: BuyParams,
     env: &BuildEnv<'_>,
 ) -> Result<CompiledMessage, TxBuildError> {
+    build_curve_buy_message(ctx, build_buy_data_with_volume_flag(params), env)
+}
+
+/// Build the unsigned pump.fun **`buy_exact_sol_in`** message: spend exactly
+/// `params.spendable_sol_in` (fees inside) and accept no fewer than `params.min_tokens_out`.
+///
+/// Same instruction sequence and the same account list as [`build_pump_buy_message`]: the IDL gives
+/// both instructions the identical 16 named accounts, and mainnet shows both at 18 with the
+/// remaining accounts (`tools/layout_probe/layout_matrix.json`: `buy_exact_sol_in|18|2022`, 63 txs).
+/// The layout gate is therefore the same `Side::Buy` key. Only the data differs.
+pub fn build_pump_buy_exact_sol_in_message(
+    ctx: &PumpCurveCtx,
+    params: BuyExactSolInParams,
+    env: &BuildEnv<'_>,
+) -> Result<CompiledMessage, TxBuildError> {
+    build_curve_buy_message(
+        ctx,
+        build_buy_exact_sol_in_data_with_volume_flag(params),
+        env,
+    )
+}
+
+fn build_curve_buy_message(
+    ctx: &PumpCurveCtx,
+    data: Vec<u8>,
+    env: &BuildEnv<'_>,
+) -> Result<CompiledMessage, TxBuildError> {
     let (compute, tip, recent_blockhash) = (env.compute, env.tip, &env.recent_blockhash);
     validate_common(recent_blockhash, &tip)?;
     let accounts = pump_buy_accounts_with_tail(ctx, env.fee_tail)?;
@@ -212,7 +249,7 @@ pub fn build_pump_buy_message(
     ixs.push(Instruction {
         program_id: crate::venue_accounts::PUMP_PROGRAM_ID,
         accounts,
-        data: build_buy_data_with_volume_flag(params),
+        data,
     });
     if let Some(t) = tip {
         ixs.push(message::system_transfer(&ctx.user, &t.to, t.lamports));

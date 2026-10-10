@@ -211,6 +211,7 @@ fn main() -> ExitCode {
         tip,
         fee_tail: FeeTail::None,
         max_slippage_bps: slippage_bps,
+        curve_buy_fee_bps: None, // pq_sell never builds a BUY
         mcap_band_enable: false, // pq_sell only sells, no buy-side mcap re-check
         mcap_band_lo_lamports: 0,
         mcap_band_hi_lamports: u64::MAX,
