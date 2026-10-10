@@ -210,6 +210,42 @@ impl Engine {
         self.model_protect_pending.contains_key(mint)
     }
 
+    /// OFFLINE REPLAY HARNESS ONLY: force the agreed HARD-STOP safeguard to fire on a held, model-managed position, so a
+    /// harness can prove that protection still EXECUTES while a resource restriction / SAFETY_OFF is active. The intent
+    /// goes through exactly the path a real trigger takes (`ScalpLifecycle` intent -> `model_protect_drain` ->
+    /// `MgmtKind::Protect` order -> landing-state fill -> books + ledger); no threshold is changed and nothing is booked
+    /// here. The daemon calls this only under `PQ_OFFLINE_PAPER_REPLAY=1` without `--live`; the engine also refuses
+    /// outside Paper mode. Counted `protect:harness_forced:HardStop`.
+    ///
+    /// # Errors
+    /// A named refusal; nothing is queued.
+    pub fn model_harness_force_protect(&mut self, mint: &[u8; 32]) -> Result<(), &'static str> {
+        if self.mode != RunMode::Paper || !self.paper_model_mode {
+            return Err("harness_force_protect_refused:not_paper_model");
+        }
+        if !self.positions.has(mint) {
+            return Err("harness_force_protect_refused:not_held");
+        }
+        if self.model_mgmt.protect.contains_key(mint) {
+            return Err("harness_force_protect_refused:protective_order_working");
+        }
+        let px = self
+            .numeric
+            .latest_price_fp(DomainMint::from_bytes(*mint))
+            .unwrap_or(0);
+        if !self
+            .positions
+            .harness_queue_intent(mint, PosExit::HardStop, px)
+        {
+            return Err("harness_force_protect_refused:not_model_managed_or_unrouted");
+        }
+        self.mrep("protect:harness_forced:HardStop");
+        // Same as after any engine event: register the trigger and create the protective order now.
+        self.model_protect_drain();
+        self.model_sync_sell_reservations();
+        Ok(())
+    }
+
     /// Mark the working protective order's acknowledgement UNCERTAIN (never cancelled, never simulated-filled).
     pub fn model_protect_mark_ack_uncertain(&mut self, mint: &[u8; 32], order_id: u64) -> bool {
         match self.model_mgmt.protect.get_mut(mint) {

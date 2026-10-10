@@ -43,6 +43,20 @@ floor), 2dce403b4c6394ad5045cc7dc1553441a006b90a (test hardening). Branch task/s
 ### Re-arm
 - An explicit operator re-arm (`model_safety_rearm`) re-derives the entry block from the table.
 - Any active operational restriction keeps entries blocked after a re-arm (`stop_rearm_with_an_active_operational_restriction_keeps_entries_blocked`).
+- Daemon entry point (the ONLY non-test caller): a named operator writes `data/OPERATOR_REARM.json`
+  `{"operator": "<name>", "safety_epoch": <epoch from the safety file>}` while the daemon runs
+  (`model_lifecycle::handle_rearm_request`). The daemon consumes the file before acting (applied at most once), logs
+  `OPERATOR_REARM <outcome>` and writes `data/OPERATOR_REARM_RESULT.json`. Refusals, each leaving the block in place:
+  `Unreadable`, `ConsumeFailed`, `EpochMissing`, `EpochMismatch{requested,current}` (a request written for an earlier
+  latch never lifts a later one), and the contract's `NotBlocked` / `NoOperator` / `UnresolvedReconFault` /
+  `UncertainOrderPending` / `PersistFailed`. A request already on disk at startup is refused `StaleAtStartup` and
+  removed (a restart never re-arms). A successful re-arm reports the re-derived `entries_blocked` and the active
+  restrictions. Tests: `model_lifecycle_e2e::operator_rearm_*`, `a_rearm_request_present_at_startup_is_refused_and_removed`.
+- HARNESS-ONLY forced protective trigger (offline replay, `PQ_OFFLINE_PAPER_REPLAY=1`, never live): `data/HARNESS_FORCE_PROTECT`
+  (64-hex mint) fires the agreed HARD-STOP on a held model-managed position through the normal protective path
+  (`Engine::model_harness_force_protect`; counted `protect:harness_forced:HardStop`, logged HARNESS_FORCE_PROTECT). It
+  changes no threshold. It exists to prove that protection EXECUTES under SAFETY_OFF and resource restrictions
+  (`a_forced_hard_stop_under_safety_off_and_a_resource_restriction_executes_through_the_protective_path`).
 
 ## Paper loss stop: valuation rules
 - Starting equity: 2 SOL (bankroll seed). Equity = cash (seed + realized - committed entry spend) + the sum of the held model-managed positions' liquidation values.

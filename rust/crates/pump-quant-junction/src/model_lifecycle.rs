@@ -562,6 +562,209 @@ pub fn simulated_pressure_from(harness: bool, file: &Path) -> SimulatedPressure 
     parse_simulated_pressure(&std::fs::read_to_string(file).unwrap_or_default())
 }
 
+/// OPERATOR RE-ARM entry point (the only daemon path that calls [`Engine::model_safety_rearm`]). A named operator
+/// writes this file as JSON `{"operator": "<name>", "safety_epoch": <epoch copied from the safety file>}` while the
+/// daemon runs. The daemon CONSUMES it (removes it before acting, so it is applied at most once), applies the existing
+/// contract (`model_safety_rearm`: NotBlocked / NoOperator / UnresolvedReconFault / UncertainOrderPending /
+/// PersistFailed), and writes the outcome to [`OPERATOR_REARM_RESULT_FILE`]. The epoch echo binds the request to ONE
+/// latch: a request written for an earlier latch can never lift a later one. A request present at startup is refused
+/// (a restart never re-arms).
+pub const OPERATOR_REARM_FILE: &str = "data/OPERATOR_REARM.json";
+/// Outcome of the last operator re-arm request (JSON; overwritten per request).
+pub const OPERATOR_REARM_RESULT_FILE: &str = "data/OPERATOR_REARM_RESULT.json";
+
+/// Why an operator re-arm request did not lift SAFETY_OFF.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RearmRequestRefusal {
+    /// Not JSON / not an object.
+    Unreadable,
+    /// The request could not be consumed (removed), so it was not applied.
+    ConsumeFailed,
+    /// No `safety_epoch` echo.
+    EpochMissing,
+    /// The echoed epoch is not the current latch's epoch (written for another latch).
+    EpochMismatch {
+        /// Echoed by the request.
+        requested: u64,
+        /// The engine's current epoch.
+        current: u64,
+    },
+    /// The request was already on disk when the daemon started: a restart never re-arms.
+    StaleAtStartup,
+    /// The engine's re-arm contract refused it.
+    Contract(pump_quant_app::safety_off::RearmRefusal),
+}
+
+/// What an operator re-arm request did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RearmOutcome {
+    /// SAFETY_OFF lifted and durably recorded. `entries_blocked` is the RE-DERIVED entry block: an active stop-table
+    /// restriction (`restrictions`) keeps entries blocked after the re-arm.
+    Rearmed {
+        /// Who re-armed.
+        operator: String,
+        /// The new (persisted) epoch.
+        epoch: u64,
+        /// Entries still blocked after the re-derivation.
+        entries_blocked: bool,
+        /// Active non-latching restrictions (stop-table triggers) at the re-arm.
+        restrictions: Vec<String>,
+    },
+    /// Nothing changed; the block stands.
+    Refused {
+        /// The operator named by the request, if any.
+        operator: Option<String>,
+        /// Why.
+        why: RearmRequestRefusal,
+    },
+}
+
+fn write_rearm_result(
+    result_file: &Path,
+    outcome: &RearmOutcome,
+    epoch_now: u64,
+    blocked_now: bool,
+) {
+    let doc = match outcome {
+        RearmOutcome::Rearmed {
+            operator,
+            epoch,
+            entries_blocked,
+            restrictions,
+        } => serde_json::json!({
+            "outcome": "rearmed", "operator": operator, "epoch": epoch,
+            "entries_blocked_after": entries_blocked, "restrictions": restrictions,
+            "safety_blocked": blocked_now,
+        }),
+        RearmOutcome::Refused { operator, why } => serde_json::json!({
+            "outcome": "refused", "operator": operator, "why": format!("{why:?}"),
+            "epoch": epoch_now, "safety_blocked": blocked_now,
+        }),
+    };
+    let _ = std::fs::write(result_file, doc.to_string());
+}
+
+/// Handle a pending operator re-arm request, if any (`None` = no request file). See [`OPERATOR_REARM_FILE`].
+pub fn handle_rearm_request(
+    engine: &mut Engine,
+    request_file: &Path,
+    result_file: &Path,
+) -> Option<RearmOutcome> {
+    let raw = match std::fs::read_to_string(request_file) {
+        Ok(r) => r,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(_) => String::new(),
+    };
+    let v: Option<serde_json::Value> = serde_json::from_str(&raw)
+        .ok()
+        .filter(|v: &serde_json::Value| v.is_object());
+    let operator = v
+        .as_ref()
+        .and_then(|v| v.get("operator"))
+        .and_then(|x| x.as_str())
+        .map(str::to_string);
+    let refuse = |why| RearmOutcome::Refused {
+        operator: operator.clone(),
+        why,
+    };
+    // Consume BEFORE acting: a request is applied at most once, never re-applied on a later latch.
+    let outcome = if std::fs::remove_file(request_file).is_err() {
+        refuse(RearmRequestRefusal::ConsumeFailed)
+    } else if let Some(v) = v {
+        let current = engine.model_safety_epoch();
+        match v.get("safety_epoch").and_then(serde_json::Value::as_u64) {
+            None => refuse(RearmRequestRefusal::EpochMissing),
+            Some(requested) if requested != current => {
+                refuse(RearmRequestRefusal::EpochMismatch { requested, current })
+            }
+            Some(_) => match engine.model_safety_rearm(operator.as_deref().unwrap_or("")) {
+                Ok(()) => RearmOutcome::Rearmed {
+                    operator: operator.clone().unwrap_or_default(),
+                    epoch: engine.model_safety_epoch(),
+                    entries_blocked: engine.model_entries_blocked(),
+                    restrictions: engine
+                        .model_stop_state()
+                        .active
+                        .iter()
+                        .map(|t| format!("{t:?}"))
+                        .collect(),
+                },
+                Err(r) => refuse(RearmRequestRefusal::Contract(r)),
+            },
+        }
+    } else {
+        refuse(RearmRequestRefusal::Unreadable)
+    };
+    write_rearm_result(
+        result_file,
+        &outcome,
+        engine.model_safety_epoch(),
+        engine.model_safety_blocked(),
+    );
+    Some(outcome)
+}
+
+/// At startup: a re-arm request already on disk is refused and removed (a restart never re-arms). Returns whether
+/// one was found.
+pub fn refuse_stale_rearm_at_startup(
+    engine: &Engine,
+    request_file: &Path,
+    result_file: &Path,
+) -> bool {
+    if !request_file.exists() {
+        return false;
+    }
+    let _ = std::fs::remove_file(request_file);
+    write_rearm_result(
+        result_file,
+        &RearmOutcome::Refused {
+            operator: None,
+            why: RearmRequestRefusal::StaleAtStartup,
+        },
+        engine.model_safety_epoch(),
+        engine.model_safety_blocked(),
+    );
+    true
+}
+
+/// HARNESS-ONLY forced protective trigger (offline replay harness; `PQ_OFFLINE_PAPER_REPLAY=1`, never live). The file
+/// holds the 64-hex mint of a held model-managed position; the daemon fires the agreed HARD-STOP safeguard on it through
+/// the normal protective path ([`Engine::model_harness_force_protect`]), logs it as HARNESS_FORCE_PROTECT, and removes
+/// the file. Thresholds are untouched; this proves protection EXECUTES under pressure, not WHEN it fires.
+pub const HARNESS_FORCE_PROTECT_FILE: &str = "data/HARNESS_FORCE_PROTECT";
+
+/// Handle the forced-trigger file. `harness` false -> `None` and the file is never read or removed. On success the
+/// result carries the protective order now working: (id, intended, filled, trigger code).
+pub fn harness_force_protect_from(
+    engine: &mut Engine,
+    harness: bool,
+    file: &Path,
+) -> Option<(String, Result<Option<(u64, u64, u64, u8)>, &'static str>)> {
+    if !harness {
+        return None;
+    }
+    let raw = std::fs::read_to_string(file).ok()?;
+    let _ = std::fs::remove_file(file);
+    let hex = raw.trim().to_string();
+    let mint = (hex.len() == 64)
+        .then(|| {
+            let mut m = [0u8; 32];
+            for (i, b) in m.iter_mut().enumerate() {
+                let at = i.checked_mul(2)?;
+                *b = u8::from_str_radix(hex.get(at..at.checked_add(2)?)?, 16).ok()?;
+            }
+            Some(m)
+        })
+        .flatten();
+    let res = match mint {
+        Some(m) => engine
+            .model_harness_force_protect(&m)
+            .map(|()| engine.model_protect_pending_order(&m)),
+        None => Err("harness_force_protect_refused:bad_mint"),
+    };
+    Some((hex, res))
+}
+
 /// The shared memory rule over this process's LIVE readings (`/proc/meminfo`, `/proc/self/cgroup`, the whole
 /// `/sys/fs/cgroup` ancestor chain). Called at startup AND on every runtime check.
 #[must_use]

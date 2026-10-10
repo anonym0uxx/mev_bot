@@ -1977,6 +1977,19 @@ fn main() -> ExitCode {
                     "[pq-daemon] paper model lane ARMED endpoint={endpoint} safety_file={safety} load={:?} blocked_at_start={}",
                     armed.load, armed.blocked_at_start
                 );
+                // A restart never re-arms: a re-arm request already on disk is refused (named) and removed.
+                if pump_quant_junction::model_lifecycle::refuse_stale_rearm_at_startup(
+                    &engine,
+                    std::path::Path::new(pump_quant_junction::model_lifecycle::OPERATOR_REARM_FILE),
+                    std::path::Path::new(
+                        pump_quant_junction::model_lifecycle::OPERATOR_REARM_RESULT_FILE,
+                    ),
+                ) {
+                    eprintln!(
+                        "[pq-daemon] OPERATOR_REARM refused: StaleAtStartup (request present before this process started; a restart never re-arms) safety_blocked={}",
+                        engine.model_safety_blocked()
+                    );
+                }
             }
         }
     }
@@ -2895,6 +2908,27 @@ fn main() -> ExitCode {
         }
 
         let mut did_work = false;
+
+        // ── OPERATOR RE-ARM (model lane): the only daemon path to `model_safety_rearm`. A named operator writes
+        // data/OPERATOR_REARM.json {operator, safety_epoch}; it is consumed once and judged by the existing contract.
+        if model_armed
+            && std::path::Path::new(pump_quant_junction::model_lifecycle::OPERATOR_REARM_FILE)
+                .exists()
+        {
+            if let Some(o) = pump_quant_junction::model_lifecycle::handle_rearm_request(
+                &mut engine,
+                std::path::Path::new(pump_quant_junction::model_lifecycle::OPERATOR_REARM_FILE),
+                std::path::Path::new(
+                    pump_quant_junction::model_lifecycle::OPERATOR_REARM_RESULT_FILE,
+                ),
+            ) {
+                eprintln!(
+                    "[pq-daemon] OPERATOR_REARM {o:?} safety_blocked={} entries_blocked={}",
+                    engine.model_safety_blocked(),
+                    engine.model_entries_blocked()
+                );
+            }
+        }
 
         // ── SUBSCRIPTION CAP RECONNECT (self-healing) ───────────────────
         // If -32006 was detected on the previous iteration, force a full WS
@@ -5032,6 +5066,22 @@ fn main() -> ExitCode {
                 }
                 for ev in evs {
                     engine.tick(ev);
+                }
+                // HARNESS-ONLY forced protective trigger (offline replay only; never live).
+                if let Some((m, res)) =
+                    pump_quant_junction::model_lifecycle::harness_force_protect_from(
+                        &mut engine,
+                        replay_harness,
+                        std::path::Path::new(
+                            pump_quant_junction::model_lifecycle::HARNESS_FORCE_PROTECT_FILE,
+                        ),
+                    )
+                {
+                    eprintln!(
+                        "[pq-daemon] HARNESS_FORCE_PROTECT (harness-only, not a market trigger) mint={m} result(protect_order id,intended,filled,code)={res:?} safety_blocked={} new_risk_blocked={}",
+                        engine.model_safety_blocked(),
+                        engine.model_new_risk_blocked()
+                    );
                 }
             }
             #[allow(clippy::manual_is_multiple_of)] // MSRV 1.85: is_multiple_of stabilised in 1.87

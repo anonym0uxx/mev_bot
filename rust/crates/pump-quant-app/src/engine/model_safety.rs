@@ -69,6 +69,13 @@ impl Engine {
         self.model_safety.blocked
     }
 
+    /// The SAFETY_OFF transition counter (monotone, persisted). An operator re-arm request echoes it, so a request
+    /// written for one latch can never lift a later one.
+    #[must_use]
+    pub fn model_safety_epoch(&self) -> u64 {
+        self.model_safety.epoch
+    }
+
     /// The recorded reason.
     #[must_use]
     pub fn model_safety_reason(&self) -> &str {
