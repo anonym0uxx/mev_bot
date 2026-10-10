@@ -61,14 +61,19 @@ pub struct FeeConfigVersion {
     pub bytes: &'static [u8],
 }
 
+/// Raw bytes of the curve `FeeConfig` read at [`CURVE_CONFIG_READ_SLOT`].
+pub const CURVE_CONFIG_BYTES: &[u8] = include_bytes!("fee_configs/curve_fee_config_454754100.bin");
+/// Read slot of the (only) captured curve `FeeConfig`.
+pub const CURVE_CONFIG_READ_SLOT: u64 = 454_754_100;
+
 /// Every captured version, grouped by venue, ascending read slot within a venue.
 pub static VERSIONS: [FeeConfigVersion; 3] = [
     FeeConfigVersion {
         venue: FeeVenue::BondingCurve,
         account: "8Wf5TiAheLUqBrKXeYg2JtAFFMWtKdG2BSFgqUcPVwTt",
-        read_slot: 454_754_100,
+        read_slot: CURVE_CONFIG_READ_SLOT,
         sha256_hex: "3504fae20640e15bd441257ab118aa96fb4e99190defc06a01aae26b307bf204",
-        bytes: include_bytes!("fee_configs/curve_fee_config_454754100.bin"),
+        bytes: CURVE_CONFIG_BYTES,
     },
     FeeConfigVersion {
         venue: FeeVenue::PumpSwapCanonical,

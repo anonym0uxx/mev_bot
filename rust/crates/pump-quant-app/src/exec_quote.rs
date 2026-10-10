@@ -25,37 +25,46 @@ use pump_quant_protocol::curve_sell_quote::{
     curve_buy_exact_in, curve_sell_from_reserves, CurveSellRefusal,
 };
 use pump_quant_protocol::pumpswap_event::CashbackField;
-use pump_quant_protocol::pumpswap_fees::{
-    decode_fee_config, sell_net_quote, sell_net_quote_cb, Fees,
-};
+use pump_quant_protocol::fee_schedule::{self, FeeScheduleRefusal, FeeSelection, FeeStamp};
+use pump_quant_protocol::pumpswap_fees::{sell_net_quote, sell_net_quote_cb, Fees};
 
 /// Measured p50 network+priority fee of one landed leg (`FEE_QUANTILES_C16.json`, `meta.fee`).
 pub const NETWORK_FEE_P50_LAMPORTS: u64 = 10_000;
 
-/// The pump-fees program `FeeConfig` (`8Wf5TiAheLUqBrKXeYg2JtAFFMWtKdG2BSFgqUcPVwTt`), captured
-/// read-only at slot 454,754,100 (`proc/m3_raw_accounts.json`). One tier: protocol 95 bp,
-/// creator 30 bp. The same 95 + 30 (creator OR cashback) was charged on 100 of 100 independent curve
-/// trades in the bF2 tape window (slots 445,637,000..445,638,600, `m3_hist_curve_fee_evidence.json`)
-/// and reproduced exactly (ceil per component) on the 2026-10 vectors. Between those two evidence
-/// points the schedule is ASSUMED unchanged; a paper run outside them must re-read the account.
-pub const CURVE_FEE_CONFIG_BYTES: &[u8] = include_bytes!("curve_fee_config_454754100.bin");
+/// The pinned curve `FeeConfig` bytes. The single authority is [`pump_quant_protocol::fee_schedule`]; this is
+/// a re-export of its curve version (account `8Wf5TiAheLUqBrKXeYg2JtAFFMWtKdG2BSFgqUcPVwTt`, read at slot
+/// 454,754,100, sha256-pinned there), kept for callers that report the version.
+pub const CURVE_FEE_CONFIG_BYTES: &[u8] = fee_schedule::CURVE_CONFIG_BYTES;
 /// Slot the pinned curve `FeeConfig` was read at.
-pub const CURVE_FEE_CONFIG_SLOT: u64 = 454_754_100;
+pub const CURVE_FEE_CONFIG_SLOT: u64 = fee_schedule::CURVE_CONFIG_READ_SLOT;
 
-/// Curve venue fee rates (protocol, creator-or-cashback) in bp, from the pinned `FeeConfig`.
+/// Curve venue fee rates (protocol, creator-or-cashback) in bp at reserves (`vsol`, `vtok`), slot `slot`, from
+/// [`fee_schedule::curve_rates`]: config in force (by slot or pinned, labelled) and market-cap tier.
+///
+/// # Errors
+/// [`QuoteRefusal::FeeSchedule`] — a named refusal, never a default rate.
+pub fn curve_rates_for(
+    vsol: u64,
+    vtok: u64,
+    slot: u64,
+    sel: FeeSelection,
+) -> Result<(u64, u64, FeeStamp), QuoteRefusal> {
+    let (r, stamp) =
+        fee_schedule::curve_rates(vsol, vtok, slot, sel).map_err(QuoteRefusal::FeeSchedule)?;
+    // The curve's tier has no LP leg (enforced by fee_schedule::decode); the creator leg is creator OR cashback.
+    if r.fees.lp_bps != 0 || r.cashback_bps != 0 {
+        return Err(QuoteRefusal::CurveFeeConfigUnsupported);
+    }
+    Ok((r.fees.protocol_bps, r.fees.creator_bps, stamp))
+}
+
+/// Curve venue fee rates (protocol, creator-or-cashback) in bp, from the pinned `FeeConfig` (slot ignored).
 #[must_use]
 pub fn curve_fees() -> Option<(u64, u64)> {
-    let cfg = decode_fee_config(CURVE_FEE_CONFIG_BYTES)?;
-    // A single-tier schedule: the rate does not depend on market cap. A multi-tier account would
-    // need the tier at the landing reserves; refuse rather than guess.
-    if cfg.fee_tiers.len() != 1 {
-        return None;
-    }
-    let f = cfg.fee_tiers[0].fees;
-    if f.lp_bps != 0 {
-        return None;
-    }
-    Some((f.protocol_bps, f.creator_bps))
+    // Market cap does not matter for the one-tier curve schedule; any defined cap selects tier 0.
+    curve_rates_for(1, 1, CURVE_FEE_CONFIG_SLOT, FeeSelection::Pinned)
+        .ok()
+        .map(|(p, c, _)| (p, c))
 }
 
 /// One executed BUY leg: all-in venue spend (fees inside), the fee components, tokens delivered.
@@ -93,6 +102,8 @@ pub struct SellQuote {
 pub enum QuoteRefusal {
     /// The pinned curve fee configuration could not be decoded / is not single-tier.
     CurveFeeConfigUnsupported,
+    /// The venue-fee authority refused (config unknown at the slot, changed between reads, rates not a tier, ...).
+    FeeSchedule(FeeScheduleRefusal),
     /// The curve's real SOL cannot pay the gross for this size (the program refuses it).
     CurveRealSolInsufficient { max_tokens: u64 },
     /// The curve is complete (migrated) — no curve route.
@@ -120,6 +131,22 @@ impl QuoteRefusal {
     pub const fn label(self) -> &'static str {
         match self {
             Self::CurveFeeConfigUnsupported => "quote_unavailable:curve_fee_config_unsupported",
+            Self::FeeSchedule(r) => match r {
+                FeeScheduleRefusal::HistoricalConfigUnknown { .. } => {
+                    "quote_unavailable:fee_config_unknown_at_slot"
+                }
+                FeeScheduleRefusal::ConfigChangedBetweenReads { .. } => {
+                    "quote_unavailable:fee_config_changed_between_reads"
+                }
+                FeeScheduleRefusal::ConfigUndecodable { .. } => {
+                    "quote_unavailable:fee_config_undecodable"
+                }
+                FeeScheduleRefusal::RatesNotInSchedule { .. } => {
+                    "quote_unavailable:fee_rates_not_in_schedule"
+                }
+                FeeScheduleRefusal::MarketCapUndefined => "quote_unavailable:fee_market_cap_undefined",
+                FeeScheduleRefusal::Overflow => "quote_unavailable:fee_overflow",
+            },
             Self::CurveRealSolInsufficient { .. } => {
                 "quote_unavailable:curve_real_sol_insufficient"
             }
