@@ -498,6 +498,25 @@ fn the_tip_is_inside_the_same_atomic_message() {
             .unwrap()
             .tip_in_same_atomic_message
     );
+    // A SEPARATE tip transaction (compute + transfer, no pump instruction) is a different structure:
+    // its tip does not revert with the buy, so the processed-failed prediction is refused for it.
+    let tip_only = pump_quant_protocol::message::compile_message(
+        &c.user,
+        &[0xAB; 32],
+        &[
+            pump_quant_protocol::message::set_compute_unit_limit(120_000),
+            pump_quant_protocol::message::set_compute_unit_price(5_000),
+            pump_quant_protocol::message::system_transfer(&c.user, &pk(9), 5_000),
+        ],
+    )
+    .unwrap();
+    let tc = message_costs(&tip_only, 5_000).unwrap();
+    assert_eq!(tc.tip, 5_000);
+    assert!(!tc.tip_in_same_atomic_message);
+    assert_eq!(
+        predicted_failure_debit(TxChainOutcome::ProcessedFailed, &tc),
+        Err(FailureCostRefusal::UnsupportedSubmissionStructure)
+    );
 }
 
 #[test]
