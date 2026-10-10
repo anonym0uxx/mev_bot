@@ -531,3 +531,134 @@ fn f4_simulated_fill_refuses_without_authoritative_fees_but_an_executed_fill_sti
         r.e.model_lane_report()
     );
 }
+
+// ==== F5 ====
+// F5 (SCOPE_ENG_R5 W2): fixed before/after replay that CROSSES A PUMPSWAP FEE TIER, on the real engine.
+//
+// LABEL: SYNTHETIC. No available capture contains a model fill on PumpSwap (proc/FEES_TRACE.md §F5: 60 daemon run
+// dirs, `ready|venue=pumpswap` = 0) and the curve has one tier, so no captured replay can exercise the tier
+// difference. This fixture builds it: the same held curve position graduates and is exited on a canonical pool
+// whose market cap sits in tier 10 (29,470-34,380 SOL: 20/5/50 = 75 bp/side) or tier 11 (34,380-39,300 SOL:
+// 20/5/45 = 70 bp/side). Pool reserves are synthetic; the virtual quote and layout follow a captured event; the
+// slot is inside the window both pool reads agree on (never today's config applied to a historical slot).
+//
+// For each order the test checks PROMPT (v1 statement, v2 statement from `exec_costs_v2`), QUOTE (fee stamp of the
+// paper fill) and SETTLEMENT (booked venue fees) agree, and writes one JSONL row per order to `$PQ_F5_OUT` for the
+// independent reconciliation script `proc/fees_f5_reconcile.py`.
+use pump_quant_app::exec_costs_v2::{exec_costs, ExecMarket};
+use pump_quant_app::exec_quote::FeeCtx;
+use pump_quant_proposal::contract_v2::{cost_line_v2, decompose_v2};
+use pump_quant_proposal::cost::{cost_line, Regime};
+use pump_quant_protocol::pumpswap_event::CashbackField as F5Cashback;
+
+const BRES: u64 = 200_000_000_000_000;
+
+/// Pool market cap (lamports) the program computes: (quote + virtual quote) x 1e15 / base.
+fn mcap(qres: u64) -> u128 {
+    (u128::from(qres) + u128::from(VQ)) * 1_000_000_000_000_000 / u128::from(BRES)
+}
+
+/// One tier-specific exit: returns (stamp label, gross, venue fees, v1 per-side bp, v2 per-side bp, v2 round trip).
+fn exit_on_pool(qres: u64, parts: (u32, u32, u32)) -> serde_json::Value {
+    let mut r = rig(
+        HIST,
+        FeeSelection::BySlot,
+        |s| if s == 0 { EXIT } else { HOLD },
+    );
+    r.run_to_order(VSOL + 200_000_000, VTOK - 4_000_000_000_000, 8_100_000_000);
+    graduate(&mut r);
+    ticks(&mut r.e, 4);
+    let inv = r.e.model_inventory_tokens(&MINT).unwrap();
+    r.clock += 1_000;
+    r.slot += 5;
+    let landing_slot = r.slot;
+    let known0 = F5Cashback::Known {
+        bps: 0,
+        lamports: 0,
+        layout_len: 369,
+    };
+    pool_swap_cb(&mut r.e, POOL, r.clock, r.slot, (BRES, qres), parts, known0);
+    assert!(
+        !r.e.model_position_open(&MINT),
+        "{:?}",
+        r.e.model_lane_report()
+    );
+    let stamp: Vec<String> =
+        r.e.model_lane_report()
+            .iter()
+            .filter(|(k, _)| k.starts_with("fee_stamp:pumpswap@"))
+            .map(|(k, _)| k.trim_start_matches("fee_stamp:").to_string())
+            .collect();
+    assert_eq!(stamp.len(), 1, "{:?}", r.e.model_lane_report());
+    let gross = r.rep("econ:exit_gross_lamports");
+    let fees = r.rep("econ:exit_venue_fees_lamports");
+    // PROMPT after (v2), from the same authority at the same slot and pool state.
+    let ec = exec_costs(
+        ExecMarket::Pool {
+            mcap_lamports: mcap(qres),
+        },
+        FeeCtx::by_slot(landing_slot),
+        0,
+        0,
+    )
+    .unwrap();
+    let clip_sol = gross as f64 / 1e9;
+    let v2_line = cost_line_v2(clip_sol, None, &ec);
+    let v2_rt = decompose_v2(clip_sol, None, &ec).round_trip_bp;
+    // PROMPT before (v1): the trained AMM statement.
+    let v1_line = cost_line(clip_sol, None, Regime::Amm);
+    serde_json::json!({
+        "label": "SYNTHETIC_tier_crossing_fixture",
+        "slot": landing_slot, "pool_base": BRES, "pool_quote": qres, "virtual_quote": VQ,
+        "mcap_lamports": mcap(qres).to_string(), "event_parts": [parts.0, parts.1, parts.2],
+        "inventory_tokens": inv, "quote_stamp": stamp[0], "settled_gross": gross, "settled_venue_fees": fees,
+        "v1_prompt_bp_per_side": 30, "v1_line": v1_line,
+        "v2_prompt_bp_per_side": ec.venue_bp_per_side, "v2_stamp": ec.fee_stamp, "v2_round_trip_bp": v2_rt,
+        "v2_line": v2_line,
+    })
+}
+
+#[test]
+fn f5_synthetic_pool_tier_crossing_prompt_quote_settlement_agree() {
+    // 31,900 SOL (tier 10, 75 bp) and 37,000 SOL (tier 11, 70 bp): q + vq = mcap x base / 1e15.
+    let rows = [
+        exit_on_pool(6_380_000_000_000 - VQ, (20, 5, 50)),
+        exit_on_pool(7_400_000_000_000 - VQ, (20, 5, 45)),
+    ];
+    let mut out = String::new();
+    for (row, (bp, tier)) in rows.iter().zip([(75u64, 10u16), (70, 11)]) {
+        let stamp = row["quote_stamp"].as_str().unwrap();
+        // QUOTE: the paper fill was priced by the tier for this pool state, at this slot, with provenance.
+        assert_eq!(
+            stamp,
+            format!("pumpswap@445186127:between_identical_reads:tier{tier}:{bp}bp")
+        );
+        // PROMPT (after) states exactly the executor's tier; (before) understated it.
+        assert_eq!(row["v2_prompt_bp_per_side"].as_u64().unwrap(), bp);
+        assert_eq!(row["v2_stamp"].as_str().unwrap(), stamp);
+        assert!(row["v1_prompt_bp_per_side"].as_u64().unwrap() < bp);
+        // SETTLEMENT: booked venue fees are this tier's per-component ceil charge on the gross, once.
+        let g = u128::from(row["settled_gross"].as_u64().unwrap());
+        let c = |b: u128| (g * b).div_ceil(10_000);
+        let parts: Vec<u128> = row["event_parts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| u128::from(v.as_u64().unwrap()))
+            .collect();
+        let want: u128 = parts.iter().map(|b| c(*b)).sum();
+        assert_eq!(
+            u128::from(row["settled_venue_fees"].as_u64().unwrap()),
+            want,
+            "{row}"
+        );
+        assert!(row["v2_round_trip_bp"].as_i64().unwrap() >= 2 * bp as i64);
+        out.push_str(&row.to_string());
+        out.push('\n');
+    }
+    // The tier difference is actually exercised: different stamps, different charged rate.
+    assert_ne!(rows[0]["quote_stamp"], rows[1]["quote_stamp"]);
+    if let Ok(p) = std::env::var("PQ_F5_OUT") {
+        std::fs::write(p, out).unwrap();
+    }
+}
