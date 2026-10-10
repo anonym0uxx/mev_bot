@@ -1111,6 +1111,13 @@ impl Engine {
                 return;
             }
         };
+        // FEES F4: a price-only report is an EXECUTED fill (it books — a missing fee figure cannot erase what
+        // happened), but its venue fee was not reported, so `sell_tokens` modelled it with the cost_model default.
+        // Disclosed by name so it is never read as executed fee evidence. Paper fills never get here without
+        // settlement: they are priced by the fee_schedule quote or refused by name before booking.
+        if settled.is_none() {
+            self.mrep("fee:executed_fill_fee_modelled_default");
+        }
         // Partial sell: free the sold share of the committed entry cost so cash reflects proceeds.
         if !exit.closed && inv_before > 0 {
             if let Some(att) = self.open_lane.get_mut(&mint) {

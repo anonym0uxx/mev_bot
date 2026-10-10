@@ -395,6 +395,11 @@ fn venue_fees_inside_a_net_quote_are_never_subtracted_again_on_the_books() {
         2,
         "entry + exit both priced by the by-slot curve config"
     );
+    assert_eq!(
+        r.rep("fee:executed_fill_fee_modelled_default"),
+        0,
+        "a paper fill is priced by the authority, never by the default"
+    );
 }
 
 /// WRONG VENUE / WRONG TIER (item 7): after graduation a pool landing event whose fee stack is not one tier of
@@ -451,6 +456,76 @@ fn a_pool_event_whose_rates_are_not_a_tier_is_refused_and_a_tier_stack_fills_sta
     );
     assert_eq!(
         r.rep("fee_stamp:pumpswap@445186127:between_identical_reads:tier0:125bp"),
+        1,
+        "{:?}",
+        r.e.model_lane_report()
+    );
+}
+
+/// F4: no unjustified default on a NEW simulated fill, yet an ALREADY EXECUTED fill still books. After graduation
+/// a pool event whose rates are not a tier leaves the paper executor without an authoritative fee: it refuses by
+/// name and sells nothing (no 95/30 fallback). The executor then reports the same order as executed, price-only:
+/// it books (inventory leaves the book), and the modelled fee on it is disclosed by name.
+#[test]
+fn f4_simulated_fill_refuses_without_authoritative_fees_but_an_executed_fill_still_books() {
+    use pump_quant_protocol::pumpswap_event::CashbackField;
+    let mut r = rig(
+        HIST,
+        FeeSelection::BySlot,
+        |s| if s == 0 { EXIT } else { HOLD },
+    );
+    let inv = r.e.model_inventory_tokens(&MINT).unwrap();
+    r.run_to_order(VSOL + 200_000_000, VTOK - 4_000_000_000_000, 8_100_000_000);
+    graduate(&mut r);
+    ticks(&mut r.e, 4);
+    let known0 = CashbackField::Known {
+        bps: 0,
+        lamports: 0,
+        layout_len: 369,
+    };
+    r.clock += 1_000;
+    r.slot += 5;
+    pool_swap_cb(
+        &mut r.e,
+        POOL,
+        r.clock,
+        r.slot,
+        (200_000_000_000_000, 85_000_000_000),
+        (0, 95, 30),
+        known0,
+    );
+    assert_eq!(
+        r.rep("mgmt:quote_unavailable:fee_rates_not_in_schedule"),
+        1,
+        "{:?}",
+        r.e.model_lane_report()
+    );
+    assert_eq!(
+        r.e.model_inventory_tokens(&MINT),
+        Some(inv),
+        "no simulated sell"
+    );
+    assert!(
+        r.e.model_mgmt_fills().is_empty(),
+        "nothing booked by default"
+    );
+    assert_eq!(r.rep("fee:executed_fill_fee_modelled_default"), 0);
+    let (id, _, intended, _) = r.e.model_mgmt_pending(&MINT).expect("EXIT still pending");
+    r.e.model_mgmt_apply_reconciled_fill(MINT, id, intended, 22_000)
+        .expect("an executed fill books");
+    assert_eq!(
+        r.e.model_mgmt_fills().len(),
+        1,
+        "{:?}",
+        r.e.model_lane_report()
+    );
+    assert_ne!(
+        r.e.model_inventory_tokens(&MINT),
+        Some(inv),
+        "inventory left the book"
+    );
+    assert_eq!(
+        r.rep("fee:executed_fill_fee_modelled_default"),
         1,
         "{:?}",
         r.e.model_lane_report()
