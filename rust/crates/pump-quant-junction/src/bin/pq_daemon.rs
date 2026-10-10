@@ -2033,8 +2033,18 @@ fn main() -> ExitCode {
         // FEES: every model-path quote is priced with the venue-fee configuration IN FORCE AT THE LANDING SLOT
         // (pump_quant_protocol::fee_schedule): labelled provenance, or a named refusal when the slot predates
         // every captured read / evidence window. Never today's config silently applied to history.
-        engine.model_set_fee_selection(pump_quant_protocol::fee_schedule::FeeSelection::BySlot);
-        eprintln!("[pq-daemon] venue fee selection: by_slot");
+        // `PQ_FEE_SELECTION=pinned` (labelled `pinned_slot_ignored` on every stamp) is the explicit opt-out used
+        // for before/after comparison; any other value refuses startup by name.
+        let fee_sel = match std::env::var("PQ_FEE_SELECTION").ok().as_deref() {
+            None | Some("by_slot") => pump_quant_protocol::fee_schedule::FeeSelection::BySlot,
+            Some("pinned") => pump_quant_protocol::fee_schedule::FeeSelection::Pinned,
+            Some(other) => {
+                eprintln!("[pq-daemon] FATAL_FEE_SELECTION_UNKNOWN: PQ_FEE_SELECTION={other:?} (by_slot|pinned)");
+                return ExitCode::from(2);
+            }
+        };
+        engine.model_set_fee_selection(fee_sel);
+        eprintln!("[pq-daemon] venue fee selection: {fee_sel:?}");
         let held_file = std::env::var("PQ_MODEL_HELD_FILE").unwrap_or_else(|_| {
             pump_quant_junction::model_lifecycle::DEFAULT_HELD_FILE.to_string()
         });
