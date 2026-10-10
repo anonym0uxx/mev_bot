@@ -11,7 +11,11 @@
 //! generating on disconnect can be read from the server's own /metrics (`num_requests_running`, abort counter).
 //!
 //!   cargo run --example serve_daemon_latency_v2 -- --upstream 127.0.0.1:8002 --mints 4 --secs 60 \
-//!       [--mgmt-held held.json] --requests req.jsonl --out report.json
+//!       [--mgmt-held held.json] [--model-workers 2|4|6] --requests req.jsonl --out report.json
+//!
+//! conc (C1/C2): `--model-workers N` (default 2) and, in `--requests`, one `"record":"engine_request"` line per engine
+//! request (id, kind, created/enqueue/worker_start/http_send/completion/resolved on the ENGINE clock, outcome class,
+//! parsed action) after the `"record":"exchange"` lines.
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -23,7 +27,8 @@ use pump_quant_app::engine::{Engine, RunMode};
 use pump_quant_app::event::{AppEvent, TradeVenue};
 use pump_quant_domain::ids::Mint as DomainMint;
 use pump_quant_junction::model_lifecycle::{
-    arm_paper_model, restore_held_state, StartupRestore, CLIENT_TIMEOUT,
+    arm_paper_model_with_workers, parse_model_workers, restore_held_state, StartupRestore,
+    CLIENT_TIMEOUT, DEFAULT_MODEL_WORKERS,
 };
 
 const VSOL: u64 = 37_900_000_000;
@@ -344,7 +349,13 @@ fn main() {
     let mut c = Config::dev_portable();
     c.bankroll_initial_lamports = 2_000_000_000;
     let mut e = Engine::new(c, RunMode::Paper);
-    let armed = arm_paper_model(&mut e, &url, &dir.join("safety.json"));
+    // C2: --model-workers N (N in {2, 4, 6}; default 2 = the previous fixed pool). Anything else refuses to run.
+    let workers = match arg("--model-workers") {
+        Some(v) => parse_model_workers(&v).unwrap_or_else(|r| panic!("--model-workers {v}: {r}")),
+        None => DEFAULT_MODEL_WORKERS,
+    };
+    let armed = arm_paper_model_with_workers(&mut e, &url, &dir.join("safety.json"), workers)
+        .expect("allowed worker count");
     assert!(!armed.blocked_at_start, "{armed:?}");
     // RESTORED EXPOSURE: the daemon's own restore path. The fixture is COPIED (never edited) and its held mints
     // are then fed history + live reserves like any other mint, so management asks do not depend on a BUY.
@@ -444,6 +455,11 @@ fn main() {
             "abandoned_deadline": rep.get("request_abandoned_deadline"),
             "dispatch_refused": pick("dispatch"),
         },
+        "model_workers": workers,
+        "model_bounds": {"entry_cap": e.model_bounds().0, "mgmt_cap": e.model_bounds().1, "queue_depth": e.model_bounds().2},
+        "local": pick("local:"),
+        "safety": {"blocked": e.model_safety_blocked(), "reason": e.model_safety_reason(),
+            "endpoint_streak": e.model_safety_consecutive_failures(), "local_expired_streak": e.model_local_expired_streak()},
         "engine_report_full": rep,
         "restore": restore,
         "held_mints": held_mints.len(),
@@ -456,7 +472,17 @@ fn main() {
             s.push_str(&serde_json::json!({"t_req_ms": x.t_req_ms, "kind": x.kind, "mint": x.mint, "step": x.step,
                 "upstream_s": x.upstream_s, "status": x.status, "finish_reason": x.finish_reason,
                 "prompt_tokens": x.prompt_tokens, "completion_tokens": x.completion_tokens,
-                "client_gone": x.client_gone, "upstream_aborted": x.upstream_aborted}).to_string());
+                "client_gone": x.client_gone, "upstream_aborted": x.upstream_aborted, "record": "exchange"}).to_string());
+            s.push('\n');
+        }
+        // C1: one line per ENGINE request (entry + management), keyed by id + kind, engine-clock ms.
+        let hex = |m: &[u8; 32]| m.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        for r in e.model_request_records() {
+            s.push_str(&serde_json::json!({"record": "engine_request", "id": r.id, "kind": r.kind, "mint": hex(&r.mint),
+                "created_ms": r.created_ms, "deadline_ms": r.deadline_ms, "enqueue_ms": r.enqueue_ms,
+                "worker_start_ms": r.worker_start_ms, "http_send_ms": r.http_send_ms, "completion_ms": r.completion_ms,
+                "resolved_ms": r.resolved_ms, "outcome": r.outcome, "late": r.late, "sent": r.sent,
+                "action": r.action, "finish_reason": r.finish_reason}).to_string());
             s.push('\n');
         }
         std::fs::write(p, s).unwrap();

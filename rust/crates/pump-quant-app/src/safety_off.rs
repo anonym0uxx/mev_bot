@@ -22,6 +22,9 @@ use serde_json::{json, Value};
 
 /// Why entries are blocked, as a stable label.
 pub const REASON_ENDPOINT_HUNG: &str = "model_endpoint_hung";
+/// Local service inadequacy: consecutive requests expired in the LOCAL queue (never sent). Same block semantics as
+/// the hung endpoint; it is NOT endpoint evidence and is never charged to endpoint health.
+pub const REASON_LOCAL_OVERLOAD: &str = "model_local_overload";
 /// Controlled daemon shutdown.
 pub const REASON_SHUTDOWN: &str = "controlled_shutdown";
 /// A state file existed but could not be trusted.
@@ -115,6 +118,10 @@ pub struct SafetyOff {
     pub persist_failures: u64,
     /// Consecutive abandoned requests since the last accepted answer.
     pub consecutive_abandoned: u32,
+    /// Consecutive LOCAL queue expiries (never sent) since the last healthy answer. Trips the local-overload block at
+    /// [`CONSECUTIVE_ABANDONED_TRIP`]. Reset by a healthy answer or an explicit re-arm only; never by an endpoint
+    /// failure, a restart (it is not persisted; the latch it sets is), or time.
+    pub consecutive_local_expired: u32,
 }
 
 fn hex(b: &[u8; 32]) -> String {

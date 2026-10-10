@@ -231,6 +231,9 @@ impl InferenceClient {
     pub fn new(endpoint: impl Into<String>, timeout: Duration) -> Self {
         let mut builder = ureq::AgentBuilder::new().timeout(timeout);
         builder = builder.timeout_connect(timeout);
+        // ureq 2.x keeps only IDLE connections, at most 1 per host by default; concurrent calls already open their own
+        // connections. 8 per host keeps up to 6 model workers' connections warm between bursts (no concurrency limit).
+        builder = builder.max_idle_connections_per_host(8);
         InferenceClient {
             endpoint: endpoint.into().trim_end_matches('/').to_string(),
             timeout,

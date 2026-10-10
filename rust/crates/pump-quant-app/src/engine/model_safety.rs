@@ -180,6 +180,7 @@ impl Engine {
         self.model_safety.epoch += 1;
         self.model_safety.rearmed_by = Some(operator.to_string());
         self.model_safety.consecutive_abandoned = 0;
+        self.model_safety.consecutive_local_expired = 0;
         if !self.model_safety_persist() {
             // Not durable => did not happen: a restart would otherwise come back blocked while this
             // process runs armed.
@@ -277,6 +278,7 @@ impl Engine {
     pub(super) fn model_safety_note_endpoint(&mut self, ok: u32, failed: u32) {
         if ok > 0 {
             self.model_safety.consecutive_abandoned = 0;
+            self.model_safety.consecutive_local_expired = 0;
         }
         if failed > 0 {
             self.model_safety.consecutive_abandoned = self
@@ -288,6 +290,33 @@ impl Engine {
             {
                 self.model_safety_trip(crate::safety_off::REASON_ENDPOINT_HUNG);
             }
+        }
+    }
+
+    /// Consecutive LOCAL queue expiries since the last healthy answer (the local-overload trip counter).
+    #[must_use]
+    pub fn model_local_expired_streak(&self) -> u32 {
+        self.model_safety.consecutive_local_expired
+    }
+
+    /// Fold LOCAL queue expiries (requests never sent) into the local-overload rule. Never touches endpoint health.
+    /// RULE (lead 14:05): `CONSECUTIVE_ABANDONED_TRIP` (3) consecutive local expiries with no healthy answer in between
+    /// latch SAFETY_OFF `model_local_overload` (same row as the hung endpoint). RESET: a healthy answer (in
+    /// `model_safety_note_endpoint`) or an explicit operator re-arm. LATCH: durable; a restart never re-arms; there is
+    /// no automatic re-arm.
+    pub(super) fn model_safety_note_local_expired(&mut self, n: u32) {
+        if n == 0 {
+            return;
+        }
+        self.model_safety.consecutive_local_expired = self
+            .model_safety
+            .consecutive_local_expired
+            .saturating_add(n);
+        if self.model_safety.consecutive_local_expired >= CONSECUTIVE_ABANDONED_TRIP
+            && !self.model_safety.blocked
+        {
+            self.mrep("local:overload_trip");
+            self.model_safety_trip(crate::safety_off::REASON_LOCAL_OVERLOAD);
         }
     }
 }

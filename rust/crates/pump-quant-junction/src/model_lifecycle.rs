@@ -42,14 +42,43 @@ pub struct Armed {
 /// [`InferenceClient`], and adopt the durable latch. A blocked latch stays blocked: a restart never
 /// re-arms.
 pub fn arm_paper_model(engine: &mut Engine, endpoint: &str, safety_path: &Path) -> Armed {
+    arm_paper_model_with_workers(engine, endpoint, safety_path, DEFAULT_MODEL_WORKERS)
+        .expect("the default worker count is allowed")
+}
+
+/// Default model worker threads (C2).
+pub const DEFAULT_MODEL_WORKERS: usize = 2;
+
+/// Parse a worker-count option (`--model-workers N` / `PQ_MODEL_WORKERS`). Only {2, 4, 6}; anything else is a named
+/// refusal (the caller refuses to start).
+///
+/// # Errors
+/// `"model_workers_not_allowed"`.
+pub fn parse_model_workers(v: &str) -> Result<usize, &'static str> {
+    match v.trim().parse::<usize>() {
+        Ok(n) if pump_quant_app::engine::model_admit::MODEL_WORKERS_ALLOWED.contains(&n) => Ok(n),
+        _ => Err("model_workers_not_allowed"),
+    }
+}
+
+/// [`arm_paper_model`] with an explicit worker count in {2, 4, 6}.
+///
+/// # Errors
+/// `"model_workers_not_allowed"` — nothing is armed.
+pub fn arm_paper_model_with_workers(
+    engine: &mut Engine,
+    endpoint: &str,
+    safety_path: &Path,
+    workers: usize,
+) -> Result<Armed, &'static str> {
     let client = InferenceClient::new(endpoint, CLIENT_TIMEOUT);
-    engine.enable_paper_model(client);
+    engine.enable_paper_model_with_workers(client, workers)?;
     let load = engine.model_safety_attach(safety_path);
-    Armed {
+    Ok(Armed {
         load,
         blocked_at_start: engine.model_safety_blocked(),
         safety_path: safety_path.to_path_buf(),
-    }
+    })
 }
 
 /// Why an acknowledgement did not authorize termination.
