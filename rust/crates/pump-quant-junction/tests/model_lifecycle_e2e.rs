@@ -1467,6 +1467,23 @@ fn operator_rearm_request_binds_lineage_epoch_id_and_reasons_and_each_refusal_is
         assert!(!out["why"].as_str().unwrap().is_empty(), "named");
     }
     assert!(handle_rearm_request(&mut r.e, &req.with_file_name("absent.json"), &res).is_none());
+    // Lineage is checked at VALIDATION (before any claim/apply), not only by the apply-time re-check.
+    put(&req, &body("r-lin-v", "feedface", epoch, &["operator"]));
+    match validate_rearm_request(&r.e, &req, &res) {
+        Some(Err(RearmOutcome::Refused {
+            why: RearmRequestRefusal::LineageMismatch { .. },
+            ..
+        })) => {}
+        other => panic!("lineage mismatch must be refused before apply: {other:?}"),
+    }
+    let ledger =
+        std::fs::read_to_string(req.with_file_name("OPERATOR_REARM_LEDGER.jsonl")).unwrap();
+    assert!(
+        !ledger
+            .lines()
+            .any(|l| l.contains("r-lin-v") && l.contains("claimed")),
+        "never claimed: {ledger}"
+    );
     // A refused id is decided: it can never be used again, even with a now-correct body.
     put(&req, &body("r-ep", &lin, epoch, &["operator"]));
     assert_eq!(
@@ -1665,6 +1682,77 @@ fn a_replayed_request_id_is_refused_in_process_and_after_a_restart_and_a_claimed
         RearmRequestRefusal::LedgerUntrusted(_)
     ));
     assert!(e.model_safety_blocked());
+    // A complete record without its newline is torn too (the next append would fuse onto it).
+    let mut raw2 = std::fs::read_to_string(&ledger).unwrap();
+    raw2.truncate(raw2.rfind("{\"request_id\":\"half").unwrap());
+    raw2.push_str("{\"request_id\":\"tail\"}");
+    std::fs::write(&ledger, &raw2).unwrap();
+    put(&req, &body("x-5", &lin, epn, &["operator"]));
+    assert_eq!(
+        refused(handle_rearm_request(&mut e, &req, &res)),
+        RearmRequestRefusal::LedgerUntrusted("torn_last_line".into())
+    );
+    // A ledger readable by group/other is untrusted.
+    raw2.push('\n');
+    std::fs::write(&ledger, &raw2).unwrap();
+    std::fs::set_permissions(&ledger, std::fs::Permissions::from_mode(0o644)).unwrap();
+    put(&req, &body("x-6", &lin, epn, &["operator"]));
+    assert_eq!(
+        refused(handle_rearm_request(&mut e, &req, &res)),
+        RearmRequestRefusal::LedgerUntrusted("owner_or_mode".into())
+    );
+    assert!(e.model_safety_blocked());
+}
+
+#[test]
+fn apply_rechecks_lineage_and_the_engine_binding_refuses_a_wrong_reason_set() {
+    let ep = Endpoint::start(|_| HOLD);
+    let mut a = rig(&ep, "rearm_lin_a");
+    let mut b = rig(&ep, "rearm_lin_b");
+    let la = bind_ledger(&mut a.e, &a.dir.clone());
+    let lb = bind_ledger(&mut b.e, &b.dir.clone());
+    assert_ne!(la, lb);
+    a.e.model_safety_trip_operator();
+    b.e.model_safety_trip_operator();
+    assert_eq!(a.e.model_safety_epoch(), b.e.model_safety_epoch());
+    // Validated against run A, applied to run B (same epoch and reasons): the lineage re-check refuses it.
+    let (req, res) = chan(&a);
+    put(
+        &req,
+        &body("l-1", &la, a.e.model_safety_epoch(), &["operator"]),
+    );
+    let v = validate_rearm_request(&a.e, &req, &res)
+        .unwrap()
+        .expect("valid for A");
+    match apply_validated_rearm(&mut b.e, &v, &res) {
+        RearmOutcome::Refused {
+            why: RearmRequestRefusal::LineageMismatch { requested, current },
+            ..
+        } => assert_eq!((requested, current), (la.clone(), lb.clone())),
+        other => panic!("{other:?}"),
+    }
+    assert!(b.e.model_safety_blocked());
+    // The engine binding itself refuses a reason set that is not exactly the active one.
+    let ep_b = b.e.model_safety_epoch();
+    assert_eq!(
+        b.e.model_safety_rearm_bound("alon", ep_b, &["disk_hard_floor".to_string()]),
+        Err(RearmRefusal::ReasonsMismatch {
+            acknowledged: vec!["disk_hard_floor".into()],
+            active: vec!["operator".into()],
+        })
+    );
+    assert_eq!(
+        b.e.model_safety_rearm_bound("alon", ep_b + 1, &["operator".to_string()]),
+        Err(RearmRefusal::EpochMismatch {
+            requested: ep_b + 1,
+            current: ep_b
+        })
+    );
+    assert!(b.e.model_safety_blocked());
+    assert_eq!(
+        b.e.model_safety_rearm_bound("alon", ep_b, &["operator".to_string()]),
+        Ok(())
+    );
 }
 
 #[test]
