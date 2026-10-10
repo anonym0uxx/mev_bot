@@ -1295,8 +1295,9 @@ impl Engine {
         }
         let (mut ok_n, mut bad_n) = (0u32, 0u32);
         // ENDPOINT HEALTH is a property of the transport and the contract, never of the decision:
-        //   failure  = transport error / non-200 / unreadable body (Err), a TRUNCATED completion, or a
-        //              completion that does not parse as the trained grammar (malformed);
+        //   failure  = transport error / non-200 / unreadable body (Err), a completion that fails the
+        //              TERMINATION contract (truncated / no or unaccepted finish_reason / template
+        //              marker / repeated field), or one that does not parse as the trained grammar;
         //   healthy  = any well-formed decision, INCLUDING a valid HOLD/SKIP. A missing-data refusal or an
         //              execution veto happens AFTER this point and never counts against the endpoint.
         // Deadlines (abandoned asks) are counted separately below.
@@ -1323,7 +1324,7 @@ impl Engine {
             }
             let healthy = match &v.result {
                 Ok(c) => {
-                    !c.truncated()
+                    c.termination().is_ok()
                         && pump_quant_inference::seam::parse_decision_payload(&c.text).is_ok()
                 }
                 Err(_) => false,
@@ -1335,6 +1336,7 @@ impl Engine {
                 self.mrep(match &v.result {
                     Err(_) => "endpoint:transport_error",
                     Ok(c) if c.truncated() => "endpoint:truncated",
+                    Ok(c) if c.termination().is_err() => "endpoint:unterminated",
                     Ok(_) => "endpoint:malformed",
                 });
             }
@@ -1523,6 +1525,7 @@ impl Engine {
                     NoTradeReason::Portfolio(_) => "portfolio".to_string(),
                     NoTradeReason::OwnImpact(_) => "own_impact".to_string(),
                     NoTradeReason::StaleDecision(_) => "stale_decision".to_string(),
+                    NoTradeReason::Unterminated(u) => format!("unterminated:{}", u.as_str()),
                 };
                 self.mrep(format!("notrade:{k}"));
             }
