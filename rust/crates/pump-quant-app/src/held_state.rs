@@ -105,7 +105,17 @@ pub struct HeldPending {
     pub lane_index: u8,
     /// Entry only: `DiscoveryLane::index()`.
     pub discovery_lane_index: u8,
+    /// Management/protective only: the executor route (`paper` | `external`). Absent = not recorded.
+    pub exec: Option<String>,
+    /// Management/protective only: durable submission state (`intent` = never handed to an executor, `begun` = the
+    /// hand-off was durably recorded before it happened). Absent = not recorded: restores UNCERTAIN.
+    pub submit: Option<String>,
 }
+
+/// Known `exec` values in the ledger.
+pub const EXEC_ROUTES: [&str; 2] = ["paper", "external"];
+/// Known `submit` values in the ledger.
+pub const SUBMIT_STATES: [&str; 2] = ["intent", "begun"];
 
 /// Terminal evidence about one entry order (the durable form of the engine's `ReconcileOutcome`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -360,7 +370,7 @@ impl HeldLedger {
                 "version": h.version,
                 "position_order": h.position_order,
             })).collect::<Vec<_>>(),
-            "pending": self.pending.iter().map(|p| json!({
+            "pending": self.pending.iter().map(|p| { let mut j = json!({
                 "kind": p.kind,
                 "id": p.id,
                 "mint": hex(&p.mint),
@@ -379,7 +389,11 @@ impl HeldLedger {
                 "snap_price_bits": p.snap_price_bits,
                 "lane_index": p.lane_index,
                 "discovery_lane_index": p.discovery_lane_index,
-            })).collect::<Vec<_>>(),
+            });
+                if let Some(x) = &p.exec { j["exec"] = json!(x); }
+                if let Some(x) = &p.submit { j["submit"] = json!(x); }
+                j
+            }).collect::<Vec<_>>(),
             "order_floor": self.order_floor,
             "sell_floor": self.sell_floor,
             "sell_prefixes": self.sell_prefixes.iter().map(|(id, v)| json!([id, v.iter().map(|(t, g, f)| json!([t, g, f])).collect::<Vec<_>>()])).collect::<Vec<_>>(),
@@ -487,6 +501,24 @@ impl HeldLedger {
                 lane_index: u8::try_from(u(p, "lane_index")?).map_err(|_| bad("p.lane_index"))?,
                 discovery_lane_index: u8::try_from(u(p, "discovery_lane_index")?)
                     .map_err(|_| bad("p.discovery_lane_index"))?,
+                exec: match p.get("exec") {
+                    None => None,
+                    Some(x) => Some(
+                        x.as_str()
+                            .filter(|v| EXEC_ROUTES.contains(v))
+                            .ok_or(bad("pending.exec"))?
+                            .to_string(),
+                    ),
+                },
+                submit: match p.get("submit") {
+                    None => None,
+                    Some(x) => Some(
+                        x.as_str()
+                            .filter(|v| SUBMIT_STATES.contains(v))
+                            .ok_or(bad("pending.submit"))?
+                            .to_string(),
+                    ),
+                },
             });
         }
         let mut decision = DecisionState::default();
@@ -767,8 +799,11 @@ pub enum RestoreRefusal {
 pub struct RestoreReport {
     /// Positions rebuilt.
     pub positions: usize,
-    /// Pending orders rebuilt (all as UNCERTAIN: acknowledgement unknown after a restart).
+    /// Pending orders rebuilt UNCERTAIN (they may have reached an executor; only reconciliation resolves them).
     pub pending_uncertain: usize,
+    /// Pending orders whose durable record PROVES they were never handed to an executor (`submit = intent`): they
+    /// restore UNSENT and are submitted once by the normal path.
+    pub pending_unsent: usize,
     /// Committed capital restored (lamports).
     pub committed_lamports: u64,
     /// Realized lamports restored.
@@ -877,6 +912,8 @@ mod tests {
                 snap_price_bits: 2.5f64.to_bits(),
                 lane_index: 0,
                 discovery_lane_index: 0,
+                exec: Some("paper".into()),
+                submit: Some("begun".into()),
             }],
         }
     }

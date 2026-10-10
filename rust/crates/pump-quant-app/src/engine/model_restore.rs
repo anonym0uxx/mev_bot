@@ -16,7 +16,7 @@ pub const SETTLED_ORDER_CAP: usize = 4_096;
 
 use std::path::{Path, PathBuf};
 
-use super::model_manage::{MgmtKind, MgmtOrder, MgmtPos};
+use super::model_manage::{ExecRoute, MgmtKind, MgmtOrder, MgmtPos, SubmitState};
 use super::{Engine, OpenAttribution};
 use crate::expected_move::SignalObs;
 use crate::held_state::{
@@ -113,6 +113,8 @@ impl Engine {
                 snap_price_bits: o.snap_price.to_bits(),
                 lane_index: lane_index(o.lane),
                 discovery_lane_index: disc_index(o.discovery_lane),
+                exec: None,
+                submit: None,
             });
         }
         for (m, o) in self
@@ -144,12 +146,22 @@ impl Engine {
                 created_ms: o.created_ms,
                 created_slot: o.created_slot,
                 version: o.version,
-                attempt: 0,
+                attempt: o.attempt,
                 snap_t_dec_ms: 0,
                 price_limit_bits: None,
                 snap_price_bits: 0,
                 lane_index: 0,
                 discovery_lane_index: 0,
+                exec: match o.exec {
+                    ExecRoute::Paper => Some("paper".into()),
+                    ExecRoute::External => Some("external".into()),
+                    ExecRoute::Unrecorded => None,
+                },
+                submit: match o.submit {
+                    SubmitState::Intent => Some("intent".into()),
+                    SubmitState::Begun => Some("begun".into()),
+                    SubmitState::Unrecorded => None,
+                },
             });
         }
         pending.sort_by(|a, b| (a.mint, a.id, &a.kind).cmp(&(b.mint, b.id, &b.kind)));
@@ -423,6 +435,16 @@ impl Engine {
         }
     }
 
+    /// Durable hand-off record: write the ledger NOW (before an order may reach an executor). `true` when written,
+    /// or when no ledger is attached (no restart can observe the order, so there is no restart ambiguity).
+    pub(super) fn model_held_durable_now(&mut self) -> bool {
+        if self.model_held.path.is_none() {
+            self.mrep("held_state:submit_record_no_ledger");
+            return true;
+        }
+        self.model_held_persist_now()
+    }
+
     /// Restore from the attached path. `Ok(None)` when there is no ledger (a clean start).
     ///
     /// # Errors
@@ -464,6 +486,9 @@ impl Engine {
             Ok(()) => {
                 let rep = self.model_held_apply(&ledger);
                 self.model_pf_apply(pf);
+                // Uncertain PAPER-route orders are reconciled against the paper executor's durable record (this
+                // ledger + its settlement ledger) now that both are applied.
+                self.model_reconcile_paper_orders();
                 self.mrep("held_state:restored");
                 Ok(Some(rep))
             }
@@ -661,6 +686,7 @@ impl Engine {
         for p in &l.pending {
             match p.kind.as_str() {
                 "entry" => {
+                    rep.pending_uncertain += 1;
                     self.model_orders.insert(
                         p.mint,
                         super::model_admit::ModelOrder {
@@ -682,6 +708,27 @@ impl Engine {
                     );
                 }
                 kind => {
+                    let exec = match p.exec.as_deref() {
+                        Some("paper") => ExecRoute::Paper,
+                        Some("external") => ExecRoute::External,
+                        _ => ExecRoute::Unrecorded,
+                    };
+                    let submit = match p.submit.as_deref() {
+                        Some("intent") => SubmitState::Intent,
+                        Some("begun") => SubmitState::Begun,
+                        _ => SubmitState::Unrecorded,
+                    };
+                    // UNSENT only when the durable record PROVES no executor ever saw it (paper route, intent). An
+                    // absent record, a begun hand-off or an external route restores UNCERTAIN.
+                    let unsent = submit == SubmitState::Intent && exec == ExecRoute::Paper;
+                    if unsent {
+                        rep.pending_unsent += 1;
+                    } else {
+                        rep.pending_uncertain += 1;
+                    }
+                    if submit == SubmitState::Unrecorded {
+                        self.mrep("held_state:restored_submission_unrecorded");
+                    }
                     let order = MgmtOrder {
                         id: p.id,
                         kind: match kind {
@@ -699,12 +746,15 @@ impl Engine {
                         max_spend: p.max_spend,
                         spent: p.spent,
                         fee_bps: p.fee_bps,
-                        // Acknowledgement unknown after a restart: never resubmitted, never simulated-filled.
-                        uncertain: true,
+                        // Possibly at an executor: never resubmitted, never simulated-filled, until reconciled.
+                        uncertain: !unsent,
                         gross: p.gross,
                         fees: p.fees,
                         protect: p.protect,
                         simulated: p.simulated,
+                        exec,
+                        submit,
+                        attempt: p.attempt,
                     };
                     if kind == "protect" {
                         self.model_mgmt.protect.insert(p.mint, order);
@@ -713,7 +763,6 @@ impl Engine {
                     }
                 }
             }
-            rep.pending_uncertain += 1;
         }
         // Restored entry orders need a log record so a later report resolves them by id.
         for p in l.pending.iter().filter(|p| p.kind == "entry") {
@@ -848,6 +897,10 @@ impl Engine {
         self.mrep_add(
             "held_state:restored_pending_uncertain",
             rep.pending_uncertain as u64,
+        );
+        self.mrep_add(
+            "held_state:restored_pending_unsent",
+            rep.pending_unsent as u64,
         );
         rep
     }

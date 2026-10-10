@@ -1964,6 +1964,15 @@ fn main() -> ExitCode {
         let held_file = std::env::var("PQ_MODEL_HELD_FILE").unwrap_or_else(|_| {
             pump_quant_junction::model_lifecycle::DEFAULT_HELD_FILE.to_string()
         });
+        // OPERATOR EVIDENCE (offline paper replay only): the held ledger with this lineage was written by a process that
+        // ran ONLY the in-process paper executor. Lets a restored order WITHOUT a durable route record be reconciled
+        // against the paper record in that same file. Never inferred; ignored outside the offline replay harness.
+        if !args.live_mode && std::env::var("PQ_OFFLINE_PAPER_REPLAY").as_deref() == Ok("1") {
+            if let Ok(l) = std::env::var("PQ_ATTEST_PAPER_ROUTE_LINEAGE") {
+                eprintln!("[pq-daemon] operator evidence: held-ledger lineage {l} ran only the paper executor");
+                engine.model_attest_paper_route(&l);
+            }
+        }
         let restore = pump_quant_junction::model_lifecycle::restore_held_state(
             &mut engine,
             std::path::Path::new(&held_file),
@@ -2091,9 +2100,9 @@ fn main() -> ExitCode {
             pump_quant_junction::model_lifecycle::StartupRestore::Restored(r) => {
                 eprintln!(
                     "[pq-daemon] held-state RESTORED from {held_file}: positions={} pending_orders_uncertain={} \
-                     committed_lamports={} realized_lamports={} inventory_unknown={} - management stays DEGRADED \
-                     until history + reserves are recovered; uncertain orders need a reconciled report",
-                    r.positions, r.pending_uncertain, r.committed_lamports, r.realized_lamports, r.inventory_unknown
+                     pending_orders_unsent={} committed_lamports={} realized_lamports={} inventory_unknown={} - management \
+                     stays DEGRADED until history + reserves are recovered; uncertain orders need a reconciled report",
+                    r.positions, r.pending_uncertain, r.pending_unsent, r.committed_lamports, r.realized_lamports, r.inventory_unknown
                 );
             }
             pump_quant_junction::model_lifecycle::StartupRestore::Refused(why) => {

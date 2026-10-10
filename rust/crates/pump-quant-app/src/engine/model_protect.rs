@@ -183,11 +183,25 @@ impl Engine {
                 fees: 0,
                 protect: reason.code(),
                 simulated: false,
+                exec: model_manage::ExecRoute::Paper,
+                submit: model_manage::SubmitState::Intent,
+                attempt: 0,
             },
         );
         if self.model_external_exec {
             if let Some(o) = self.model_mgmt.protect.get_mut(&mint) {
                 o.uncertain = true;
+                o.exec = model_manage::ExecRoute::External;
+                o.submit = model_manage::SubmitState::Begun;
+                o.attempt = 1;
+            }
+            // The hand-off is durably recorded before the external executor can see it; otherwise withdrawn and
+            // the trigger stays pending (re-evaluated next event).
+            if !self.model_held_durable_now() {
+                self.model_mgmt.protect.remove(&mint);
+                self.positions.note_protect_deferred(&mint);
+                self.mrep("protect:submit_refused:persist_failed");
+                return;
             }
             self.mrep("protect:submitted_external");
         }
@@ -215,6 +229,11 @@ impl Engine {
         match self.model_mgmt.protect.get_mut(mint) {
             Some(o) if o.id == order_id => {
                 o.uncertain = true;
+                o.exec = model_manage::ExecRoute::External;
+                if o.submit == model_manage::SubmitState::Intent {
+                    o.submit = model_manage::SubmitState::Begun;
+                    o.attempt = o.attempt.max(1);
+                }
                 self.mrep("protect:ack_uncertain");
                 true
             }

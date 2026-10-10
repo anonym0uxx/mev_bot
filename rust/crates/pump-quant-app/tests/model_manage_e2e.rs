@@ -1120,6 +1120,8 @@ fn pending_orders_restore_as_uncertain_and_only_a_reconciled_report_resolves_the
     r.e.model_held_attach(&hp);
     r.advance_to_order(120_000);
     let (id, _, intended, _) = r.e.model_mgmt_pending(&MINT).expect("REDUCE pending");
+    // The acknowledgement is unknown at an executor outside the paper record (durably External/Begun).
+    assert!(r.e.model_mgmt_mark_ack_uncertain(&MINT, id));
     assert!(r.e.model_held_persist_now());
     drop(r);
 

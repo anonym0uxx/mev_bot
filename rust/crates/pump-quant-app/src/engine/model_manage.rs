@@ -96,6 +96,35 @@ pub struct MgmtOrder {
     pub protect: u8,
     /// Some fill of this order came from the PAPER EXECUTOR (modelled price and fees, not executed evidence).
     pub simulated: bool,
+    /// Which executor owns the order (durable).
+    pub exec: ExecRoute,
+    /// Durable submission state: `Intent` = recorded, never handed to an executor; `Begun` = the hand-off was
+    /// durably recorded BEFORE it happened; `Unrecorded` = restored from a ledger without a submission record.
+    pub submit: SubmitState,
+    /// Submission attempt (0 while `Intent`; the hand-off makes it 1). Stable across restarts.
+    pub attempt: u32,
+}
+
+/// The executor that owns a management order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecRoute {
+    /// The in-process paper executor: its whole state is the durable held ledger (same atomic file).
+    Paper,
+    /// The external (report-inbox) executor: only its reports resolve the order.
+    External,
+    /// Restored from a ledger that did not record the route.
+    Unrecorded,
+}
+
+/// Durable submission state of a management order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubmitState {
+    /// Durably recorded intent; no executor has seen it.
+    Intent,
+    /// The hand-off to the executor was durably recorded before it happened.
+    Begun,
+    /// Restored from a ledger without a submission record: may have reached an executor (UNCERTAIN).
+    Unrecorded,
 }
 
 /// How a management order ended. A live order is not in the log (it is in `MgmtLane::orders`).
@@ -583,12 +612,24 @@ impl Engine {
                 fees: 0,
                 protect: 0,
                 simulated: false,
+                exec: ExecRoute::Paper,
+                submit: SubmitState::Intent,
+                attempt: 0,
             },
         );
         if self.model_external_exec && kind != MgmtKind::Add {
-            // Submitted to the external executor: unresolved until it reports. Never paper-filled.
+            // Submitted to the external executor: unresolved until it reports. Never paper-filled. The hand-off is
+            // durably recorded BEFORE the executor can see the order; if that write fails the order is withdrawn.
             if let Some(o) = self.model_mgmt.orders.get_mut(&mint) {
                 o.uncertain = true;
+                o.exec = ExecRoute::External;
+                o.submit = SubmitState::Begun;
+                o.attempt = 1;
+            }
+            if !self.model_held_durable_now() {
+                self.model_mgmt.orders.remove(&mint);
+                self.mrep("mgmt:submit_refused:persist_failed");
+                return;
             }
             self.mrep("mgmt:submitted_external");
         }
@@ -602,6 +643,7 @@ impl Engine {
 
     /// Try to fill pending management sells against LANDING state (never the prompt's state).
     pub(super) fn model_mgmt_try_fills(&mut self, clock: i64) {
+        self.model_mgmt_begin_submissions(clock);
         let pm: Vec<[u8; 32]> = self.model_mgmt.protect.keys().copied().collect();
         for m in pm {
             let _ = self.model_with_protect_mint(&m, |e| e.model_mgmt_try_fills_orders(clock));
@@ -622,6 +664,16 @@ impl Engine {
             if order.uncertain {
                 // Acknowledgement unknown: unresolved intent. Neither expired nor simulated-filled.
                 self.mrep("mgmt:pending_uncertain_held");
+                continue;
+            }
+            if order.submit == SubmitState::Intent {
+                // Not handed off (no landing state yet, or the hand-off record could not be written): the executor
+                // never sees it. TTL still applies.
+                if clock - order.created_ms > MODEL_ORDER_TTL_MS {
+                    self.model_mgmt_end(&mint, false);
+                    self.mrep("mgmt:order_expired_unfilled");
+                    self.mrep("mgmt:order_expired_unsubmitted");
+                }
                 continue;
             }
             if order.kind == MgmtKind::Add {
@@ -2050,6 +2102,13 @@ impl Engine {
         match self.model_mgmt.orders.get_mut(mint) {
             Some(o) if o.id == order_id => {
                 o.uncertain = true;
+                // An unknown acknowledgement belongs to an executor OUTSIDE the paper record: never reconciled
+                // against the held ledger, only by evidence.
+                o.exec = ExecRoute::External;
+                if o.submit == SubmitState::Intent {
+                    o.submit = SubmitState::Begun;
+                    o.attempt = o.attempt.max(1);
+                }
                 self.mrep("mgmt:ack_uncertain");
                 true
             }
@@ -2573,6 +2632,185 @@ impl Engine {
         SellReportResult::Fault
     }
 
+    /// DURABLE HAND-OFF to the paper executor. An order at `Intent` is handed off only when a landing state exists
+    /// on which the paper executor could act (>= `MODEL_FILL_LANDING_MS` after creation, newer slot, not after the
+    /// clock). Each such order becomes `Begun` (attempt + 1) and the held ledger is written BEFORE the executor may
+    /// price or fill it; if that write fails the orders go back to `Intent` and nothing is handed off. Runs outside
+    /// any protective-slot swap, so the snapshot is the whole book.
+    pub(super) fn model_mgmt_begin_submissions(&mut self, clock: i64) {
+        let landing_ok =
+            |e: &Self, m: &[u8; 32], o: &MgmtOrder| -> bool {
+                let landing = o.created_ms + MODEL_FILL_LANDING_MS;
+                let curve = e.model_cache.curve_obs(m).is_some_and(|c| {
+                    c.ts_ms >= landing && c.ts_ms <= clock && c.slot > o.created_slot
+                });
+                let pool = e.model_cache.amm_obs(m).is_some_and(|a| {
+                    a.ts_ms >= landing && a.ts_ms <= clock && a.slot > o.created_slot
+                });
+                curve || pool
+            };
+        let mut begun: Vec<([u8; 32], bool)> = Vec::new();
+        let cands: Vec<([u8; 32], bool, MgmtOrder)> = self
+            .model_mgmt
+            .orders
+            .iter()
+            .map(|(m, o)| (*m, false, *o))
+            .chain(self.model_mgmt.protect.iter().map(|(m, o)| (*m, true, *o)))
+            .filter(|(_, _, o)| o.submit == SubmitState::Intent && !o.uncertain)
+            .collect();
+        for (m, p, o) in cands {
+            if !landing_ok(self, &m, &o) {
+                continue;
+            }
+            let slot = if p {
+                self.model_mgmt.protect.get_mut(&m)
+            } else {
+                self.model_mgmt.orders.get_mut(&m)
+            };
+            if let Some(x) = slot {
+                x.submit = SubmitState::Begun;
+                x.attempt += 1;
+                begun.push((m, p));
+            }
+        }
+        if begun.is_empty() {
+            return;
+        }
+        if self.model_held_durable_now() {
+            self.mrep_add("mgmt:submit:begun", begun.len() as u64);
+            return;
+        }
+        for (m, p) in begun {
+            let slot = if p {
+                self.model_mgmt.protect.get_mut(&m)
+            } else {
+                self.model_mgmt.orders.get_mut(&m)
+            };
+            if let Some(o) = slot {
+                o.submit = SubmitState::Intent;
+                o.attempt -= 1;
+            }
+        }
+        self.mrep("mgmt:submit_deferred:persist_failed");
+    }
+
+    /// OPERATOR EVIDENCE (set before restore): the process that wrote the held ledger with this `lineage` ran ONLY
+    /// the in-process paper executor (no external executor). It applies only to orders whose route the ledger did not
+    /// record, only for that exact lineage, and only lets them be reconciled against the paper record.
+    pub fn model_attest_paper_route(&mut self, lineage: &str) {
+        self.model_paper_route_attest = Some(lineage.to_string());
+        self.mrep("held_state:paper_route_attestation_supplied");
+    }
+
+    /// Durable submission record of the working management or protective order `order_id` on `mint`:
+    /// (route, submission state, attempt, uncertain).
+    #[must_use]
+    pub fn model_mgmt_submit_state(
+        &self,
+        mint: &[u8; 32],
+        order_id: u64,
+    ) -> Option<(ExecRoute, SubmitState, u32, bool)> {
+        self.model_mgmt
+            .orders
+            .get(mint)
+            .into_iter()
+            .chain(self.model_mgmt.protect.get(mint))
+            .find(|o| o.id == order_id)
+            .map(|o| (o.exec, o.submit, o.attempt, o.uncertain))
+    }
+
+    /// RECONCILIATION of an UNCERTAIN order against the PAPER EXECUTOR's durable record (runs once, after restore).
+    /// The in-process paper executor has no state outside the held ledger: each paper fill, the order's cumulative
+    /// fill and (v2) the settlement ledger's per-order cumulative are written in the SAME atomic file. For an order the
+    /// ledger durably routes to that executor, the file therefore IS the executor's record, and it is definitive:
+    /// * record agrees (v2: settlement cumulative tokens for this order == the order's filled quantity): nothing
+    ///   beyond `filled` executed. The attempt is ENDED by that evidence (terminal record `EndedUnfilled` /
+    ///   `EndedPartial`, never resubmitted, nothing booked), its reservation is released, and a protective order's
+    ///   trigger re-arms so protection RE-EVALUATES from live data (a level stop that no longer holds is not re-fired).
+    ///   Any replacement is a NEW order identity created after this reconciliation.
+    /// * record disagrees: stays UNCERTAIN, named `held_state:paper_record_mismatch`.
+    /// Orders routed to the external executor, orders without a route record (unless operator evidence attests the
+    /// writer's lineage, [`Engine::model_attest_paper_route`]), and processes running the external executor are never
+    /// reconciled here. Returns how many orders were reconciled.
+    pub fn model_reconcile_paper_orders(&mut self) -> usize {
+        if self.model_external_exec {
+            self.mrep("held_state:paper_reconcile_skipped:external_process");
+            return 0;
+        }
+        let mut cands: Vec<([u8; 32], bool, MgmtOrder)> = Vec::new();
+        for (m, o) in &self.model_mgmt.orders {
+            cands.push((*m, false, *o));
+        }
+        for (m, o) in &self.model_mgmt.protect {
+            cands.push((*m, true, *o));
+        }
+        let mut n = 0;
+        for (m, p, o) in cands {
+            if !o.uncertain || o.submit == SubmitState::Intent {
+                continue;
+            }
+            if o.exec == ExecRoute::External {
+                self.mrep("held_state:paper_reconcile_skipped:external_order");
+                continue;
+            }
+            let attested = o.exec == ExecRoute::Unrecorded
+                && self
+                    .model_paper_route_attest
+                    .as_deref()
+                    .is_some_and(|l| !l.is_empty() && l == self.model_held.lineage);
+            if o.exec == ExecRoute::Unrecorded && !attested {
+                // No durable route record and no operator evidence: stays UNCERTAIN (never inferred).
+                self.mrep("held_state:paper_reconcile_skipped:route_unrecorded");
+                continue;
+            }
+            let agrees = match self.model_pf.settle.as_ref() {
+                Some(l) => {
+                    let leg = if o.kind == MgmtKind::Add {
+                        crate::shadow_pool::LegKind::Add
+                    } else {
+                        crate::shadow_pool::LegKind::Sell
+                    };
+                    l.cumulative(&m, leg, o.id).0 == o.filled
+                }
+                None => true,
+            };
+            if !agrees {
+                self.mrep("held_state:paper_record_mismatch");
+                continue;
+            }
+            if attested {
+                self.mrep("held_state:paper_route_attested");
+            }
+            // Definitive: the attempt ends at exactly what the record holds. `uncertain` is cleared FIRST so the end
+            // is evidence-based (no `uncertain_sell_preempted` fault), and the reservation is released.
+            let pre = if p { "protect" } else { "mgmt" };
+            if p {
+                let _ = self.model_with_protect_id(&m, o.id, |e| {
+                    if let Some(x) = e.model_mgmt.orders.get_mut(&m) {
+                        x.uncertain = false;
+                    }
+                    e.model_mgmt_end(&m, false);
+                });
+            } else {
+                if let Some(x) = self.model_mgmt.orders.get_mut(&m) {
+                    x.uncertain = false;
+                }
+                self.model_mgmt_end(&m, false);
+            }
+            self.mrep(if o.filled == 0 {
+                format!("{pre}:recon:paper_record_no_execution")
+            } else {
+                format!("{pre}:recon:paper_record_remainder_not_executed")
+            });
+            n += 1;
+        }
+        if n > 0 {
+            self.mrep_add("held_state:paper_order_reconciled", n as u64);
+            self.model_sync_sell_reservations();
+        }
+        n
+    }
+
     /// A reconciled report (fill) resolves uncertainty for the order it names.
     pub(super) fn model_mgmt_clear_uncertain(&mut self, mint: &[u8; 32]) {
         if let Some(o) = self.model_mgmt.orders.get_mut(mint) {
@@ -2718,6 +2956,9 @@ mod add_planner_tests {
                 fees: 0,
                 protect: 0,
                 simulated: false,
+                exec: ExecRoute::Paper,
+                submit: SubmitState::Begun,
+                attempt: 1,
             },
         );
         assert!(

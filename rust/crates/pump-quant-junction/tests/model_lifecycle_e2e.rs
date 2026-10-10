@@ -853,6 +853,9 @@ fn a_crash_mid_reduce_restarts_through_the_daemons_restore_path_and_resolves_onl
     r.advance_to_order(120_000);
     let (id, kind, intended, _) = r.e.model_mgmt_pending(&MINT).expect("REDUCE in flight");
     assert_eq!(format!("{kind:?}"), "Reduce");
+    // In flight = handed to an executor whose acknowledgement is unknown (a never-handed-off intent restores UNSENT;
+    // that boundary is pinned in pump-quant-app tests/submission_boundary_e2e.rs).
+    assert!(r.e.model_mgmt_mark_ack_uncertain(&MINT, id));
     // One more tick lets the on-change persist write the in-flight order (no explicit flush).
     ticks(&mut r.e, 2);
     let inv_before = r.e.model_inventory_tokens(&MINT).unwrap();

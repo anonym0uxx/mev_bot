@@ -274,12 +274,15 @@ fn books(e: &Engine) -> (i128, u64, u64, Option<u64>, Option<u64>) {
     )
 }
 
-/// A world stopped with a REDUCE order created and not yet filled (crash after intent, before any fill).
+/// A world stopped with a REDUCE order SUBMITTED (acknowledgement unknown) and not yet filled (crash after
+/// submission, before any fill). A crash after a durable intent that was never handed off is a different boundary
+/// (it restores UNSENT): see tests/submission_boundary_e2e.rs.
 fn reduce_pending_world(tag: &str) -> (std::path::PathBuf, u64, u64) {
     let hp = held_path(tag);
     let mut r = rig(|step| if step == 0 { REDUCE } else { HOLD }, &hp);
     r.advance_to_order(120_000);
     let (id, _, intended, _) = r.e.model_mgmt_pending(&MINT).expect("REDUCE pending");
+    assert!(r.e.model_mgmt_mark_ack_uncertain(&MINT, id));
     assert!(r.e.model_held_persist_now());
     (hp, id, intended)
 }
@@ -1212,9 +1215,11 @@ fn a_restart_with_a_pending_or_partly_filled_protective_order_neither_resubmits_
         r.e.model_protect_pending_order(&MINT)
             .expect("protective order");
     assert_eq!((pq, code), (inv0, 1));
+    // Submitted to an executor whose acknowledgement is unknown (durably External/Begun).
+    assert!(r.e.model_protect_mark_ack_uncertain(&MINT, pid));
     assert!(r.e.model_held_persist_now());
     drop(r);
-    // CRASH after intent / before any fill: restored UNRESOLVED, same identity and quantity, not resubmitted.
+    // CRASH after submission / before any fill: restored UNRESOLVED, same identity and quantity, not resubmitted.
     let mut e2 = fresh(&hp);
     e2.model_held_restore().unwrap().unwrap();
     assert_eq!(e2.model_inventory_tokens(&MINT), Some(inv0));
