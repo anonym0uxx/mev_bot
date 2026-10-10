@@ -350,6 +350,18 @@ fn venue_fees_inside_a_net_quote_are_never_subtracted_again_on_the_books() {
     let venue_in = (c(lo, 95) + c(lo, 30)) as u64;
     assert_eq!(r.rep("econ:entry_venue_fees_lamports"), venue_in);
     assert!(venue_in > 0);
+    // Non-circular anchor: the clip implied by the booked cost (cost - leg - ATA) must be EXACTLY the all-in
+    // spend that delivers the inventory held. A venue fee charged again on top of the clip inflates the implied
+    // clip, and its exact-in token output no longer equals the inventory.
+    let (vs0, vt0) = (
+        u128::from(VSOL + 200_000_000),
+        u128::from(VTOK - 4_000_000_000_000),
+    );
+    assert_eq!(
+        u128::from(v.inventory_tokens.unwrap()),
+        vt0 * (lo - 1) / (vs0 + lo - 1),
+        "booked cost - leg - ATA is exactly the clip that bought the inventory (no fee on top)"
+    );
     assert_eq!(
         v.committed,
         size + leg + ata,
