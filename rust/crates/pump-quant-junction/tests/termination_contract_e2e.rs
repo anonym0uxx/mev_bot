@@ -57,6 +57,13 @@ fn events(n: u32) -> Vec<AppEvent> {
         });
     }
     let t_last = T0 + 1_000 + i64::from(n) * 2_000;
+    // Canonical (non-Mayhem) curve: pq_daemon pushes CurveModeObserved from the decoded account before its
+    // reserves and before OnchainConfirm; an unknown mode is a named entry refusal since the offset merge.
+    ev.push(AppEvent::CurveModeObserved {
+        mint,
+        mayhem: false,
+        slot: 2_000,
+    });
     ev.push(AppEvent::CurveObserved {
         mint,
         v_sol_lamports: VSOL,
