@@ -1,0 +1,27 @@
+Decide the next action for a position you already hold. Only causal information is shown.
+MINT: ozuUP6r26BjZkgv8eGDR6ZPVLGqfDGvKF5MGKq4pump
+DECISION TIME (unix ms): 1788970583820
+STEP: 0
+
+MARKET STATE (at decision time):
+  venue: pumpswap  market: graduated_amm
+  pool depth: 1865 SOL
+  mark price (lamports per raw token): 0.0245422000546
+  mark price (SOL per raw token): 2.45422000546e-11
+  mark price (SOL per whole token): 2.45422000546e-05
+  execution cost: round trip 257 bp = 2 x execution fee (125 bp/side [curve@454754100:read_at_slot:tier0:125bp]) + 2 x clip impact (2.83 bp/leg for 0.53 SOL into 1865 SOL) + 2 x network+tip (0.380 bp/leg) + rent not refunded (0.095 bp); cashback, if any, is an entitlement, not cash
+
+POSITION STATE (at the decision instant, before any action):
+  entry price (lamports per raw token): 0.023292756397
+  unrealized PnL: 536.4 bp
+  holding time: 120 s
+  max favourable so far: 19351.6 bp
+  max adverse so far: -2332.2 bp
+  inventory: 21.4659 raw tokens
+  cash: 0.5 SOL
+  position value at mark: 0.52682 SOL
+ENRICHED CANDIDATE STATE: holders_at_t=968 top1_float_share=0.68258 holder_hhi=0.566494 mcap_sol_at_t=24542.200055 bundle_wallets=1020 round_trip_wallets=12 creator_past_launches=0 creator_known=True wash_ratio=0.01217
+DEV HISTORY: creator_past_launches=0 creator_known=True bundle_wallets=1020 wash_ratio=0.01217
+LIVE FLOW STATE: entrants_60s=7 entrants_300s=877 net_flow_sol_300s=-142.882533 fresh_wallet_share_300s=1.0 flow_lookback_d=7.0 sniper_share_300s=0.0 bot_uniform_share_300s=0.0 smart_entrants_300s=0 smart_net_flow_sol_300s=0.0 coentry_wallets_300s=0 creator_trading_own_mint=True entrant_fee_p90_lamports=5000 entrant_cu_p50=118392
+
+Choose exactly one action: HOLD, ADD, REDUCE, EXIT. Answer in the fixed format.

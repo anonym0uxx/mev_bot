@@ -319,3 +319,101 @@ fn management_prompts_are_byte_identical_to_the_corpus() {
     });
     assert!(n >= 140, "expected the full fixture set, ran {n}");
 }
+
+// ---- prompt contract v2 (pq_prompt_v2_exec_fee_20261010) ----
+use pump_quant_proposal::contract_v2 as v2;
+
+fn v2_costs() -> v2::ExecCosts {
+    v2::ExecCosts {
+        venue_bp_per_side: 125,
+        fee_stamp: "curve@454754100:read_at_slot:tier0:125bp".to_string(),
+        network_lamports_per_leg: 10_000,
+        tip_lamports_per_leg: 10_000,
+        rent_unrefunded_lamports: 5_000,
+    }
+}
+
+/// v2 differs from v1 ONLY in the cost block, on every fixture row (trained feature bytes unchanged).
+#[test]
+fn v2_changes_only_the_cost_block_on_every_fixture_row() {
+    let c = v2_costs();
+    let hdr = "SIZE OPTIONS (choose one on BUY;";
+    let n = run_v2("tests/fixtures/decision.jsonl", |input| {
+        let b = decision_bundle(input);
+        let (a, z) = (render_decision(&b), v2::render_decision_v2(&b, &c));
+        assert_eq!(a[..a.rfind(hdr).unwrap()], z[..z.rfind(hdr).unwrap()]);
+        assert!(z.contains("[curve@454754100:read_at_slot:tier0:125bp]"));
+    });
+    assert!(n >= 150, "{n}");
+    let n = run_v2("tests/fixtures/management.jsonl", |input| {
+        let m = management_bundle(input);
+        let (a, z) = (render_management(&m), v2::render_management_v2(&m, &c));
+        let (la, lz): (Vec<_>, Vec<_>) = (a.lines().collect(), z.lines().collect());
+        assert_eq!(la.len(), lz.len());
+        let diff: Vec<_> = la.iter().zip(&lz).filter(|(x, y)| x != y).collect();
+        assert_eq!(diff.len(), 1, "exactly the cost line differs");
+        assert!(
+            diff[0].0.contains("execution cost:")
+                && diff[0].1.contains("execution fee (125 bp/side")
+        );
+    });
+    assert!(n >= 140, "{n}");
+}
+
+fn run_v2(path: &str, f: impl Fn(&Value)) -> usize {
+    let raw = std::fs::read_to_string(path).unwrap();
+    let mut n = 0;
+    for line in raw.lines().filter(|l| !l.trim().is_empty()) {
+        let row: Value = serde_json::from_str(line.trim_end_matches('\r')).unwrap();
+        f(&row["input"]);
+        n += 1;
+    }
+    n
+}
+
+/// Byte fixtures: the v2 system prompts and two rendered v2 prompts are pinned by sha256 in
+/// tests/fixtures/contract_v2/ (files + SHA256SUMS). Any byte change to the v2 contract turns this red.
+#[test]
+fn v2_contract_bytes_match_the_pinned_fixtures() {
+    let dir = "tests/fixtures/contract_v2";
+    let c = v2_costs();
+    let dec = std::fs::read_to_string("tests/fixtures/decision.jsonl").unwrap();
+    let man = std::fs::read_to_string("tests/fixtures/management.jsonl").unwrap();
+    let d0: Value = serde_json::from_str(dec.lines().next().unwrap()).unwrap();
+    let m0: Value = serde_json::from_str(man.lines().next().unwrap()).unwrap();
+    let got = [
+        (
+            "system_decision_v2.txt",
+            v2::system_prompt_v2(pump_quant_proposal::PromptFamily::Decision)
+                .unwrap()
+                .to_string(),
+        ),
+        (
+            "system_management_v2.txt",
+            v2::system_prompt_v2(pump_quant_proposal::PromptFamily::Management)
+                .unwrap()
+                .to_string(),
+        ),
+        (
+            "decision_row0_v2.txt",
+            v2::render_decision_v2(&decision_bundle(&d0["input"]), &c),
+        ),
+        (
+            "management_row0_v2.txt",
+            v2::render_management_v2(&management_bundle(&m0["input"]), &c),
+        ),
+    ];
+    if std::env::var("PQ_WRITE_V2_FIXTURES").as_deref() == Ok("1") {
+        std::fs::create_dir_all(dir).unwrap();
+        for (f, s) in &got {
+            std::fs::write(format!("{dir}/{f}"), s).unwrap();
+        }
+        return;
+    }
+    for (f, s) in &got {
+        let want =
+            std::fs::read_to_string(format!("{dir}/{f}")).unwrap_or_else(|e| panic!("{f}: {e}"));
+        assert_eq!(&want, s, "{f} drifted from the pinned v2 contract");
+    }
+    assert_eq!(v2::PROMPT_CONTRACT_V2_ID, "pq_prompt_v2_exec_fee_20261010");
+}

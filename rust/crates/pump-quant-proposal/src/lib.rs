@@ -17,6 +17,7 @@
 use std::fmt::Write as _;
 
 pub mod bundle_gate;
+pub mod contract_v2;
 pub mod cost;
 pub mod decision;
 pub mod fmt;
