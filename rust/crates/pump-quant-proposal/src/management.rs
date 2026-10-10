@@ -1,4 +1,13 @@
-//! The `management_replay` user prompt, byte-identical to the c11 corpus.
+//! The `management_replay` user prompt, byte-identical to the c12 corpus (SFT_DATASET_V10,
+//! `/training/v2/candidate_sft_c12`), the corpus the served model was trained on.
+//!
+//! c12 management rows carry NO `ENRICHED CANDIDATE STATE:` / `DEV HISTORY:` /
+//! `LIVE FLOW STATE:` lines and end WITHOUT a trailing newline (c12 builder
+//! `build_management_c12.py::render_user`). The enriched / dev / flow inputs are still part of
+//! [`ManagementBundle`]: they are computed by the same producers as the entry prompt and kept as a
+//! non-rendered record ([`render_management_state`]), but [`render_management`] does not print
+//! them. Adding them to the management prompt requires an explicitly versioned contract with
+//! training and evaluation.
 //!
 //! Same contract as [`crate::decision`]: fixed section order, Python number types, and
 //! the `.4g` / `.12g` / `.6g` / `.2f` prints the corpus used. The cost line is generated
@@ -127,8 +136,20 @@ pub fn render_dev(d: &DevHistoryManagement) -> String {
     out
 }
 
-/// Render the full `management_replay` user prompt exactly as the corpus stores it,
-/// trailing newline included.
+/// The management-side enriched / dev / flow state as the three `key=value` lines the c11
+/// corpus printed. NOT part of the c12 management prompt: this is the record/observability form
+/// of state that is computed for every management decision but not rendered to the model.
+pub fn render_management_state(m: &ManagementBundle) -> String {
+    let mut out = render_enriched(&m.enriched);
+    out.push('\n');
+    out.push_str(&render_dev(&m.dev));
+    out.push('\n');
+    out.push_str(&crate::decision::flow_line(&m.flow, m.flow_no_prior));
+    out
+}
+
+/// Render the full `management_replay` user prompt exactly as the c12 corpus stores it: no
+/// enriched / dev / flow lines and NO trailing newline.
 pub fn render_management(m: &ManagementBundle) -> String {
     let regime = Regime::for_venue(&m.venue);
     let clip = m.qty_pre * m.mark;
@@ -183,14 +204,11 @@ pub fn render_management(m: &ManagementBundle) -> String {
         "  position value at mark: {} SOL\n",
         py_g(m.qty_pre * m.mark, 6)
     ));
-    out.push_str(&render_enriched(&m.enriched));
-    out.push('\n');
-    out.push_str(&render_dev(&m.dev));
-    out.push('\n');
-    out.push_str(&crate::decision::flow_line(&m.flow, m.flow_no_prior));
+    // c12: the enriched / dev / flow lines are not rendered (see `render_management_state`),
+    // and the prompt ends at `format.` with no trailing newline.
     out.push_str(
-        "\n\nChoose exactly one action: HOLD, ADD, REDUCE, EXIT. Answer in the fixed \
-         format.\n",
+        "\nChoose exactly one action: HOLD, ADD, REDUCE, EXIT. Answer in the fixed \
+         format.",
     );
     out
 }
@@ -268,19 +286,80 @@ mod tests {
         assert!(s.contains("for 0.53 SOL into 1865 SOL"), "{s}");
         assert!(s.contains("  inventory: 21.4659 raw tokens\n"));
         assert!(s.contains("  cash: 0.5 SOL\n"));
-        assert!(s.contains(
+        // c12: none of the three blocks, and no trailing newline.
+        assert!(!s.contains("ENRICHED CANDIDATE STATE"), "{s}");
+        assert!(!s.contains("DEV HISTORY"), "{s}");
+        assert!(!s.contains("LIVE FLOW STATE"), "{s}");
+        assert!(s.ends_with(
+            "  position value at mark: 0.52682 SOL\n\nChoose exactly one action: HOLD, ADD, REDUCE, EXIT. Answer in the fixed format."
+        ), "{s}");
+        // ... while the state is still computed and kept as the non-rendered record.
+        let rec = render_management_state(&bundle());
+        assert!(rec.contains(
             "ENRICHED CANDIDATE STATE: holders_at_t=968 top1_float_share=0.68258 \
              holder_hhi=0.566494 mcap_sol_at_t=24542.200055 bundle_wallets=1020 \
              round_trip_wallets=12 creator_past_launches=0 creator_known=True \
              wash_ratio=0.01217\n"
         ));
-        assert!(s.contains(
+        assert!(rec.contains(
             "DEV HISTORY: creator_past_launches=0 creator_known=True bundle_wallets=1020 \
              wash_ratio=0.01217\n"
         ));
-        assert!(s.ends_with(
-            "\n\nChoose exactly one action: HOLD, ADD, REDUCE, EXIT. Answer in the fixed format.\n"
-        ));
+        assert!(
+            rec.ends_with("entrant_fee_p90_lamports=5000 entrant_cu_p50=118392"),
+            "{rec}"
+        );
+    }
+
+    /// Lead decision D2: varying the enriched / dev / flow inputs leaves the rendered management
+    /// prompt byte-identical (they are not rendered), while the non-rendered record DOES change
+    /// (they are still carried). Control: changing a rendered field (cash) changes the prompt.
+    #[test]
+    fn varying_enriched_dev_flow_leaves_the_management_prompt_unchanged() {
+        let base = bundle();
+        let want = render_management(&base);
+        let mut variants = Vec::new();
+        let mut v = base.clone();
+        v.enriched = EnrichedManagement::default();
+        variants.push(v);
+        let mut v = base.clone();
+        v.enriched.holders_at_t = Some(PyNum::Int(3));
+        v.enriched.wash_ratio = Some(PyNum::Float(0.9));
+        v.enriched.mcap_sol_at_t = None;
+        variants.push(v);
+        let mut v = base.clone();
+        v.dev = DevHistoryManagement {
+            creator_past_launches: Some(PyNum::Int(227)),
+            creator_known: Some(PyNum::Bool(false)),
+            bundle_wallets: None,
+            wash_ratio: Some(PyNum::Float(0.5)),
+        };
+        variants.push(v);
+        let mut v = base.clone();
+        v.flow.entrants_60s = 0;
+        v.flow.net_flow_sol_300s = 99.5;
+        v.flow.fresh_wallet_share_300s = None;
+        v.flow.creator_trading_own_mint = false;
+        v.flow.entrant_cu_p50 = None;
+        variants.push(v);
+        let mut v = base.clone();
+        v.flow_no_prior = true;
+        variants.push(v);
+        for (i, v) in variants.iter().enumerate() {
+            assert_ne!(
+                render_management_state(v),
+                render_management_state(&base),
+                "variant {i} must actually change the carried state"
+            );
+            assert_eq!(render_management(v), want, "variant {i} changed the prompt");
+        }
+        let mut c = base.clone();
+        c.cash_pre = 0.25;
+        assert_ne!(
+            render_management(&c),
+            want,
+            "control: a rendered field must show"
+        );
     }
 
     #[test]

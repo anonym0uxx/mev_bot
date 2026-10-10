@@ -8,7 +8,16 @@ the rendered prompt equals `expected` byte for byte.
 - `decision.jsonl` — 161 rows, one per variant class (venue x curve-reserve presence x
   AMM-reserve presence x `no_prior_flow` x `evidence_status` x optional-field absence)
   plus a fill sample, drawn from `c11/candidate_sft_c11/train.jsonl`.
-- `management.jsonl` — 151 rows, same sampling rule.
+- `management.jsonl` — 151 rows, same sampling rule, drawn from the **c12** corpus
+  (`/training/v2/candidate_sft_c12/train.jsonl`, the corpus the served model was trained on).
+  `expected` is the c12 row's user prompt verbatim: no `ENRICHED CANDIDATE STATE:` /
+  `DEV HISTORY:` / `LIVE FLOW STATE:` lines and no trailing newline. c12 does not print the
+  enriched/dev/flow inputs, so they are joined from the matching c11 row on
+  (mint, t_dec, step): 30,011/30,011 joined, 0 synthetic (`input.enr_dev_flow_source`).
+  sha256 316bead55072305a4074c2664cab1a38e6a04ee495f5720950cc420f27885bee.
+- `management_c11.jsonl` — the previous c11 fixture (151 rows, sha256
+  6c5963a4442f9e485a4953f826914c84797896912ae8eae20982d14143510973), kept as evidence.
+  The management renderer is expected to FAIL against it (it carries the three lines).
 
 ## Full-corpus validation (the real claim)
 
@@ -31,13 +40,15 @@ The oracle scripts live outside the repo (the build is Rust-only):
     /training/v2/code/src/v2/rl/parity_rust/p1_ref2.py          decision format table
     /training/v2/code/src/v2/rl/parity_rust/p1_mgmt.py          management format table
     /training/v2/code/src/v2/rl/parity_rust/gen_fixtures.py     decision fixtures
-    /training/v2/code/src/v2/rl/parity_rust/gen_mgmt_fixtures.py management fixtures
+    /training/v2/code/src/v2/rl/parity_rust/gen_mgmt_fixtures.py management fixtures (c11)
+    /training/mh_build/proc/mgmtrender/gen_mgmt_fixtures_c12.py   management fixtures (c12)
 
 Regenerate (writes LF; the checked-in files are CRLF):
 
     cd /training/v2/code/src/v2/rl/parity_rust
     python3 gen_fixtures.py 150 /tmp/decision.jsonl
-    python3 gen_mgmt_fixtures.py /tmp/management.jsonl 150
+    python3 gen_mgmt_fixtures.py /tmp/management_c11.jsonl 150
+    python3 /training/mh_build/proc/mgmtrender/gen_mgmt_fixtures_c12.py /tmp/management.jsonl 150
 
 ## Inputs that the prompt prints only lossily
 

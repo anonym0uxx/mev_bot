@@ -248,6 +248,11 @@ fn history(i: usize, t_end: i64) -> Vec<AppEvent> {
             feature: None,
         });
     }
+    ev.push(AppEvent::CurveModeObserved {
+        mint,
+        mayhem: false,
+        slot: 0,
+    });
     ev.push(AppEvent::OnchainConfirm {
         mint,
         virtual_sol_lamports: VSOL,
@@ -263,6 +268,7 @@ fn history_for(m: [u8; 32], salt: usize, t_end: i64) -> Vec<AppEvent> {
         match x {
             AppEvent::LaunchObserved { mint, .. }
             | AppEvent::MarketTrade { mint, .. }
+            | AppEvent::CurveModeObserved { mint, .. }
             | AppEvent::OnchainConfirm { mint, .. } => *mint = dm,
             _ => {}
         }
