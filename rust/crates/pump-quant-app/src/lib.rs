@@ -84,6 +84,7 @@ pub mod missing_history_store;
 pub mod model_authority;
 pub mod model_lane;
 pub mod model_worker;
+pub mod paper_deposit;
 pub mod parse;
 pub mod portfolio;
 pub mod position;

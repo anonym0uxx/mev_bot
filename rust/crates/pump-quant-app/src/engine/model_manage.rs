@@ -1217,8 +1217,10 @@ impl Engine {
         let closed = exit.closed;
         // A full exit closes the token account: `book_exit` credits the ATA deposit back net of the close fee. The
         // settlement books the same credit inside this SELL's proceeds (labelled by a counter), never elsewhere.
+        // FEES R10 F8: the paper account's ACTUAL deposit (refund_on_close), never today's minimum or a constant.
         let ata_refund = if closed && self.ata_open.contains(&mint) {
-            crate::cost_model::ATA_RENT_LAMPORTS - crate::cost_model::ATA_CLOSE_LAMPORTS
+            self.paper_ata_close_refund(&mint)
+                .saturating_sub(crate::cost_model::ATA_CLOSE_LAMPORTS)
         } else {
             0
         };
@@ -1244,6 +1246,7 @@ impl Engine {
         if self.model_v2() {
             if ata_refund > 0 {
                 self.mrep("settle:ata_rent_refund_in_closing_sell");
+                self.mrep(format!("settle:rent_basis:{}", self.paper_rent_basis().id));
             }
             let leg_cost = self.cfg.txcost_for(true).planned_leg_lamports();
             match settled {

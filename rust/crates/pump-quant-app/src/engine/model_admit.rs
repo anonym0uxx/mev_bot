@@ -1786,18 +1786,22 @@ impl Engine {
         };
         // Venue fees are INSIDE the clip on every model fill (exact-in): no separate entry fee is added.
         let entry_fee = 0u64;
-        let needs_ata = !self.ata_open.contains(&mint);
+        // FEES R10 F8: the ATA deposit is the paper plan's value (plan_buy_deposits on the paper account state at the
+        // versioned rent basis), not a constant. A refused plan (unknown token program) is a named non-fill.
+        let ata_deposit = match self.paper_entry_deposit(&mint) {
+            Ok(d) => d,
+            Err(r) => {
+                self.mrep(format!("fill_none:{}", r.label()));
+                return;
+            }
+        };
         // M3: the landed BUY leg pays the network fee (measured p50) AND the configured tip, each once. Venue
         // fees are already inside the clip (exact-in), so `entry_fee_bps` is 0 on both model fill paths.
         let leg = self.cfg.txcost_for(false).planned_leg_lamports();
         let entry_cost = size
             .saturating_add(entry_fee)
             .saturating_add(leg)
-            .saturating_add(if needs_ata {
-                crate::cost_model::ATA_RENT_LAMPORTS
-            } else {
-                0
-            });
+            .saturating_add(ata_deposit);
         let floor = derive_survival_floor(
             self.bankroll_origin.seed_lamports(),
             self.cfg.floor_fraction_bps,
@@ -1846,6 +1850,7 @@ impl Engine {
         self.books_scoped(&[super::books::BookSite::EntryOpen], |s| {
             s.open_pending(&pe)
         });
+        self.paper_ata_record_deposit(mint, ata_deposit);
         if self.open_lane.contains_key(&mint) {
             let (quote_validated, landing_validated) = (order.amm, false);
             if !(quote_validated && landing_validated) {
@@ -1890,11 +1895,10 @@ impl Engine {
                     .cfg
                     .txcost_for(false)
                     .tip_lamports
-                    .saturating_add(if needs_ata {
-                        crate::cost_model::ATA_RENT_LAMPORTS
-                    } else {
-                        0
-                    });
+                    .saturating_add(ata_deposit);
+                if self.model_v2() {
+                    self.mrep(format!("settle:rent_basis:{}", self.paper_rent_basis().id));
+                }
                 self.model_settle(
                     mint,
                     crate::shadow_pool::LegKind::Entry,
@@ -2252,6 +2256,7 @@ impl Engine {
                         self.books_release(super::books::BookSite::ReconUnwind, cost);
                     }
                     self.ata_open.remove(&mint);
+                    self.paper_ata_deposit.remove(&mint);
                     self.open_lane.remove(&mint);
                     self.model_quarantine.remove(&mint);
                     self.model_position_order.remove(&mint);

@@ -57,6 +57,9 @@ pub struct HeldEntry {
     pub version: u64,
     /// The order that opened the position.
     pub position_order: u64,
+    /// FEES R10 F8: lamports the paper wallet deposited into this mint's ATA (the refund on close). `None` (ABSENT
+    /// from the file) = opened under the v0 legacy constant / a pre-F8 ledger.
+    pub ata_deposit_lamports: Option<u64>,
 }
 
 /// One pending order. After a restart its acknowledgement is UNKNOWN, so it restores as uncertain.
@@ -412,7 +415,7 @@ impl HeldLedger {
             "written_wall_ms": self.written_wall_ms,
             "generation": self.generation,
             "lineage": self.lineage,
-            "held": self.held.iter().map(|h| json!({
+            "held": self.held.iter().map(|h| (json!({
                 "mint": hex(&h.mint),
                 "entry_price_fp": h.entry_price_fp,
                 "size_lamports": h.size_lamports,
@@ -431,7 +434,12 @@ impl HeldLedger {
                 "step": h.step,
                 "version": h.version,
                 "position_order": h.position_order,
-            })).collect::<Vec<_>>(),
+            }), h)).map(|(mut j, h)| {
+                if let (Some(d), Some(o)) = (h.ata_deposit_lamports, j.as_object_mut()) {
+                    o.insert("ata_deposit_lamports".to_string(), json!(d));
+                }
+                j
+            }).collect::<Vec<_>>(),
             "pending": self.pending.iter().map(|p| { let mut j = json!({
                 "kind": p.kind,
                 "id": p.id,
@@ -529,6 +537,10 @@ impl HeldLedger {
                 step: i(h, "step")?,
                 version: u(h, "version")?,
                 position_order: u(h, "position_order")?,
+                ata_deposit_lamports: match h.get("ata_deposit_lamports") {
+                    None => None,
+                    Some(d) => Some(d.as_u64().ok_or(bad("ata_deposit_lamports"))?),
+                },
             });
         }
         let mut pending = Vec::new();
@@ -972,6 +984,7 @@ mod tests {
                 step: 5,
                 version: 3,
                 position_order: 1,
+                ata_deposit_lamports: None,
             }],
             pending: vec![HeldPending {
                 kind: "reduce".into(),
