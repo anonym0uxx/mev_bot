@@ -1456,7 +1456,7 @@ fn construct_live_engine(
         RpcLiveStateFetcher,
     };
     use pump_quant_protocol::layout::LayoutRegistry;
-    use pump_quant_protocol::tx_build::{ComputePlan, TipPlan};
+    use pump_quant_protocol::tx_build::TipPlan;
     use pump_quant_protocol::venue_accounts::FeeTail;
     use std::sync::Arc;
 
@@ -1656,25 +1656,14 @@ fn construct_live_engine(
         .expect("observed layout fixtures must register");
 
     // ── 5. Sink config ─────────────────────────────────────────────────
-    let compute = ComputePlan {
-        unit_limit: pump_quant_app::txcost::TXCOST_V1_20261010.cu_limit,
-        unit_price_micro_lamports: pump_quant_app::txcost::TXCOST_V1_20261010
-            .cu_price_micro_lamports,
-    };
-    // Helius Sender tip: required by all Sender tiers. We use SWQOS-only
-    // (swqos_only=true) whose minimum is 5,000 lamports (0.000005 SOL).
-    // Tip account: 2nyhqdwKcJZR2vcqCyrYsaPVdAnFoJjiksCXJ7hfEYgD (first of 12
-    // designated Helius tip accounts, from live endpoint error + docs).
+    // FEES R10 F1: compute envelope + Helius Sender SWQOS-only tip (5,000 minimum, account
+    // 2nyhqdwKcJZR2vcqCyrYsaPVdAnFoJjiksCXJ7hfEYgD) from the ONE versioned TxCostConfig, through the same
+    // `builder_plans` that `builder_txcost::tests` pins equal to paper's v1 planned leg.
     // See: https://www.helius.dev/docs/sending-transactions/sender-swqos-only
-    let tip: Option<TipPlan> = Some(TipPlan {
-        to: [
-            0x1a, 0xa2, 0xf0, 0x5a, 0x6f, 0x89, 0x50, 0xfc, 0xbf, 0x5d, 0xf9, 0xca, 0x39, 0x48,
-            0x1c, 0x6d, 0xf1, 0x33, 0x05, 0xc8, 0xb8, 0x7c, 0x64, 0x4f, 0x4d, 0x8c, 0x6d, 0x82,
-            0x0b, 0x37, 0x89, 0xa6,
-        ],
-        // SCOPE_TXCOST_R9 T1: from the one versioned cost config (5,000 = SWQOS-only minimum).
-        lamports: pump_quant_app::txcost::TXCOST_V1_20261010.tip_lamports,
-    });
+    let (compute, tip_plan) = pump_quant_junction::builder_txcost::builder_plans(
+        &pump_quant_junction::builder_txcost::BUILDER_TXCOST,
+    );
+    let tip: Option<TipPlan> = Some(tip_plan);
     let fee_tail = FeeTail::None;
 
     let sink_config = LiveSinkConfig {
