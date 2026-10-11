@@ -535,4 +535,131 @@ mod tests {
             Err(QuoteRefusal::AmmCashbackUnknown)
         );
     }
+
+    // ---- FEES R10 F4 (S1): the paper fee is computed for OUR size, from rates only. Hand-derived expectations
+    // (program arithmetic written out here, not by calling the quote helpers): exact-in buys take the largest
+    // net n with n + sum(ceil(n x bps / 1e4)) <= spend; sells take each component as ceil(gross x bps / 1e4).
+    fn hand_c(n: u128, bps: u128) -> u128 {
+        (n * bps).div_ceil(10_000)
+    }
+    fn hand_exact_in(spend: u128, bps: &[u128]) -> u128 {
+        let tot = |n: u128| n + bps.iter().map(|b| hand_c(n, *b)).sum::<u128>();
+        let (mut lo, mut hi) = (0u128, spend);
+        while lo < hi {
+            let m = lo + (hi - lo).div_ceil(2);
+            if tot(m) <= spend {
+                lo = m;
+            } else {
+                hi = m - 1;
+            }
+        }
+        lo
+    }
+    const SOL: u64 = 1_000_000_000;
+    // Curve at (vsol, vtok), real tokens/SOL ample; pinned curve config 95/30 (pinned_curve_fee_config_is_single_tier_95_30).
+    const CV: (u64, u64) = (40_000_000_000, 800_000_000_000_000);
+    // Pool (synthetic reserves), captured non-cashback parts 2/93/30 and virtual quote 17_584_505_661.
+    const PB: u64 = 200_000_000_000_000;
+    const PQ: u64 = 85_000_000_000;
+    const PVQ: u64 = 17_584_505_661;
+    const PARTS: (u32, u32, u32) = (2, 93, 30);
+
+    #[test]
+    fn f4_curve_buy_fee_is_computed_at_our_size_005_and_2_sol() {
+        for spend in [SOL / 20, 2 * SOL] {
+            let q = curve_buy(CV.0, CV.1, 600_000_000_000_000, spend).unwrap();
+            let n = hand_exact_in(u128::from(spend), &[95, 30]);
+            let fees = hand_c(n, 95) + hand_c(n, 30);
+            let toks = u128::from(CV.1) * (n - 1) / (u128::from(CV.0) + n - 1);
+            assert_eq!(
+                (
+                    u128::from(q.net_in),
+                    u128::from(q.venue_fees),
+                    u128::from(q.tokens)
+                ),
+                (n, fees, toks),
+                "spend {spend}"
+            );
+            assert_eq!(u128::from(q.spend), n + fees);
+        }
+    }
+
+    #[test]
+    fn f4_curve_sell_fee_is_computed_at_our_size_005_and_2_sol() {
+        for target in [SOL / 20, 2 * SOL] {
+            // tokens whose gross is ~target at this curve state
+            let t = u64::try_from(
+                u128::from(target) * u128::from(CV.1) / (u128::from(CV.0) - u128::from(target)),
+            )
+            .unwrap();
+            let q = curve_sell(CV.0, CV.1, 30 * SOL, t).unwrap();
+            let g = u128::from(CV.0) * u128::from(t) / (u128::from(CV.1) + u128::from(t));
+            let fees = hand_c(g, 95) + hand_c(g, 30);
+            assert_eq!(
+                (
+                    u128::from(q.gross),
+                    u128::from(q.venue_fees),
+                    u128::from(q.net)
+                ),
+                (g, fees, g - fees),
+                "target {target}"
+            );
+        }
+    }
+
+    #[test]
+    fn f4_pool_buy_fee_is_computed_at_our_size_005_and_2_sol() {
+        for spend in [SOL / 20, 2 * SOL] {
+            let q = amm_buy(
+                PB,
+                PQ,
+                Some(PVQ),
+                Some(PARTS),
+                CashbackField::NotRecorded,
+                spend,
+            )
+            .unwrap();
+            let n = hand_exact_in(u128::from(spend), &[2, 93, 30]);
+            let fees = hand_c(n, 2) + hand_c(n, 93) + hand_c(n, 30);
+            let eff = u128::from(PQ) + u128::from(PVQ);
+            let out = u128::from(PB) * (n - 1) / (eff + n - 1);
+            assert_eq!(
+                (
+                    u128::from(q.net_in),
+                    u128::from(q.venue_fees),
+                    u128::from(q.tokens)
+                ),
+                (n, fees, out),
+                "spend {spend}"
+            );
+        }
+    }
+
+    #[test]
+    fn f4_pool_sell_fee_is_computed_at_our_size_005_and_2_sol() {
+        let eff = u128::from(PQ) + u128::from(PVQ);
+        for target in [u128::from(SOL / 20), u128::from(2 * SOL)] {
+            let t = u64::try_from(target * u128::from(PB) / (eff - target)).unwrap();
+            let q = amm_sell(
+                PB,
+                PQ,
+                Some(PVQ),
+                Some(PARTS),
+                CashbackField::NotRecorded,
+                t,
+            )
+            .unwrap();
+            let g = eff * u128::from(t) / (u128::from(PB) + u128::from(t));
+            let fees = hand_c(g, 2) + hand_c(g, 93) + hand_c(g, 30);
+            assert_eq!(
+                (
+                    u128::from(q.gross),
+                    u128::from(q.venue_fees),
+                    u128::from(q.net)
+                ),
+                (g, fees, g - fees),
+                "target {target}"
+            );
+        }
+    }
 }

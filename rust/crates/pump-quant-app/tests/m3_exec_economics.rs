@@ -733,3 +733,120 @@ fn f3_txcost_v0_vs_v1_per_leg_and_round_trip_delta_and_no_decision_change() {
         "realized moves by exactly the round-trip leg delta (18,800)"
     );
 }
+
+// ---------------------------------------------------------------------------------------------------------
+// FEES R10 F4 (S1): the paper fee is computed at OUR size from the landing event's RATES; the observed swap's own
+// size and charged fee never enter it. And a later observation never rewrites an earlier admission quote.
+// ---------------------------------------------------------------------------------------------------------
+
+/// A canonical pool swap whose OBSERVED trade (size, quote, charged tx fee) is chosen by the caller; reserves,
+/// rates and virtual quote are the landing state.
+fn pool_swap_observed(r: &mut Rig, (token_amount, quote_lamports, fee_lamports): (u64, u64, u64)) {
+    r.e.tick(AppEvent::AmmSwap {
+        mint: mint(),
+        pool: POOL,
+        pool_is_canonical: true,
+        quote_is_wsol: true,
+        token_reserve_pre: 200_000_000_000_000,
+        quote_reserve_pre: 85_000_000_000,
+        fee_bps: Some(2 + 93 + 30),
+        fee_parts: Some((2, 93, 30)),
+        virtual_quote: Some(VQ),
+        cashback: CashbackField::NotRecorded,
+        is_buy: false,
+        token_amount,
+        quote_lamports,
+        trader: [9u8; 32],
+        fee_lamports: Some(fee_lamports),
+        cu_consumed: Some(1),
+        recv_unix_ms: Some(r.clock),
+        slot: r.slot,
+    });
+    ticks(&mut r.e, 2);
+}
+
+/// Two exits of the SAME position on the SAME landing reserves and rates, where the observed swap is a tiny
+/// 50,000-lamport trade in one run and a 40-SOL trade with a 9,999,999-lamport tx fee in the other. The fill fee
+/// must be the hand-derived fee at OUR gross in both (so equal), never the observed swap's charged fee.
+#[test]
+fn f4_pool_exit_fee_is_computed_at_our_size_not_the_observed_swaps_charged_fee() {
+    let mut fees = Vec::new();
+    for obs in [
+        (1_000_000_000u64, 50_000u64, 5_000u64),
+        (900_000_000_000_000, 40_000_000_000, 9_999_999),
+    ] {
+        let mut r = rig(|s| if s == 0 { EXIT } else { HOLD });
+        r.run_to_order(VSOL + 200_000_000, VTOK - 4_000_000_000_000, 8_100_000_000);
+        let (id, _, intended, _) = r.e.model_mgmt_pending(&MINT).unwrap();
+        graduate(&mut r);
+        ticks(&mut r.e, 4);
+        r.clock += 1_000;
+        r.slot += 5;
+        pool_swap_observed(&mut r, obs);
+        let f =
+            r.e.model_mgmt_fills()
+                .last()
+                .copied()
+                .unwrap_or_else(|| panic!("{obs:?}: {:?}", r.e.model_lane_report()));
+        assert_eq!((f.order_id, f.tokens), (id, intended));
+        let eff = 85_000_000_000u128 + u128::from(VQ);
+        let g = eff * u128::from(intended) / (200_000_000_000_000u128 + u128::from(intended));
+        let venue =
+            (g * 2).div_ceil(10_000) + (g * 93).div_ceil(10_000) + (g * 30).div_ceil(10_000);
+        let leg = u128::from(
+            Config::dev_portable()
+                .txcost_for(true)
+                .planned_leg_lamports(),
+        );
+        assert_eq!(u128::from(f.gross_lamports), g, "{obs:?}");
+        assert_eq!(
+            u128::from(f.fee_lamports),
+            venue + leg,
+            "{obs:?}: our size, not the observed swap"
+        );
+        assert_eq!(u128::from(r.rep("econ:exit_venue_fees_lamports")), venue);
+        fees.push(f.fee_lamports);
+    }
+    assert_eq!(
+        fees[0], fees[1],
+        "the observed trade's size/charged fee never moves our fee"
+    );
+}
+
+/// LEAK: the admission quote (entry spend, inventory, entry venue fee, network, tip) is fixed at the landing that
+/// filled it. Later observations at very different reserves, with large observed trades and tx fees, must not
+/// rewrite any of it.
+#[test]
+fn f4_a_later_observation_never_changes_the_earlier_admission_quote() {
+    let mut r = rig(|_| HOLD);
+    let v0 = r.e.model_accounting_view(&MINT);
+    let snap = |r: &Rig| {
+        (
+            r.rep("econ:entry_venue_fees_lamports"),
+            r.rep("econ:entry_network_lamports"),
+            r.rep("econ:entry_tip_lamports"),
+        )
+    };
+    let c0 = snap(&r);
+    assert!(c0.0 > 0, "entry venue fee booked");
+    for k in 0..6u64 {
+        r.clock += 1_000;
+        r.slot += 1;
+        curve(
+            &mut r.e,
+            r.clock,
+            r.slot,
+            VSOL + 9_000_000_000 * (k + 1),
+            VTOK - 90_000_000_000_000 * (k + 1),
+            8_100_000_000 + 9_000_000_000 * (k + 1),
+        );
+        r.n += 1;
+        print(&mut r.e, r.n, r.clock, r.slot);
+        ticks(&mut r.e, 2);
+    }
+    let v1 = r.e.model_accounting_view(&MINT);
+    assert_eq!(v1.attribution_entry_spend, v0.attribution_entry_spend);
+    assert_eq!(v1.inventory_tokens, v0.inventory_tokens);
+    assert_eq!(v1.remaining_cost_basis, v0.remaining_cost_basis);
+    assert_eq!(snap(&r), c0);
+}
