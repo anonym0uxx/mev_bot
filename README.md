@@ -1,126 +1,214 @@
-# mev_bot — `pump-quant`
+<div align="center">
 
-A Rust trading engine for Solana memecoins on **pump.fun** (bonding curve) and **PumpSwap** (AMM pools). A trained
-language model (Qwen) proposes entry and position-management decisions. The Rust engine validates them, simulates or
-executes them, books every lamport, and enforces the safeguards. The default and only quick-start mode is **paper**:
-simulated fills, no keys, no orders.
+# pump-quant
 
-> **A tested engineering release is not authorization to trade.** Passing tests, CI and acceptance drills show
-> that the code behaves as specified on fixtures. They say nothing about profitability, and live trading is a
-> separate, explicit operator decision (see [Status](#status)).
+**Model-directed trading research for Solana memecoin markets, with a deterministic Rust engine underneath.**
 
-## Decision authority
+[Status](#status) · [How it works](#how-it-works) · [AI/ML approach](#aiml-approach) · [Get started](#get-started-offline) · [Docs](#documentation) · [For coding agents](#for-coding-agents)
 
-| Concern | Owner |
-|---|---|
-| Whether to enter (BUY / SKIP), size tier (`NONE` / `SMALL` / `FULL`), and position management (HOLD / REDUCE / EXIT / ADD) | **Qwen policy**, through the typed inference seam (`pump-quant-inference/src/seam.rs`, `pump-quant-proposal`) |
-| Prompt construction from engine state, parsing, termination checks, deadlines; late or malformed answers are refused by name | Rust (`pump-quant-app` model lane) |
-| Fills (paper landing-state simulation or the live builder), fees, rent deposits, settlement, books and the durable ledger | Rust (`pump-quant-app`, `pump-quant-execution`, `pump-quant-protocol`) |
-| Protective safeguards: hard stop, rug precursor, SAFETY_OFF latch, solvency/per-position limits, stop/handoff contract | Rust; created by safeguards, never by the model |
+</div>
 
-Rust never re-sizes a model decision except for solvency/per-position limits, and it fails closed. Missing
-evidence produces a **named refusal** (for example `deposit_unknown`, `capture_seal_behind_restart`), never a
-default value.
+pump-quant watches pump.fun bonding curves and PumpSwap pools and asks a fine-tuned Qwen model what to do: enter, watch,
+skip, or manage an open position. A Rust engine checks each answer against the account and market, simulates the fill,
+and books every lamport, so each decision can be measured against its real costs.
+
+> [!NOTE]
+> The current release runs in **paper mode** only. Orders are simulated against observed market state, and nothing
+> is submitted on-chain.
 
 ## Status
 
-Each line is a separate claim; none implies another. Dated detail lives in the linked records.
-
-| Area | State |
+| Area | Where it stands |
 |---|---|
-| **Engineering** | Integration head passes the full workspace suite, fmt, clippy (`-D warnings`) and hosted CI (`rust-ci`). A packaged handoff → final report → restore drill passes on the release package. Evidence: [acceptance record](docs/acceptance/ENGINEERING_ACCEPTANCE.md). |
-| **Model quality** | **Not accepted.** No model candidate has passed the decision-quality gates. Experiments continue offline, and no candidate is promoted. |
-| **Serving latency** | Engine-side timely usability (≥ 95 % of decisions usable before their deadline) has **not** been demonstrated. |
-| **Paper evaluation** | Fixture replays and drills only. A bounded forward paper run is planned and **not yet run**; it measures integration, not profitability. |
-| **Live trading** | **Not enabled.** The live BUY path is built and disabled. It reports `deposit_unknown` until a coherent on-chain state fetcher exists, and on-chain program versions are unverified. Key custody and enablement are operator-held. |
+| Engineering | **Accepted** at a pinned source revision: CI, workspace tests and a packaged stop → report → restore drill. [Record](docs/acceptance/ENGINEERING_ACCEPTANCE.md) |
+| Model quality | **Not accepted.** No checkpoint has passed the decision-quality gates, and none is promoted. |
+| Serving latency | Engine-side timely usability (≥ 95 % of decisions usable before their deadline) is **not yet demonstrated**. |
+| Forward paper evaluation | **Not yet run.** It will measure operational behaviour and net economics over a bounded window. It cannot establish sustained profitability. |
+| Live trading | **Not enabled.** Several independent gates are closed. See [Operating boundaries](#operating-boundaries). |
 
-## Architecture
+Dated results live in the linked records, not on this page.
 
-```
- Helius LaserStream (gRPC, via tools/stream-capture-rs)      PumpPortal / Helius WS
-                    │  transactions, account updates                  │
-                    ▼                                                  ▼
- ┌──────────────────────────────── pq-daemon (pump-quant-junction) ──────────────────────────────┐
- │  decode + bind (laserstream.rs, curve bindings)  →  Engine::tick (pump-quant-app)              │
- │      market state · flow history · launch/creator registry · held ledger · safeguards          │
- │          │ prompt (engine state only)                     ▲ typed verdict / named refusal       │
- │          ▼                                                │                                     │
- │      model lane ──HTTP──► Qwen server (vLLM, OpenAI-compatible; external to this repo)          │
- │          │                                                                                      │
- │      paper fills (landing state, fee + rent + tx cost)  |  live builder (disabled)              │
- │      durable state: held.json, safety.json, flow.ckpt, event_stream.jsonl + capture_seal.json   │
- └────────────────────────────────────────────────────────────────────────────────────────────────┘
-          │ event stream / tape                                         │ status + health JSON
-          ▼                                                             ▼
-  pq-engine-replay, evaluator (offline)                       operator, pq-watchdog
+## How it works
+
+```mermaid
+flowchart LR
+    S["Market stream<br/>LaserStream gRPC · WS"] --> D["Decode and bind<br/>pq-daemon"]
+    D --> E["Engine state<br/>prints · reserves · flow · launches"]
+    E -->|"prompt from engine state"| M["Qwen via vLLM<br/>OpenAI-compatible API"]
+    M -->|"typed decision"| V["Validate and veto<br/>contract · deadline · capital"]
+    V --> F["Paper fill<br/>fees · rent · tx cost"]
+    F --> L["Books and durable ledger"]
+    L --> E
+    E --> R["Event stream<br/>replay and training data"]
 ```
 
-## Repository map
+1. **Observe.** The daemon decodes on-chain transactions and account updates into prints, reserves and launches. It
+   keeps causal state per market: only information available at decision time is used.
+2. **Decide.** For a candidate market or an open position, the engine renders a fixed-format prompt from its own
+   state. Qwen answers with an action and a size tier.
+3. **Validate.** Rust parses the answer against the contract. It refuses late, malformed or off-contract answers by
+   name, and applies capital vetoes. It never substitutes a decision the model did not make.
+4. **Fill and reconcile.** Paper fills are priced on the market state observed after the decision, including venue
+   fees, rent deposits and transaction costs. Settlement updates books, the held-position ledger and the sealed event
+   capture, so a restart resumes from the same state.
 
-| Path | Contents |
-|---|---|
-| `rust/` | Cargo workspace (edition 2021). Engine crates live in `rust/crates/`. |
-| `rust/crates/pump-quant-app` | Engine: model lane, positions, paper fills, fees/rent/tx cost, safeguards, durable state |
-| `rust/crates/pump-quant-junction` | Binaries (`pq-daemon`, `pq-engine-replay`, `pq-sell`, `pq-watchdog`, `pq-serving-latency`), stream decode, restart rehydration |
-| `rust/crates/pump-quant-inference`, `pump-quant-proposal` | Model seam: prompt contract, parser, decision types |
-| `rust/crates/pump-quant-protocol`, `pump-quant-execution` | On-chain layouts, PDAs, transaction and deposit planning |
-| `rust/data/CHAMPION_CONFIG.txt` | Authoritative runtime config, loaded by `pq-daemon` from `data/CHAMPION_CONFIG.txt` relative to its working directory |
-| `tools/stream-capture-rs` | LaserStream capture sidecar |
-| `tools/data-pipeline`, `tools/training`, `tools/qwen_training_handoff`, `training/` | Corpus pipeline and the training code of record (mirror; runs on the training host) |
-| `tools/gates/portable_gate.py`, `.githooks/pre-push` | Repository gate and credential guard |
-| `docs/` | Current entry document plus many **historical** design records (see below) |
+<details>
+<summary>Decision vocabulary</summary>
 
-## Getting started (offline / paper)
+| Context | Actions | Size |
+|---|---|---|
+| Entry | `BUY`, `WATCH`, `SKIP` | `SMALL` or `FULL` on `BUY`, otherwise `NONE` |
+| Open position | `HOLD`, `ADD`, `REDUCE`, `EXIT` | fraction defined by the management contract |
 
-Prerequisites: Linux x86-64, Rust stable (tested with 1.99.0), Python 3 for the gate. No network access, keys or
-model server are needed for these steps. The declared MSRV (1.85) does not currently build; see `docs/ENTRY.md` §7.
+`SMALL` and `FULL` are fractions of the account's clip (25 % and 100 %). The model chooses the tier. The engine resolves
+the lamport amount.
+</details>
+
+## AI/ML approach
+
+**Data.** A capture sidecar records the raw stream. The same decoders the daemon uses turn it into causal features:
+windows end at the decision time, and fields that are unknown stay unknown. Data pipelines and the training code of
+record live under `tools/data-pipeline`, `tools/training` and `training/`.
+
+**Prompts, labels and evaluation sets** are versioned contracts. The prompt and response formats are defined in
+`pump-quant-proposal` and parsed by `pump-quant-inference`. Training, validation and held-out examination sets are
+kept separate, and held-out rows are excluded from training. Dataset pins and run records live with the training
+code of record.
+
+**Training.** Qwen is adapted with supervised fine-tuning and offline RL experiments. Runs are pre-registered with
+pass/fail criteria. Low loss or a passing format check shows the model learned the contract; it does not show
+economic edge.
+
+**From checkpoint to serving.** These are three different states:
+
+- **Trained checkpoint:** the output of a run.
+- **Accepted model:** a checkpoint that passed the pinned decision-quality and serving gates.
+- **Promoted serving configuration:** an accepted model deployed behind vLLM by an operator decision.
+
+Only the third is ever called by the daemon. Today no checkpoint is accepted.
+
+**No online learning.** The system does not learn from its own trades. Paper and live outcomes become data only
+through an explicit, versioned dataset build and a new training run.
+
+## Operating boundaries
+
+**Qwen** decides the action and the size tier.
+
+**Rust** decides feasibility and keeps the books. It handles prompt construction, the response contract, deadlines,
+fills, fees, rent, settlement and the durable ledger. It also runs the agreed safeguards (hard stop, rug precursor,
+the SAFETY_OFF latch, the stop/handoff contract), which act on held positions without asking the model.
+
+**Capital is bounded by Rust, never widened by it.**
+
+- A tier resolves to a fraction of the configured clip. If the portfolio cap cannot be counted live, every tier
+  falls back to half the clip.
+- That clip is capped to what the account can pay after a fee buffer, and refused below the venue minimum.
+- An entry is refused if it would cross the bankroll survival floor, exceed the own-impact limit on the pool, or
+  exceed the portfolio and per-position caps.
+- Anything off-contract means no trade.
+
+Exact values live in the configuration file (see [Documentation](#documentation)).
+
+**Live trading is not available in this release.** Several independent gates are closed:
+
+- The model admission path refuses every decision in live mode (`refuse:live_forbidden`).
+- The live BUY builder refuses with `deposit_unknown` until a coherent on-chain state fetcher exists.
+- Signing keys are operator-held and are not part of any quick start.
+
+Fixing any one of these alone does not enable trading. Deployed program metadata has been read, including the last
+deploy slot and upgrade authority. Still open:
+
+- the executable behaviour of some account-creation paths the builder relies on;
+- re-reading program metadata at runtime;
+- the behaviour of historical program versions.
+
+## Get started (offline)
+
+You need Linux x86-64, Rust stable (tested with 1.99.0) and Python 3. The first build downloads crates. For a fully
+offline build, the dependencies must already be cached or vendored; then add `--offline`.
 
 ```bash
-git config core.hooksPath .githooks          # once per clone: blocking credential guard
-python3 tools/gates/portable_gate.py --repo .   # expected: "portable gate PASSED (blocking checks)"
+git config core.hooksPath .githooks              # blocking credential guard, once per clone
+python3 tools/gates/portable_gate.py --repo .    # → "portable gate PASSED (blocking checks)"
 
 cd rust
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace                        # expected: all pass, 0 failed (count changes over time)
-
-# Engine replay of a recorded event stream (offline). Prints one JSON object, for example:
-# {"admitted":..,"rejected":..,"net_lamports":..,"ticks":..,"events_fed":..,"parse_skipped":0}
-cargo run --bin pq-engine-replay -- --event-stream <event_stream.jsonl> --config data/CHAMPION_CONFIG.txt
+cargo test --workspace --locked                  # → every target reports "0 failed"
 ```
 
-No event stream is committed to the repository. `pq-daemon` writes one to `data/event_stream.jsonl` during a paper
-session, and the capture tool records raw lines. The replay summary counts engine decisions; it is not a P&L claim.
+To replay a recorded event stream through the engine, you need an input file. None is committed. A paper session
+writes one to `data/event_stream.jsonl`.
 
-Running `pq-daemon` in paper mode needs stream credentials (Helius / LaserStream) and, for model decisions, a
-reachable model endpoint (`PQ_MODEL_ENDPOINT`). At start it prints
-`startup paper check: no keypair, no --live, no submission sink (paper)`. Operating details:
-`docs/ENTRY.md` §5 and §10. *These daemon steps are not covered by the commands above and were not executed while
-writing this README.* Never pass `--live`: live execution is not enabled.
+```bash
+cargo run --locked --bin pq-engine-replay -- --event-stream <event_stream.jsonl> --config data/CHAMPION_CONFIG.txt
+# → one JSON line: {"admitted":…,"rejected":…,"net_lamports":…,"ticks":…,"events_fed":…,"parse_skipped":0}
+```
 
-## Where things are defined
+The output counts engine decisions on that input. It is not a performance result.
 
-| What | Authoritative source |
+<details>
+<summary>Full CI-equivalent checks and paper daemon notes</summary>
+
+```bash
+cd rust
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo build --workspace --locked
+cargo test --workspace --locked
+```
+
+A paper `pq-daemon` session needs **stream/API credentials** (Helius / LaserStream) and, for model decisions, a
+reachable model endpoint (`PQ_MODEL_ENDPOINT`). It needs **no signing key**. At start it prints
+`startup paper check: no keypair, no --live, no submission sink (paper)`. See [`docs/ENTRY.md`](docs/ENTRY.md) §5
+and §10. These daemon steps were not executed while writing this page.
+</details>
+
+## Documentation
+
+| Topic | Where |
 |---|---|
-| Runtime configuration | `rust/data/CHAMPION_CONFIG.txt`. The config dump and fingerprint are printed at daemon start. |
-| Transaction cost assumption | `txcost_version` in the config. Definitions in `pump-quant-app/src/txcost.rs` and `pump-quant-junction/src/builder_txcost.rs` (paper = live builder plan). |
-| Rent / ATA deposit assumption | `paper_rent_basis` in the config, defined in `pump-quant-app/src/paper_deposit.rs`. The pinned snapshot is the paper assumption for this version, **not** proof of historical rent. The token program must be proven from stream evidence; otherwise `deposit_unknown`. |
-| Venue fees | Fee authority in `pump-quant-app` (fees are inside the clip on exact-in fills) |
-| Operating entry points, env vars, stop sentinels, retired features | [`docs/ENTRY.md`](docs/ENTRY.md) |
-| Release identities, acceptance evidence, rollback | [`docs/acceptance/ENGINEERING_ACCEPTANCE.md`](docs/acceptance/ENGINEERING_ACCEPTANCE.md) and git tags `rollback/*`, `tested/*` |
+| Operating entry, binaries, environment, stop sentinels, retired features | [`docs/ENTRY.md`](docs/ENTRY.md) |
+| Engineering acceptance, release identities, rollback | [`docs/acceptance/ENGINEERING_ACCEPTANCE.md`](docs/acceptance/ENGINEERING_ACCEPTANCE.md) |
 | Branch dispositions | [`docs/acceptance/BRANCH_CLEANUP_RECORD.md`](docs/acceptance/BRANCH_CLEANUP_RECORD.md) |
-| Consolidation history and dispositions | [`docs/CONSOLIDATION_MANIFEST.md`](docs/CONSOLIDATION_MANIFEST.md) |
+| Consolidation history | [`docs/CONSOLIDATION_MANIFEST.md`](docs/CONSOLIDATION_MANIFEST.md) |
 | Training code of record | [`training/README.md`](training/README.md) |
-| CI | `.github/workflows/gate.yml` (`rust-ci`: portable gate, fmt, clippy, build, test) |
+| Runtime configuration | `rust/data/CHAMPION_CONFIG.txt` |
 
-## Historical documents
+Many files in `docs/` describe earlier designs and launch procedures. They are kept as history, not instructions.
+Where they disagree with `docs/ENTRY.md`, that file wins.
 
-Most files in `docs/` (for example `ARCH_*`, `ARCHITECT_*`, `QUANT_*`, `*_V2.md`, dated `*_2026-*.md`,
-`RUNBOOK.md`, `RESTART_INSTRUCTIONS.md`) describe earlier designs, strategies or launch procedures. They are kept as
-evidence, **not instructions**. Where they conflict with `docs/ENTRY.md` or this README, those two win.
+## For coding agents
 
-## Safety and responsibility
+<details>
+<summary>Canonical locations, validation and working rules</summary>
 
-This software can sign and submit Solana transactions when explicitly configured for live mode. Live mode is not
-enabled in this release. Trading memecoins carries a high risk of total loss. Nothing in this repository is
-financial advice, and nothing in it demonstrates profitability.
+**Code**
+
+- Engine: `rust/crates/pump-quant-app` (model lane, positions, paper fills, fees, rent, tx cost, safeguards, durable state).
+- Daemon and binaries: `rust/crates/pump-quant-junction` (`src/bin/pq_daemon.rs`, stream decode, restart rehydration).
+- Model contract: `rust/crates/pump-quant-proposal` (prompt/response format) and `rust/crates/pump-quant-inference` (`src/seam.rs` parser and decision types).
+- On-chain layouts and deposit planning: `rust/crates/pump-quant-protocol`, `rust/crates/pump-quant-execution`.
+
+**Configuration and cost assumptions**
+
+- `rust/data/CHAMPION_CONFIG.txt`, including `txcost_version` and `paper_rent_basis`.
+- Definitions: `pump-quant-app/src/txcost.rs`, `pump-quant-app/src/paper_deposit.rs`, `pump-quant-junction/src/builder_txcost.rs`.
+
+**Validation.** Run the commands in the CI-equivalent block above. CI is `.github/workflows/gate.yml` (`rust-ci`, on
+pull requests to `main`).
+
+**Release identities.** Accepted source revision, packaged binary hashes and rollback SHA are in
+`docs/acceptance/ENGINEERING_ACCEPTANCE.md`. A later documentation or merge commit is not the source of a built
+binary.
+
+**Working rules**
+
+- Preserve journals, datasets, checkpoints, capture files and other people's uncommitted work.
+- Never delete, clean, rewrite or force-push to make a tree look tidy.
+- Missing evidence is a named refusal, not a default.
+- Approval boundaries are set by the operator's instructions and `docs/ENTRY.md` §3–§4, not by this README. A
+  passing test run grants no authority to trade, promote a model or change policy.
+</details>
+
+---
+
+<sub>Trading memecoins carries a high risk of total loss. Nothing here is financial advice or a claim of profitability.</sub>

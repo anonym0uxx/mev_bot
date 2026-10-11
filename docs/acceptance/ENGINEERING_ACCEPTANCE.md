@@ -46,12 +46,19 @@ Fresh run directories; the package is SHA256SUMS-verified before every run.
 ## Remaining limitations (not closed by this acceptance)
 - Model decision quality: no candidate has passed the quality gates; none promoted.
 - Engine-side timely usability ≥ 95 %: not demonstrated.
-- Live BUY: disabled; `deposit_unknown` until a coherent on-chain state fetcher exists; deployed program versions
-  unverified.
+- Live trading: not enabled. Model admission refuses every decision in live mode (`refuse:live_forbidden`), and
+  the live BUY builder refuses with `deposit_unknown` until a coherent on-chain state fetcher exists. Fixing either
+  alone does not enable trading. Deployed program metadata (last deploy slot, upgrade authority) was read. Still
+  open: the executable behaviour of some account-creation paths the builder relies on (for example
+  `track_volume = 0` with no user volume accumulator, and an under-funded creator vault), re-reading program
+  metadata at runtime, and the behaviour of historical program versions.
 - Token-program coverage: on recorded captures, a token program was proven for 188/194, 134/139 and 198/206 traded
   mints. The rest refuse as `deposit_unknown` (counted per mint, not per entry request).
-- Windows serving parity/latency, AMM sell economics, and the forward paper run: open.
+- Windows serving parity/latency and AMM sell economics: open.
+- Forward paper run: not yet executed. It will measure operational behaviour and net economics over a bounded
+  window; it cannot establish sustained profitability.
 
 ## Documentation-only commits after `905acd2d`
-README rewrite, this record and the branch cleanup record. No code, config or test changes, so the engineering
-evidence above applies unchanged.
+The README rewrite, this record and the branch cleanup record. These commits change no code, configuration or
+tests. No binary is built from them: the packaged binaries above are built from `905acd2d`, and a later
+documentation or merge commit must not be presented as their source.
