@@ -631,7 +631,26 @@ impl ShadowBook {
                 delta_carried: carried,
             };
         };
-        let shadow = match sell(s.base, s.quote, s.vq) {
+        let shadow = match fee
+            .map_or(Ok((parts, cashback)), |fee| {
+                // FEES R10 F5: the tier of OUR shadow state, not the observed event's.
+                crate::shadow_tier::shadow_pool_rates(
+                    fee,
+                    (obs.base, obs.quote),
+                    (s.base, s.quote),
+                    s.vq,
+                    parts,
+                    cashback,
+                    None,
+                )
+            })
+            .and_then(|(p, c)| match fee {
+                Some(fee) => {
+                    crate::exec_quote::amm_sell_at(fee, s.base, s.quote, Some(s.vq), p, c, tokens)
+                        .map(|x| x.0)
+                }
+                None => crate::exec_quote::amm_sell(s.base, s.quote, Some(s.vq), p, c, tokens),
+            }) {
             Ok(q) if u128::from(q.gross) > cap => {
                 Err(ShadowRefusal::CapacityExceeded { capacity: cap })
             }

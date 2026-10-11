@@ -156,6 +156,9 @@ pub enum QuoteRefusal {
     /// A pool fee tier was asked for without the LIVE base-mint supply the program's market cap uses
     /// (`poolMarketCap`): never assumed 1e15, never banded (SCOPE_FEES_R6 T2).
     PoolMintSupplyUnknown,
+    /// FEES R10 F5, `paper_fill_v2_shadow` only: our carried shadow trades may move the pool market cap across a
+    /// tier threshold and the evidence (event tier, no live supply) cannot determine OUR tier. Never the observed rate.
+    ShadowFeeTierUndetermined,
 }
 
 impl QuoteRefusal {
@@ -193,6 +196,7 @@ impl QuoteRefusal {
             Self::ShadowCapacityExceeded => "quote_unavailable:shadow_capacity_exceeded",
             Self::ShadowStateInvalid => "quote_unavailable:shadow_state_invalid",
             Self::PoolMintSupplyUnknown => "quote_unavailable:pool_mint_supply_unknown",
+            Self::ShadowFeeTierUndetermined => "quote_unavailable:shadow_fee_tier_undetermined",
         }
     }
 }

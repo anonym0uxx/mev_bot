@@ -839,15 +839,22 @@ impl Engine {
                             ) {
                                 None => Err(crate::exec_quote::QuoteRefusal::ShadowStateInvalid),
                                 Some((fb, fq)) => {
-                                    let q = crate::exec_quote::amm_sell_at(
-                                        self.model_fee_ctx(o.slot),
-                                        fb,
-                                        fq,
-                                        vq,
+                                    // FEES R10 F5: the tier of OUR shadow state (identical states = event rates).
+                                    let fctx = self.model_fee_ctx(o.slot);
+                                    let q = crate::shadow_tier::shadow_pool_rates(
+                                        fctx,
+                                        (o.base_reserves_raw, o.quote_reserves_lamports),
+                                        (fb, fq),
+                                        vq.unwrap_or(0),
                                         parts,
                                         cashback,
-                                        tokens,
-                                    );
+                                        None,
+                                    )
+                                    .and_then(|(parts, cashback)| {
+                                        crate::exec_quote::amm_sell_at(
+                                            fctx, fb, fq, vq, parts, cashback, tokens,
+                                        )
+                                    });
                                     match q {
                                         Ok(x)
                                             if self.model_v2()
