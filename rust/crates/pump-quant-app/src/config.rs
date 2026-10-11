@@ -224,6 +224,11 @@ pub struct Config {
     /// above; the value an absent key parses to, so an old run manifest replays with its own costs);
     /// 1 = `txcost_v1_20261010` (the live builder's envelope, 10,600 a leg). Recorded in the config dump.
     pub txcost_version: u32,
+    /// FEES R10 F8: the versioned PAPER rent basis ([`crate::paper_deposit::PaperRentBasis`]) the paper BUY
+    /// deposit is planned against. Config text `paper_rent_basis = rent_v1_s455400973` (1) = minimums read at slot
+    /// 455,400,973; an absent key = 0 = `rent_v0_legacy_constant` (2,039,280 for every entry; historical replays
+    /// only, labelled). Recorded in the config dump and on every settlement as the basis id.
+    pub paper_rent_basis: u32,
     /// Impact `k` (bps) for the simulator's constant-product impact model.
     pub sim_impact_k_bps: u32,
 
@@ -1387,6 +1392,7 @@ impl Config {
             entry_tip_lamports: 10_000,
             exit_tip_lamports: 10_000,
             txcost_version: 0,
+            paper_rent_basis: 0,
             sim_impact_k_bps: 50,
 
             // Fixture/portable base: DISARMED. This profile has no depth model, and the
@@ -2198,6 +2204,11 @@ impl Config {
         let _ = writeln!(s, "exit_fee_bps = {}", self.exit_fee_bps as i64);
         let _ = writeln!(s, "exit_tip_lamports = {}", self.exit_tip_lamports as i64);
         let _ = writeln!(s, "txcost_version = {}", self.txcost_version);
+        let _ = writeln!(
+            s,
+            "paper_rent_basis = {}",
+            crate::paper_deposit::PaperRentBasis::by_version(self.paper_rent_basis).id
+        );
         // The id rides as a comment (the grammar is integer-valued); it names what the version selects.
         let _ = writeln!(s, "# txcost_id = {}", self.txcost_for(false).id);
         let _ = writeln!(
@@ -2864,6 +2875,14 @@ impl Config {
                 .split_once('=')
                 .ok_or(ConfigError::Syntax(lineno + 1))?;
             let key = k.trim();
+            if key == "paper_rent_basis" {
+                // FEES R10 F8: an id-valued key (the basis is named, never a bare number).
+                cfg.paper_rent_basis = crate::paper_deposit::PaperRentBasis::version_of_id(
+                    v.trim(),
+                )
+                .ok_or_else(|| ConfigError::UnknownKey(format!("paper_rent_basis={}", v.trim())))?;
+                continue;
+            }
             if Self::is_path_key(key) {
                 cfg.apply_path(key, v.trim())?;
                 continue;

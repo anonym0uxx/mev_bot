@@ -61,6 +61,9 @@ pub struct HeldEntry {
     /// was first inserted, and the tape origin the trained state was built from). `None` = unrecorded (a ledger
     /// written before this record existed): management then refuses by name, never by inventing one.
     pub launch: Option<HeldLaunch>,
+    /// FEES R10 F8: lamports the paper wallet deposited into this mint's ATA (the refund on close). `None` (ABSENT
+    /// from the file) = opened under the v0 legacy constant / a pre-F8 ledger.
+    pub ata_deposit_lamports: Option<u64>,
 }
 
 /// A held mint's launch identity, distinct from the creator registry (which answers creator-count history for every
@@ -298,14 +301,37 @@ pub struct HeldFeeUnresolved {
     pub mint: [u8; 32],
     /// Tokens the report proved executed.
     pub tokens: u64,
-    /// Reported price (1e9 fixed point), the only other reported number.
+    /// REPORTED EVIDENCE: the reporter's fill price, lamports per raw token in 1e9 fixed point. It is what the
+    /// report SAID, not a proven executed gross: `tokens x price_fp` is an ESTIMATE of gross, never exact gross.
     pub price_fp: u64,
-    /// Modelled gross the legacy path booked (NOT reported).
-    pub estimate_gross_lamports: u64,
-    /// Modelled all-in fee the legacy path booked (NOT reported).
-    pub estimate_fee_lamports: u64,
+    /// FEES F7: MODELLED gross for this tranche (NOT reported). `None` = UNKNOWN (the model could not price it); an
+    /// unknown is never an ordinary 0.
+    pub estimate_gross_lamports: Option<u64>,
+    /// FEES F7: MODELLED all-in fee (NOT reported). `None` = UNKNOWN, never an ordinary 0.
+    pub estimate_fee_lamports: Option<u64>,
     /// Name of the model that produced the estimate.
     pub basis: String,
+}
+
+impl HeldFeeUnresolved {
+    /// FEES F7: the estimated cash this legacy fill would have returned (`gross - fee`), held in the named
+    /// `legacy_estimated_unsettled_lamports` bucket and NEVER in realized cash. `None` when either part is unknown.
+    #[must_use]
+    pub fn estimated_unsettled_lamports(&self) -> Option<i128> {
+        Some(i128::from(self.estimate_gross_lamports?) - i128::from(self.estimate_fee_lamports?))
+    }
+}
+
+/// FEES F7: what `HeldFeeUnresolved::price_fp` means (written next to every record so a reader cannot mistake it).
+pub const LEGACY_PRICE_MEANING: &str =
+    "reported_fill_price_lamports_per_raw_token_1e9_fp:not_proven_executed_gross;tokens_x_price_is_an_estimate";
+
+/// An optional u64 field: absent or `null` = unknown (`None`), a number = `Some`, anything else untrusted.
+fn opt_u(x: &Value, k: &'static str) -> Result<Option<u64>, LedgerReadError> {
+    match &x[k] {
+        Value::Null => Ok(None),
+        v => v.as_u64().map(Some).ok_or(LedgerReadError::Untrusted(k)),
+    }
 }
 
 /// The whole durable record.
@@ -441,6 +467,7 @@ impl HeldLedger {
                                 "order_id": f.order_id, "mint": hex(&f.mint), "tokens": f.tokens,
                                 "price_fp": f.price_fp, "estimate_gross_lamports": f.estimate_gross_lamports,
                                 "estimate_fee_lamports": f.estimate_fee_lamports, "basis": f.basis,
+                                "price_meaning": LEGACY_PRICE_MEANING,
                             })
                         })
                         .collect(),
@@ -460,7 +487,7 @@ impl HeldLedger {
             "written_wall_ms": self.written_wall_ms,
             "generation": self.generation,
             "lineage": self.lineage,
-            "held": self.held.iter().map(|h| json!({
+            "held": self.held.iter().map(|h| (json!({
                 "mint": hex(&h.mint),
                 "entry_price_fp": h.entry_price_fp,
                 "size_lamports": h.size_lamports,
@@ -480,7 +507,12 @@ impl HeldLedger {
                 "version": h.version,
                 "position_order": h.position_order,
                 "launch": h.launch.as_ref().map(HeldLaunch::to_json),
-            })).collect::<Vec<_>>(),
+            }), h)).map(|(mut j, h)| {
+                if let (Some(d), Some(o)) = (h.ata_deposit_lamports, j.as_object_mut()) {
+                    o.insert("ata_deposit_lamports".to_string(), json!(d));
+                }
+                j
+            }).collect::<Vec<_>>(),
             "pending": self.pending.iter().map(|p| { let mut j = json!({
                 "kind": p.kind,
                 "id": p.id,
@@ -582,6 +614,10 @@ impl HeldLedger {
                 launch: match h.get("launch") {
                     None | Some(Value::Null) => None,
                     Some(x) => Some(HeldLaunch::from_json(x).ok_or(bad("held.launch"))?),
+                },
+                ata_deposit_lamports: match h.get("ata_deposit_lamports") {
+                    None => None,
+                    Some(d) => Some(d.as_u64().ok_or(bad("ata_deposit_lamports"))?),
                 },
             });
         }
@@ -808,8 +844,8 @@ impl HeldLedger {
                         .ok_or(bad("fee_unresolved.mint"))?,
                     tokens: u(f, "tokens")?,
                     price_fp: u(f, "price_fp")?,
-                    estimate_gross_lamports: u(f, "estimate_gross_lamports")?,
-                    estimate_fee_lamports: u(f, "estimate_fee_lamports")?,
+                    estimate_gross_lamports: opt_u(f, "estimate_gross_lamports")?,
+                    estimate_fee_lamports: opt_u(f, "estimate_fee_lamports")?,
                     basis: f["basis"]
                         .as_str()
                         .ok_or(bad("fee_unresolved.basis"))?
@@ -1043,6 +1079,7 @@ mod tests {
                     tape_through_ms: Some(1_700_000_000_900),
                     tape_trades_before: Some(41),
                 }),
+                ata_deposit_lamports: None,
             }],
             pending: vec![HeldPending {
                 kind: "reduce".into(),

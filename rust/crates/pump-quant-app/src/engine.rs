@@ -19,6 +19,7 @@ pub mod books;
 pub mod model_admit;
 pub mod model_barrier;
 pub mod model_creator;
+mod model_deposit;
 pub mod model_manage;
 pub mod model_mayhem;
 pub mod model_protect;
@@ -1191,6 +1192,12 @@ pub struct Engine {
     /// insert is REFUSED and the rent is charged anyway (the conservative direction:
     /// an untracked account is priced as a fresh one, never as free).
     ata_open: std::collections::BTreeSet<[u8; 32]>,
+    /// FEES R10 F8: lamports the PAPER wallet actually deposited into each open ATA (the plan value at the entry
+    /// that opened it). Bounded with `ata_open`. Absent for an open ATA = opened under the v0 legacy constant.
+    paper_ata_deposit: BTreeMap<[u8; 32], u64>,
+    /// FEES R10 F8: the mint's owning token program, where an event/ctx carried it. Absent = unknown, which the v1
+    /// paper rent basis refuses as `deposit_unknown` (no default program). Bounded by `ATA_OPEN_CAP`.
+    model_token_program: BTreeMap<[u8; 32], [u8; 32]>,
     /// mint → creator entity (from TokenMetadata), for the credibility haircut.
     mint_creator: BTreeMap<[u8; 32], u64>,
     /// creator → (lifetime launches, window start tick, launches in window).
@@ -1728,6 +1735,8 @@ impl Engine {
             theses: BTreeMap::new(),
             thesis_adverse: BTreeMap::new(),
             ata_open: std::collections::BTreeSet::new(),
+            paper_ata_deposit: BTreeMap::new(),
+            model_token_program: BTreeMap::new(),
             mint_creator: BTreeMap::new(),
             creator_launches: BTreeMap::new(),
             first_slot_fees: BTreeMap::new(),
@@ -4510,9 +4519,12 @@ impl Engine {
         // only the engine knows whether an account exists for the mint. Applied
         // before any accountant reads `e.net_lamports`, so the refund reaches the
         // journal, the bankroll, the lane attribution and the analytics identically.
+        // FEES R10 F8: the refund is the paper account's ACTUAL deposited balance, never today's minimum.
+        let refund = self.paper_ata_close_refund(&e.mint);
         if e.closed && self.ata_open.remove(&e.mint) {
+            self.paper_ata_deposit.remove(&e.mint);
             e.net_lamports = e.net_lamports.saturating_add(i128::from(
-                crate::cost_model::ATA_RENT_LAMPORTS - crate::cost_model::ATA_CLOSE_LAMPORTS,
+                refund.saturating_sub(crate::cost_model::ATA_CLOSE_LAMPORTS),
             ));
         }
         // ASSESSABILITY GUARD: a paper-model routing fill (quote or landing unvalidated) settles cash
@@ -6240,6 +6252,7 @@ impl Engine {
         self.books_release(books::BookSite::SinkRollback, entry_cost);
         // Remove from ata_open and open_lane (inserted when the position opened).
         self.ata_open.remove(&mint);
+        self.paper_ata_deposit.remove(&mint);
         self.open_lane.remove(&mint);
     }
 

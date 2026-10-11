@@ -86,6 +86,7 @@ impl Engine {
                 version: mp.map_or(1, |m| m.version),
                 position_order: mp.map_or(0, |m| m.position_order),
                 launch: self.model_cache.held_launch_record(&x.mint),
+                ata_deposit_lamports: self.paper_ata_deposit.get(&x.mint).copied(),
             });
         }
         held.sort_by_key(|h| h.mint);
@@ -633,6 +634,9 @@ impl Engine {
             // at entry) so the closing sell credits the ATA deposit back exactly as an uninterrupted run does.
             if self.ata_open.len() < super::ATA_OPEN_CAP {
                 self.ata_open.insert(h.mint);
+                if let Some(d) = h.ata_deposit_lamports {
+                    self.paper_ata_deposit.insert(h.mint, d);
+                }
             }
             self.books_restore(l.realized_lamports, h.entry_spend);
             rep.committed_lamports = rep.committed_lamports.saturating_add(h.entry_spend);

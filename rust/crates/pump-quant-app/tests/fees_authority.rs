@@ -129,9 +129,21 @@ struct Rig {
 }
 
 fn rig(base: u64, sel: FeeSelection, answer: fn(i64) -> &'static str) -> Rig {
+    rig_x(base, sel, answer, |_| {}, |_| {})
+}
+
+fn rig_x(
+    base: u64,
+    sel: FeeSelection,
+    answer: fn(i64) -> &'static str,
+    tweak: fn(&mut Config),
+    pre: fn(&mut Engine),
+) -> Rig {
     let mut c = Config::dev_portable();
     c.bankroll_initial_lamports = 2_000_000_000;
+    tweak(&mut c);
     let mut e = Engine::new(c, RunMode::Paper);
+    pre(&mut e);
     e.model_set_fee_selection(sel);
     e.enable_paper_model(Script {
         answer,
@@ -527,7 +539,10 @@ fn f4_simulated_fill_refuses_without_authoritative_fees_but_an_executed_fill_sti
         (u[0].order_id, u[0].tokens, u[0].price_fp),
         (id, intended, 22_000)
     );
-    assert!(u[0].estimate_fee_lamports > 0 && u[0].basis.starts_with("legacy_price_only:"));
+    assert!(
+        u[0].estimate_fee_lamports.is_some_and(|f| f > 0)
+            && u[0].basis.starts_with("legacy_price_only:")
+    );
     assert_eq!(
         (
             r.e.model_mgmt_fills()[0].gross_lamports,
@@ -813,4 +828,73 @@ fn f3_v2_cost_statement_txcost_v0_vs_v1_changes_only_the_landing_term() {
             );
         }
     }
+}
+
+// ==== FEES R10 F8: the paper deposit through the real engine entry + close ====
+/// Under `paper_rent_basis = rent_v1_s455400973` with the mint's token program evidenced (SPL), the entry commits
+/// clip + leg + rent(165) at the snapshot (1,488,440), the deposit is recorded as the paper account's balance, and
+/// the closing EXIT refunds exactly that balance less the close signature. Without token-program evidence the entry
+/// is refused by name (`deposit_unknown`), never charged a default.
+#[test]
+fn f8_v1_rent_basis_commits_the_planned_deposit_and_the_close_refunds_the_actual_balance() {
+    let mut r = rig_x(
+        HIST,
+        FeeSelection::BySlot,
+        |s| if s == 0 { EXIT } else { HOLD },
+        |c| {
+            *c = Config::from_str_over_default(&format!(
+                "{}paper_rent_basis = rent_v1_s455400973\n",
+                c.dump_to_text()
+            ))
+            .unwrap()
+        },
+        |e| {
+            e.model_observe_token_program(
+                MINT,
+                pump_quant_protocol::venue_accounts::TOKEN_PROGRAM_ID,
+            )
+        },
+    );
+    assert_eq!(r.e.paper_rent_basis().id, "rent_v1_s455400973");
+    let v = r.e.model_accounting_view(&MINT);
+    assert_eq!(r.e.model_paper_ata_deposit(&MINT), Some(1_488_440));
+    let leg = 10_000 + Config::dev_portable().entry_tip_lamports;
+    let size = v.attribution_entry_spend.unwrap() - leg - 1_488_440;
+    assert_eq!(
+        v.committed,
+        size + leg + 1_488_440,
+        "committed = clip + leg + planned deposit"
+    );
+    let (vs, vt) = (VSOL + 200_000_000, VTOK - 4_000_000_000_000);
+    r.run_to_order(vs, vt, 8_100_000_000);
+    let before = r.e.model_accounting_view(&MINT);
+    r.land(vs, vt, 8_100_000_000);
+    let f = r.e.model_mgmt_fills().last().copied().expect("exit filled");
+    assert!(f.closed);
+    let after = r.e.model_accounting_view(&MINT);
+    assert_eq!(
+        after.realized - before.realized,
+        i128::from(f.gross_lamports)
+            - i128::from(f.fee_lamports)
+            - i128::from(before.remaining_cost_basis.unwrap())
+            + i128::from(1_488_440 - pump_quant_app::cost_model::ATA_CLOSE_LAMPORTS),
+        "the close refunds the ACTUAL deposit (1,488,440), not the 2,039,280 constant"
+    );
+    assert_eq!(r.e.model_paper_ata_deposit(&MINT), None, "closed");
+
+    // No token-program evidence under v1: named refusal, no fill, nothing committed.
+    let r2 = rig_x(
+        HIST,
+        FeeSelection::BySlot,
+        |_| HOLD,
+        |c| c.paper_rent_basis = 1,
+        |_| {},
+    );
+    assert!(!r2.e.model_position_open(&MINT));
+    assert!(
+        r2.rep("fill_none:deposit_unknown") >= 1,
+        "{:?}",
+        r2.e.model_lane_report()
+    );
+    assert_eq!(r2.e.model_accounting_view(&MINT).committed, 0);
 }

@@ -2096,3 +2096,127 @@ fn a_quiet_window_refuses_the_due_ask_by_staleness_and_the_consult_recovers_when
     assert_eq!(format!("{kind:?}"), "Reduce");
     assert_eq!(filled, 0, "an intent is not a fill");
 }
+
+// ==== FEES R10 F7 (S3) ====
+/// Legacy price-only report -> persist -> restart -> duplicate report. Inventory moves once; realized cash moves by
+/// ONLY the sold tranche's pro-rata cost basis (the modelled proceeds never enter cash); the estimate sits in the
+/// named `legacy_estimated_unsettled_lamports` bucket, counted once, and survives the restart. Expected books are
+/// hand-computed from the durable ledger fields (cost, remaining_bps, inventory, entry_spend), not from the engine.
+#[test]
+fn f7_legacy_price_only_estimate_never_enters_cash_and_survives_restart_and_duplicate_once() {
+    let hp = held_path("f7");
+    let mut r = rig(|step| if step == 0 { REDUCE } else { HOLD });
+    r.e.model_held_attach(&hp);
+    r.advance_to_order(120_000);
+    let (id, _, intended, _) = r.e.model_mgmt_pending(&MINT).expect("REDUCE pending");
+    assert!(r.e.model_mgmt_mark_ack_uncertain(&MINT, id));
+    assert!(r.e.model_held_persist_now());
+    drop(r);
+
+    let mut e2 = fresh_engine(2_000_000_000, &hp);
+    e2.model_held_restore().unwrap().unwrap();
+    let led = e2.model_held_ledger();
+    let h = &led.held[0];
+    let (cost, rem, inv0, spend0) = (
+        u128::from(h.cost_lamports),
+        u128::from(h.remaining_bps),
+        h.inventory_tokens.unwrap(),
+        h.entry_spend,
+    );
+    let v0 = e2.model_accounting_view(&MINT);
+    assert_eq!(v0.legacy_estimated_unsettled_lamports, 0);
+    // Hand-computed: sold share of the remaining position (floor), its pro-rata cost, the committed release.
+    let frac = u128::from(intended) * rem / u128::from(inv0);
+    let exp_cost = (cost * frac / 10_000) as i128;
+    let exp_release = (u128::from(spend0) * u128::from(intended) / u128::from(inv0)) as u64;
+    e2.model_mgmt_apply_reconciled_fill(MINT, id, intended, 22_000)
+        .expect("legacy price-only report books");
+    let u = e2.model_fee_unresolved().to_vec();
+    assert_eq!(u.len(), 1, "{u:?}");
+    let (g, f) = (
+        u[0].estimate_gross_lamports
+            .expect("modelled gross known here"),
+        u[0].estimate_fee_lamports.expect("modelled fee known here"),
+    );
+    assert!(g > f && f > 0, "{u:?}");
+    let est = i128::from(g) - i128::from(f);
+    let check = |e: &Engine, tag: &str| {
+        let v = e.model_accounting_view(&MINT);
+        assert_eq!(
+            v.inventory_tokens,
+            Some(inv0 - intended),
+            "{tag}: inventory moved once"
+        );
+        assert_eq!(
+            v.realized,
+            v0.realized - exp_cost,
+            "{tag}: realized = only the sold cost basis"
+        );
+        assert_eq!(
+            v.committed,
+            v0.committed - exp_release,
+            "{tag}: committed released once"
+        );
+        assert_eq!(
+            i128::from(v.balance),
+            i128::from(v.seed) + v.realized,
+            "{tag}: the estimate is not in the balance"
+        );
+        assert_eq!(
+            v.legacy_estimated_unsettled_lamports, est,
+            "{tag}: bucket counted once"
+        );
+        assert_eq!(
+            e.model_legacy_estimated_unsettled_lamports(),
+            (est, 0),
+            "{tag}"
+        );
+        assert_eq!(e.model_fee_unresolved().len(), 1, "{tag}");
+    };
+    check(&e2, "after report");
+    assert!(e2.model_held_persist_now());
+    drop(e2);
+
+    let mut e3 = fresh_engine(2_000_000_000, &hp);
+    e3.model_held_restore().unwrap().unwrap();
+    check(&e3, "after restart");
+    assert!(e3
+        .model_mgmt_apply_reconciled_fill(MINT, id, intended, 22_000)
+        .is_err());
+    let _ = e3.model_mgmt_ingest_report(MINT, id, intended, 22_000);
+    check(&e3, "after duplicate");
+    // The durable record states what its price means (reported evidence, an estimate, not exact gross).
+    let js = std::fs::read_to_string(&hp).unwrap();
+    assert!(js.contains("not_proven_executed_gross"), "{js}");
+}
+
+/// FEES R10 F7: the legacy price-only mode cannot be enabled from `pq_daemon` (no config key, no CLI path reaches
+/// the setter). Source-level pin over the daemon binary and the config key parser.
+#[test]
+fn f7_legacy_price_only_mode_is_unreachable_from_pq_daemon_and_config() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    for f in [
+        "pump-quant-junction/src/bin/pq_daemon.rs",
+        "pump-quant-app/src/config.rs",
+    ] {
+        let s = std::fs::read_to_string(root.join(f)).unwrap();
+        assert!(
+            !s.contains("legacy_price_only"),
+            "{f} must not reach model_set_legacy_price_only_reports"
+        );
+    }
+    // Nor any junction library module the daemon links.
+    let dir = root.join("pump-quant-junction/src");
+    let mut stack = vec![dir];
+    while let Some(d) = stack.pop() {
+        for ent in std::fs::read_dir(&d).unwrap() {
+            let p = ent.unwrap().path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p.extension().is_some_and(|x| x == "rs") {
+                let s = std::fs::read_to_string(&p).unwrap();
+                assert!(!s.contains("legacy_price_only"), "{}", p.display());
+            }
+        }
+    }
+}
