@@ -355,29 +355,81 @@ fn missing_launch_fee_meta_or_curve_are_named_refusals_that_never_reach_the_mode
     }
 }
 
+/// A model source that blocks INSIDE inference until the test releases it, so the test knows by explicit
+/// synchronisation (not wall-clock sleeps) that a request is outstanding while the engine keeps ticking.
+struct Gated {
+    text: &'static str,
+    calls: Arc<AtomicUsize>,
+    started: std::sync::mpsc::SyncSender<()>,
+    release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+}
+
+impl ModelSource for Gated {
+    fn complete(&self, _s: &str, _u: &str) -> Result<String, InferenceError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let _ = self.started.try_send(());
+        // Bounded: a test that never releases cannot hang the worker forever.
+        let rx = self.release.lock().expect("gate lock");
+        let _ = rx.recv_timeout(Duration::from_secs(30));
+        Ok(self.text.to_string())
+    }
+}
+
 #[test]
 fn a_slow_model_never_blocks_the_engine_and_a_late_answer_creates_no_order() {
-    // The model takes far longer than the decision deadline (feed clock).
-    let (mut e, calls) = armed(BUY, 400, false);
+    // Explicit synchronisation at the two boundaries that matter: (1) the worker is INSIDE inference (request
+    // outstanding) while the engine ticks; (2) the verdict is delivered only after the feed clock is past the
+    // deadline. Every wait is bounded so a regression fails instead of hanging.
+    const BOUND: Duration = Duration::from_secs(20);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let (started_tx, started_rx) = std::sync::mpsc::sync_channel::<()>(4);
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let mut e = Engine::new(cfg(), RunMode::Paper);
+    e.enable_paper_model(Gated {
+        text: BUY,
+        calls: Arc::clone(&calls),
+        started: started_tx,
+        release: std::sync::Mutex::new(release_rx),
+    });
     let f = Feed {
         n: 40,
         with_launch: true,
         with_meta: true,
         with_curve: true,
     };
-    let started = std::time::Instant::now();
     for ev in events(f) {
         e.tick(ev);
     }
+    // Boundary 1: wait (bounded) until a worker has the request and is blocked inside the model, ticking the
+    // engine meanwhile. Every tick must return while the model is still held: ticks never wait on inference.
+    let t0 = std::time::Instant::now();
+    loop {
+        e.tick(AppEvent::Tick);
+        if started_rx.try_recv().is_ok() {
+            break;
+        }
+        assert!(
+            t0.elapsed() < BOUND,
+            "no inference started within {BOUND:?}: {:?}",
+            e.model_lane_report()
+        );
+        std::thread::yield_now();
+    }
+    // The model is held: the engine still advances (each tick returns although the request is outstanding).
     for _ in 0..4 {
         e.tick(AppEvent::Tick);
     }
-    assert!(
-        started.elapsed() < Duration::from_millis(300),
-        "ticking must not wait on the model (took {:?})",
-        started.elapsed()
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "exactly one request is outstanding"
     );
-    // The feed clock moves on past the deadline while the worker is still busy.
+    assert_eq!(
+        e.model_pending_orders(),
+        0,
+        "no order while the answer is outstanding"
+    );
+    // The feed clock moves past the decision deadline while the worker is still held.
     e.tick(AppEvent::CurveObserved {
         mint: mint(),
         v_sol_lamports: VSOL,
@@ -392,9 +444,17 @@ fn a_slow_model_never_blocks_the_engine_and_a_late_answer_creates_no_order() {
         mayhem: false,
         slot: 0,
     });
-    std::thread::sleep(Duration::from_millis(600));
-    for _ in 0..4 {
+    // Boundary 2: only now deliver the (valid BUY) answer, then tick until the engine has consumed it (bounded).
+    release_tx.send(()).expect("release the gated model");
+    let t1 = std::time::Instant::now();
+    while rep(&e, "discard:late") + rep(&e, "discard:abandoned") == 0 {
         e.tick(AppEvent::Tick);
+        assert!(
+            t1.elapsed() < BOUND,
+            "the late verdict was never consumed within {BOUND:?}: {:?}",
+            e.model_lane_report()
+        );
+        std::thread::yield_now();
     }
     assert!(calls.load(Ordering::SeqCst) >= 1);
     assert_eq!(
