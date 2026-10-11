@@ -330,6 +330,27 @@ impl OutboundSink for LiveOutboundSink {
                     ));
                 }
             };
+            // SCOPE_TXCOST_R9 T2: the accounts this message may create, read at one slot. Absent ATA
+            // -> rent(actual size) at that slot (the message's CreateIdempotent creates it); open and
+            // valid -> no deposit; incompatible -> named refusal; UVA absent with track_volume=0x00 ->
+            // `uva_absent_track_volume_off_unverified`. No hardcoded deposit is a source here.
+            let observed = match self.state_fetcher.observe_buy_accounts(&state.curve_ctx) {
+                Ok(o) => o,
+                Err(e) => {
+                    return OutboundOutcome::Construction(format!(
+                        "deposit_unknown: buy accounts unobserved ({e:?})"
+                    ));
+                }
+            };
+            if let Err(r) =
+                pump_quant_protocol::tx_build::plan_buy_deposits(&state.curve_ctx, &observed)
+            {
+                return OutboundOutcome::Construction(format!(
+                    "{}: {r:?} (observed slot {})",
+                    r.label(),
+                    observed.slot
+                ));
+            }
             let params = BuyExactSolInParams {
                 spendable_sol_in: plan.spendable_sol_in,
                 min_tokens_out: plan.min_tokens_out,
@@ -604,6 +625,42 @@ mod tests {
         ) -> Result<u64, StateFetchError> {
             // Return a non-zero balance so the sell path proceeds in tests.
             Ok(500_000_000_000)
+        }
+
+        fn observe_buy_accounts(
+            &self,
+            ctx: &PumpCurveCtx,
+        ) -> Result<pump_quant_protocol::tx_build::BuyAccountObservation, StateFetchError> {
+            Ok(open_accounts(ctx))
+        }
+    }
+
+    /// T2 fixture: user ATA and UVA both already open and valid at slot 440,000,000 (no deposit).
+    /// Rent minimums are evidence fixtures tagged with their read slot (~455.40M,
+    /// CHAIN_READONLY_EVIDENCE); here they are re-tagged to the observation slot of the fixture.
+    fn open_accounts(ctx: &PumpCurveCtx) -> pump_quant_protocol::tx_build::BuyAccountObservation {
+        use pump_quant_protocol::tx_build::{
+            ata_account_size, AccountState, BuyAccountObservation, RentSnapshot,
+        };
+        let size = ata_account_size(&ctx.token_program).unwrap_or(165);
+        BuyAccountObservation {
+            slot: 440_000_000,
+            user_ata: AccountState::Present {
+                owner: ctx.token_program,
+                data_len: size,
+                lamports: 2_039_280,
+                token_mint: Some(ctx.mint),
+            },
+            user_volume_accumulator: AccountState::Present {
+                owner: pump_quant_protocol::venue_accounts::PUMP_PROGRAM_ID,
+                data_len: 137,
+                lamports: 1_346_200,
+                token_mint: None,
+            },
+            rent: RentSnapshot {
+                slot: 440_000_000,
+                minimums: vec![(165, 1_488_440), (170, 1_513_840), (137, 1_346_200)],
+            },
         }
     }
 
@@ -917,6 +974,12 @@ mod tests {
         ) -> Result<u64, StateFetchError> {
             Ok(0)
         }
+        fn observe_buy_accounts(
+            &self,
+            ctx: &PumpCurveCtx,
+        ) -> Result<pump_quant_protocol::tx_build::BuyAccountObservation, StateFetchError> {
+            Ok(open_accounts(ctx))
+        }
     }
 
     fn test_blockhash() -> LiveBlockhash {
@@ -1152,5 +1215,173 @@ mod tests {
             o => panic!("{o:?}"),
         }
         assert!(seen.lock().unwrap().is_empty());
+    }
+
+    // ───────────── SCOPE_TXCOST_R9 T2/T4 at the live sink (bytes only; nothing is submitted) ─────────────
+
+    /// A CurveFetcher whose buy-account observation is set per test (`None` = not implemented).
+    struct ObsFetcher {
+        inner: CurveFetcher,
+        uva_absent: bool,
+        ata_absent: bool,
+        observed: bool,
+    }
+    impl LiveStateFetcher for ObsFetcher {
+        fn fetch_state_hot(
+            &self,
+            m: &[u8; 32],
+            u: &[u8; 32],
+        ) -> Result<LiveCurveState, StateFetchError> {
+            self.inner.fetch_state_hot(m, u)
+        }
+        fn prefetch_state(
+            &self,
+            m: &[u8; 32],
+            u: &[u8; 32],
+        ) -> Result<LiveCurveState, StateFetchError> {
+            self.inner.fetch_state_hot(m, u)
+        }
+        fn latest_blockhash(&self) -> Result<LiveBlockhash, StateFetchError> {
+            Ok(test_blockhash())
+        }
+        fn fetch_ata_balance(
+            &self,
+            _m: &[u8; 32],
+            _u: &[u8; 32],
+            _t: &[u8; 32],
+        ) -> Result<u64, StateFetchError> {
+            Ok(0)
+        }
+        fn observe_buy_accounts(
+            &self,
+            ctx: &PumpCurveCtx,
+        ) -> Result<pump_quant_protocol::tx_build::BuyAccountObservation, StateFetchError> {
+            use pump_quant_protocol::tx_build::AccountState;
+            if !self.observed {
+                return Err(StateFetchError::RpcError("unobserved".into()));
+            }
+            let mut o = open_accounts(ctx);
+            if self.uva_absent {
+                o.user_volume_accumulator = AccountState::Absent;
+            }
+            if self.ata_absent {
+                o.user_ata = AccountState::Absent;
+            }
+            Ok(o)
+        }
+    }
+
+    fn obs_sink(
+        fetcher: ObsFetcher,
+        max_slippage_bps: u16,
+    ) -> (LiveOutboundSink, Arc<Mutex<Vec<Vec<u8>>>>) {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let mut pk = [0u8; 32];
+        pk[0] = 2;
+        let sink = LiveOutboundSink::new(
+            LiveSinkConfig {
+                compute: ComputePlan {
+                    unit_limit: 120_000,
+                    unit_price_micro_lamports: 5_000,
+                },
+                tip: None,
+                fee_tail: FeeTail::None,
+                max_slippage_bps,
+                curve_buy_fee_bps: Some((95, 30)),
+                mcap_band_enable: false,
+                mcap_band_lo_lamports: 0,
+                mcap_band_hi_lamports: u64::MAX,
+            },
+            Arc::new(verified_buy_registry()),
+            Arc::new(fetcher),
+            Arc::new(CapturingSigner {
+                pk,
+                seen: Arc::clone(&seen),
+            }),
+            Arc::new(RefusingSubmitter),
+        );
+        (sink, seen)
+    }
+
+    const POOL: (u64, u64) = (30_000_000_000, 1_073_000_000_000_000);
+
+    fn obs_fetcher(observed: bool, ata_absent: bool, uva_absent: bool) -> ObsFetcher {
+        ObsFetcher {
+            inner: CurveFetcher {
+                vsol: POOL.0,
+                vtok: POOL.1,
+            },
+            uva_absent,
+            ata_absent,
+            observed,
+        }
+    }
+
+    /// T-iii-4b at the sink: UVA absent + track_volume 0x00 -> refused by name, NOTHING signed.
+    #[test]
+    fn live_buy_with_uva_absent_is_refused_by_name_and_signs_nothing() {
+        for ata_absent in [false, true] {
+            let (sink, seen) = obs_sink(obs_fetcher(true, ata_absent, true), 500);
+            match sink.on_admit(&buy_rec(250_000_000, None)) {
+                OutboundOutcome::Construction(m) => {
+                    assert!(
+                        m.starts_with("uva_absent_track_volume_off_unverified"),
+                        "{m}"
+                    )
+                }
+                o => panic!("expected the named refusal, got {o:?}"),
+            }
+            assert!(
+                seen.lock().unwrap().is_empty(),
+                "a refusal must sign nothing"
+            );
+        }
+    }
+
+    /// T2: an unobserved account state is `deposit_unknown` (never an assumed open ATA or a constant).
+    #[test]
+    fn live_buy_without_an_account_observation_is_deposit_unknown() {
+        let (sink, seen) = obs_sink(obs_fetcher(false, false, false), 500);
+        match sink.on_admit(&buy_rec(250_000_000, None)) {
+            OutboundOutcome::Construction(m) => assert!(m.starts_with("deposit_unknown"), "{m}"),
+            o => panic!("expected deposit_unknown, got {o:?}"),
+        }
+        assert!(seen.lock().unwrap().is_empty());
+    }
+
+    /// T2 cases A and E both build the SAME message (CreateIdempotent is unconditional): the deposit
+    /// difference is cash planning, not a different instruction sequence.
+    #[test]
+    fn live_buy_builds_for_absent_and_open_ata() {
+        let mut msgs = Vec::new();
+        for ata_absent in [true, false] {
+            let (sink, seen) = obs_sink(obs_fetcher(true, ata_absent, false), 500);
+            match sink.on_admit(&buy_rec(250_000_000, None)) {
+                OutboundOutcome::Sender(m) => assert!(m.contains("submission is disabled"), "{m}"),
+                o => panic!("expected a build that reaches the (refusing) submitter, got {o:?}"),
+            }
+            msgs.push(seen.lock().unwrap()[0].clone());
+        }
+        assert_eq!(msgs[0], msgs[1]);
+    }
+
+    /// T4 at the sink: no PRICE LIMIT and no supported fallback (a 100% slippage tolerance makes the
+    /// floor zero) -> `price_fallback_bound_unavailable`; never `min_tokens_out = 0` on a wire.
+    #[test]
+    fn live_buy_without_any_bound_is_refused_by_name() {
+        let (sink, seen) = obs_sink(obs_fetcher(true, false, false), 10_000);
+        match sink.on_admit(&buy_rec(250_000_000, None)) {
+            OutboundOutcome::Construction(m) => {
+                assert!(m.starts_with("price_fallback_bound_unavailable"), "{m}")
+            }
+            o => panic!("expected fallback_bound_unavailable, got {o:?}"),
+        }
+        assert!(seen.lock().unwrap().is_empty());
+        // With a model limit, the same config builds: the model's floor binds.
+        let (sink, _) = obs_sink(obs_fetcher(true, false, false), 10_000);
+        assert!(matches!(
+            sink.on_admit(&buy_rec(250_000_000, Some(1e-3))),
+            OutboundOutcome::Sender(_)
+        ));
     }
 }

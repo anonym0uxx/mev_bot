@@ -23,8 +23,12 @@ use pump_quant_protocol::ix::{BUY_DISCRIMINATOR, BUY_EXACT_SOL_IN_DISCRIMINATOR}
 use pump_quant_protocol::layout::{
     LayoutKey, LayoutRegistry, Side, Variant, Venue, VerifiedLayout,
 };
-use pump_quant_protocol::tx_build::ComputePlan;
-use pump_quant_protocol::venue_accounts::{FeeTail, PumpCurveCtx, TOKEN_PROGRAM_ID, WSOL_MINT};
+use pump_quant_protocol::tx_build::{
+    AccountState, BuyAccountObservation, ComputePlan, RentSnapshot,
+};
+use pump_quant_protocol::venue_accounts::{
+    FeeTail, PumpCurveCtx, PUMP_PROGRAM_ID, TOKEN_PROGRAM_ID, WSOL_MINT,
+};
 
 const K: u128 = 30_000_000_000u128 * 1_073_000_000_000_000u128;
 const VTOK_OFFSET: u64 = 279_900_000_000_000;
@@ -38,6 +42,7 @@ fn key(tag: u8) -> [u8; 32] {
 struct Fetcher {
     vsol: u64,
     vtok: u64,
+    uva_absent: bool,
 }
 
 impl LiveStateFetcher for Fetcher {
@@ -85,6 +90,37 @@ impl LiveStateFetcher for Fetcher {
     ) -> Result<u64, StateFetchError> {
         Ok(0)
     }
+    /// SCOPE_TXCOST_R9 T2: ATA and UVA both open and valid at the observation slot, so the deposit plan
+    /// is zero and the agreement grid measures the price bound only. (Absent-UVA is a live-only named
+    /// refusal; see `uva_absent_is_a_live_only_named_refusal`.)
+    fn observe_buy_accounts(
+        &self,
+        ctx: &PumpCurveCtx,
+    ) -> Result<BuyAccountObservation, StateFetchError> {
+        Ok(BuyAccountObservation {
+            slot: 440_000_000,
+            user_ata: AccountState::Present {
+                owner: ctx.token_program,
+                data_len: 165,
+                lamports: 1_488_440,
+                token_mint: Some(ctx.mint),
+            },
+            user_volume_accumulator: if self.uva_absent {
+                AccountState::Absent
+            } else {
+                AccountState::Present {
+                    owner: PUMP_PROGRAM_ID,
+                    data_len: 137,
+                    lamports: 1_346_200,
+                    token_mint: None,
+                }
+            },
+            rent: RentSnapshot {
+                slot: 440_000_000,
+                minimums: vec![(165, 1_488_440), (137, 1_346_200)],
+            },
+        })
+    }
 }
 
 struct Recorder(Arc<Mutex<Vec<Vec<u8>>>>);
@@ -128,6 +164,16 @@ fn registry() -> LayoutRegistry {
 
 /// Live verdict: Ok((spend, min_tokens_out)) parsed from the signed bytes, or Err(refusal label).
 fn live(vsol: u64, vtok: u64, clip: u64, limit: Option<f64>) -> Result<(u64, u64), String> {
+    live_with(vsol, vtok, clip, limit, false)
+}
+
+fn live_with(
+    vsol: u64,
+    vtok: u64,
+    clip: u64,
+    limit: Option<f64>,
+    uva_absent: bool,
+) -> Result<(u64, u64), String> {
     let seen = Arc::new(Mutex::new(Vec::new()));
     let sink = LiveOutboundSink::new(
         LiveSinkConfig {
@@ -145,7 +191,11 @@ fn live(vsol: u64, vtok: u64, clip: u64, limit: Option<f64>) -> Result<(u64, u64
             mcap_band_hi_lamports: u64::MAX,
         },
         Arc::new(registry()),
-        Arc::new(Fetcher { vsol, vtok }),
+        Arc::new(Fetcher {
+            vsol,
+            vtok,
+            uva_absent,
+        }),
         Arc::new(Recorder(Arc::clone(&seen))),
         Arc::new(NoSubmit),
     );
@@ -261,4 +311,23 @@ fn the_187_5_bp_fixture_is_refused_by_both_paths() {
     assert_eq!(tokens, 2_468_558_269_818);
     let over_bp = ((clip as f64 / tokens as f64) / 198_819e-9 - 1.0) * 10_000.0;
     assert!((over_bp - 187.5).abs() < 0.1, "{over_bp}");
+}
+
+/// SCOPE_TXCOST_R9 T2 / T-iii-4b: with the UVA absent the live builder refuses by name
+/// (`uva_absent_track_volume_off_unverified`) on every grid limit, including cases paper fills. This is
+/// a DOCUMENTED live-only refusal: the paper fill has no account-state input, so it cannot see it.
+/// Paper/live agreement above is therefore conditional on the accounts being open and valid.
+#[test]
+fn uva_absent_is_a_live_only_named_refusal() {
+    let vsol = 50_000_000_000u64;
+    let vtok = (K / u128::from(vsol)) as u64;
+    let clip = 250_000_000;
+    for limit in [None, Some(1e-3)] {
+        assert!(paper(vsol, vtok, clip, limit).is_ok());
+        assert_eq!(
+            live_with(vsol, vtok, clip, limit, true),
+            Err("uva_absent_track_volume_off_unverified".into())
+        );
+        assert!(live_with(vsol, vtok, clip, limit, false).is_ok());
+    }
 }

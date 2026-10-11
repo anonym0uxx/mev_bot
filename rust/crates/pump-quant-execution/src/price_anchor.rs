@@ -159,6 +159,10 @@ pub enum BuyPlanRefusal {
         /// The slippage floor.
         min_tokens_out: u64,
     },
+    /// SCOPE_TXCOST_R9 T4: no price bound AND no supported fallback bound (the caller's slippage floor
+    /// is zero, i.e. absent). An absent MAX PRICE never means zero `min_tokens_out`; this path's
+    /// capability is incomplete and the buy is refused (`fallback_bound_unavailable`).
+    FallbackBoundUnavailable,
 }
 
 impl BuyPlanRefusal {
@@ -169,6 +173,7 @@ impl BuyPlanRefusal {
             Self::LimitUnusable(_) => "limit_unusable",
             Self::LimitNotMet { .. } => "limit_not_met",
             Self::SlippageFloorNotMet { .. } => "slippage_floor_not_met",
+            Self::FallbackBoundUnavailable => "fallback_bound_unavailable",
         }
     }
 }
@@ -185,6 +190,9 @@ pub fn plan_curve_buy(
             min_tokens_from_price_limit(clip, limit).map_err(BuyPlanRefusal::LimitUnusable)?,
             MinTokensSource::ModelPriceLimit,
         ),
+        // T4: absent limit = no ADDITIONAL model ceiling; the defined slippage floor still binds. A
+        // zero floor is not a bound, so with no supported fallback the buy is refused by name.
+        None if fallback_min_tokens == 0 => return Err(BuyPlanRefusal::FallbackBoundUnavailable),
         None => (fallback_min_tokens, MinTokensSource::SlippageFallback),
     };
     if let Some(q) = quoted_tokens {
@@ -206,6 +214,115 @@ pub fn plan_curve_buy(
         min_tokens_out,
         source,
     })
+}
+
+/// The completion contract a price field is read under (PLIM_AMENDMENT_v2_2 §3).
+///
+/// v2 is UNADOPTED: no prompt, label or model emits `MAX PRICE`, and the production parser
+/// (`pump_quant_inference::seam`) is unchanged. This resolution exists so the v2 contract's refusals
+/// are pinned by tests before any adoption; nothing in the live or paper path calls it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PriceContract {
+    /// v1: `PRICE LIMIT` (legacy, a copy of the state price) is the only price field.
+    V1,
+    /// v2 (unadopted): `MAX PRICE` = the maximum average all-in acquisition price for the clip.
+    V2,
+}
+
+/// The ONE entry price bound an order carries after versioned resolution.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum EntryPriceBound {
+    /// No model-supplied ceiling. The slippage floor and cash budget still apply.
+    Absent,
+    /// v1 `PRICE LIMIT`, lamports per raw token.
+    LegacyLimit(f64),
+    /// v2 `MAX PRICE`, lamports per raw token, fee-inclusive at the chosen clip.
+    MaxPrice(f64),
+}
+
+impl EntryPriceBound {
+    /// The per-raw-token ceiling the floor `min{t : t*x >= C}` is computed from, if any.
+    #[must_use]
+    pub fn ceiling(self) -> Option<f64> {
+        match self {
+            Self::Absent => None,
+            Self::LegacyLimit(x) | Self::MaxPrice(x) => Some(x),
+        }
+    }
+}
+
+/// Why a completion's price fields cannot be resolved to one bound. All are `off_contract` except a
+/// present-but-unparseable value, which is the same `limit_unusable` the plan reports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoundContractRefusal {
+    /// Legacy `PRICE LIMIT` and v2 `MAX PRICE` in one completion. Their meanings differ (state price vs
+    /// average acquisition price) and no versioned mapping exists, so the stricter floor is NOT taken.
+    BothLegacyAndMaxPrice,
+    /// A price field appears more than once.
+    DuplicateField,
+    /// A `MAX PRICE` line in a v1 completion. Never read as the legacy field.
+    MaxPriceInV1,
+    /// A present value that is not a finite positive number.
+    Unusable,
+}
+
+impl BoundContractRefusal {
+    /// Stable report label.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::BothLegacyAndMaxPrice => "off_contract:legacy_and_max_price",
+            Self::DuplicateField => "off_contract:duplicate_price_field",
+            Self::MaxPriceInV1 => "off_contract:max_price_in_v1",
+            Self::Unusable => "limit_unusable",
+        }
+    }
+}
+
+fn price_field_values<'a>(completion: &'a str, key: &str) -> Vec<&'a str> {
+    let prefix = format!("{key}:");
+    completion
+        .lines()
+        .map(str::trim)
+        .filter_map(|l| l.strip_prefix(prefix.as_str()).map(str::trim))
+        .collect()
+}
+
+fn usable(tok: &str) -> Result<f64, BoundContractRefusal> {
+    match tok.parse::<f64>() {
+        Ok(v) if v.is_finite() && v > 0.0 => Ok(v),
+        _ => Err(BoundContractRefusal::Unusable),
+    }
+}
+
+/// Resolve a completion's price fields under `contract` to exactly one [`EntryPriceBound`]
+/// (PLIM_AMENDMENT_v2_2 §3). Never derives a bound from a quote; never combines two fields.
+pub fn resolve_entry_price_bound(
+    completion: &str,
+    contract: PriceContract,
+) -> Result<EntryPriceBound, BoundContractRefusal> {
+    let legacy = price_field_values(completion, "PRICE LIMIT");
+    let max = price_field_values(completion, "MAX PRICE");
+    if legacy.len() > 1 || max.len() > 1 {
+        return Err(BoundContractRefusal::DuplicateField);
+    }
+    match (contract, legacy.first(), max.first()) {
+        (PriceContract::V1, _, Some(_)) => Err(BoundContractRefusal::MaxPriceInV1),
+        (PriceContract::V2, Some(_), Some(_)) => Err(BoundContractRefusal::BothLegacyAndMaxPrice),
+        (_, Some(l), None) => usable(l).map(EntryPriceBound::LegacyLimit),
+        (PriceContract::V2, None, Some(w)) => usable(w).map(EntryPriceBound::MaxPrice),
+        (_, None, None) => Ok(EntryPriceBound::Absent),
+    }
+}
+
+/// [`plan_curve_buy`] for a resolved [`EntryPriceBound`]: one bound, one floor, the clip unchanged.
+pub fn plan_curve_buy_bound(
+    clip: u64,
+    bound: EntryPriceBound,
+    quoted_tokens: Option<u64>,
+    fallback_min_tokens: u64,
+) -> Result<CurveBuyPlan, BuyPlanRefusal> {
+    plan_curve_buy(clip, bound.ceiling(), quoted_tokens, fallback_min_tokens)
 }
 
 /// Resolve the `min_tokens_out` that ships.
@@ -434,5 +551,137 @@ mod tests {
         let (tokens, source) = resolve_min_tokens_out(size, Some(0.0), slippage);
         assert_eq!(tokens, slippage);
         assert_eq!(source, MinTokensSource::SlippageFallback);
+    }
+
+    // ─────────── SCOPE_TXCOST_R9 T4 + PLIM_R8_P3 T-ii (v2 contract; UNADOPTED, diagnostic) ───────────
+
+    /// T4: an absent bound is no ADDITIONAL ceiling — the slippage floor still binds; with no supported
+    /// fallback (floor 0) the buy is refused by name, never built with `min_tokens_out = 0`.
+    #[test]
+    fn absent_bound_keeps_the_slippage_floor_and_refuses_without_one() {
+        let clip = 250_000_000u64;
+        let p = plan_curve_buy_bound(clip, EntryPriceBound::Absent, Some(1_000), 950).unwrap();
+        assert_eq!((p.spendable_sol_in, p.min_tokens_out), (clip, 950));
+        assert_eq!(p.source, MinTokensSource::SlippageFallback);
+        for q in [Some(1_000), None] {
+            let r = plan_curve_buy_bound(clip, EntryPriceBound::Absent, q, 0).unwrap_err();
+            assert_eq!(r, BuyPlanRefusal::FallbackBoundUnavailable);
+            assert_eq!(r.label(), "fallback_bound_unavailable");
+        }
+        // A present bound does not need the fallback (the model's floor binds).
+        assert!(plan_curve_buy(clip, Some(0.5), None, 0).is_ok());
+    }
+
+    /// T-ii-1 (corrected by T4): legacy PRICE LIMIT + v2 MAX PRICE in one completion is off_contract.
+    /// The stricter floor is NOT taken: the two fields mean different things and no mapping exists.
+    #[test]
+    fn w_and_legacy_together_are_off_contract() {
+        let c = "DECISION: BUY\nSIZE: FULL\nPRICE LIMIT: 0.0002\nMAX PRICE: 0.0003\n";
+        let r = resolve_entry_price_bound(c, PriceContract::V2).unwrap_err();
+        assert_eq!(r, BoundContractRefusal::BothLegacyAndMaxPrice);
+        assert_eq!(r.label(), "off_contract:legacy_and_max_price");
+        // Order does not matter, and neither field alone survives the combination.
+        let c2 = "DECISION: BUY\nSIZE: FULL\nMAX PRICE: 0.0003\nPRICE LIMIT: 0.0002\n";
+        assert!(resolve_entry_price_bound(c2, PriceContract::V2).is_err());
+    }
+
+    /// T-ii-2: v2 without MAX PRICE -> no W bound; nothing is derived from a quote.
+    #[test]
+    fn w_absent_never_invents_a_bound() {
+        let c = "DECISION: BUY\nSIZE: HALF\n";
+        let b = resolve_entry_price_bound(c, PriceContract::V2).unwrap();
+        assert_eq!(b, EntryPriceBound::Absent);
+        assert_eq!(b.ceiling(), None);
+        // With a quote available, the floor is still the caller's slippage floor, never ceil(C/P_allin).
+        let clip = 500_000_000u64;
+        let quoted = 2_468_558_269_818u64;
+        let p = plan_curve_buy_bound(clip, b, Some(quoted), 7).unwrap();
+        assert_eq!(p.min_tokens_out, 7);
+        assert_eq!(p.source, MinTokensSource::SlippageFallback);
+    }
+
+    /// T-ii-3: W is fee-inclusive — compared against the clip C (venue fees inside), not `net_in`.
+    /// On a fixture with P_net <= W < P_allin the buy is `limit_not_met`.
+    #[test]
+    fn w_is_fee_inclusive() {
+        let clip = 500_000_000u64;
+        let tokens = 2_468_558_269_818u64; // full-clip quote on the 80-SOL pool (+187.5 bp fixture)
+        let fees = clip * 125 / 10_125; // (95+30) bp on net -> fees inside C
+        let net_in = clip - fees;
+        let p_net = net_in as f64 / tokens as f64;
+        let p_allin = clip as f64 / tokens as f64;
+        let w = p_net * 1.000_1;
+        assert!(p_net <= w && w < p_allin);
+        let c = format!("DECISION: BUY\nSIZE: FULL\nMAX PRICE: {w}\n");
+        let b = resolve_entry_price_bound(&c, PriceContract::V2).unwrap();
+        assert_eq!(b, EntryPriceBound::MaxPrice(w));
+        assert_eq!(
+            plan_curve_buy_bound(clip, b, Some(tokens), 1)
+                .unwrap_err()
+                .label(),
+            "limit_not_met"
+        );
+        // At W = P_allin (rounded up a hair) it fills.
+        let ok = plan_curve_buy_bound(
+            clip,
+            EntryPriceBound::MaxPrice(p_allin * 1.000_001),
+            Some(tokens),
+            1,
+        );
+        assert!(ok.is_ok());
+    }
+
+    /// T-ii-4: W never resizes — every plan spends exactly the clip.
+    #[test]
+    fn w_never_resizes() {
+        for clip in [125_000_000u64, 250_000_000, 500_000_000] {
+            for w in [1e-4, 2e-4, 1.0] {
+                if let Ok(p) = plan_curve_buy_bound(clip, EntryPriceBound::MaxPrice(w), None, 1) {
+                    assert_eq!(p.spendable_sol_in, clip);
+                }
+            }
+        }
+    }
+
+    /// T-ii-5: a v1 completion has no W: a MAX PRICE line is off_contract, never read as the legacy field.
+    #[test]
+    fn v1_completion_has_no_w() {
+        let c = "DECISION: BUY\nSIZE: FULL\nMAX PRICE: 0.0003\n";
+        assert_eq!(
+            resolve_entry_price_bound(c, PriceContract::V1),
+            Err(BoundContractRefusal::MaxPriceInV1)
+        );
+        // v1 legacy limit alone resolves as before (a) — diagnostic meaning unchanged.
+        let l = "DECISION: BUY\nSIZE: FULL\nPRICE LIMIT: 0.0002\n";
+        assert_eq!(
+            resolve_entry_price_bound(l, PriceContract::V1),
+            Ok(EntryPriceBound::LegacyLimit(0.0002))
+        );
+        assert_eq!(
+            resolve_entry_price_bound("DECISION: BUY\nSIZE: FULL\n", PriceContract::V1),
+            Ok(EntryPriceBound::Absent)
+        );
+    }
+
+    /// T4: malformed or duplicate fields are refused; a quote never manufactures the ceiling.
+    #[test]
+    fn malformed_or_duplicate_price_fields_are_refused() {
+        for c in [
+            "DECISION: BUY\nMAX PRICE: 1\nMAX PRICE: 2\n",
+            "DECISION: BUY\nPRICE LIMIT: 1\nPRICE LIMIT: 1\n",
+        ] {
+            assert_eq!(
+                resolve_entry_price_bound(c, PriceContract::V2),
+                Err(BoundContractRefusal::DuplicateField)
+            );
+        }
+        for v in ["abc", "0", "-1", "NaN", "inf"] {
+            let c = format!("DECISION: BUY\nMAX PRICE: {v}\n");
+            assert_eq!(
+                resolve_entry_price_bound(&c, PriceContract::V2),
+                Err(BoundContractRefusal::Unusable),
+                "{v}"
+            );
+        }
     }
 }
