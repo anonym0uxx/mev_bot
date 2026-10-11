@@ -453,3 +453,150 @@ fn late_results_after_abandonment_are_rejected_at_every_worker_count() {
         );
     }
 }
+
+// ---- HEALTH_R10 Slice A (+ D2): classification, cause-based latch reason, late-before-expire is never healthy ----
+
+/// Every call waits for one permit, then answers BUY. Lets a test release exactly one worker answer.
+struct Valve {
+    permits: Arc<AtomicUsize>,
+    answered: Arc<AtomicUsize>,
+}
+impl ModelSource for Valve {
+    fn complete(&self, _s: &str, _u: &str) -> Result<String, InferenceError> {
+        loop {
+            let p = self.permits.load(Ordering::SeqCst);
+            if p > 0
+                && self
+                    .permits
+                    .compare_exchange(p, p - 1, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_ok()
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        self.answered.fetch_add(1, Ordering::SeqCst);
+        Ok(BUY.to_string())
+    }
+}
+
+/// Local queue expiries are classed `local_expiry` and never as a dispatched failure; every SENT ask abandoned at its
+/// deadline is classed `dispatched_deadline_miss` exactly once; the L streak still latches `model_local_overload`.
+#[test]
+fn health_classes_local_expiry_apart_from_dispatched_deadline_misses() {
+    let mut w = wedged(2, "hr10_classes");
+    for _ in 0..60 {
+        if w.e.model_safety_blocked() {
+            break;
+        }
+        w.step();
+    }
+    assert_eq!(
+        w.e.model_safety_reason(),
+        pump_quant_app::safety_off::REASON_LOCAL_OVERLOAD
+    );
+    assert_eq!(
+        rep(&w.e, "health:class:local_expiry"),
+        rep(&w.e, "local_queue_expired"),
+        "{:?}",
+        w.e.model_lane_report()
+    );
+    assert!(rep(&w.e, "health:class:local_expiry") >= 3);
+    assert_eq!(
+        rep(&w.e, "health:class:dispatched_deadline_miss"),
+        rep(&w.e, "request_abandoned_deadline")
+    );
+    assert_eq!(rep(&w.e, "health:class:transport_failure"), 0);
+    assert_eq!(
+        w.e.model_safety_latch_mix(),
+        None,
+        "an L latch carries no E mix"
+    );
+    // Valid-but-late (after expire): each SENT ask's late BUY is evidence only, never a second charge.
+    let charged = rep(&w.e, "health:class:dispatched_deadline_miss");
+    let streak = w.e.model_safety_consecutive_failures();
+    w.release_and_drain();
+    assert!(rep(&w.e, "health:late_valid_after_deadline") >= 1);
+    assert_eq!(
+        rep(&w.e, "health:late_valid_after_deadline"),
+        rep(&w.e, "health:late_arrival_already_charged")
+    );
+    assert_eq!(rep(&w.e, "health:class:dispatched_deadline_miss"), charged);
+    assert_eq!(w.e.model_safety_consecutive_failures(), streak, "+0");
+}
+
+/// D2 RACE: a VALID answer that reaches the poll at deadline+1 ms, BEFORE that poll's expire sweep, is one
+/// dispatched_deadline_miss (charged once, never again at expire) and resets nothing.
+#[test]
+fn a_valid_answer_one_ms_after_its_deadline_before_expire_is_one_failure_and_no_reset() {
+    let permits = Arc::new(AtomicUsize::new(0));
+    let answered = Arc::new(AtomicUsize::new(0));
+    let mut e = Engine::new(cfg(), RunMode::Paper);
+    e.enable_paper_model_with_workers(
+        Valve {
+            permits: Arc::clone(&permits),
+            answered: Arc::clone(&answered),
+        },
+        2,
+    )
+    .unwrap();
+    e.model_safety_attach(&tmp("hr10_race"));
+    for ev in events(40) {
+        e.tick(ev);
+    }
+    let mut clock = T0 + 1_000 + 40 * 2_000;
+    let mut i = 0u32;
+    while e.model_request_records().is_empty() && i < 20 {
+        clock += 5_000;
+        i += 1;
+        print(&mut e, 300 + i, clock, 5_000 + u64::from(i));
+        ticks(&mut e, 1);
+    }
+    let recs = e.model_request_records();
+    assert_eq!(recs.len(), 1, "one ask in flight: {recs:?}");
+    let deadline = recs[0].deadline_ms;
+    assert_eq!(e.model_safety_consecutive_failures(), 0);
+    // Feed clock to deadline + 1 ms with NO tick (so no poll / expire sweep yet).
+    i += 1;
+    print(&mut e, 300 + i, deadline + 1, 5_000 + u64::from(i));
+    // Release exactly the one worker and let its verdict land in the channel.
+    permits.store(1, Ordering::SeqCst);
+    for _ in 0..500 {
+        if answered.load(Ordering::SeqCst) >= 1 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    std::thread::sleep(Duration::from_millis(50));
+    assert_eq!(answered.load(Ordering::SeqCst), 1);
+    // ONE poll: the verdict is drained before the sweep.
+    e.tick(AppEvent::Tick);
+    assert_eq!(
+        rep(&e, "health:late_before_expire"),
+        1,
+        "{:?}",
+        e.model_lane_report()
+    );
+    assert_eq!(rep(&e, "health:class:dispatched_deadline_miss"), 1);
+    assert_eq!(rep(&e, "health:late_valid_after_deadline"), 1);
+    assert_eq!(
+        e.model_safety_consecutive_failures(),
+        1,
+        "one failure, no healthy reset"
+    );
+    assert_eq!(
+        rep(&e, "request_abandoned_deadline"),
+        0,
+        "never charged at expire"
+    );
+    assert!(
+        !e.model_position_open(&MINT),
+        "a late BUY never opens a position"
+    );
+    // Further polls on the same clock never charge it a second time.
+    ticks(&mut e, 3);
+    assert_eq!(rep(&e, "health:class:dispatched_deadline_miss"), 1);
+    assert_eq!(rep(&e, "request_abandoned_deadline"), 0);
+    assert_eq!(e.model_safety_consecutive_failures(), 1);
+    permits.store(1_000, Ordering::SeqCst);
+}

@@ -42,6 +42,9 @@ pub enum StopTrigger {
     /// Consecutive requests expired in the LOCAL queue (never sent): local service is inadequate. Same row semantics
     /// as `EndpointHung`; separate cause, never endpoint evidence.
     LocalModelOverload,
+    /// HEALTH_R10: the endpoint streak tripped with at least one non-transport failure (deadline miss / invalid
+    /// output). Same row semantics as `EndpointHung`; separate named cause.
+    ModelServiceInadequate,
     /// An unresolved entry reconciliation fault or management-sell fault exists.
     ReconciliationFault,
     /// A durable held-state / safety write failed.
@@ -70,9 +73,10 @@ pub enum StopTrigger {
 
 impl StopTrigger {
     /// Every trigger, in table order.
-    pub const ALL: [StopTrigger; 14] = [
+    pub const ALL: [StopTrigger; 15] = [
         Self::EndpointHung,
         Self::LocalModelOverload,
+        Self::ModelServiceInadequate,
         Self::ReconciliationFault,
         Self::DurableWriteFailure,
         Self::DiskHeadroomLow,
@@ -181,6 +185,13 @@ pub const fn action_for(t: StopTrigger) -> StopAction {
             Block,
             Latch::SafetyOff(crate::safety_off::REASON_LOCAL_OVERLOAD),
             "ALERT_MODEL_LOCAL_OVERLOAD",
+        ),
+        StopTrigger::ModelServiceInadequate => row(
+            "entry_asks_stopped_service_inadequate_management_continues",
+            Block,
+            Block,
+            Latch::SafetyOff(crate::safety_off::REASON_SERVICE_INADEQUATE),
+            "ALERT_MODEL_SERVICE_INADEQUATE",
         ),
         StopTrigger::ReconciliationFault => row(
             "risk_off_reconcile_continues",

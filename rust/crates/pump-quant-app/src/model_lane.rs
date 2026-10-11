@@ -280,6 +280,16 @@ impl RequestTable {
         Ok(entry)
     }
 
+    /// The deadline of a LIVE (issued, not abandoned, not yet answered) request. HEALTH_R10 D2: the health charge reads
+    /// it to class an answer arriving after its deadline (but before the expire sweep) as a deadline miss.
+    #[must_use]
+    pub fn live_deadline(&self, id: RequestId) -> Option<i64> {
+        self.inflight
+            .get(&id)
+            .filter(|e| !e.abandoned)
+            .map(|e| e.deadline_ms)
+    }
+
     /// Release a request that never reached a worker (the dispatch was refused). Returns true if
     /// it was present. Unlike [`accept`](Self::accept) this counts nothing as accepted.
     pub fn release(&mut self, id: RequestId) -> bool {
