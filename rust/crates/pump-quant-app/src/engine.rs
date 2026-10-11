@@ -1198,6 +1198,8 @@ pub struct Engine {
     /// FEES R10 F8: the mint's owning token program, where an event/ctx carried it. Absent = unknown, which the v1
     /// paper rent basis refuses as `deposit_unknown` (no default program). Bounded by `ATA_OPEN_CAP`.
     model_token_program: BTreeMap<[u8; 32], [u8; 32]>,
+    /// Observation order of `model_token_program` keys (FIFO eviction of non-open mints). Same bound.
+    model_token_program_order: std::collections::VecDeque<[u8; 32]>,
     /// mint → creator entity (from TokenMetadata), for the credibility haircut.
     mint_creator: BTreeMap<[u8; 32], u64>,
     /// creator → (lifetime launches, window start tick, launches in window).
@@ -1737,6 +1739,7 @@ impl Engine {
             ata_open: std::collections::BTreeSet::new(),
             paper_ata_deposit: BTreeMap::new(),
             model_token_program: BTreeMap::new(),
+            model_token_program_order: std::collections::VecDeque::new(),
             mint_creator: BTreeMap::new(),
             creator_launches: BTreeMap::new(),
             first_slot_fees: BTreeMap::new(),

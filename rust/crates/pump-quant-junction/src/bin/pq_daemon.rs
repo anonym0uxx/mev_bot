@@ -923,6 +923,8 @@ struct SessionStats {
     /// Rev-30: LS account updates where PDA couldn't be resolved to a mint.
     ls_account_unresolved: u64,
     pda_installed_from_tx: u64,
+    /// FEES R10 F8: mints whose token program was proven from a stream tx and fed to the engine.
+    token_program_observed: u64,
     pda_map_full_refused: u64,
     fc_spawned: bool,
     fc_triggers_emitted: u64,
@@ -974,6 +976,7 @@ impl SessionStats {
             ls_onchain_confirms_decoded: 0,
             ls_account_unresolved: 0,
             pda_installed_from_tx: 0,
+            token_program_observed: 0,
             pda_map_full_refused: 0,
             fc_spawned: false,
             fc_triggers_emitted: 0,
@@ -3408,7 +3411,7 @@ fn main() -> ExitCode {
                     "\"ls_active\":{},",
                     "\"ls_account_received\":{},",
                     "\"ls_onchain_confirms_decoded\":{},",
-                    "\"ls_account_unresolved\":{},\"pda_installed_from_tx\":{},\"pda_map_full_refused\":{},",
+                    "\"ls_account_unresolved\":{},\"pda_installed_from_tx\":{},\"pda_map_full_refused\":{},\"token_program_observed\":{},",
                     "\"delta_trades_derived\":{},",
                     "\"delta_no_trade\":{},",
                     "\"delta_out_of_range\":{},",
@@ -3457,6 +3460,7 @@ fn main() -> ExitCode {
                 stats.ls_account_unresolved,
                 stats.pda_installed_from_tx,
                 stats.pda_map_full_refused,
+                stats.token_program_observed,
                 stats.delta_trades_derived,
                 stats.delta_no_trade,
                 stats.delta_out_of_range,
@@ -3525,6 +3529,16 @@ fn main() -> ExitCode {
                     did_work = true;
                     stats.ls_transactions_received += 1;
                     let classified = classify_pump_instructions(&tx);
+                    // FEES R10 F8: the paper deposit plan needs each mint's token program; prove it from this
+                    // successful tx's own ATA derivation (never an index guess, never a default program).
+                    for (m, tp) in
+                        pump_quant_junction::laserstream::observed_token_programs(&tx, |m| {
+                            engine.model_token_program_known(m)
+                        })
+                    {
+                        engine.model_observe_token_program(m, tp);
+                        stats.token_program_observed += 1;
+                    }
                     stats.ls_instructions_classified += classified.len() as u64;
                     // CURVE IDENTITY from verified pump.fun instructions. The curve PDA is a pure function of
                     // (pump program, mint), so deriving it from the mint named by a decoded pump.fun buy / sell /

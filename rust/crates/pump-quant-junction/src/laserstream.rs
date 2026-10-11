@@ -1160,6 +1160,60 @@ fn b58_decode(s: &str) -> Option<Vec<u8>> {
     Some(result)
 }
 
+/// FEES R10 F8 feed: the owning token program of each mint traded in a SUCCESSFUL transaction, PROVEN by
+/// derivation rather than read from an account index. For a pump.fun buy/sell (mint = [2], user ATA = [5],
+/// user = [6]) or a PumpSwap buy/sell (user = [1], base mint = [3], user base ATA = [5]), a candidate program
+/// (SPL Token / Token-2022) is accepted only if `ATA(user, program, mint)` equals the listed user ATA, and only
+/// when EXACTLY ONE candidate matches. `tx_ok != Some(true)` yields nothing (a failed or unattested tx is not
+/// evidence). `skip(mint)` lets the caller avoid re-deriving mints it already knows. Never guesses a default.
+pub fn observed_token_programs(
+    tx: &LaserStreamTx,
+    skip: impl Fn(&[u8; 32]) -> bool,
+) -> Vec<([u8; 32], [u8; 32])> {
+    use pump_quant_protocol::ix::BUY_EXACT_SOL_IN_DISCRIMINATOR;
+    use pump_quant_protocol::venue_accounts::{TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID};
+    let mut out: Vec<([u8; 32], [u8; 32])> = Vec::new();
+    if tx.tx_ok != Some(true) {
+        return out;
+    }
+    for ix in &tx.instructions {
+        let Some(disc) = ix.data.get(..8) else {
+            continue;
+        };
+        let (mint_i, ata_i, user_i) = if ix.program_id == PUMP_FUN_PROGRAM
+            && (disc == BUY_DISCRIMINATOR
+                || disc == SELL_DISCRIMINATOR
+                || disc == BUY_EXACT_SOL_IN_DISCRIMINATOR)
+        {
+            (2, 5, 6)
+        } else if ix.program_id == PUMP_SWAP_PROGRAM
+            && (disc == BUY_DISCRIMINATOR || disc == SELL_DISCRIMINATOR)
+        {
+            (3, 5, 1)
+        } else {
+            continue;
+        };
+        let (Some(mint), Some(ata), Some(user)) = (
+            account_key_at(ix, tx, mint_i),
+            account_key_at(ix, tx, ata_i),
+            account_key_at(ix, tx, user_i),
+        ) else {
+            continue;
+        };
+        if skip(&mint) || out.iter().any(|(m, _)| *m == mint) {
+            continue;
+        }
+        let matches: Vec<[u8; 32]> = [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID]
+            .into_iter()
+            .filter(|tp| pump_quant_protocol::pda::derive_ata(&user, tp, &mint).ok() == Some(ata))
+            .collect();
+        if let [tp] = matches.as_slice() {
+            out.push((mint, *tp));
+        }
+    }
+    out
+}
+
 // ─── Tests ───────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1235,6 +1289,64 @@ mod tests {
             tx_ok: None,
             balances: None,
         }
+    }
+
+    /// FEES R10 F8 feed: the token program is accepted only when it reproduces the listed user ATA.
+    #[test]
+    fn observed_token_programs_are_proven_by_ata_derivation_and_refused_otherwise() {
+        use pump_quant_protocol::pda::derive_ata;
+        use pump_quant_protocol::venue_accounts::{TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID};
+        let (mint_a, mint_b, user) = ([0xA1; 32], [0xB2; 32], [0x42; 32]);
+        let ata_a = derive_ata(&user, &TOKEN_2022_PROGRAM_ID, &mint_a).unwrap();
+        let ata_b = derive_ata(&user, &TOKEN_PROGRAM_ID, &mint_b).unwrap();
+        let mut tx = make_tx(1, true);
+        // keys: 0 global, 1 fee, 2 mint_a, 3 curve, 4 assoc curve, 5 ata_a, 6 user, 7 mint_b, 8 ata_b, 9 pool
+        tx.account_keys = vec![
+            [1; 32], [2; 32], mint_a, [3; 32], [4; 32], ata_a, user, mint_b, ata_b, [9; 32],
+        ];
+        let mut data = BUY_DISCRIMINATOR.to_vec();
+        data.extend_from_slice(&[0u8; 16]);
+        // pump.fun buy on mint_a (Token-2022).
+        tx.instructions.push(LaserStreamInstruction {
+            program_id: PUMP_FUN_PROGRAM,
+            data: data.clone(),
+            accounts: vec![0, 1, 2, 3, 4, 5, 6],
+            outer: None,
+            depth: None,
+        });
+        // PumpSwap sell on mint_b (SPL): pool, user, global, base mint, quote mint, user base ATA.
+        let mut sdata = SELL_DISCRIMINATOR.to_vec();
+        sdata.extend_from_slice(&[0u8; 16]);
+        tx.instructions.push(LaserStreamInstruction {
+            program_id: PUMP_SWAP_PROGRAM,
+            data: sdata,
+            accounts: vec![9, 6, 0, 7, 1, 8],
+            outer: None,
+            depth: None,
+        });
+        // Unattested status: nothing.
+        assert!(observed_token_programs(&tx, |_| false).is_empty());
+        tx.tx_ok = Some(false);
+        assert!(observed_token_programs(&tx, |_| false).is_empty());
+        tx.tx_ok = Some(true);
+        assert_eq!(
+            observed_token_programs(&tx, |_| false),
+            vec![(mint_a, TOKEN_2022_PROGRAM_ID), (mint_b, TOKEN_PROGRAM_ID)]
+        );
+        // Skip hook honoured.
+        assert_eq!(
+            observed_token_programs(&tx, |m| *m == mint_a),
+            vec![(mint_b, TOKEN_PROGRAM_ID)]
+        );
+        // A listed ATA that no candidate program reproduces is refused (no default program).
+        tx.account_keys[5] = [0x77; 32];
+        assert_eq!(
+            observed_token_programs(&tx, |_| false),
+            vec![(mint_b, TOKEN_PROGRAM_ID)]
+        );
+        // Truncated account list: refused, no panic.
+        tx.instructions[1].accounts.truncate(4);
+        assert!(observed_token_programs(&tx, |_| false).is_empty());
     }
 
     #[test]
