@@ -102,6 +102,7 @@ pub mod social_plane;
 pub mod state_ledger;
 pub mod stop_policy;
 pub mod structure;
+pub mod supply_evidence;
 pub mod token_ingest;
 pub mod toxicity;
 pub mod txcost;
