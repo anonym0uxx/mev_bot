@@ -1614,6 +1614,23 @@ impl Engine {
                 };
                 // FEES: the landing event's rates must be a tier of the PumpSwap config in force at its slot.
                 let fee = self.model_fee_ctx(obs.slot);
+                // FEES R10 F5: under v2 the tier is OUR shadow state's, never the observed event's when they may
+                // differ (identical states return the event's rates unchanged; undetermined = named refusal).
+                let (parts, cashback) = match crate::shadow_tier::shadow_pool_rates(
+                    fee,
+                    (obs.base_reserves_raw, obs.quote_reserves_lamports),
+                    (fb, fq),
+                    vq.unwrap_or(0),
+                    parts,
+                    cashback,
+                    None,
+                ) {
+                    Ok(x) => x,
+                    Err(r) => {
+                        self.mrep(format!("fill_none:{}", r.label()));
+                        continue;
+                    }
+                };
                 let q = match crate::exec_quote::amm_buy_at(fee, fb, fq, vq, parts, cashback, size)
                 {
                     Ok((q, st)) => {

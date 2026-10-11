@@ -95,6 +95,7 @@ pub mod screen;
 pub mod settlement;
 pub mod shadow;
 pub mod shadow_pool;
+pub mod shadow_tier;
 pub mod social_earn;
 pub mod social_ingest;
 pub mod social_plane;
