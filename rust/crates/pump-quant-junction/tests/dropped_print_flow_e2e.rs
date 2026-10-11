@@ -22,7 +22,7 @@
 use std::time::Duration;
 
 use pump_quant_app::config::Config;
-use pump_quant_app::engine::model_manage::MgmtKind;
+use pump_quant_app::engine::model_manage::{MgmtKind, SellReportResult};
 use pump_quant_app::engine::{Engine, RunMode};
 use pump_quant_app::event::{AppEvent, TradeVenue};
 use pump_quant_app::model_authority::ModelSource;
@@ -418,12 +418,30 @@ fn an_upstream_dropped_print_refuses_the_window_end_to_end_and_does_not_disable_
         e.model_lane_report()
     );
     // Reconciliation still functions: a reconciled fill for the pending EXIT closes it.
+    // FEES R10 F0: this is the PRODUCTION reconciliation path (pq_daemon's ModelMgmtReport carries cumulative
+    // tokens/gross/fees), not a legacy price-only replay, so the fixture reports cumulative evidence instead of
+    // opting into `model_set_legacy_price_only_reports`. The R6 E4 gate (price-only refused outside legacy mode)
+    // is untouched. Gross/fee are fixture evidence (fee <= gross), booked exactly as reported.
     if let Some((id, kind, intended, filled)) = e.model_mgmt_pending(&HELD) {
         assert_eq!(kind, MgmtKind::Exit);
-        let tokens = intended - filled;
+        assert_eq!(
+            filled, 0,
+            "fixture: the EXIT is unfilled before this report"
+        );
+        let (cum_gross, cum_fees) = (900_000_000_u64, 11_250_000_u64);
         assert!(
-            e.model_mgmt_apply_reconciled_fill(HELD, id, tokens, 45_000_000_000)
-                .is_ok(),
+            matches!(
+                e.model_mgmt_ingest_evidence(
+                    HELD,
+                    id,
+                    MgmtKind::Exit,
+                    intended,
+                    intended,
+                    cum_gross,
+                    cum_fees
+                ),
+                SellReportResult::Applied { delta } if delta == intended
+            ),
             "reconciliation of the held EXIT must still work: {:?}",
             e.model_lane_report()
         );
