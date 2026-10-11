@@ -1,0 +1,20 @@
+DECISION CLOCK — assess this opportunity.
+t_dec_ms=1788970423162  age_s=4800.0  last_trade_age_s=0.61
+venue=pumpswap  curve_present=True  evidence_status=complete
+n_prior_trades=12153  buy_count=11992  sell_count=161  unique_traders=30
+price_lamports_per_raw_token=1.0499954004771828  ret_5s_bp=-22.3881  ret_30s_bp=-6.39046  vol_30s_bp=24.9794
+buy_volume_lamports=421853121410  sell_volume_lamports=187758112762  net_flow_lamports=234095008648
+top1_trader_share=0.0523  top5_trader_share=0.24072  buyer_seller_ratio=74.4845
+ENRICHED CANDIDATE STATE (strictly causal at t_dec): mcap_sol_at_t=1042345.458066 mcap_source=amm holders_at_t=40 top1_float_share=0.661787 top5_float_share=0.999836 holder_hhi=0.552218 bundle_slots=3519 bundle_wallets=9138 volume_sol_at_t=8693.714047 wash_ratio=0.102041
+DEV HISTORY: creator_past_launches=0 creator_known=1
+LIVE FLOW STATE: entrants_60s=30 entrants_300s=30 net_flow_sol_300s=14.025214 fresh_wallet_share_300s=1.0 flow_lookback_d=7.0 sniper_share_300s=0.0 bot_uniform_share_300s=0.131258 smart_entrants_300s=0 smart_net_flow_sol_300s=0.0 coentry_wallets_300s=3 creator_trading_own_mint=True entrant_fee_p90_lamports=8000 entrant_cu_p50=103088
+CURVE STATE (at decision time): curve_reserves=present src=laserstream staleness_ms=4804291 pricing_eligible=false v_sol_reserves_sol=115.005359057 v_tokens_reserves=279900000000000 real_sol_reserves_sol=85.005359057 real_tokens_reserves=0 curve_price_sol_per_raw_token=0.000000000000410880 curve_k=32190000000054300000000000 curve_progress=1.000000 curve_regime=graduated
+AMM POOL STATE (at decision time): amm_reserves=present src=helius_amm_backfill pool=DCWRaevTQYA3BRHXiwLZZgDDwK28m3qUb8kEC4WP48xL quote=WSOL staleness_ms=610 pricing_eligible=true base_reserves_raw=4103523770432 quote_reserves_lamports=4277289364175 quote_reserves_sol=4277.289364175 amm_price_sol_per_raw_token=0.000000001042345458 reserve_slot=445653654
+PRICE UNITS: price_lamports_per_raw_token=1.0499954 price_sol_per_raw_token=1.0499954e-09 price_sol_per_whole_token=0.0010499954
+
+Choose exactly one action: BUY, WATCH, SKIP. Respect the stated round-trip cost. Answer in the fixed format.
+SIZE OPTIONS (choose one on BUY; round-trip cost at the execution fee 125 bp/side [curve@454754100:read_at_slot:tier0:125bp]):
+  SMALL = 0.25 SOL - 254 bp round trip (pool depth 4277.3 SOL)
+  MID = 0.50 SOL - 253 bp round trip (pool depth 4277.3 SOL)
+  FULL = 1.00 SOL - 254 bp round trip (pool depth 4277.3 SOL)
+  Size is a judgement: a bigger clip pays more impact in a thinner book.

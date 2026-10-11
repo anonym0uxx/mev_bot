@@ -264,6 +264,7 @@ impl Engine {
             pending,
             decision: self.model_decision_state(),
             paper_fill: self.model_pf_section(),
+            fee_unresolved: self.model_fee_unresolved.clone(),
         }
     }
 
@@ -850,6 +851,7 @@ impl Engine {
         }
         // Management orders: settled identity + cumulative fills + terminal state; restored AS RECORDS only.
         self.model_sell_floor = l.sell_floor;
+        self.model_fee_unresolved.clone_from(&l.fee_unresolved);
         for (id, cps) in &l.sell_prefixes {
             self.model_sell_prefix.insert(*id, cps.clone());
         }

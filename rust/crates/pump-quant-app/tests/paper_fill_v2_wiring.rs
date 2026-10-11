@@ -139,6 +139,9 @@ struct Rig {
 
 fn engine(v: Option<PaperFillVersion>, answer: fn(i64) -> &'static str) -> Engine {
     let mut e = Engine::new(cfg(), RunMode::Paper);
+
+    // SCOPE_FEES_R6 E4: these fixtures drive PRICE-ONLY management reports: explicit labelled legacy replay mode.
+    e.model_set_legacy_price_only_reports(true);
     e.enable_paper_model(Script {
         calls: Arc::new(AtomicUsize::new(0)),
         answer,

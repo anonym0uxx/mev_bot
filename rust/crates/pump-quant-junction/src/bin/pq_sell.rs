@@ -58,7 +58,6 @@ fn main() -> ExitCode {
         HeliusSenderSubmitter, LiveWalletSigner, RpcLiveStateFetcher,
     };
     use pump_quant_protocol::layout::LayoutRegistry;
-    use pump_quant_protocol::tx_build::{ComputePlan, TipPlan};
     use pump_quant_protocol::venue_accounts::FeeTail;
     use std::sync::Arc;
 
@@ -193,18 +192,11 @@ fn main() -> ExitCode {
     eprintln!("[pq-sell] LayoutRegistry populated");
 
     // ── Sink config (same as daemon) ─────────────────────────────────────
-    let compute = ComputePlan {
-        unit_limit: 120_000,
-        unit_price_micro_lamports: 5_000,
-    };
-    let tip = Some(TipPlan {
-        to: [
-            0x1a, 0xa2, 0xf0, 0x5a, 0x6f, 0x89, 0x50, 0xfc, 0xbf, 0x5d, 0xf9, 0xca, 0x39, 0x48,
-            0x1c, 0x6d, 0xf1, 0x33, 0x05, 0xc8, 0xb8, 0x7c, 0x64, 0x4f, 0x4d, 0x8c, 0x6d, 0x82,
-            0x0b, 0x37, 0x89, 0xa6,
-        ],
-        lamports: 5_000,
-    });
+    // FEES R10 F1: the same builder plans as pq_daemon, from the one versioned TxCostConfig.
+    let (compute, tip_plan) = pump_quant_junction::builder_txcost::builder_plans(
+        &pump_quant_junction::builder_txcost::BUILDER_TXCOST,
+    );
+    let tip = Some(tip_plan);
 
     let sink_config = LiveSinkConfig {
         compute,

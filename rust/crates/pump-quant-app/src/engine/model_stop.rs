@@ -198,14 +198,16 @@ impl Engine {
                 return Err("mark_stale");
             }
             match self.model_amm_econ.get(mint).copied() {
-                Some((parts, vq, t, cashback)) if t == o.ts_ms => crate::exec_quote::amm_sell(
+                Some((parts, vq, t, cashback)) if t == o.ts_ms => crate::exec_quote::amm_sell_at(
+                    self.model_fee_ctx(o.slot),
                     o.base_reserves_raw,
                     o.quote_reserves_lamports,
                     vq,
                     parts,
                     cashback,
                     inv,
-                ),
+                )
+                .map(|x| x.0),
                 _ => Err(crate::exec_quote::QuoteRefusal::AmmEconomicsMissing),
             }
         } else {
@@ -219,10 +221,17 @@ impl Engine {
             if clock.saturating_sub(o.ts_ms) > budget {
                 return Err("mark_stale");
             }
-            crate::exec_quote::curve_sell(o.v_sol_lamports, o.v_tokens, o.real_sol_lamports, inv)
+            crate::exec_quote::curve_sell_at(
+                self.model_fee_ctx(o.slot),
+                o.v_sol_lamports,
+                o.v_tokens,
+                o.real_sol_lamports,
+                inv,
+            )
+            .map(|x| x.0)
         }
         .map_err(crate::exec_quote::QuoteRefusal::label)?;
-        let leg = crate::exec_quote::landed_leg_cost(self.cfg.exit_tip_lamports);
+        let leg = self.cfg.txcost_for(true).planned_leg_lamports();
         Ok(i128::from(q.net) - i128::from(leg))
     }
 

@@ -61,6 +61,7 @@ pub mod decision_join;
 pub mod engine;
 pub mod enrichment;
 pub mod event;
+pub mod exec_costs_v2;
 pub mod exec_identity;
 pub mod exec_quote;
 pub mod expected_move;
@@ -102,6 +103,7 @@ pub mod stop_policy;
 pub mod structure;
 pub mod token_ingest;
 pub mod toxicity;
+pub mod txcost;
 pub mod venue;
 
 pub use config::{Config, ConfigError, FillModeCfg};

@@ -300,6 +300,11 @@ struct Rig {
 fn rig(ep: &Endpoint, name: &str) -> Rig {
     let dir = tmp(name);
     let mut e = Engine::new(cfg(), RunMode::Paper);
+    // FEES R10 F0: LEGACY price-only replay mode (labelled, test-only). These fixtures test lifecycle state
+    // (intent is not a fill; only reconciled quantities move inventory) through the price-only
+    // `model_mgmt_apply_reconciled_fill`, which the R6 E4 gate refuses outside this explicit mode.
+    // Fee/gross accounting is not under test here (cumulative evidence is covered in model_sell_recovery_e2e).
+    e.model_set_legacy_price_only_reports(true);
     let armed = arm_paper_model(&mut e, &ep.url, &dir.join("safety.json"));
     assert!(!armed.blocked_at_start, "{armed:?}");
     for ev in events(40) {
@@ -882,6 +887,9 @@ fn a_crash_mid_reduce_restarts_through_the_daemons_restore_path_and_resolves_onl
     drop(r.e); // crash
 
     let mut e2 = Engine::new(cfg(), RunMode::Paper);
+    // FEES R10 F0: legacy price-only replay mode is NOT persisted or configurable; the restarted test engine
+    // opts in explicitly, exactly as the rig does (labelled, test-only).
+    e2.model_set_legacy_price_only_reports(true);
     let _ = arm_paper_model(&mut e2, &ep.url, &dir.join("safety2.json"));
     match restore_held_state(&mut e2, &held) {
         StartupRestore::Restored(rep) => {

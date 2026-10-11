@@ -1809,8 +1809,14 @@ impl Engine {
                     self.mrep("fill_none:quote_unavailable:shadow_state_invalid");
                     continue;
                 };
-                let q = match crate::exec_quote::amm_buy(fb, fq, vq, parts, cashback, size) {
-                    Ok(q) => q,
+                // FEES: the landing event's rates must be a tier of the PumpSwap config in force at its slot.
+                let fee = self.model_fee_ctx(obs.slot);
+                let q = match crate::exec_quote::amm_buy_at(fee, fb, fq, vq, parts, cashback, size)
+                {
+                    Ok((q, st)) => {
+                        self.model_note_fee_stamp(&st);
+                        q
+                    }
                     Err(r) => {
                         self.mrep(format!("fill_none:{}", r.label()));
                         continue;
@@ -1867,16 +1873,24 @@ impl Engine {
                     self.mrep("fill_none:quote_unavailable:shadow_state_invalid");
                     continue;
                 };
-                let q = match crate::exec_quote::curve_buy(fc.vsol, fc.vtok, fc.real_tok, size) {
-                    Ok(q) => q,
-                    Err(r) => {
-                        self.mrep(format!("fill_none:{}", r.label()));
-                        continue;
-                    }
-                };
+                // FEES: the curve config in force at the landing slot (BySlot in the daemon), tier by market cap.
+                let fee = self.model_fee_ctx(obs.slot);
+                let q =
+                    match crate::exec_quote::curve_buy_at(fee, fc.vsol, fc.vtok, fc.real_tok, size)
+                    {
+                        Ok((q, st)) => {
+                            self.model_note_fee_stamp(&st);
+                            q
+                        }
+                        Err(r) => {
+                            self.mrep(format!("fill_none:{}", r.label()));
+                            continue;
+                        }
+                    };
                 if self.model_v2() {
                     // External-liquidity benchmark: the same size on the observed state alone, reported apart.
-                    if let Ok(x) = crate::exec_quote::curve_buy(
+                    if let Ok((x, _)) = crate::exec_quote::curve_buy_at(
+                        fee,
                         obs.v_sol_lamports,
                         obs.v_tokens,
                         obs.real_tokens,
@@ -1955,7 +1969,7 @@ impl Engine {
         let needs_ata = !self.ata_open.contains(&mint);
         // M3: the landed BUY leg pays the network fee (measured p50) AND the configured tip, each once. Venue
         // fees are already inside the clip (exact-in), so `entry_fee_bps` is 0 on both model fill paths.
-        let leg = crate::exec_quote::landed_leg_cost(self.cfg.entry_tip_lamports);
+        let leg = self.cfg.txcost_for(false).planned_leg_lamports();
         let entry_cost = size
             .saturating_add(entry_fee)
             .saturating_add(leg)
@@ -1976,9 +1990,12 @@ impl Engine {
         }
         self.mrep_add(
             "econ:entry_network_lamports",
-            crate::exec_quote::NETWORK_FEE_P50_LAMPORTS,
+            self.cfg.txcost_planned_network_lamports(),
         );
-        self.mrep_add("econ:entry_tip_lamports", self.cfg.entry_tip_lamports);
+        self.mrep_add(
+            "econ:entry_tip_lamports",
+            self.cfg.txcost_for(false).tip_lamports,
+        );
         let pe = PendingEntry {
             lane: order.lane,
             discovery_lane: order.discovery_lane,
@@ -2049,18 +2066,22 @@ impl Engine {
             // v2: the ONE settlement path books the entry BUY (all-in clip as venue spend, network estimate and
             // tip + ATA rent as fixed costs: exactly the committed entry cost), and the shadow carries our delta.
             if let Some(t) = tokens {
-                let fixed = self.cfg.entry_tip_lamports.saturating_add(if needs_ata {
-                    crate::cost_model::ATA_RENT_LAMPORTS
-                } else {
-                    0
-                });
+                let fixed = self
+                    .cfg
+                    .txcost_for(false)
+                    .tip_lamports
+                    .saturating_add(if needs_ata {
+                        crate::cost_model::ATA_RENT_LAMPORTS
+                    } else {
+                        0
+                    });
                 self.model_settle(
                     mint,
                     crate::shadow_pool::LegKind::Entry,
                     order.id,
                     t,
                     size,
-                    crate::exec_quote::NETWORK_FEE_P50_LAMPORTS,
+                    self.cfg.txcost_planned_network_lamports(),
                     fixed,
                 );
                 if let Some((basis, net_in)) = shadow_basis {

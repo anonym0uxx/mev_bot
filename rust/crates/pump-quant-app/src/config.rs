@@ -210,10 +210,20 @@ pub struct Config {
     pub entry_fee_bps: u32,
     /// See [`Config::entry_fee_bps`] — decision-inert.
     pub exit_fee_bps: u32,
-    /// See [`Config::entry_fee_bps`] — decision-inert.
+    /// NOT decision-inert (SCOPE_TXCOST_R9 T1 correction): under `txcost_version = 0` (the pre-T1 legacy
+    /// cost configuration, kept so old runs replay with their own costs) this is the per-leg tip the paper
+    /// executor books on every model BUY/ADD leg: it enters `entry_cost` (model_admit.rs), the wallet-floor
+    /// guard, the ADD budget and the settled fixed cost. Under `txcost_version = 1` it is NOT read: the tip
+    /// comes from [`crate::txcost::TXCOST_V1_20261010`], the same value the live builder sends.
     pub entry_tip_lamports: u64,
-    /// See [`Config::entry_fee_bps`] — decision-inert.
+    /// Exit-leg counterpart of [`Config::entry_tip_lamports`] (same version rule): the per-leg tip booked on
+    /// every model SELL leg and subtracted in the stop-table liquidation estimates.
     pub exit_tip_lamports: u64,
+    /// SCOPE_TXCOST_R9 T1: which versioned [`crate::txcost::TxCostConfig`] prices planned base fee, priority
+    /// fee and tip. 0 = `txcost_v0_legacy_p50` (pre-T1: measured p50 network 10,000 + the two tip fields
+    /// above; the value an absent key parses to, so an old run manifest replays with its own costs);
+    /// 1 = `txcost_v1_20261010` (the live builder's envelope, 10,600 a leg). Recorded in the config dump.
+    pub txcost_version: u32,
     /// Impact `k` (bps) for the simulator's constant-product impact model.
     pub sim_impact_k_bps: u32,
 
@@ -1376,6 +1386,7 @@ impl Config {
             exit_fee_bps: 100,
             entry_tip_lamports: 10_000,
             exit_tip_lamports: 10_000,
+            txcost_version: 0,
             sim_impact_k_bps: 50,
 
             // Fixture/portable base: DISARMED. This profile has no depth model, and the
@@ -1777,6 +1788,12 @@ impl Config {
             "exit_fee_bps" => self.exit_fee_bps = bp(value)?,
             "entry_tip_lamports" => self.entry_tip_lamports = nonneg(value)?,
             "exit_tip_lamports" => self.exit_tip_lamports = nonneg(value)?,
+            "txcost_version" => {
+                self.txcost_version = match value {
+                    0 | 1 => value as u32,
+                    _ => return Err(ConfigError::OutOfRange(key.to_string(), value)),
+                }
+            }
             "sim_impact_k_bps" => self.sim_impact_k_bps = bp(value)?,
             "curve_exact_fill_enable" => self.curve_exact_fill_enable = value != 0,
             "mcap_band_enable" => self.mcap_band_enable = value != 0,
@@ -2180,6 +2197,9 @@ impl Config {
         let _ = writeln!(s, "entry_tip_lamports = {}", self.entry_tip_lamports as i64);
         let _ = writeln!(s, "exit_fee_bps = {}", self.exit_fee_bps as i64);
         let _ = writeln!(s, "exit_tip_lamports = {}", self.exit_tip_lamports as i64);
+        let _ = writeln!(s, "txcost_version = {}", self.txcost_version);
+        // The id rides as a comment (the grammar is integer-valued); it names what the version selects.
+        let _ = writeln!(s, "# txcost_id = {}", self.txcost_for(false).id);
         let _ = writeln!(
             s,
             "expectancy_min_lane_trades = {}",
@@ -2856,6 +2876,26 @@ impl Config {
         }
         cfg.validate()?;
         Ok(cfg)
+    }
+
+    /// SCOPE_TXCOST_R9 T1: the versioned transaction-cost configuration this config selects for one leg
+    /// (`exit` picks the legacy exit tip under version 0; version 1 has one tip for both legs).
+    #[must_use]
+    pub const fn txcost_for(&self, exit: bool) -> crate::txcost::TxCostConfig {
+        crate::txcost::TxCostConfig::by_version(
+            self.txcost_version,
+            if exit {
+                self.exit_tip_lamports
+            } else {
+                self.entry_tip_lamports
+            },
+        )
+    }
+
+    /// Planned network fee (`meta.fee`: base + priority) of one leg under [`Config::txcost_for`].
+    #[must_use]
+    pub fn txcost_planned_network_lamports(&self) -> u64 {
+        self.txcost_for(false).planned_network_lamports()
     }
 
     /// Reject internally inconsistent envelopes before they can drive a decision.

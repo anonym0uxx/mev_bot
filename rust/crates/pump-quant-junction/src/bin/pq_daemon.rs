@@ -1481,7 +1481,7 @@ fn construct_live_engine(
         RpcLiveStateFetcher,
     };
     use pump_quant_protocol::layout::LayoutRegistry;
-    use pump_quant_protocol::tx_build::{ComputePlan, TipPlan};
+    use pump_quant_protocol::tx_build::TipPlan;
     use pump_quant_protocol::venue_accounts::FeeTail;
     use std::sync::Arc;
 
@@ -1681,23 +1681,14 @@ fn construct_live_engine(
         .expect("observed layout fixtures must register");
 
     // ── 5. Sink config ─────────────────────────────────────────────────
-    let compute = ComputePlan {
-        unit_limit: 120_000,
-        unit_price_micro_lamports: 5_000,
-    };
-    // Helius Sender tip: required by all Sender tiers. We use SWQOS-only
-    // (swqos_only=true) whose minimum is 5,000 lamports (0.000005 SOL).
-    // Tip account: 2nyhqdwKcJZR2vcqCyrYsaPVdAnFoJjiksCXJ7hfEYgD (first of 12
-    // designated Helius tip accounts, from live endpoint error + docs).
+    // FEES R10 F1: compute envelope + Helius Sender SWQOS-only tip (5,000 minimum, account
+    // 2nyhqdwKcJZR2vcqCyrYsaPVdAnFoJjiksCXJ7hfEYgD) from the ONE versioned TxCostConfig, through the same
+    // `builder_plans` that `builder_txcost::tests` pins equal to paper's v1 planned leg.
     // See: https://www.helius.dev/docs/sending-transactions/sender-swqos-only
-    let tip: Option<TipPlan> = Some(TipPlan {
-        to: [
-            0x1a, 0xa2, 0xf0, 0x5a, 0x6f, 0x89, 0x50, 0xfc, 0xbf, 0x5d, 0xf9, 0xca, 0x39, 0x48,
-            0x1c, 0x6d, 0xf1, 0x33, 0x05, 0xc8, 0xb8, 0x7c, 0x64, 0x4f, 0x4d, 0x8c, 0x6d, 0x82,
-            0x0b, 0x37, 0x89, 0xa6,
-        ],
-        lamports: 5_000, // 0.000005 SOL — SWQOS-only minimum
-    });
+    let (compute, tip_plan) = pump_quant_junction::builder_txcost::builder_plans(
+        &pump_quant_junction::builder_txcost::BUILDER_TXCOST,
+    );
+    let tip: Option<TipPlan> = Some(tip_plan);
     let fee_tail = FeeTail::None;
 
     let sink_config = LiveSinkConfig {
@@ -1906,6 +1897,11 @@ fn main() -> ExitCode {
             eprintln!("[pq-daemon] no CHAMPION_CONFIG.txt — using compiled dev_portable defaults");
         }
     }
+    // FEES R10 F2: name the active paper txcost id (and flag a v0 parse) at startup, never silent.
+    eprintln!(
+        "{}",
+        pump_quant_junction::builder_txcost::startup_txcost_line(&cfg)
+    );
     let tick_period_ms = cfg.paper_tick_period_ms;
 
     eprintln!("[pq-daemon] === AUTONOMOUS DAEMON STARTING ===");
@@ -2093,6 +2089,21 @@ fn main() -> ExitCode {
             "[pq-daemon] paper fill model: {}",
             engine.model_paper_fill().label()
         );
+        // FEES: every model-path quote is priced with the venue-fee configuration IN FORCE AT THE LANDING SLOT
+        // (pump_quant_protocol::fee_schedule): labelled provenance, or a named refusal when the slot predates
+        // every captured read / evidence window. Never today's config silently applied to history.
+        // `PQ_FEE_SELECTION=pinned` (labelled `pinned_slot_ignored` on every stamp) is the explicit opt-out used
+        // for before/after comparison; any other value refuses startup by name.
+        let fee_sel = match std::env::var("PQ_FEE_SELECTION").ok().as_deref() {
+            None | Some("by_slot") => pump_quant_protocol::fee_schedule::FeeSelection::BySlot,
+            Some("pinned") => pump_quant_protocol::fee_schedule::FeeSelection::Pinned,
+            Some(other) => {
+                eprintln!("[pq-daemon] FATAL_FEE_SELECTION_UNKNOWN: PQ_FEE_SELECTION={other:?} (by_slot|pinned)");
+                return ExitCode::from(2);
+            }
+        };
+        engine.model_set_fee_selection(fee_sel);
+        eprintln!("[pq-daemon] venue fee selection: {fee_sel:?}");
         let held_file = std::env::var("PQ_MODEL_HELD_FILE").unwrap_or_else(|_| {
             pump_quant_junction::model_lifecycle::DEFAULT_HELD_FILE.to_string()
         });
@@ -5776,6 +5787,11 @@ fn main() -> ExitCode {
                         "[pq-daemon] CONFIG HOT-RELOAD: {n} mutations applied. Summary: {}",
                         reload.summary
                     );
+                    // FEES R10 F2: a reload may change txcost_version; re-state the active id.
+                    eprintln!(
+                        "{}",
+                        pump_quant_junction::builder_txcost::startup_txcost_line(&cfg)
+                    );
 
                     // ── GAP B: record auto-revert state on promotion ──
                     // Save the pre-promotion fingerprint and current PnL so
@@ -5838,6 +5854,10 @@ fn main() -> ExitCode {
                         {
                             cfg = reverted_cfg;
                             auto_revert_state.reverted = true;
+                            eprintln!(
+                                "{}",
+                                pump_quant_junction::builder_txcost::startup_txcost_line(&cfg)
+                            );
                             write_auto_revert_state(&auto_revert_state);
                             eprintln!(
                                 "[pq-daemon] AUTO-REVERT: config restored to fingerprint {:#018x}",

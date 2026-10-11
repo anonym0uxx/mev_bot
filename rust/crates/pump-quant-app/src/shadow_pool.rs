@@ -520,7 +520,31 @@ impl ShadowBook {
     /// Curve SELL of `tokens`: the external benchmark AND the shadow quote, separately.
     #[must_use]
     pub fn curve_sell_view(&self, mint: &[u8; 32], obs: &CurveBase, tokens: u64) -> ShadowSellView {
-        let external = crate::exec_quote::curve_sell(obs.vsol, obs.vtok, obs.real_sol, tokens);
+        self.curve_sell_view_with(None, mint, obs, tokens)
+    }
+
+    /// [`Self::curve_sell_view`] with the fee configuration `fee` selects (the engine: by the observation slot).
+    #[must_use]
+    pub fn curve_sell_view_at(
+        &self,
+        fee: crate::exec_quote::FeeCtx,
+        mint: &[u8; 32],
+        obs: &CurveBase,
+        tokens: u64,
+    ) -> ShadowSellView {
+        self.curve_sell_view_with(Some(fee), mint, obs, tokens)
+    }
+
+    fn curve_sell_view_with(
+        &self,
+        fee: Option<crate::exec_quote::FeeCtx>,
+        mint: &[u8; 32],
+        obs: &CurveBase,
+        tokens: u64,
+    ) -> ShadowSellView {
+        let fee = fee.unwrap_or(crate::exec_quote::FeeCtx::PINNED);
+        let sell = |v, t, r| crate::exec_quote::curve_sell_at(fee, v, t, r, tokens).map(|x| x.0);
+        let external = sell(obs.vsol, obs.vtok, obs.real_sol);
         let carried = self
             .markets
             .get(mint)
@@ -533,7 +557,7 @@ impl ShadowBook {
                 delta_carried: carried,
             };
         };
-        let shadow = match crate::exec_quote::curve_sell(s.vsol, s.vtok, s.real_sol, tokens) {
+        let shadow = match sell(s.vsol, s.vtok, s.real_sol) {
             Ok(q) if u128::from(q.gross) > cap => {
                 Err(ShadowRefusal::CapacityExceeded { capacity: cap })
             }
@@ -558,8 +582,43 @@ impl ShadowBook {
         cashback: CashbackField,
         tokens: u64,
     ) -> ShadowSellView {
-        let external =
-            crate::exec_quote::amm_sell(obs.base, obs.quote, Some(obs.vq), parts, cashback, tokens);
+        self.pool_sell_view_with(None, mint, obs, parts, cashback, tokens)
+    }
+
+    /// [`Self::pool_sell_view`] with the fee configuration `fee` selects: the event rates must be a tier of the
+    /// PumpSwap configuration in force (named refusal `fee_rates_not_in_schedule` otherwise). The engine path.
+    #[must_use]
+    pub fn pool_sell_view_at(
+        &self,
+        fee: crate::exec_quote::FeeCtx,
+        mint: &[u8; 32],
+        obs: &PoolBase,
+        parts: Option<(u32, u32, u32)>,
+        cashback: CashbackField,
+        tokens: u64,
+    ) -> ShadowSellView {
+        self.pool_sell_view_with(Some(fee), mint, obs, parts, cashback, tokens)
+    }
+
+    /// `fee = None`: the event's rates priced as reported, arithmetic only (no schedule validation) — the
+    /// un-slotted legacy view kept for the pure shadow-book API; the engine always passes `Some`.
+    fn pool_sell_view_with(
+        &self,
+        fee: Option<crate::exec_quote::FeeCtx>,
+        mint: &[u8; 32],
+        obs: &PoolBase,
+        parts: Option<(u32, u32, u32)>,
+        cashback: CashbackField,
+        tokens: u64,
+    ) -> ShadowSellView {
+        let sell = |b, q, vq| match fee {
+            Some(fee) => {
+                crate::exec_quote::amm_sell_at(fee, b, q, Some(vq), parts, cashback, tokens)
+                    .map(|x| x.0)
+            }
+            None => crate::exec_quote::amm_sell(b, q, Some(vq), parts, cashback, tokens),
+        };
+        let external = sell(obs.base, obs.quote, obs.vq);
         let carried = self
             .markets
             .get(mint)
@@ -572,15 +631,13 @@ impl ShadowBook {
                 delta_carried: carried,
             };
         };
-        let shadow =
-            match crate::exec_quote::amm_sell(s.base, s.quote, Some(s.vq), parts, cashback, tokens)
-            {
-                Ok(q) if u128::from(q.gross) > cap => {
-                    Err(ShadowRefusal::CapacityExceeded { capacity: cap })
-                }
-                Ok(q) => Ok(q),
-                Err(r) => Err(ShadowRefusal::Quote(r)),
-            };
+        let shadow = match sell(s.base, s.quote, s.vq) {
+            Ok(q) if u128::from(q.gross) > cap => {
+                Err(ShadowRefusal::CapacityExceeded { capacity: cap })
+            }
+            Ok(q) => Ok(q),
+            Err(r) => Err(ShadowRefusal::Quote(r)),
+        };
         ShadowSellView {
             external,
             shadow,
@@ -720,6 +777,28 @@ impl ShadowBook {
         obs: Option<&ObservedVenue>,
         tokens: u64,
     ) -> Option<i128> {
+        self.net_liquidation_estimate_with(None, mint, obs, tokens)
+    }
+
+    /// [`Self::net_liquidation_estimate`] with the fee configuration `fee` selects (the engine path).
+    #[must_use]
+    pub fn net_liquidation_estimate_at(
+        &self,
+        fee: crate::exec_quote::FeeCtx,
+        mint: &[u8; 32],
+        obs: Option<&ObservedVenue>,
+        tokens: u64,
+    ) -> Option<i128> {
+        self.net_liquidation_estimate_with(Some(fee), mint, obs, tokens)
+    }
+
+    fn net_liquidation_estimate_with(
+        &self,
+        fee: Option<crate::exec_quote::FeeCtx>,
+        mint: &[u8; 32],
+        obs: Option<&ObservedVenue>,
+        tokens: u64,
+    ) -> Option<i128> {
         if self.divergence(mint).is_some() {
             return None;
         }
@@ -732,7 +811,7 @@ impl ShadowBook {
                 {
                     return None;
                 }
-                self.curve_sell_view(mint, c, tokens)
+                self.curve_sell_view_with(fee, mint, c, tokens)
             }
             ObservedVenue::Pool(p, parts, cashback) => {
                 if self
@@ -742,7 +821,7 @@ impl ShadowBook {
                 {
                     return None;
                 }
-                self.pool_sell_view(mint, p, *parts, *cashback, tokens)
+                self.pool_sell_view_with(fee, mint, p, *parts, *cashback, tokens)
             }
         };
         let q = view.shadow.ok()?;

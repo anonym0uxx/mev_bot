@@ -811,7 +811,13 @@ impl Engine {
                 }
             }
             let quoted: Option<
-                Result<crate::exec_quote::SellQuote, crate::exec_quote::QuoteRefusal>,
+                Result<
+                    (
+                        crate::exec_quote::SellQuote,
+                        pump_quant_protocol::fee_schedule::FeeStamp,
+                    ),
+                    crate::exec_quote::QuoteRefusal,
+                >,
             > = if route_amm {
                 self.model_cache
                     .amm_obs(&mint)
@@ -833,13 +839,19 @@ impl Engine {
                             ) {
                                 None => Err(crate::exec_quote::QuoteRefusal::ShadowStateInvalid),
                                 Some((fb, fq)) => {
-                                    let q = crate::exec_quote::amm_sell(
-                                        fb, fq, vq, parts, cashback, tokens,
+                                    let q = crate::exec_quote::amm_sell_at(
+                                        self.model_fee_ctx(o.slot),
+                                        fb,
+                                        fq,
+                                        vq,
+                                        parts,
+                                        cashback,
+                                        tokens,
                                     );
                                     match q {
                                         Ok(x)
                                             if self.model_v2()
-                                                && u128::from(x.gross)
+                                                && u128::from(x.0.gross)
                                                     > self.model_shadow_capacity(
                                                         &mint,
                                                         o.quote_reserves_lamports,
@@ -864,11 +876,16 @@ impl Engine {
                         // v2: observed + our carried delta, capped by conserved capacity (v1: observed).
                         None => Err(crate::exec_quote::QuoteRefusal::ShadowStateInvalid),
                         Some(s) => {
-                            match crate::exec_quote::curve_sell(s.vsol, s.vtok, s.real_sol, tokens)
-                            {
+                            match crate::exec_quote::curve_sell_at(
+                                self.model_fee_ctx(o.slot),
+                                s.vsol,
+                                s.vtok,
+                                s.real_sol,
+                                tokens,
+                            ) {
                                 Ok(x)
                                     if self.model_v2()
-                                        && u128::from(x.gross)
+                                        && u128::from(x.0.gross)
                                             > self.model_shadow_capacity(
                                                 &mint,
                                                 o.real_sol_lamports,
@@ -893,12 +910,14 @@ impl Engine {
                             o.ts_ms >= landing && o.ts_ms <= clock && o.slot > order.created_slot
                         })
                         .map(|o| {
-                            crate::exec_quote::curve_sell(
+                            crate::exec_quote::curve_sell_at(
+                                self.model_fee_ctx(o.slot),
                                 o.v_sol_lamports,
                                 o.v_tokens,
                                 o.real_sol_lamports,
                                 tokens,
                             )
+                            .map(|x| x.0)
                         })
                 };
                 match ext {
@@ -915,7 +934,10 @@ impl Engine {
                 "mgmt:fill_curve"
             };
             let priced = match quoted {
-                Some(Ok(q)) => Some(q),
+                Some(Ok((q, st))) => {
+                    self.model_note_fee_stamp(&st);
+                    Some(q)
+                }
                 Some(Err(r)) => {
                     let l = format!("mgmt:{}", r.label());
                     if order.kind == MgmtKind::Protect {
@@ -934,7 +956,7 @@ impl Engine {
                     // state is the first observation >= 400 ms after creation on a newer slot; the quote is the
                     // program's arithmetic at that state for this exact size; fees = venue fees from the quote +
                     // network fee (measured p50) + exit tip, each once. Not executed evidence: `simulated`.
-                    let leg = crate::exec_quote::landed_leg_cost(self.cfg.exit_tip_lamports);
+                    let leg = self.cfg.txcost_for(true).planned_leg_lamports();
                     let (g, f) = (q.gross, q.venue_fees.saturating_add(leg));
                     let Some(px) = crate::exec_quote::price_fp(q.net, tokens) else {
                         self.mrep("mgmt:quote_unavailable:unpriceable");
@@ -972,9 +994,12 @@ impl Engine {
                     }
                     self.mrep_add(
                         "econ:exit_network_lamports",
-                        crate::exec_quote::NETWORK_FEE_P50_LAMPORTS,
+                        self.cfg.txcost_planned_network_lamports(),
                     );
-                    self.mrep_add("econ:exit_tip_lamports", self.cfg.exit_tip_lamports);
+                    self.mrep_add(
+                        "econ:exit_tip_lamports",
+                        self.cfg.txcost_for(true).tip_lamports,
+                    );
                     if let Some(o) = self.model_mgmt.orders.get_mut(&mint) {
                         o.simulated = true;
                     }
@@ -1036,6 +1061,21 @@ impl Engine {
         }
     }
 
+    /// SCOPE_FEES_R6 E4: enable the explicit, labelled LEGACY replay-compatibility mode in which a price-only
+    /// management report (no gross, no fee) still books, its fee modelled and recorded as unresolved. Off by default.
+    pub fn model_set_legacy_price_only_reports(&mut self, on: bool) {
+        self.model_legacy_price_only = on;
+        if on {
+            self.mrep("mode:legacy_price_only_reports");
+        }
+    }
+
+    /// SCOPE_FEES_R6 E3: executed fills whose venue fee was not evidenced (durable; estimates by name).
+    #[must_use]
+    pub fn model_fee_unresolved(&self) -> &[crate::held_state::HeldFeeUnresolved] {
+        &self.model_fee_unresolved
+    }
+
     /// Apply a RECONCILED fill (full or partial) reported for a pending management order. The order is
     /// matched by id and the quantity is checked against what is still pending: a stale or duplicate
     /// report changes nothing.
@@ -1061,6 +1101,12 @@ impl Engine {
         if tokens == 0 || tokens > order.intended - order.filled {
             self.mrep("mgmt:recon:rejected:quantity");
             return Err("quantity");
+        }
+        // SCOPE_FEES_R6 E4: a price-only report has no gross and no fee. Outside the explicit legacy replay mode it
+        // is refused by name (the executor must report cumulative gross + fees: `model_mgmt_ingest_evidence`).
+        if !self.model_legacy_price_only {
+            self.mrep("mgmt:recon:rejected:price_only_report_outside_legacy_mode");
+            return Err("price_only_report_outside_legacy_mode");
         }
         self.model_mgmt_clear_uncertain(&mint);
         self.model_mgmt_book(mint, order, tokens, price_fp, None);
@@ -1108,6 +1154,15 @@ impl Engine {
         let reason = PosExit::from_code(order.protect)
             .filter(|_| order.kind == MgmtKind::Protect)
             .unwrap_or(PosExit::ModelManaged);
+        // SCOPE_FEES_R6 E3: the legacy price-only path's modelled (gross, all-in fee), captured BEFORE booking by the
+        // same pure function the price-based sell books with, so the durable estimate is exactly what moved.
+        let legacy_estimate = if settled.is_none() {
+            self.positions
+                .simulate_sell_settlement(&mint, tokens, price_fp)
+                .ok()
+        } else {
+            None
+        };
         let sold = match settled {
             Some(gf) => self
                 .positions
@@ -1129,6 +1184,26 @@ impl Engine {
                 return;
             }
         };
+        // FEES F4: a price-only report is an EXECUTED fill (it books — a missing fee figure cannot erase what
+        // happened), but its venue fee was not reported, so `sell_tokens` modelled it with the cost_model default.
+        // Disclosed by name so it is never read as executed fee evidence. Paper fills never get here without
+        // settlement: they are priced by the fee_schedule quote or refused by name before booking.
+        if settled.is_none() {
+            self.mrep("fee:executed_fill_fee_modelled_default");
+            // SCOPE_FEES_R6 E3: the unresolved fee component is recorded DURABLY (held.json `fee_unresolved`), the
+            // modelled estimate kept under its own name: never shown as settled economics.
+            self.model_fee_unresolved
+                .push(crate::held_state::HeldFeeUnresolved {
+                    order_id: order.id,
+                    mint,
+                    tokens,
+                    price_fp,
+                    estimate_gross_lamports: legacy_estimate.map_or(0, |e| e.0),
+                    estimate_fee_lamports: legacy_estimate.map_or(0, |e| e.1),
+                    basis: "legacy_price_only:cost_model_venue_fee_bps_per_leg+fixed_leg"
+                        .to_string(),
+                });
+        }
         // Partial sell: free the sold share of the committed entry cost so cash reflects proceeds.
         if !exit.closed && inv_before > 0 {
             if let Some(att) = self.open_lane.get_mut(&mint) {
@@ -1175,7 +1250,7 @@ impl Engine {
             if ata_refund > 0 {
                 self.mrep("settle:ata_rent_refund_in_closing_sell");
             }
-            let leg_cost = crate::exec_quote::landed_leg_cost(self.cfg.exit_tip_lamports);
+            let leg_cost = self.cfg.txcost_for(true).planned_leg_lamports();
             match settled {
                 Some((g, f)) if order.simulated && f >= leg_cost => self.model_settle(
                     mint,
@@ -1183,8 +1258,8 @@ impl Engine {
                     order.id,
                     tokens,
                     (g - (f - leg_cost)).saturating_add(ata_refund),
-                    crate::exec_quote::NETWORK_FEE_P50_LAMPORTS,
-                    self.cfg.exit_tip_lamports,
+                    self.cfg.txcost_planned_network_lamports(),
+                    self.cfg.txcost_for(true).tip_lamports,
                 ),
                 Some((g, f)) => self.model_settle(
                     mint,
@@ -1604,6 +1679,8 @@ enum AddState {
         vsol: u64,
         vtok: u64,
         real_tok: u64,
+        /// Venue-fee configuration that prices this curve buy (the landing slot under `BySlot`).
+        fee: crate::exec_quote::FeeCtx,
     },
     Amm {
         base: u64,
@@ -1614,6 +1691,8 @@ enum AddState {
         cr: u32,
         /// Cashback bps from the landing event's layout (known; 0 = known zero).
         cb: u64,
+        /// The validated fee configuration/tier these event rates belong to.
+        stamp: pump_quant_protocol::fee_schedule::FeeStamp,
     },
 }
 
@@ -1646,9 +1725,10 @@ impl AddState {
                 vsol,
                 vtok,
                 real_tok,
-            } => crate::exec_quote::curve_buy(vsol, vtok, real_tok, n)
+                fee,
+            } => crate::exec_quote::curve_buy_at(fee, vsol, vtok, real_tok, n)
                 .ok()
-                .map(|q| q.tokens),
+                .map(|q| q.0.tokens),
             AddState::Amm {
                 base,
                 quote,
@@ -1657,6 +1737,7 @@ impl AddState {
                 pr,
                 cr,
                 cb,
+                ..
             } => {
                 let f = pump_quant_protocol::pumpswap_event::buy_exact_quote_in_cb(
                     u128::from(base),
@@ -1669,6 +1750,25 @@ impl AddState {
                 u64::try_from(f.base_out).ok()
             }
         }
+    }
+}
+
+/// ADD refusal label for a venue-fee refusal (named; never priced at a default rate).
+fn add_fee_refusal(r: crate::exec_quote::QuoteRefusal) -> &'static str {
+    use crate::exec_quote::QuoteRefusal as Q;
+    use pump_quant_protocol::fee_schedule::FeeScheduleRefusal as F;
+    match r {
+        Q::FeeSchedule(F::HistoricalConfigUnknown { .. }) => {
+            "mgmt:refuse:add_quote_unavailable:fee_config_unknown_at_slot"
+        }
+        Q::FeeSchedule(F::ConfigChangedBetweenReads { .. }) => {
+            "mgmt:refuse:add_quote_unavailable:fee_config_changed_between_reads"
+        }
+        Q::FeeSchedule(F::RatesNotInSchedule { .. }) => {
+            "mgmt:refuse:add_quote_unavailable:fee_rates_not_in_schedule"
+        }
+        Q::AmmCashbackUnknown => "mgmt:refuse:add_amm_cashback_unknown",
+        _ => "mgmt:refuse:add_quote_unavailable:fee_schedule",
     }
 }
 
@@ -1699,9 +1799,7 @@ impl Engine {
                 let fee = (u128::from(rem) * u128::from(o.fee_bps)).div_ceil(10_000);
                 acc.saturating_add(rem)
                     .saturating_add(u64::try_from(fee).unwrap_or(u64::MAX))
-                    .saturating_add(crate::exec_quote::landed_leg_cost(
-                        self.cfg.entry_tip_lamports,
-                    ))
+                    .saturating_add(self.cfg.txcost_for(false).planned_leg_lamports())
             })
     }
 
@@ -1739,6 +1837,13 @@ impl Engine {
                 None if cr == 0 => return Err("mgmt:refuse:add_amm_cashback_unknown"),
                 None => 0,
             };
+            // FEES: the landing event's rates must be a tier of the PumpSwap config in force at its slot.
+            let stamp = crate::exec_quote::amm_rates_for(
+                self.model_fee_ctx(o.slot),
+                Some((lp, pr, cr)),
+                cashback,
+            )
+            .map_err(add_fee_refusal)?;
             let Some((fb, fq)) = self.model_fill_pool(
                 mint,
                 o.base_reserves_raw,
@@ -1756,6 +1861,7 @@ impl Engine {
                 pr,
                 cr,
                 cb,
+                stamp,
             })
         } else {
             if self.model_curve_mode_exclusion(mint).is_some() {
@@ -1773,10 +1879,15 @@ impl Engine {
             let Some(s) = self.model_fill_curve(mint, &o) else {
                 return Err("mgmt:refuse:add_quote_unavailable:shadow_state_invalid");
             };
+            // FEES: the curve config in force at the landing slot must be known (named refusal otherwise).
+            let fee = self.model_fee_ctx(o.slot);
+            crate::exec_quote::curve_rates_for(s.vsol, s.vtok, fee.slot, fee.sel)
+                .map_err(add_fee_refusal)?;
             Ok(AddState::Curve {
                 vsol: s.vsol,
                 vtok: s.vtok,
                 real_tok: s.real_tok,
+                fee,
             })
         }
     }
@@ -1791,7 +1902,7 @@ impl Engine {
         state: AddState,
         order_bound: Option<u64>,
     ) -> Result<AddPlan, &'static str> {
-        let fixed = crate::exec_quote::landed_leg_cost(self.cfg.entry_tip_lamports);
+        let fixed = self.cfg.txcost_for(false).planned_leg_lamports();
         let fee_bps = state.fee_bps();
         let floor = derive_survival_floor(
             self.bankroll_origin.seed_lamports(),
@@ -1905,6 +2016,17 @@ impl Engine {
                 } else {
                     "mgmt:fill_curve_buy"
                 });
+                let stamp = match state {
+                    AddState::Amm { stamp, .. } => Some(stamp),
+                    AddState::Curve {
+                        vsol, vtok, fee, ..
+                    } => crate::exec_quote::curve_rates_for(vsol, vtok, fee.slot, fee.sel)
+                        .ok()
+                        .map(|x| x.2),
+                };
+                if let Some(st) = stamp {
+                    self.model_note_fee_stamp(&st);
+                }
                 let px =
                     (u128::from(plan.n) * 1_000_000_000).div_ceil(u128::from(plan.tokens.max(1)));
                 let px = u64::try_from(px).unwrap_or(u64::MAX);
@@ -1926,9 +2048,10 @@ impl Engine {
                             vsol,
                             vtok,
                             real_tok,
-                        } => crate::exec_quote::curve_buy(vsol, vtok, real_tok, plan.n)
+                            fee,
+                        } => crate::exec_quote::curve_buy_at(fee, vsol, vtok, real_tok, plan.n)
                             .ok()
-                            .map(|q| q.net_in),
+                            .map(|q| q.0.net_in),
                         AddState::Amm {
                             base,
                             quote,
@@ -1937,6 +2060,7 @@ impl Engine {
                             pr,
                             cr,
                             cb,
+                            ..
                         } => pump_quant_protocol::pumpswap_event::buy_exact_quote_in_cb(
                             u128::from(base),
                             u128::from(quote),
@@ -2007,9 +2131,7 @@ impl Engine {
             Some(f) => f,
             None => u64::try_from(u128::from(spent) * u128::from(fee_bps) / 10_000)
                 .unwrap_or(0)
-                .saturating_add(crate::exec_quote::landed_leg_cost(
-                    self.cfg.entry_tip_lamports,
-                )),
+                .saturating_add(self.cfg.txcost_for(false).planned_leg_lamports()),
         };
         let cost = spent.saturating_add(fee);
         if let Err(r) = self
@@ -2040,17 +2162,16 @@ impl Engine {
         if self.model_v2() {
             match settled_fee {
                 None => {
-                    let rate_fee = fee.saturating_sub(crate::exec_quote::landed_leg_cost(
-                        self.cfg.entry_tip_lamports,
-                    ));
+                    let rate_fee =
+                        fee.saturating_sub(self.cfg.txcost_for(false).planned_leg_lamports());
                     self.model_settle(
                         mint,
                         crate::shadow_pool::LegKind::Add,
                         order.id,
                         tokens,
                         spent.saturating_add(rate_fee),
-                        crate::exec_quote::NETWORK_FEE_P50_LAMPORTS,
-                        self.cfg.entry_tip_lamports,
+                        self.cfg.txcost_planned_network_lamports(),
+                        self.cfg.txcost_for(false).tip_lamports,
                     );
                 }
                 Some(f) => self.model_settle(
@@ -2167,9 +2288,7 @@ impl Engine {
             (u128::from(order.max_spend) * u128::from(order.fee_bps)).div_ceil(10_000),
         )
         .unwrap_or(u64::MAX)
-        .saturating_add(crate::exec_quote::landed_leg_cost(
-            self.cfg.entry_tip_lamports,
-        ));
+        .saturating_add(self.cfg.txcost_for(false).planned_leg_lamports());
         let fee_over = order.fees.saturating_add(fee) > fee_cap;
         let px = u64::try_from((u128::from(spent) * 1_000_000_000).div_ceil(u128::from(tokens)))
             .map_err(|_| "price_overflow")?;
@@ -3124,6 +3243,7 @@ mod add_planner_tests {
             vsol,
             vtok: 849_000_000_000_000,
             real_tok: 569_000_000_000_000,
+            fee: crate::exec_quote::FeeCtx::PINNED,
         }
     }
 

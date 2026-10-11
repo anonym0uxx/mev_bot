@@ -24,38 +24,77 @@
 use pump_quant_protocol::curve_sell_quote::{
     curve_buy_exact_in, curve_sell_from_reserves, CurveSellRefusal,
 };
+use pump_quant_protocol::fee_schedule::{self, FeeScheduleRefusal, FeeSelection, FeeStamp};
 use pump_quant_protocol::pumpswap_event::CashbackField;
-use pump_quant_protocol::pumpswap_fees::{
-    decode_fee_config, sell_net_quote, sell_net_quote_cb, Fees,
-};
+use pump_quant_protocol::pumpswap_fees::{sell_net_quote, sell_net_quote_cb, Fees};
 
 /// Measured p50 network+priority fee of one landed leg (`FEE_QUANTILES_C16.json`, `meta.fee`).
 pub const NETWORK_FEE_P50_LAMPORTS: u64 = 10_000;
 
-/// The pump-fees program `FeeConfig` (`8Wf5TiAheLUqBrKXeYg2JtAFFMWtKdG2BSFgqUcPVwTt`), captured
-/// read-only at slot 454,754,100 (`proc/m3_raw_accounts.json`). One tier: protocol 95 bp,
-/// creator 30 bp. The same 95 + 30 (creator OR cashback) was charged on 100 of 100 independent curve
-/// trades in the bF2 tape window (slots 445,637,000..445,638,600, `m3_hist_curve_fee_evidence.json`)
-/// and reproduced exactly (ceil per component) on the 2026-10 vectors. Between those two evidence
-/// points the schedule is ASSUMED unchanged; a paper run outside them must re-read the account.
-pub const CURVE_FEE_CONFIG_BYTES: &[u8] = include_bytes!("curve_fee_config_454754100.bin");
+/// The pinned curve `FeeConfig` bytes. The single authority is [`pump_quant_protocol::fee_schedule`]; this is
+/// a re-export of its curve version (account `8Wf5TiAheLUqBrKXeYg2JtAFFMWtKdG2BSFgqUcPVwTt`, read at slot
+/// 454,754,100, sha256-pinned there), kept for callers that report the version.
+pub const CURVE_FEE_CONFIG_BYTES: &[u8] = fee_schedule::CURVE_CONFIG_BYTES;
 /// Slot the pinned curve `FeeConfig` was read at.
-pub const CURVE_FEE_CONFIG_SLOT: u64 = 454_754_100;
+pub const CURVE_FEE_CONFIG_SLOT: u64 = fee_schedule::CURVE_CONFIG_READ_SLOT;
 
-/// Curve venue fee rates (protocol, creator-or-cashback) in bp, from the pinned `FeeConfig`.
+/// Curve venue fee rates (protocol, creator-or-cashback) in bp at reserves (`vsol`, `vtok`), slot `slot`, from
+/// [`fee_schedule::curve_rates`]: config in force (by slot or pinned, labelled) and market-cap tier.
+///
+/// # Errors
+/// [`QuoteRefusal::FeeSchedule`] — a named refusal, never a default rate.
+pub fn curve_rates_for(
+    vsol: u64,
+    vtok: u64,
+    slot: u64,
+    sel: FeeSelection,
+) -> Result<(u64, u64, FeeStamp), QuoteRefusal> {
+    let (r, stamp) =
+        fee_schedule::curve_rates(vsol, vtok, slot, sel).map_err(QuoteRefusal::FeeSchedule)?;
+    // The curve's tier has no LP leg (enforced by fee_schedule::decode); the creator leg is creator OR cashback.
+    if r.fees.lp_bps != 0 || r.cashback_bps != 0 {
+        return Err(QuoteRefusal::CurveFeeConfigUnsupported);
+    }
+    Ok((r.fees.protocol_bps, r.fees.creator_bps, stamp))
+}
+
+/// Curve venue fee rates (protocol, creator-or-cashback) in bp, from the pinned `FeeConfig` (slot ignored).
 #[must_use]
 pub fn curve_fees() -> Option<(u64, u64)> {
-    let cfg = decode_fee_config(CURVE_FEE_CONFIG_BYTES)?;
-    // A single-tier schedule: the rate does not depend on market cap. A multi-tier account would
-    // need the tier at the landing reserves; refuse rather than guess.
-    if cfg.fee_tiers.len() != 1 {
-        return None;
+    // Market cap does not matter for the one-tier curve schedule; any defined cap selects tier 0.
+    curve_rates_for(1, 1, CURVE_FEE_CONFIG_SLOT, FeeSelection::Pinned)
+        .ok()
+        .map(|(p, c, _)| (p, c))
+}
+
+/// Which fee configuration prices a quote: the trade's slot and the selection policy. The daemon prices
+/// [`FeeSelection::BySlot`] (the configuration in force at the landing slot, with labelled provenance or a
+/// named refusal); synthetic-slot test rigs use [`FeeCtx::PINNED`] (latest read, labelled `pinned_slot_ignored`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FeeCtx {
+    pub slot: u64,
+    pub sel: FeeSelection,
+}
+
+impl FeeCtx {
+    /// Latest captured read, slot ignored (labelled). The legacy un-slotted quote functions use this.
+    pub const PINNED: Self = Self {
+        slot: CURVE_FEE_CONFIG_SLOT,
+        sel: FeeSelection::Pinned,
+    };
+    /// The configuration in force at `slot`.
+    #[must_use]
+    pub const fn by_slot(slot: u64) -> Self {
+        Self {
+            slot,
+            sel: FeeSelection::BySlot,
+        }
     }
-    let f = cfg.fee_tiers[0].fees;
-    if f.lp_bps != 0 {
-        return None;
+    /// `slot` under policy `sel`.
+    #[must_use]
+    pub const fn new(slot: u64, sel: FeeSelection) -> Self {
+        Self { slot, sel }
     }
-    Some((f.protocol_bps, f.creator_bps))
 }
 
 /// One executed BUY leg: all-in venue spend (fees inside), the fee components, tokens delivered.
@@ -93,6 +132,8 @@ pub struct SellQuote {
 pub enum QuoteRefusal {
     /// The pinned curve fee configuration could not be decoded / is not single-tier.
     CurveFeeConfigUnsupported,
+    /// The venue-fee authority refused (config unknown at the slot, changed between reads, rates not a tier, ...).
+    FeeSchedule(FeeScheduleRefusal),
     /// The curve's real SOL cannot pay the gross for this size (the program refuses it).
     CurveRealSolInsufficient { max_tokens: u64 },
     /// The curve is complete (migrated) — no curve route.
@@ -112,6 +153,9 @@ pub enum QuoteRefusal {
     ShadowCapacityExceeded,
     /// `paper_fill_v2_shadow` only: observed + carried delta is not representable.
     ShadowStateInvalid,
+    /// A pool fee tier was asked for without the LIVE base-mint supply the program's market cap uses
+    /// (`poolMarketCap`): never assumed 1e15, never banded (SCOPE_FEES_R6 T2).
+    PoolMintSupplyUnknown,
 }
 
 impl QuoteRefusal {
@@ -120,6 +164,24 @@ impl QuoteRefusal {
     pub const fn label(self) -> &'static str {
         match self {
             Self::CurveFeeConfigUnsupported => "quote_unavailable:curve_fee_config_unsupported",
+            Self::FeeSchedule(r) => match r {
+                FeeScheduleRefusal::HistoricalConfigUnknown { .. } => {
+                    "quote_unavailable:fee_config_unknown_at_slot"
+                }
+                FeeScheduleRefusal::ConfigChangedBetweenReads { .. } => {
+                    "quote_unavailable:fee_config_changed_between_reads"
+                }
+                FeeScheduleRefusal::ConfigUndecodable { .. } => {
+                    "quote_unavailable:fee_config_undecodable"
+                }
+                FeeScheduleRefusal::RatesNotInSchedule { .. } => {
+                    "quote_unavailable:fee_rates_not_in_schedule"
+                }
+                FeeScheduleRefusal::MarketCapUndefined => {
+                    "quote_unavailable:fee_market_cap_undefined"
+                }
+                FeeScheduleRefusal::Overflow => "quote_unavailable:fee_overflow",
+            },
             Self::CurveRealSolInsufficient { .. } => {
                 "quote_unavailable:curve_real_sol_insufficient"
             }
@@ -130,43 +192,81 @@ impl QuoteRefusal {
             Self::Unpriceable => "quote_unavailable:unpriceable",
             Self::ShadowCapacityExceeded => "quote_unavailable:shadow_capacity_exceeded",
             Self::ShadowStateInvalid => "quote_unavailable:shadow_state_invalid",
+            Self::PoolMintSupplyUnknown => "quote_unavailable:pool_mint_supply_unknown",
         }
     }
 }
 
-/// Curve BUY with an all-in spend of `spend` lamports (`buy_exact_sol_in` arithmetic).
+/// Curve BUY with an all-in spend of `spend` lamports (`buy_exact_sol_in` arithmetic), fees from the pinned
+/// (latest) configuration. Synthetic-slot callers only; the engine prices [`curve_buy_at`].
 pub fn curve_buy(
     vsol: u64,
     vtok: u64,
     real_tok: u64,
     spend: u64,
 ) -> Result<BuyQuote, QuoteRefusal> {
+    curve_buy_at(FeeCtx::PINNED, vsol, vtok, real_tok, spend).map(|(q, _)| q)
+}
+
+/// Curve BUY priced with the fee configuration `ctx` selects (by the landing slot in the daemon). Returns the
+/// [`FeeStamp`] (config version, provenance, tier, bp) that priced it.
+///
+/// # Errors
+/// Named [`QuoteRefusal`]s; a fee configuration unknown at the slot is `FeeSchedule(..)`, never a default rate.
+pub fn curve_buy_at(
+    ctx: FeeCtx,
+    vsol: u64,
+    vtok: u64,
+    real_tok: u64,
+    spend: u64,
+) -> Result<(BuyQuote, FeeStamp), QuoteRefusal> {
     if vtok == 0 {
         return Err(QuoteRefusal::CurveComplete);
     }
-    let (p, c) = curve_fees().ok_or(QuoteRefusal::CurveFeeConfigUnsupported)?;
+    let (p, c, stamp) = curve_rates_for(vsol, vtok, ctx.slot, ctx.sel)?;
     let q =
         curve_buy_exact_in(vsol, vtok, real_tok, spend, p, c).ok_or(QuoteRefusal::Unpriceable)?;
     let fees = q.protocol_fee + q.creator_fee;
     let used = q.net_in + fees;
-    Ok(BuyQuote {
-        spend: u64::try_from(used).map_err(|_| QuoteRefusal::Unpriceable)?,
-        net_in: u64::try_from(q.net_in).map_err(|_| QuoteRefusal::Unpriceable)?,
-        venue_fees: u64::try_from(fees).map_err(|_| QuoteRefusal::Unpriceable)?,
-        // Creator vs cashback recipient is not carried on the curve path (open item); never an entitlement here.
-        cashback_entitlement: 0,
-        tokens: u64::try_from(q.tokens_out).map_err(|_| QuoteRefusal::Unpriceable)?,
-    })
+    Ok((
+        BuyQuote {
+            spend: u64::try_from(used).map_err(|_| QuoteRefusal::Unpriceable)?,
+            net_in: u64::try_from(q.net_in).map_err(|_| QuoteRefusal::Unpriceable)?,
+            venue_fees: u64::try_from(fees).map_err(|_| QuoteRefusal::Unpriceable)?,
+            // Creator vs cashback recipient is not carried on the curve path (open item); never an entitlement here.
+            cashback_entitlement: 0,
+            tokens: u64::try_from(q.tokens_out).map_err(|_| QuoteRefusal::Unpriceable)?,
+        },
+        stamp,
+    ))
 }
 
-/// Curve SELL of exactly `tokens` against landing reserves incl. the curve's REAL SOL.
+/// Curve SELL of exactly `tokens` against landing reserves incl. the curve's REAL SOL (pinned configuration;
+/// the engine prices [`curve_sell_at`]).
 pub fn curve_sell(
     vsol: u64,
     vtok: u64,
     real_sol: u64,
     tokens: u64,
 ) -> Result<SellQuote, QuoteRefusal> {
-    let (p, c) = curve_fees().ok_or(QuoteRefusal::CurveFeeConfigUnsupported)?;
+    curve_sell_at(FeeCtx::PINNED, vsol, vtok, real_sol, tokens).map(|(q, _)| q)
+}
+
+/// Curve SELL priced with the fee configuration `ctx` selects, with its [`FeeStamp`].
+///
+/// # Errors
+/// Named [`QuoteRefusal`]s.
+pub fn curve_sell_at(
+    ctx: FeeCtx,
+    vsol: u64,
+    vtok: u64,
+    real_sol: u64,
+    tokens: u64,
+) -> Result<(SellQuote, FeeStamp), QuoteRefusal> {
+    if vtok == 0 {
+        return Err(QuoteRefusal::CurveComplete);
+    }
+    let (p, c, stamp) = curve_rates_for(vsol, vtok, ctx.slot, ctx.sel)?;
     let f = Fees {
         lp_bps: 0,
         protocol_bps: p,
@@ -175,14 +275,17 @@ pub fn curve_sell(
     match curve_sell_from_reserves(vsol, vtok, real_sol, tokens, f) {
         Ok(q) => {
             let fees = q.protocol_fee + q.creator_fee;
-            Ok(SellQuote {
-                gross: u64::try_from(q.gross).map_err(|_| QuoteRefusal::Unpriceable)?,
-                venue_fees: u64::try_from(fees).map_err(|_| QuoteRefusal::Unpriceable)?,
-                // Creator vs cashback recipient is not observable from reserves; the 30 bp leaves the
-                // seller either way. A cashback credit is never counted as proceeds here.
-                cashback_withheld: 0,
-                net: u64::try_from(q.net).map_err(|_| QuoteRefusal::Unpriceable)?,
-            })
+            Ok((
+                SellQuote {
+                    gross: u64::try_from(q.gross).map_err(|_| QuoteRefusal::Unpriceable)?,
+                    venue_fees: u64::try_from(fees).map_err(|_| QuoteRefusal::Unpriceable)?,
+                    // Creator vs cashback recipient is not observable from reserves; the 30 bp leaves the
+                    // seller either way. A cashback credit is never counted as proceeds here.
+                    cashback_withheld: 0,
+                    net: u64::try_from(q.net).map_err(|_| QuoteRefusal::Unpriceable)?,
+                },
+                stamp,
+            ))
         }
         Err(CurveSellRefusal::RealSolInsufficient { max_tokens }) => {
             Err(QuoteRefusal::CurveRealSolInsufficient { max_tokens })
@@ -308,6 +411,64 @@ pub fn amm_sell(
     })
 }
 
+/// The pool rates a landing event reported, VALIDATED against the PumpSwap configuration in force at
+/// `ctx` ([`fee_schedule::pool_rates_from_event`]): they must be one tier of that table (cashback coins carry the
+/// tier's creator share as cashback). An all-zero event, another venue's rates or a non-tier stack is refused
+/// `fee_rates_not_in_schedule`, never priced. Cashback-unknown is refused first, exactly as [`amm_buy`].
+///
+/// # Errors
+/// Named [`QuoteRefusal`]s.
+pub fn amm_rates_for(
+    ctx: FeeCtx,
+    parts: Option<(u32, u32, u32)>,
+    cashback: CashbackField,
+) -> Result<FeeStamp, QuoteRefusal> {
+    let (f, cb_bps) = amm_parts(parts, cashback)?;
+    let cb = cashback.known().map(|_| cb_bps);
+    let (_, stamp) = fee_schedule::pool_rates_from_event(
+        (f.lp_bps, f.protocol_bps, f.creator_bps),
+        cb,
+        ctx.slot,
+        ctx.sel,
+    )
+    .map_err(QuoteRefusal::FeeSchedule)?;
+    Ok(stamp)
+}
+
+/// Pool BUY ([`amm_buy`] arithmetic) whose event rates are first validated by [`amm_rates_for`].
+///
+/// # Errors
+/// Named [`QuoteRefusal`]s.
+pub fn amm_buy_at(
+    ctx: FeeCtx,
+    base: u64,
+    quote: u64,
+    vq: Option<u64>,
+    parts: Option<(u32, u32, u32)>,
+    cashback: CashbackField,
+    spend: u64,
+) -> Result<(BuyQuote, FeeStamp), QuoteRefusal> {
+    let stamp = amm_rates_for(ctx, parts, cashback)?;
+    Ok((amm_buy(base, quote, vq, parts, cashback, spend)?, stamp))
+}
+
+/// Pool SELL ([`amm_sell`] arithmetic) whose event rates are first validated by [`amm_rates_for`].
+///
+/// # Errors
+/// Named [`QuoteRefusal`]s.
+pub fn amm_sell_at(
+    ctx: FeeCtx,
+    base: u64,
+    quote: u64,
+    vq: Option<u64>,
+    parts: Option<(u32, u32, u32)>,
+    cashback: CashbackField,
+    tokens: u64,
+) -> Result<(SellQuote, FeeStamp), QuoteRefusal> {
+    let stamp = amm_rates_for(ctx, parts, cashback)?;
+    Ok((amm_sell(base, quote, vq, parts, cashback, tokens)?, stamp))
+}
+
 /// Per-leg network + tip lamports for a landed transaction (booked once per landed leg).
 #[must_use]
 pub const fn landed_leg_cost(tip_lamports: u64) -> u64 {
@@ -373,5 +534,132 @@ mod tests {
             ),
             Err(QuoteRefusal::AmmCashbackUnknown)
         );
+    }
+
+    // ---- FEES R10 F4 (S1): the paper fee is computed for OUR size, from rates only. Hand-derived expectations
+    // (program arithmetic written out here, not by calling the quote helpers): exact-in buys take the largest
+    // net n with n + sum(ceil(n x bps / 1e4)) <= spend; sells take each component as ceil(gross x bps / 1e4).
+    fn hand_c(n: u128, bps: u128) -> u128 {
+        (n * bps).div_ceil(10_000)
+    }
+    fn hand_exact_in(spend: u128, bps: &[u128]) -> u128 {
+        let tot = |n: u128| n + bps.iter().map(|b| hand_c(n, *b)).sum::<u128>();
+        let (mut lo, mut hi) = (0u128, spend);
+        while lo < hi {
+            let m = lo + (hi - lo).div_ceil(2);
+            if tot(m) <= spend {
+                lo = m;
+            } else {
+                hi = m - 1;
+            }
+        }
+        lo
+    }
+    const SOL: u64 = 1_000_000_000;
+    // Curve at (vsol, vtok), real tokens/SOL ample; pinned curve config 95/30 (pinned_curve_fee_config_is_single_tier_95_30).
+    const CV: (u64, u64) = (40_000_000_000, 800_000_000_000_000);
+    // Pool (synthetic reserves), captured non-cashback parts 2/93/30 and virtual quote 17_584_505_661.
+    const PB: u64 = 200_000_000_000_000;
+    const PQ: u64 = 85_000_000_000;
+    const PVQ: u64 = 17_584_505_661;
+    const PARTS: (u32, u32, u32) = (2, 93, 30);
+
+    #[test]
+    fn f4_curve_buy_fee_is_computed_at_our_size_005_and_2_sol() {
+        for spend in [SOL / 20, 2 * SOL] {
+            let q = curve_buy(CV.0, CV.1, 600_000_000_000_000, spend).unwrap();
+            let n = hand_exact_in(u128::from(spend), &[95, 30]);
+            let fees = hand_c(n, 95) + hand_c(n, 30);
+            let toks = u128::from(CV.1) * (n - 1) / (u128::from(CV.0) + n - 1);
+            assert_eq!(
+                (
+                    u128::from(q.net_in),
+                    u128::from(q.venue_fees),
+                    u128::from(q.tokens)
+                ),
+                (n, fees, toks),
+                "spend {spend}"
+            );
+            assert_eq!(u128::from(q.spend), n + fees);
+        }
+    }
+
+    #[test]
+    fn f4_curve_sell_fee_is_computed_at_our_size_005_and_2_sol() {
+        for target in [SOL / 20, 2 * SOL] {
+            // tokens whose gross is ~target at this curve state
+            let t = u64::try_from(
+                u128::from(target) * u128::from(CV.1) / (u128::from(CV.0) - u128::from(target)),
+            )
+            .unwrap();
+            let q = curve_sell(CV.0, CV.1, 30 * SOL, t).unwrap();
+            let g = u128::from(CV.0) * u128::from(t) / (u128::from(CV.1) + u128::from(t));
+            let fees = hand_c(g, 95) + hand_c(g, 30);
+            assert_eq!(
+                (
+                    u128::from(q.gross),
+                    u128::from(q.venue_fees),
+                    u128::from(q.net)
+                ),
+                (g, fees, g - fees),
+                "target {target}"
+            );
+        }
+    }
+
+    #[test]
+    fn f4_pool_buy_fee_is_computed_at_our_size_005_and_2_sol() {
+        for spend in [SOL / 20, 2 * SOL] {
+            let q = amm_buy(
+                PB,
+                PQ,
+                Some(PVQ),
+                Some(PARTS),
+                CashbackField::NotRecorded,
+                spend,
+            )
+            .unwrap();
+            let n = hand_exact_in(u128::from(spend), &[2, 93, 30]);
+            let fees = hand_c(n, 2) + hand_c(n, 93) + hand_c(n, 30);
+            let eff = u128::from(PQ) + u128::from(PVQ);
+            let out = u128::from(PB) * (n - 1) / (eff + n - 1);
+            assert_eq!(
+                (
+                    u128::from(q.net_in),
+                    u128::from(q.venue_fees),
+                    u128::from(q.tokens)
+                ),
+                (n, fees, out),
+                "spend {spend}"
+            );
+        }
+    }
+
+    #[test]
+    fn f4_pool_sell_fee_is_computed_at_our_size_005_and_2_sol() {
+        let eff = u128::from(PQ) + u128::from(PVQ);
+        for target in [u128::from(SOL / 20), u128::from(2 * SOL)] {
+            let t = u64::try_from(target * u128::from(PB) / (eff - target)).unwrap();
+            let q = amm_sell(
+                PB,
+                PQ,
+                Some(PVQ),
+                Some(PARTS),
+                CashbackField::NotRecorded,
+                t,
+            )
+            .unwrap();
+            let g = eff * u128::from(t) / (u128::from(PB) + u128::from(t));
+            let fees = hand_c(g, 2) + hand_c(g, 93) + hand_c(g, 30);
+            assert_eq!(
+                (
+                    u128::from(q.gross),
+                    u128::from(q.venue_fees),
+                    u128::from(q.net)
+                ),
+                (g, fees, g - fees),
+                "target {target}"
+            );
+        }
     }
 }

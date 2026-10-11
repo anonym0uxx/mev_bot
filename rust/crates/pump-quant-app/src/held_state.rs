@@ -289,6 +289,25 @@ pub struct DecisionState {
 /// One cumulative settlement checkpoint of a sell order: (tokens, gross, fees).
 pub type SettlementPoint = (u64, u64, u64);
 
+/// SCOPE_FEES_R6 E3: one executed fill whose venue fee was not evidenced (a legacy price-only report). The books
+/// carry the quantity; `estimate_fee_lamports` is the MODELLED all-in fee (`basis`), kept apart by name and never
+/// presented as settled economics. Restart-safe: written to held.json under `fee_unresolved` when non-empty.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeldFeeUnresolved {
+    pub order_id: u64,
+    pub mint: [u8; 32],
+    /// Tokens the report proved executed.
+    pub tokens: u64,
+    /// Reported price (1e9 fixed point), the only other reported number.
+    pub price_fp: u64,
+    /// Modelled gross the legacy path booked (NOT reported).
+    pub estimate_gross_lamports: u64,
+    /// Modelled all-in fee the legacy path booked (NOT reported).
+    pub estimate_fee_lamports: u64,
+    /// Name of the model that produced the estimate.
+    pub basis: String,
+}
+
 /// The whole durable record.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeldLedger {
@@ -334,6 +353,8 @@ pub struct HeldLedger {
     /// `paper_fill_v2_shadow` only: shadow book + shared settlement ledger. `None` (and ABSENT from the file) under
     /// the default v1, so v1 ledgers are byte-identical to before.
     pub paper_fill: Option<Value>,
+    /// SCOPE_FEES_R6 E3: fills with an unresolved (unevidenced) fee component. ABSENT from the file when empty.
+    pub fee_unresolved: Vec<HeldFeeUnresolved>,
 }
 
 /// Why a ledger could not be read.
@@ -408,6 +429,23 @@ impl HeldLedger {
         let mut v = self.to_json_base();
         if let (Some(pf), Some(o)) = (&self.paper_fill, v.as_object_mut()) {
             o.insert("paper_fill".to_string(), pf.clone());
+        }
+        if let (false, Some(o)) = (self.fee_unresolved.is_empty(), v.as_object_mut()) {
+            o.insert(
+                "fee_unresolved".to_string(),
+                Value::Array(
+                    self.fee_unresolved
+                        .iter()
+                        .map(|f| {
+                            json!({
+                                "order_id": f.order_id, "mint": hex(&f.mint), "tokens": f.tokens,
+                                "price_fp": f.price_fp, "estimate_gross_lamports": f.estimate_gross_lamports,
+                                "estimate_fee_lamports": f.estimate_fee_lamports, "basis": f.basis,
+                            })
+                        })
+                        .collect(),
+                ),
+            );
         }
         v
     }
@@ -759,7 +797,28 @@ impl HeldLedger {
             }
             sell_prefixes.push((id, cps));
         }
+        let mut fee_unresolved = Vec::new();
+        if let Some(a) = v.get("fee_unresolved") {
+            for f in a.as_array().ok_or(bad("fee_unresolved"))? {
+                fee_unresolved.push(HeldFeeUnresolved {
+                    order_id: u(f, "order_id")?,
+                    mint: f["mint"]
+                        .as_str()
+                        .and_then(unhex)
+                        .ok_or(bad("fee_unresolved.mint"))?,
+                    tokens: u(f, "tokens")?,
+                    price_fp: u(f, "price_fp")?,
+                    estimate_gross_lamports: u(f, "estimate_gross_lamports")?,
+                    estimate_fee_lamports: u(f, "estimate_fee_lamports")?,
+                    basis: f["basis"]
+                        .as_str()
+                        .ok_or(bad("fee_unresolved.basis"))?
+                        .to_string(),
+                });
+            }
+        }
         Ok(Self {
+            fee_unresolved,
             sell_prefixes,
             sells,
             sell_faults,
@@ -931,6 +990,7 @@ mod tests {
             }],
             order_floor: 2,
             paper_fill: None,
+            fee_unresolved: Vec::new(),
             sell_prefixes: vec![(1, vec![(10, 220_000, 220)])],
             sells: vec![HeldSell {
                 id: 3,
