@@ -749,3 +749,68 @@ fn t3_protocol_tier_at_a_real_threshold_rows_for_the_independent_decoder() {
         std::fs::write(p, out).unwrap();
     }
 }
+
+/// FEES R10 F3: the v2 prompt cost statement under `txcost_version = 0` vs `1` on the SAME markets (the by-slot
+/// curve and the three pool tiers of the T3 threshold rows). The venue rate and fee stamp (the fee AUTHORITY)
+/// must not move. Only the network+tip landing term moves, by exactly 9,400 lamports a leg (18,800 a round
+/// trip) over the clip notional. Prints one `F3_V2` JSON row per (market, clip) for the report.
+#[test]
+fn f3_v2_cost_statement_txcost_v0_vs_v1_changes_only_the_landing_term() {
+    let markets = [
+        (
+            "curve_by_slot",
+            ExecMarket::Curve {
+                vsol: VSOL,
+                vtok: VTOK,
+            },
+        ),
+        (
+            "pool_below_34380",
+            ExecMarket::Pool {
+                effective_quote: 34_379_999_999_999,
+                base_reserve: 1_000_000_000_000_000,
+                mint_supply: Some(1_000_000_000_000_000),
+            },
+        ),
+        (
+            "pool_at_34380",
+            ExecMarket::Pool {
+                effective_quote: 34_380_000_000_000,
+                base_reserve: 1_000_000_000_000_000,
+                mint_supply: Some(1_000_000_000_000_000),
+            },
+        ),
+    ];
+    let v0 = Config::from_str_over_default("").unwrap();
+    let mut v1 = Config::dev_portable();
+    v1.apply("txcost_version", 1).unwrap();
+    for (label, m) in markets {
+        let ctx = FeeCtx::by_slot(454_754_100);
+        let a = exec_costs(m, ctx, v0.txcost_for(false), 0).unwrap();
+        let b = exec_costs(m, ctx, v1.txcost_for(false), 0).unwrap();
+        assert_eq!(a.venue_bp_per_side, b.venue_bp_per_side, "{label}");
+        assert_eq!(a.fee_stamp, b.fee_stamp, "{label}");
+        let leg_a = a.network_lamports_per_leg + a.tip_lamports_per_leg;
+        let leg_b = b.network_lamports_per_leg + b.tip_lamports_per_leg;
+        assert_eq!((leg_a, leg_b), (20_000, 10_600), "{label}");
+        for clip in [0.05_f64, 0.5, 2.0] {
+            let (da, db) = (decompose_v2(clip, None, &a), decompose_v2(clip, None, &b));
+            let want = 9_400.0 / (clip * 1e9) * 1e4;
+            assert!(
+                (da.landing_bp_per_leg - db.landing_bp_per_leg - want).abs() < 1e-9,
+                "{label} {clip}"
+            );
+            assert_eq!(da.venue_bp_per_side, db.venue_bp_per_side);
+            println!(
+                "F3_V2 {}",
+                serde_json::json!({
+                    "market": label, "clip_sol": clip, "fee_stamp": a.fee_stamp,
+                    "venue_bp_per_side": a.venue_bp_per_side,
+                    "v0_landing_bp_per_leg": da.landing_bp_per_leg, "v1_landing_bp_per_leg": db.landing_bp_per_leg,
+                    "v0_round_trip_bp": da.round_trip_bp, "v1_round_trip_bp": db.round_trip_bp,
+                    "v0_line": cost_line_v2(clip, None, &a), "v1_line": cost_line_v2(clip, None, &b),
+                })
+            );
+        }
+    }
+}

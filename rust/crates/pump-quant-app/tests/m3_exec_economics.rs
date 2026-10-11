@@ -134,8 +134,16 @@ struct Rig {
 }
 
 fn rig(answer: fn(i64) -> &'static str) -> Rig {
+    rig_txcost(answer, None)
+}
+
+/// FEES R10 F3: the same rig under an explicit `txcost_version` (`None` = the dev_portable default).
+fn rig_txcost(answer: fn(i64) -> &'static str, txcost_version: Option<i64>) -> Rig {
     let mut c = Config::dev_portable();
     c.bankroll_initial_lamports = 2_000_000_000;
+    if let Some(v) = txcost_version {
+        c.apply("txcost_version", v).unwrap();
+    }
     let mut e = Engine::new(c, RunMode::Paper);
     e.enable_paper_model(Script {
         answer,
@@ -643,4 +651,85 @@ fn an_unknown_cashback_pool_exit_stays_refused_by_name() {
         assert_eq!(r.rep("econ:exit_cashback_entitlement_lamports"), 0);
         assert!(r.e.model_position_open(&MINT));
     }
+}
+
+/// FEES R10 F3: before/after of the T1 cost version on the SAME synthetic tape: entry + EXIT under
+/// `txcost_version = 0` (legacy p50 10,000 + config tip) vs `1` (builder envelope 5,600 + 5,000 tip). Expected
+/// deltas are derived here from the two configurations; the engine's books must move by exactly them, and no
+/// decision or refusal may change (only the costs). Prints one `F3_ROW` JSON line per version for the report.
+#[test]
+fn f3_txcost_v0_vs_v1_per_leg_and_round_trip_delta_and_no_decision_change() {
+    let mut rows = Vec::new();
+    for v in [0i64, 1] {
+        let mut r = rig_txcost(|s| if s == 0 { EXIT } else { HOLD }, Some(v));
+        let cfg = {
+            let mut c = Config::dev_portable();
+            c.apply("txcost_version", v).unwrap();
+            c
+        };
+        let (eleg, xleg) = (
+            cfg.txcost_for(false).planned_leg_lamports(),
+            cfg.txcost_for(true).planned_leg_lamports(),
+        );
+        let entry_view = r.e.model_accounting_view(&MINT);
+        let inv = entry_view.inventory_tokens.unwrap();
+        let clip = entry_view.attribution_entry_spend.unwrap();
+        let entry_net = r.rep("econ:entry_network_lamports");
+        let entry_tip = r.rep("econ:entry_tip_lamports");
+        let (vs, vt) = (VSOL + 200_000_000, VTOK - 4_000_000_000_000);
+        r.run_to_order(vs, vt, 8_100_000_000);
+        r.land(vs, vt, 8_100_000_000);
+        let f = r.e.model_mgmt_fills().last().copied().expect("exit filled");
+        let exit_net = r.rep("econ:exit_network_lamports");
+        let exit_tip = r.rep("econ:exit_tip_lamports");
+        let g = u128::from(inv) * u128::from(vs) / (u128::from(vt) + u128::from(inv));
+        let venue = (g * 95).div_ceil(10_000) + (g * 30).div_ceil(10_000);
+        assert_eq!(
+            entry_net + entry_tip,
+            eleg,
+            "v{v}: entry leg booked = planned"
+        );
+        assert_eq!(exit_net + exit_tip, xleg, "v{v}: exit leg booked = planned");
+        assert_eq!(u128::from(f.fee_lamports), venue + u128::from(xleg), "v{v}");
+        let refusals: u64 =
+            r.e.model_lane_report()
+                .iter()
+                .filter(|(k, _)| k.contains("refuse") || k.contains("quote_unavailable"))
+                .map(|(_, n)| *n)
+                .sum();
+        let realized = r.e.model_accounting_view(&MINT).realized;
+        let row = serde_json::json!({
+            "txcost_version": v, "txcost_id": cfg.txcost_for(false).id,
+            "entry_leg": eleg, "entry_network": entry_net, "entry_tip": entry_tip,
+            "exit_leg": xleg, "exit_network": exit_net, "exit_tip": exit_tip,
+            "round_trip_legs": eleg + xleg, "clip": clip, "inventory_tokens": inv,
+            "exit_tokens": f.tokens, "exit_gross": f.gross_lamports, "exit_fee": f.fee_lamports,
+            "realized": realized.to_string(), "refusal_counters": refusals,
+            "position_open_after_exit": r.e.model_position_open(&MINT),
+        });
+        println!("F3_ROW {row}");
+        rows.push((eleg, xleg, clip, inv, f.tokens, refusals, realized));
+    }
+    let (v0, v1) = (rows[0], rows[1]);
+    assert_eq!((v0.0, v0.1), (20_000, 20_000), "legacy per leg");
+    assert_eq!((v1.0, v1.1), (10_600, 10_600), "v1 per leg = builder");
+    assert_eq!(v0.0 + v0.1 - (v1.0 + v1.1), 18_800, "round-trip delta");
+    // Decisions unchanged: the same swap size (identical inventory), a full EXIT of the whole inventory, the same
+    // refusals. The committed spend = swap + entry leg + ATA, so it moves by exactly the entry-leg delta.
+    assert_eq!(
+        v0.3, v1.3,
+        "same swap size: the cost version never resizes the model's order"
+    );
+    assert_eq!((v0.4 == v0.3, v1.4 == v1.3), (true, true), "EXIT sells all");
+    assert_eq!(v0.5, v1.5, "no refusal changes");
+    assert_eq!(
+        v0.2 - v1.2,
+        v0.0 - v1.0,
+        "committed spend moves by the entry-leg delta (9,400)"
+    );
+    assert_eq!(
+        v1.6 - v0.6,
+        i128::from((v0.0 + v0.1) - (v1.0 + v1.1)),
+        "realized moves by exactly the round-trip leg delta (18,800)"
+    );
 }
