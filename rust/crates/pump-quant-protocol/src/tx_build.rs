@@ -318,9 +318,10 @@ pub const UVA_ACCOUNT_SIZE: u64 = 137;
 
 /// The planned base fee per required signature.
 ///
-/// TODO(TxCostConfig (fees T1)): this is the ONE accessor the plim slice reads the planned
-/// per-signature fee through. When fees lands the single versioned `TxCostConfig`, replace the
-/// body with a read of it; no other plim code names the number.
+/// This is the ONE accessor the plim slice reads the planned per-signature fee through. The
+/// protocol crate cannot depend on `pump-quant-app`, so the value is pinned EQUAL to
+/// `pump_quant_app::txcost::TXCOST_V1_20261010.lamports_per_signature` by the integration test
+/// `pump-quant-app/tests/txcost_plim_parity.rs`; change both in one versioned step.
 #[must_use]
 pub const fn planned_lamports_per_signature() -> u64 {
     5_000

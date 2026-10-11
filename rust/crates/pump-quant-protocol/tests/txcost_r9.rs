@@ -90,7 +90,7 @@ fn registry() -> LayoutRegistry {
 }
 
 /// The pq_daemon live envelope: CU 120,000 @ 5,000 µlamports, 5,000-lamport Sender tip.
-/// TODO(TxCostConfig (fees T1)): read compute/tip through the single TxCostConfig once it lands.
+/// Compute/tip equal TXCOST_V1_20261010 (pinned by pump-quant-app/tests/txcost_plim_parity.rs).
 fn daemon_compute() -> ComputePlan {
     ComputePlan {
         unit_limit: 120_000,

@@ -543,6 +543,10 @@ fn an_external_curve_attempt_is_never_replaced_by_a_paper_pool_attempt() {
         Some((1, false, SubmitState::Begun))
     );
     let part = intended / 4;
+    // INTEG (fees R6 E4 x wire W1.3): this v1 fixture reconciles a price-only curve partial, which the fees
+    // gate refuses outside the labelled LEGACY price-only mode. Attempt identity is under test here, not
+    // fee/gross accounting, so the fixture opts into that test-only mode (same remedy as fees R10 F0).
+    r.e.model_set_legacy_price_only_reports(true);
     r.e.model_mgmt_apply_reconciled_fill(MINT, id, part, 22_000_000)
         .unwrap();
     assert_eq!(r.e.model_inventory_tokens(&MINT), Some(inv - part));
@@ -610,6 +614,10 @@ fn a_partial_curve_fill_then_migration_replaces_only_the_proven_remainder_on_the
     r.begin_on_curve_refused(id);
     let part = intended / 3;
     // Reconciled partial fill of the CURVE attempt (paper-owned, definitive for those tokens).
+    // INTEG (fees R6 E4 x wire W1.3): this v1 fixture reconciles a price-only curve partial, which the fees
+    // gate refuses outside the labelled LEGACY price-only mode. Attempt identity is under test here, not
+    // fee/gross accounting, so the fixture opts into that test-only mode (same remedy as fees R10 F0).
+    r.e.model_set_legacy_price_only_reports(true);
     r.e.model_mgmt_apply_reconciled_fill(MINT, id, part, 22_000_000)
         .unwrap();
     assert_eq!(r.e.model_inventory_tokens(&MINT), Some(inv - part));
@@ -937,6 +945,10 @@ fn a_restart_between_the_replacement_hand_off_and_its_fill_keeps_attempt_two_and
     let (id, intended) = r.drive_to_order();
     r.begin_on_curve_refused(id);
     let part = intended / 3;
+    // INTEG (fees R6 E4 x wire W1.3): this v1 fixture reconciles a price-only curve partial, which the fees
+    // gate refuses outside the labelled LEGACY price-only mode. Attempt identity is under test here, not
+    // fee/gross accounting, so the fixture opts into that test-only mode (same remedy as fees R10 F0).
+    r.e.model_set_legacy_price_only_reports(true);
     r.e.model_mgmt_apply_reconciled_fill(MINT, id, part, 22_000_000)
         .unwrap();
     let curve_fill = *r.e.model_mgmt_fills().last().unwrap();
@@ -996,6 +1008,7 @@ fn a_restart_between_the_replacement_hand_off_and_its_fill_keeps_attempt_two_and
     drop(r);
 
     let mut e2 = engine(|_| HOLD, false, Some(&hp));
+    e2.model_set_legacy_price_only_reports(true);
     e2.model_held_restore()
         .expect("restore ok")
         .expect("ledger present");
