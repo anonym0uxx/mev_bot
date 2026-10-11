@@ -55,6 +55,11 @@ Fresh run directories; the package is SHA256SUMS-verified before every run.
 - Token-program coverage: on recorded captures, a token program was proven for 188/194, 134/139 and 198/206 traded
   mints. The rest refuse as `deposit_unknown` (counted per mint, not per entry request).
 - Windows serving parity/latency and AMM sell economics: open.
+- Sizing policy limitation (unchanged by this release): when the portfolio cap cannot be counted live, a uniform
+  half-clip fallback applies to every tier (`PortfolioCap::unenforceable` / `fraction_bps_for`, `pump-quant-app/src/portfolio.rs`). That lowers `FULL`
+  to 50 % but raises `SMALL` from 25 % to 50 % of the clip. Changing that rule requires a separate decision.
+- Diagnostic daemon runs have used unaccepted checkpoints. They measure serving and contract behaviour, not decision
+  quality. An authorized forward paper run requires an accepted, promoted configuration.
 - Forward paper run: not yet executed. It will measure operational behaviour and net economics over a bounded
   window; it cannot establish sustained profitability.
 

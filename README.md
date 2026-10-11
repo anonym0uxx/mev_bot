@@ -60,8 +60,9 @@ flowchart LR
 | Entry | `BUY`, `WATCH`, `SKIP` | `SMALL` or `FULL` on `BUY`, otherwise `NONE` |
 | Open position | `HOLD`, `ADD`, `REDUCE`, `EXIT` | fraction defined by the management contract |
 
-`SMALL` and `FULL` are fractions of the account's clip (25 % and 100 %). The model chooses the tier. The engine resolves
-the lamport amount.
+`SMALL` and `FULL` are fractions of the account's clip: 25 % and 100 % while the portfolio cap is enforced, and a
+uniform 50 % otherwise (see [Operating boundaries](#operating-boundaries)). The model chooses the tier. The engine
+resolves the lamport amount.
 </details>
 
 ## AI/ML approach
@@ -85,7 +86,9 @@ economic edge.
 - **Accepted model:** a checkpoint that passed the pinned decision-quality and serving gates.
 - **Promoted serving configuration:** an accepted model deployed behind vLLM by an operator decision.
 
-Only the third is ever called by the daemon. Today no checkpoint is accepted.
+The daemon can be pointed at any served checkpoint. Diagnostic runs, used to measure serving, latency and contract
+behaviour, have used unaccepted checkpoints, and their results say nothing about decision quality. An authorized
+forward paper run requires an accepted, promoted configuration. Today no checkpoint is accepted.
 
 **No online learning.** The system does not learn from its own trades. Paper and live outcomes become data only
 through an explicit, versioned dataset build and a new training run.
@@ -98,11 +101,13 @@ through an explicit, versioned dataset build and a new training run.
 fills, fees, rent, settlement and the durable ledger. It also runs the agreed safeguards (hard stop, rug precursor,
 the SAFETY_OFF latch, the stop/handoff contract), which act on held positions without asking the model.
 
-**Capital is bounded by Rust, never widened by it.**
+**Capital sizing.** The model's tier is resolved to lamports by Rust.
 
-- A tier resolves to a fraction of the configured clip. If the portfolio cap cannot be counted live, every tier
-  falls back to half the clip.
-- That clip is capped to what the account can pay after a fee buffer, and refused below the venue minimum.
+- With the portfolio cap enforced, `SMALL` is 25 % and `FULL` is 100 % of the configured clip.
+- If the portfolio cap cannot be counted live, a uniform half-clip fallback applies to every tier. This lowers
+  `FULL` to 50 %, but **raises `SMALL` from 25 % to 50 %**. That is a known policy limitation, recorded in the
+  [acceptance record](docs/acceptance/ENGINEERING_ACCEPTANCE.md). It is not changed here.
+- The resulting clip is capped to what the account can pay after a fee buffer, and refused below the venue minimum.
 - An entry is refused if it would cross the bankroll survival floor, exceed the own-impact limit on the pool, or
   exceed the portfolio and per-position caps.
 - Anything off-contract means no trade.
