@@ -1839,6 +1839,11 @@ fn main() -> ExitCode {
             eprintln!("[pq-daemon] no CHAMPION_CONFIG.txt — using compiled dev_portable defaults");
         }
     }
+    // FEES R10 F2: name the active paper txcost id (and flag a v0 parse) at startup, never silent.
+    eprintln!(
+        "{}",
+        pump_quant_junction::builder_txcost::startup_txcost_line(&cfg)
+    );
     let tick_period_ms = cfg.paper_tick_period_ms;
 
     eprintln!("[pq-daemon] === AUTONOMOUS DAEMON STARTING ===");
@@ -5473,6 +5478,11 @@ fn main() -> ExitCode {
                         "[pq-daemon] CONFIG HOT-RELOAD: {n} mutations applied. Summary: {}",
                         reload.summary
                     );
+                    // FEES R10 F2: a reload may change txcost_version; re-state the active id.
+                    eprintln!(
+                        "{}",
+                        pump_quant_junction::builder_txcost::startup_txcost_line(&cfg)
+                    );
 
                     // ── GAP B: record auto-revert state on promotion ──
                     // Save the pre-promotion fingerprint and current PnL so
@@ -5535,6 +5545,10 @@ fn main() -> ExitCode {
                         {
                             cfg = reverted_cfg;
                             auto_revert_state.reverted = true;
+                            eprintln!(
+                                "{}",
+                                pump_quant_junction::builder_txcost::startup_txcost_line(&cfg)
+                            );
                             write_auto_revert_state(&auto_revert_state);
                             eprintln!(
                                 "[pq-daemon] AUTO-REVERT: config restored to fingerprint {:#018x}",

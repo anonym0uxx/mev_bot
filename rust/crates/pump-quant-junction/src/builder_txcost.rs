@@ -43,6 +43,28 @@ pub fn builder_planned_leg_lamports(signatures: u64, compute: ComputePlan, tip: 
         .saturating_add(tip.lamports)
 }
 
+/// FEES R10 F2: the startup line naming the active paper txcost id beside the builder's, so a run that
+/// parsed version 0 (an absent `txcost_version` key) is visible, never silent.
+#[must_use]
+pub fn startup_txcost_line(cfg: &pump_quant_app::config::Config) -> String {
+    let paper = cfg.txcost_for(false);
+    let (c, t) = builder_plans(&BUILDER_TXCOST);
+    let builder_leg = builder_planned_leg_lamports(BUILDER_TXCOST.signatures, c, t);
+    let mut s = format!(
+        "[pq-daemon] txcost: paper txcost_version={} id={} planned_leg={} (entry) / {} (exit); builder id={} planned_leg={}",
+        cfg.txcost_version,
+        paper.id,
+        paper.planned_leg_lamports(),
+        cfg.txcost_for(true).planned_leg_lamports(),
+        BUILDER_TXCOST.id,
+        builder_leg,
+    );
+    if paper.id != BUILDER_TXCOST.id {
+        s.push_str(" WARNING: paper_txcost_differs_from_builder (legacy v0 parse: absent or 0 txcost_version)");
+    }
+    s
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -61,5 +83,32 @@ mod tests {
         for exit in [false, true] {
             assert_eq!(cfg.txcost_for(exit).planned_leg_lamports(), builder);
         }
+    }
+
+    #[test]
+    fn startup_line_names_the_active_id_and_flags_a_v0_parse() {
+        let mut v1 = Config::dev_portable();
+        v1.apply("txcost_version", 1).unwrap();
+        let l1 = startup_txcost_line(&v1);
+        assert!(
+            l1.contains("txcost_version=1 id=txcost_v1_20261010 planned_leg=10600"),
+            "{l1}"
+        );
+        assert!(!l1.contains("WARNING"), "{l1}");
+        // An absent key (pre-T1 manifest / missing CHAMPION_CONFIG line) parses as v0: named, never silent.
+        let v0 = Config::from_str_over_default("").unwrap();
+        let l0 = startup_txcost_line(&v0);
+        assert!(
+            l0.contains("txcost_version=0 id=txcost_v0_legacy_p50"),
+            "{l0}"
+        );
+        assert!(
+            l0.contains("WARNING: paper_txcost_differs_from_builder"),
+            "{l0}"
+        );
+        assert!(
+            l0.contains("builder id=txcost_v1_20261010 planned_leg=10600"),
+            "{l0}"
+        );
     }
 }
