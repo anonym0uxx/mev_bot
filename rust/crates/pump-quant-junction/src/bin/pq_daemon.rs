@@ -3174,12 +3174,22 @@ fn main() -> ExitCode {
                     handle_stop_request, StopGate, HANDOFF_REQUEST_FILE,
                     PROTECTIVE_HANDOFF_ACK_FILE,
                 };
-                match handle_stop_request(
+                let gate = handle_stop_request(
                     &mut engine,
                     &mut model_stop_session,
                     std::path::Path::new(HANDOFF_REQUEST_FILE),
                     std::path::Path::new(PROTECTIVE_HANDOFF_ACK_FILE),
-                ) {
+                );
+                // The controlled shutdown persisted the held ledger (a new generation and decision clock). Seal the
+                // capture to it BEFORE the loop can exit: otherwise the durable ledger is ahead of the sealed capture
+                // and a restart from it refuses launch recovery (capture_seal_behind_restart).
+                capture_seal_if_new(
+                    &engine,
+                    &mut event_stream_writer,
+                    &mut capture_sealer,
+                    &mut capture_sealed_gen,
+                );
+                match gate {
                     StopGate::CompleteFlat => {
                         eprintln!("[pq-daemon] DAEMON_STOP accepted: flat and reconciled");
                         clean_stop_sentinel();
