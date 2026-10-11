@@ -226,14 +226,37 @@ pub struct HeldFeeUnresolved {
     pub mint: [u8; 32],
     /// Tokens the report proved executed.
     pub tokens: u64,
-    /// Reported price (1e9 fixed point), the only other reported number.
+    /// REPORTED EVIDENCE: the reporter's fill price, lamports per raw token in 1e9 fixed point. It is what the
+    /// report SAID, not a proven executed gross: `tokens x price_fp` is an ESTIMATE of gross, never exact gross.
     pub price_fp: u64,
-    /// Modelled gross the legacy path booked (NOT reported).
-    pub estimate_gross_lamports: u64,
-    /// Modelled all-in fee the legacy path booked (NOT reported).
-    pub estimate_fee_lamports: u64,
+    /// FEES F7: MODELLED gross for this tranche (NOT reported). `None` = UNKNOWN (the model could not price it); an
+    /// unknown is never an ordinary 0.
+    pub estimate_gross_lamports: Option<u64>,
+    /// FEES F7: MODELLED all-in fee (NOT reported). `None` = UNKNOWN, never an ordinary 0.
+    pub estimate_fee_lamports: Option<u64>,
     /// Name of the model that produced the estimate.
     pub basis: String,
+}
+
+impl HeldFeeUnresolved {
+    /// FEES F7: the estimated cash this legacy fill would have returned (`gross - fee`), held in the named
+    /// `legacy_estimated_unsettled_lamports` bucket and NEVER in realized cash. `None` when either part is unknown.
+    #[must_use]
+    pub fn estimated_unsettled_lamports(&self) -> Option<i128> {
+        Some(i128::from(self.estimate_gross_lamports?) - i128::from(self.estimate_fee_lamports?))
+    }
+}
+
+/// FEES F7: what `HeldFeeUnresolved::price_fp` means (written next to every record so a reader cannot mistake it).
+pub const LEGACY_PRICE_MEANING: &str =
+    "reported_fill_price_lamports_per_raw_token_1e9_fp:not_proven_executed_gross;tokens_x_price_is_an_estimate";
+
+/// An optional u64 field: absent or `null` = unknown (`None`), a number = `Some`, anything else untrusted.
+fn opt_u(x: &Value, k: &'static str) -> Result<Option<u64>, LedgerReadError> {
+    match &x[k] {
+        Value::Null => Ok(None),
+        v => v.as_u64().map(Some).ok_or(LedgerReadError::Untrusted(k)),
+    }
 }
 
 /// The whole durable record.
@@ -369,6 +392,7 @@ impl HeldLedger {
                                 "order_id": f.order_id, "mint": hex(&f.mint), "tokens": f.tokens,
                                 "price_fp": f.price_fp, "estimate_gross_lamports": f.estimate_gross_lamports,
                                 "estimate_fee_lamports": f.estimate_fee_lamports, "basis": f.basis,
+                                "price_meaning": LEGACY_PRICE_MEANING,
                             })
                         })
                         .collect(),
@@ -730,8 +754,8 @@ impl HeldLedger {
                         .ok_or(bad("fee_unresolved.mint"))?,
                     tokens: u(f, "tokens")?,
                     price_fp: u(f, "price_fp")?,
-                    estimate_gross_lamports: u(f, "estimate_gross_lamports")?,
-                    estimate_fee_lamports: u(f, "estimate_fee_lamports")?,
+                    estimate_gross_lamports: opt_u(f, "estimate_gross_lamports")?,
+                    estimate_fee_lamports: opt_u(f, "estimate_fee_lamports")?,
                     basis: f["basis"]
                         .as_str()
                         .ok_or(bad("fee_unresolved.basis"))?

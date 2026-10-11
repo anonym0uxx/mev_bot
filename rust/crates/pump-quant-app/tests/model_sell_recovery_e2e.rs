@@ -3846,7 +3846,7 @@ fn r6_e5_executed_totals_book_exactly_once_across_restart_and_duplicates() {
         (u[0].order_id, u[0].tokens, u[0].price_fp),
         (id, t3, 22_000)
     );
-    assert!(u[0].estimate_fee_lamports > 0);
+    assert!(u[0].estimate_fee_lamports.is_some_and(|f| f > 0));
     let last = *e2.model_mgmt_fills().last().unwrap();
     assert_eq!((last.gross_lamports, last.fee_lamports), (0, 0));
     let r3 = e2.model_accounting_view(&MINT).realized;

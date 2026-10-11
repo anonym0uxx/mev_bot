@@ -527,7 +527,10 @@ fn f4_simulated_fill_refuses_without_authoritative_fees_but_an_executed_fill_sti
         (u[0].order_id, u[0].tokens, u[0].price_fp),
         (id, intended, 22_000)
     );
-    assert!(u[0].estimate_fee_lamports > 0 && u[0].basis.starts_with("legacy_price_only:"));
+    assert!(
+        u[0].estimate_fee_lamports.is_some_and(|f| f > 0)
+            && u[0].basis.starts_with("legacy_price_only:")
+    );
     assert_eq!(
         (
             r.e.model_mgmt_fills()[0].gross_lamports,

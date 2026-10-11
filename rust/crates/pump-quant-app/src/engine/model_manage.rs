@@ -1030,11 +1030,29 @@ impl Engine {
 
     /// SCOPE_FEES_R6 E4: enable the explicit, labelled LEGACY replay-compatibility mode in which a price-only
     /// management report (no gross, no fee) still books, its fee modelled and recorded as unresolved. Off by default.
+    /// FEES F7: only inventory and the sold cost basis are booked; the modelled proceeds are held in the
+    /// `legacy_estimated_unsettled_lamports` bucket, never realized cash. No config key or CLI reaches this setter
+    /// from `pq_daemon` (pinned by a source test): it is a test / offline-replay switch only.
     pub fn model_set_legacy_price_only_reports(&mut self, on: bool) {
         self.model_legacy_price_only = on;
         if on {
             self.mrep("mode:legacy_price_only_reports");
         }
+    }
+
+    /// FEES F7: the named LEGACY bucket — the modelled proceeds (estimated gross - modelled fee) of every legacy
+    /// price-only fill, summed over records whose estimate is known, plus the count whose estimate is UNKNOWN.
+    /// Never part of realized cash, balance or free cash; durable because it is derived from `fee_unresolved`.
+    #[must_use]
+    pub fn model_legacy_estimated_unsettled_lamports(&self) -> (i128, usize) {
+        self.model_fee_unresolved
+            .iter()
+            .fold((0, 0), |(sum, unknown), f| {
+                match f.estimated_unsettled_lamports() {
+                    Some(v) => (sum + v, unknown),
+                    None => (sum, unknown + 1),
+                }
+            })
     }
 
     /// SCOPE_FEES_R6 E3: executed fills whose venue fee was not evidenced (durable; estimates by name).
@@ -1136,7 +1154,7 @@ impl Engine {
                 .sell_tokens_settled(&mint, tokens, price_fp, reason, gf),
             None => self.positions.sell_tokens(&mint, tokens, price_fp, reason),
         };
-        let exit = match sold {
+        let mut exit = match sold {
             Ok(e) => e,
             Err(r) => {
                 // Named, nothing substituted, order dropped so the next cadence decides afresh.
@@ -1165,11 +1183,21 @@ impl Engine {
                     mint,
                     tokens,
                     price_fp,
-                    estimate_gross_lamports: legacy_estimate.map_or(0, |e| e.0),
-                    estimate_fee_lamports: legacy_estimate.map_or(0, |e| e.1),
+                    estimate_gross_lamports: legacy_estimate.map(|e| e.0),
+                    estimate_fee_lamports: legacy_estimate.map(|e| e.1),
                     basis: "legacy_price_only:cost_model_venue_fee_bps_per_leg+fixed_leg"
                         .to_string(),
                 });
+            // FEES F7 (S3): the modelled proceeds (estimated gross - modelled fee) do NOT enter realized cash. The
+            // inventory movement IS booked (the report evidences the tokens left), so the sold share of the cost
+            // basis leaves the books as a realized cost; the estimate lives only in the named, durable
+            // `legacy_estimated_unsettled_lamports` bucket (derived from `fee_unresolved`), never spendable.
+            // `sell_tokens` computed its net from exactly the pure function captured above, so subtracting the
+            // estimate leaves `-(pro-rata cost)`.
+            if let Some((g, f)) = legacy_estimate {
+                exit.net_lamports -= i128::from(g) - i128::from(f);
+                self.mrep("fee:legacy_estimate_held_unsettled");
+            }
         }
         // Partial sell: free the sold share of the committed entry cost so cash reflects proceeds.
         if !exit.closed && inv_before > 0 {
@@ -1468,6 +1496,7 @@ impl Engine {
             attribution_realized: self.open_lane.get(mint).map(|a| a.realized_acc),
             remaining_cost_basis: self.positions.remaining_cost_basis(mint),
             inventory_tokens: self.positions.inventory_tokens(mint),
+            legacy_estimated_unsettled_lamports: self.model_legacy_estimated_unsettled_lamports().0,
         }
     }
 
@@ -1635,6 +1664,9 @@ pub struct ModelAccountingView {
     pub remaining_cost_basis: Option<u64>,
     /// Reconciled inventory.
     pub inventory_tokens: Option<u64>,
+    /// FEES F7: legacy price-only estimated proceeds held OUTSIDE cash (see
+    /// `Engine::model_legacy_estimated_unsettled_lamports`); never in `realized`/`balance`/`free`.
+    pub legacy_estimated_unsettled_lamports: i128,
 }
 
 /// Executable state an ADD is planned against.
