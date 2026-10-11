@@ -1,0 +1,3 @@
+{'tape_rows': 17677, 'event_rows': 20189, 'common': 16773, 'tape_only': 904, 'event_only': 3416, 'trader_same': 16688, 'trader_differs': 85}
+[('8DnMWfeu', ['ARu4n5mF'], 'net_position'), ('8DnMWfeu', ['ARu4n5mF'], 'net_position'), ('o71QmB3R', ['ARu4n5mF'], 'net_position')]
+Counter({'instruction_accounts': 26516, 'net_position': 889})

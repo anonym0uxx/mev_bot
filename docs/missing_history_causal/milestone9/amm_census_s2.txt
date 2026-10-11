@@ -1,0 +1,4 @@
+PASS1 txs_with_amm_program=464979 swap_txs=358458 emitted=330480 rejects=4631 dup=0 no_balances_txs=0 not_verified_success_txs=50638
+REASONS {"no_sign_pattern_anywhere": 4553, "wide_conservation_failed": 78}
+POP {"no_sign_pattern_anywhere|no_usdc_leg": 3532, "no_sign_pattern_anywhere|usdc_leg_in_tx": 1021, "wide_conservation_failed|no_usdc_leg": 75, "wide_conservation_failed|usdc_leg_in_tx": 3}
+PASS2 (identical redelivery) new_emitted=0 duplicates_added=330480 rejects_added=4631

@@ -1,0 +1,111 @@
+{
+ "examples_before_wrong": [
+  [
+   "GrEpzw",
+   1788975600000,
+   "before",
+   1,
+   "ref",
+   11,
+   "after",
+   11
+  ],
+  [
+   "5w6dfu",
+   1788975600000,
+   "before",
+   2,
+   "ref",
+   16,
+   "after",
+   16
+  ],
+  [
+   "6ooVqt",
+   1788975600000,
+   "before",
+   4,
+   "ref",
+   42,
+   "after",
+   42
+  ],
+  [
+   "9UkQpL",
+   1788975600000,
+   "before",
+   1,
+   "ref",
+   7,
+   "after",
+   7
+  ]
+ ],
+ "groups": {
+  "flagged": {
+   "after:all_exact": 110,
+   "after:bot_uniform:exact": 110,
+   "after:cu_p50:exact": 110,
+   "after:entrants_300s:exact": 110,
+   "after:entrants_300s==corpus_tape": 11,
+   "after:entrants_60s:exact": 110,
+   "after:entrants_60s==corpus_tape": 41,
+   "after:fee_p90:exact": 110,
+   "after:net_flow:exact": 110,
+   "after:served": 110,
+   "before:all_exact": 0,
+   "before:bot_uniform:exact": 10,
+   "before:cu_p50:exact": 3,
+   "before:entrants_300s:exact": 0,
+   "before:entrants_60s:exact": 25,
+   "before:fee_p90:exact": 67,
+   "before:net_flow:exact": 0,
+   "before:no_prior_flow": 9,
+   "before:served": 101,
+   "corpus_tape:served": 110,
+   "windows": 110
+  },
+  "unflagged": {
+   "after:all_exact": 1663,
+   "after:bot_uniform:exact": 1663,
+   "after:cu_p50:exact": 1663,
+   "after:entrants_300s:exact": 1663,
+   "after:entrants_300s==corpus_tape": 618,
+   "after:entrants_60s:exact": 1663,
+   "after:entrants_60s==corpus_tape": 1063,
+   "after:fee_p90:exact": 1663,
+   "after:net_flow:exact": 1663,
+   "after:served": 1663,
+   "before:all_exact": 11,
+   "before:bot_uniform:exact": 116,
+   "before:cu_p50:exact": 46,
+   "before:entrants_300s:exact": 36,
+   "before:entrants_60s:exact": 132,
+   "before:fee_p90:exact": 82,
+   "before:net_flow:exact": 11,
+   "before:no_prior_flow": 1296,
+   "before:served": 367,
+   "corpus_tape:served": 1663,
+   "windows": 1663
+  }
+ },
+ "harness_summary": {
+  "clocks": 1863,
+  "event_duplicates": 0,
+  "event_incomplete_tx": 2913,
+  "event_trades": 36569,
+  "ingest_after": {
+   "Accepted": 36569
+  },
+  "ingest_before": {
+   "Accepted": 17284
+  },
+  "mints_with_clocks": 307,
+  "snapshot_trades": 17284,
+  "snapshot_unresolved_curve": 374
+ },
+ "max_recv_ms": 1788976428190,
+ "min_recv_ms": 1788975568357,
+ "session": "20260909_173928_000596",
+ "slice": "parts 0000-0019"
+}

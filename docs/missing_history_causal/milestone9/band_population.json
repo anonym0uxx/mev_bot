@@ -1,0 +1,317 @@
+{
+ "fields": [
+  "buy_count",
+  "sell_count",
+  "n_prior_trades",
+  "unique_traders",
+  "net_flow_lamports",
+  "buy_volume_lamports",
+  "sell_volume_lamports"
+ ],
+ "match_by_condition": {
+  "F": {
+   "buy_count": [
+    49,
+    49
+   ],
+   "sell_count": [
+    49,
+    49
+   ],
+   "n_prior_trades": [
+    49,
+    49
+   ],
+   "unique_traders": [
+    49,
+    49
+   ],
+   "net_flow_lamports": [
+    49,
+    49
+   ],
+   "buy_volume_lamports": [
+    49,
+    49
+   ],
+   "sell_volume_lamports": [
+    49,
+    49
+   ]
+  },
+  "N": {
+   "buy_count": [
+    12,
+    49
+   ],
+   "sell_count": [
+    24,
+    49
+   ],
+   "n_prior_trades": [
+    12,
+    49
+   ],
+   "unique_traders": [
+    12,
+    49
+   ],
+   "net_flow_lamports": [
+    12,
+    49
+   ],
+   "buy_volume_lamports": [
+    12,
+    49
+   ],
+   "sell_volume_lamports": [
+    24,
+    49
+   ]
+  },
+  "C1": {
+   "buy_count": [
+    36,
+    49
+   ],
+   "sell_count": [
+    32,
+    49
+   ],
+   "n_prior_trades": [
+    31,
+    49
+   ],
+   "unique_traders": [
+    33,
+    49
+   ],
+   "net_flow_lamports": [
+    31,
+    49
+   ],
+   "buy_volume_lamports": [
+    33,
+    49
+   ],
+   "sell_volume_lamports": [
+    32,
+    49
+   ]
+  },
+  "C2": {
+   "buy_count": [
+    14,
+    49
+   ],
+   "sell_count": [
+    31,
+    49
+   ],
+   "n_prior_trades": [
+    14,
+    49
+   ],
+   "unique_traders": [
+    14,
+    49
+   ],
+   "net_flow_lamports": [
+    14,
+    49
+   ],
+   "buy_volume_lamports": [
+    14,
+    49
+   ],
+   "sell_volume_lamports": [
+    31,
+    49
+   ]
+  },
+  "PF": {
+   "buy_count": [
+    49,
+    49
+   ],
+   "sell_count": [
+    36,
+    49
+   ],
+   "n_prior_trades": [
+    36,
+    49
+   ],
+   "unique_traders": [
+    49,
+    49
+   ],
+   "net_flow_lamports": [
+    36,
+    49
+   ],
+   "buy_volume_lamports": [
+    49,
+    49
+   ],
+   "sell_volume_lamports": [
+    36,
+    49
+   ]
+  },
+  "PN": {
+   "buy_count": [
+    12,
+    49
+   ],
+   "sell_count": [
+    24,
+    49
+   ],
+   "n_prior_trades": [
+    12,
+    49
+   ],
+   "unique_traders": [
+    12,
+    49
+   ],
+   "net_flow_lamports": [
+    12,
+    49
+   ],
+   "buy_volume_lamports": [
+    12,
+    49
+   ],
+   "sell_volume_lamports": [
+    24,
+    49
+   ]
+  }
+ },
+ "per_mint_whole_run_band_drop": [
+  [
+   "51nHMcvh",
+   "S1",
+   5572,
+   77,
+   0.0138
+  ],
+  [
+   "9Ww6Y27k",
+   "S1",
+   225,
+   5,
+   0.0222
+  ],
+  [
+   "h3rE7S4b",
+   "S1",
+   756,
+   3,
+   0.004
+  ],
+  [
+   "HW19taHD",
+   "S1",
+   727,
+   4,
+   0.0055
+  ],
+  [
+   "3G6PAF44",
+   "S2",
+   374,
+   3,
+   0.008
+  ],
+  [
+   "HVcoQEjR",
+   "S2",
+   744,
+   3,
+   0.004
+  ],
+  [
+   "B2sbKzTX",
+   "S2",
+   526,
+   17,
+   0.0323
+  ],
+  [
+   "BHprQ1wT",
+   "S2",
+   620,
+   11,
+   0.0177
+  ]
+ ],
+ "per_mint_total_match": {
+  "51nHMcvh": {
+   "F": "98/98",
+   "N": "2/98",
+   "C1": "16/98",
+   "C2": "7/98",
+   "PF": "46/98",
+   "PN": "2/98"
+  },
+  "9Ww6Y27k": {
+   "F": "35/35",
+   "N": "30/35",
+   "C1": "35/35",
+   "C2": "35/35",
+   "PF": "35/35",
+   "PN": "30/35"
+  },
+  "h3rE7S4b": {
+   "F": "35/35",
+   "N": "28/35",
+   "C1": "2/35",
+   "C2": "28/35",
+   "PF": "35/35",
+   "PN": "28/35"
+  },
+  "HW19taHD": {
+   "F": "35/35",
+   "N": "0/35",
+   "C1": "35/35",
+   "C2": "10/35",
+   "PF": "35/35",
+   "PN": "0/35"
+  },
+  "3G6PAF44": {
+   "F": "35/35",
+   "N": "11/35",
+   "C1": "35/35",
+   "C2": "15/35",
+   "PF": "35/35",
+   "PN": "11/35"
+  },
+  "HVcoQEjR": {
+   "F": "35/35",
+   "N": "10/35",
+   "C1": "35/35",
+   "C2": "10/35",
+   "PF": "35/35",
+   "PN": "10/35"
+  },
+  "B2sbKzTX": {
+   "F": "35/35",
+   "N": "2/35",
+   "C1": "35/35",
+   "C2": "2/35",
+   "PF": "35/35",
+   "PN": "2/35"
+  },
+  "BHprQ1wT": {
+   "F": "35/35",
+   "N": "25/35",
+   "C1": "35/35",
+   "C2": "25/35",
+   "PF": "35/35",
+   "PN": "25/35"
+  }
+ }
+}

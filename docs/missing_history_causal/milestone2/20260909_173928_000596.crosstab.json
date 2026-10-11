@@ -1,0 +1,10 @@
+{
+ "event_only|nonzero|NOT_in_corpus_DISC": 4815,
+ "event_only|nonzero|corpus_covered_ix": 1430,
+ "event_only|zero_reserve|NOT_in_corpus_DISC": 279,
+ "event_only|zero_reserve|corpus_covered_ix": 2305,
+ "matched|nonzero|corpus_covered_ix": 30195,
+ "matched|zero_reserve|corpus_covered_ix": 329,
+ "tape_only|nonzero|corpus_covered_ix": 1300,
+ "trader_mismatch|nonzero|corpus_covered_ix": 129
+}

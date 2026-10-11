@@ -29,8 +29,138 @@ pub struct ReserveSnapshot {
     pub virtual_sol: u64,
     /// Virtual token reserves (base units) at the last observation.
     pub virtual_token: u64,
+    /// Real SOL reserves (lamports) at the last observation. Only the mode-aware classifier reads it
+    /// (a Mayhem curve's virtual offset moves between trades; its real reserves do not move on a reset).
+    pub real_sol: u64,
+    /// Real token reserves (base units) at the last observation.
+    pub real_token: u64,
     /// Slot at which the snapshot was taken.
     pub slot: u64,
+}
+
+impl ReserveSnapshot {
+    /// The snapshot of a decoded curve at `slot` (all four reserves).
+    #[must_use]
+    pub fn of(curve: &PumpCurve, slot: u64) -> Self {
+        Self {
+            virtual_sol: curve.virtual_sol,
+            virtual_token: curve.virtual_token,
+            real_sol: curve.real_sol,
+            real_token: curve.real_token,
+            slot,
+        }
+    }
+}
+
+/// The curve mode a reserve delta is interpreted under (proc/OFFSET_v4_REPORT.md §1).
+///
+/// The virtual-delta derivation assumes a constant virtual offset (`vsol - real_sol` = 30 SOL). That was
+/// observed ONLY on non-Mayhem, SOL-quoted, 151-byte curves (`Ordinary`). A Mayhem curve's virtual offset
+/// moves between trades, and any other account is `Unknown`. Neither inherits the derivation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeltaMode {
+    /// `classify_pump_curve` = Ordinary: the legacy virtual-delta derivation applies.
+    Ordinary,
+    /// `classify_pump_curve` = Mayhem: no trade is derived from its reserves.
+    Mayhem,
+    /// Unsupported / undecodable account: no trade is derived (fail-closed).
+    Unknown,
+}
+
+impl DeltaMode {
+    /// Classify the raw account bytes with the protocol's verified classifier.
+    #[must_use]
+    pub fn of_account(account_data: &[u8]) -> Self {
+        use pump_quant_protocol::decode::{classify_pump_curve, PumpCurveClass};
+        match classify_pump_curve(account_data) {
+            PumpCurveClass::Ordinary { .. } => DeltaMode::Ordinary,
+            PumpCurveClass::Mayhem { .. } => DeltaMode::Mayhem,
+            PumpCurveClass::Unsupported(_) => DeltaMode::Unknown,
+        }
+    }
+
+    /// Named reason used in counters for a refused (non-Ordinary) derivation.
+    #[must_use]
+    pub const fn refusal(self) -> &'static str {
+        match self {
+            DeltaMode::Ordinary => "ordinary",
+            DeltaMode::Mayhem => "delta_unsupported:mayhem_mode",
+            DeltaMode::Unknown => "delta_unsupported:curve_mode_unknown",
+        }
+    }
+}
+
+/// Mode-aware [`derive_market_trade_from_delta`]: only an `Ordinary` curve derives a trade; a Mayhem or
+/// Unknown curve derives NOTHING (its miss is classified by [`classify_delta_miss_for_mode`]).
+#[must_use]
+pub fn derive_market_trade_from_delta_for_mode(
+    mint_bytes: &[u8; 32],
+    previous: Option<ReserveSnapshot>,
+    current: &PumpCurve,
+    slot: u64,
+    is_live: bool,
+    recv_unix_ms: Option<i64>,
+    mode: DeltaMode,
+) -> Option<ProvenancedEvent> {
+    match mode {
+        DeltaMode::Ordinary => derive_market_trade_from_delta(
+            mint_bytes,
+            previous,
+            current,
+            slot,
+            is_live,
+            recv_unix_ms,
+        ),
+        DeltaMode::Mayhem | DeltaMode::Unknown => None,
+    }
+}
+
+/// Mode-aware [`classify_delta_miss`].
+///
+/// * `Ordinary` -> exactly [`classify_delta_miss`].
+/// * `Mayhem`   -> real reserves unchanged = `NoPrint` (an offset-only reset: nothing traded, NOT a possible
+///   missing trade); real reserves moved = `ModeUnsupported` (a trade happened, not derived from Mayhem reserves).
+/// * `Unknown`  -> nothing moved = `NoPrint`; anything moved = `ModeUnsupported` (fail-closed).
+#[must_use]
+pub fn classify_delta_miss_for_mode(
+    prev: Option<&ReserveSnapshot>,
+    current: &PumpCurve,
+    slot: u64,
+    mode: DeltaMode,
+) -> DeltaMiss {
+    let Some(p) = prev else {
+        return DeltaMiss::NoPrint;
+    };
+    if slot < p.slot {
+        return DeltaMiss::StaleSnapshot;
+    }
+    let real_moved = current.real_sol != p.real_sol || current.real_token != p.real_token;
+    let virt_moved =
+        current.virtual_sol != p.virtual_sol || current.virtual_token != p.virtual_token;
+    match mode {
+        DeltaMode::Ordinary => classify_delta_miss(prev, current, slot),
+        DeltaMode::Mayhem if !real_moved => DeltaMiss::NoPrint,
+        DeltaMode::Unknown if !real_moved && !virt_moved => DeltaMiss::NoPrint,
+        DeltaMode::Mayhem | DeltaMode::Unknown => DeltaMiss::ModeUnsupported,
+    }
+}
+
+/// Mode-aware [`note_curve_snapshot_outcome`] (the daemon's clocked account path).
+#[must_use]
+pub fn note_curve_snapshot_outcome_for_mode(
+    engine: &mut Engine,
+    mint: [u8; 32],
+    prev: Option<&ReserveSnapshot>,
+    current: &PumpCurve,
+    slot: u64,
+    recv_unix_ms: Option<i64>,
+    mode: DeltaMode,
+) -> DeltaMiss {
+    let miss = classify_delta_miss_for_mode(prev, current, slot, mode);
+    if let (Some(kind), Some(ms)) = (miss.missing_kind(), recv_unix_ms) {
+        engine.note_missing_observation(mint, ms, kind, format!("slot:{slot}"));
+    }
+    miss
 }
 
 /// The derivation result: either a trade was observed or the reserves
@@ -164,6 +294,8 @@ pub fn derive_market_trade_from_delta(
         cu_consumed: None,
         // Decoded from a pump.fun `BondingCurve` account, so the venue is the curve by construction.
         venue: Some(pump_quant_app::event::TradeVenue::PumpFun),
+        event_id: None,
+        feature: None,
     };
 
     Some(ProvenancedEvent {
@@ -208,75 +340,92 @@ pub fn delta_representable(prev: Option<&ReserveSnapshot>, current: &PumpCurve) 
 ///   instant is missing a print and must not be served as complete or as a quiet market.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DeltaMiss {
-    /// No print existed to drop.
+    /// No print existed to drop (first sighting, or nothing moved).
     NoPrint,
-    /// A print existed and was dropped upstream of the flow reducer.
+    /// The snapshot is OLDER (lower slot) than the one it is diffed against. The delta between
+    /// them is meaningless in either direction; it proves nothing about a lost trade. Counted,
+    /// never gated.
+    StaleSnapshot,
+    /// A delta outside `i64`: the account decoded to non-physical reserves. No trade is shown to
+    /// exist or to be absent: UNKNOWN. Gated fail-closed (see `MissingKind::InvalidObservation`).
+    InvalidObservation,
+    /// Both reserves moved by representable amounts but the pair is not a derivable swap
+    /// (same-sign move, or a zero token side): a swap-sized move the derivation refused, i.e. a
+    /// POSSIBLE missing trade. Not CONFIRMED: only an independent transaction record can confirm.
     UpstreamDropped,
+    /// The curve is NOT Ordinary (Mayhem, or mode Unknown) and its reserves moved by more than an
+    /// offset-only reset: a print happened that the constant-offset derivation must not interpret
+    /// (proc/OFFSET_v4_REPORT.md §1). Refused by name, and recorded fail-closed as a possible missing
+    /// trade (the flow window is missing that print). An offset-only Mayhem reset is `NoPrint`, not this.
+    ModeUnsupported,
 }
 
-/// Classify a `None` from [`derive_market_trade_from_delta`], so a caller can tell an
-/// ordinary no-trade observation from a dropped print.
+impl DeltaMiss {
+    /// The missing-history kind this outcome records, or `None` when nothing is recorded.
+    #[must_use]
+    pub fn missing_kind(self) -> Option<pump_quant_app::decision_join::MissingKind> {
+        use pump_quant_app::decision_join::MissingKind;
+        match self {
+            DeltaMiss::NoPrint | DeltaMiss::StaleSnapshot => None,
+            DeltaMiss::InvalidObservation => Some(MissingKind::InvalidObservation),
+            DeltaMiss::UpstreamDropped | DeltaMiss::ModeUnsupported => {
+                Some(MissingKind::PossibleTrade)
+            }
+        }
+    }
+}
+
+/// Classify a `None` from [`derive_market_trade_from_delta`]. Mirrors the derivation's rejections
+/// exactly (pinned by a test); the final arm fails CLOSED.
 ///
-/// This mirrors the derivation's rejections exactly and is only meaningful when the
-/// derivation returned `None` (the consistency is pinned by a test below). A valid print
-/// never reaches the fall-through: the final arm exists so the classifier fails *closed*
-/// rather than misreading an unclassified rejection as an ordinary no-trade.
+/// COVERAGE NOTE (checked, not assumed): the instruction-print path for the same transaction is
+/// NOT an authoritative substitute. It carries trader/side/fee/CU/slot but `price_fp = 0`, no
+/// quote leg on sells and no post-trade liquidity, and the ingest refuses it as `NoPrice`. So a
+/// refused reserve delta is never marked "covered" by the presence of an instruction print.
 #[must_use]
-pub fn classify_delta_miss(prev: Option<&ReserveSnapshot>, current: &PumpCurve) -> DeltaMiss {
+pub fn classify_delta_miss(
+    prev: Option<&ReserveSnapshot>,
+    current: &PumpCurve,
+    slot: u64,
+) -> DeltaMiss {
     let Some(p) = prev else {
-        return DeltaMiss::NoPrint; // first sighting: no print existed
+        return DeltaMiss::NoPrint;
     };
-    // Same widened arithmetic as the derivation: only a delta that cannot fit `i64`
-    // is out of range, never a merely large reserve.
+    if slot < p.slot {
+        return DeltaMiss::StaleSnapshot;
+    }
     let delta_vsol = i128::from(current.virtual_sol).checked_sub(i128::from(p.virtual_sol));
     let delta_vtoken = i128::from(current.virtual_token).checked_sub(i128::from(p.virtual_token));
     let (Some(dv), Some(dt)) = (
         delta_vsol.and_then(|d| i64::try_from(d).ok()),
         delta_vtoken.and_then(|d| i64::try_from(d).ok()),
     ) else {
-        return DeltaMiss::UpstreamDropped; // delta outside i64
+        return DeltaMiss::InvalidObservation;
     };
     if dv == 0 || dt == 0 {
-        return DeltaMiss::NoPrint; // nothing moved
+        return DeltaMiss::NoPrint;
     }
-    if (dv > 0) == (dt > 0) {
-        return DeltaMiss::UpstreamDropped; // self-inconsistent curve
-    }
-    if current.virtual_token == 0 {
-        return DeltaMiss::UpstreamDropped; // degenerate post-trade reserves
-    }
-    // Either a valid print (the classifier was misused) or a rejection not enumerated
-    // above; both fail closed rather than being read as an ordinary no-trade.
+    // Remaining rejections: same-sign move, zero token side, or an unenumerated one: all fail
+    // closed as a POSSIBLE missing trade.
     DeltaMiss::UpstreamDropped
 }
 
-/// The clocked LaserStream `accountSubscribe` path's drop-classification step, extracted so
-/// the daemon and its integration test share ONE body.
-///
-/// Called exactly when [`derive_market_trade_from_delta`] returned `None` for a reserve
-/// snapshot pair. It classifies the miss and, when the refusal was an
-/// [`DeltaMiss::UpstreamDropped`] that carries a wire receive time, records the drop on the
-/// engine via [`Engine::note_flow_upstream_drop`] so the decision join refuses any 300 s flow
-/// window that contains it (by name, never as a quiet market). Returns the classification so
-/// the caller keeps its own accounting (the daemon still counts `delta_no_trade` /
-/// `delta_out_of_range`).
-///
-/// A `recv_unix_ms` of `None` is a drop with no known receive instant: the engine call is
-/// deliberately skipped (no fabricated time, no silent fallback) — the classification is
-/// still returned so the caller can count it.
+/// The clocked LaserStream `accountSubscribe` path's classification step, shared by the daemon
+/// and its integration tests. Called when [`derive_market_trade_from_delta`] returned `None`.
+/// A `recv_unix_ms` of `None` records nothing (no fabricated time); the classification is still
+/// returned so the caller can count it.
 #[must_use]
 pub fn note_curve_snapshot_outcome(
     engine: &mut Engine,
     mint: [u8; 32],
     prev: Option<&ReserveSnapshot>,
     current: &PumpCurve,
+    slot: u64,
     recv_unix_ms: Option<i64>,
 ) -> DeltaMiss {
-    let miss = classify_delta_miss(prev, current);
-    if miss == DeltaMiss::UpstreamDropped {
-        if let Some(ms) = recv_unix_ms {
-            engine.note_flow_upstream_drop(mint, ms);
-        }
+    let miss = classify_delta_miss(prev, current, slot);
+    if let (Some(kind), Some(ms)) = (miss.missing_kind(), recv_unix_ms) {
+        engine.note_missing_observation(mint, ms, kind, format!("slot:{slot}"));
     }
     miss
 }
@@ -302,6 +451,8 @@ mod tests {
         let prev = ReserveSnapshot {
             virtual_sol: 30_000_000_000,
             virtual_token: 1_000_000_000,
+            real_sol: 0,
+            real_token: 0,
             slot: 900,
         };
         // Ordinary no-trade: a small, representable delta.
@@ -326,6 +477,8 @@ mod tests {
         let prev = ReserveSnapshot {
             virtual_sol: 30_000_000_000,
             virtual_token: 1_000_000_000,
+            real_sol: 0,
+            real_token: 0,
             slot: 900,
         };
         let cur = make_curve(u64::MAX, 1_000_000_000);
@@ -344,6 +497,8 @@ mod tests {
         let prev = ReserveSnapshot {
             virtual_sol: big,
             virtual_token: big + 5000,
+            real_sol: 0,
+            real_token: 0,
             slot: 900,
         };
         // Buy: vsol +500, vtoken -10 (both reserves still > i64::MAX)
@@ -370,6 +525,8 @@ mod tests {
         let prev = ReserveSnapshot {
             virtual_sol: big + 500,
             virtual_token: big + 4990,
+            real_sol: 0,
+            real_token: 0,
             slot: 900,
         };
         // Sell: vsol -500, vtoken +10
@@ -412,6 +569,8 @@ mod tests {
         let prev = ReserveSnapshot {
             virtual_sol: 30_000_000_000,
             virtual_token: 1_000_000_000,
+            real_sol: 0,
+            real_token: 0,
             slot: 900,
         };
         // Buy: vsol up, vtoken down
@@ -447,6 +606,8 @@ mod tests {
         let prev = ReserveSnapshot {
             virtual_sol: 35_000_000_000,
             virtual_token: 900_000_000,
+            real_sol: 0,
+            real_token: 0,
             slot: 900,
         };
         // Sell: vsol down, vtoken up
@@ -468,6 +629,8 @@ mod tests {
         let prev = ReserveSnapshot {
             virtual_sol: 30_000_000_000,
             virtual_token: 1_000_000_000,
+            real_sol: 0,
+            real_token: 0,
             slot: 900,
         };
         // Same reserves — only the `complete` flag changed (migration)
@@ -482,6 +645,8 @@ mod tests {
         let prev = ReserveSnapshot {
             virtual_sol: 30_000_000_000,
             virtual_token: 1_000_000_000,
+            real_sol: 0,
+            real_token: 0,
             slot: 900,
         };
         // Both up — not a valid constant-product trade
@@ -502,6 +667,8 @@ mod tests {
         let prev = ReserveSnapshot {
             virtual_sol: 30_000_000_000,
             virtual_token: 1_000_000_000,
+            real_sol: 0,
+            real_token: 0,
             slot: 900,
         };
         // Buy: vsol=31, vtoken=990M → price = 31e9 * 1e9 / 990M
@@ -523,6 +690,8 @@ mod tests {
         let prev = ReserveSnapshot {
             virtual_sol: 30_000_000_000,
             virtual_token: 1_000_000_000,
+            real_sol: 0,
+            real_token: 0,
             slot: 900,
         };
         let curve = make_curve(31_000_000_000, 0);
@@ -531,49 +700,62 @@ mod tests {
         assert!(result.is_none());
     }
 
-    /// The classifier must agree with the derivation: an ordinary no-trade observation is
-    /// `NoPrint`, and a print that genuinely moved the curve but was refused is
-    /// `UpstreamDropped`.
+    /// Ordinary no-trade, invalid (unknown) observation, possible missing trade and an
+    /// out-of-order snapshot are four DIFFERENT outcomes.
     #[test]
-    fn classify_separates_dropped_prints_from_ordinary_no_trade() {
+    fn classify_separates_possible_trades_invalid_observations_and_ordinary_no_trade() {
         let prev = ReserveSnapshot {
             virtual_sol: 30_000_000_000,
             virtual_token: 1_000_000_000,
+            real_sol: 0,
+            real_token: 0,
             slot: 900,
         };
-        // Ordinary: first sighting, and reserves that did not move.
+        let c =
+            |p: Option<&ReserveSnapshot>, cur: &PumpCurve, slot| classify_delta_miss(p, cur, slot);
         assert_eq!(
-            classify_delta_miss(None, &make_curve(31_000_000_000, 1_000_000_000)),
+            c(None, &make_curve(31_000_000_000, 1_000_000_000), 901),
             DeltaMiss::NoPrint
         );
         assert_eq!(
-            classify_delta_miss(Some(&prev), &make_curve(30_000_000_000, 1_000_000_000)),
+            c(Some(&prev), &make_curve(30_000_000_000, 1_000_000_000), 901),
             DeltaMiss::NoPrint
         );
-        // Dropped: out-of-range delta.
+        // Non-physical reserves: UNKNOWN, not a possible trade.
         assert_eq!(
-            classify_delta_miss(Some(&prev), &make_curve(u64::MAX, 1_000_000_000)),
+            c(Some(&prev), &make_curve(u64::MAX, 1_000_000_000), 901),
+            DeltaMiss::InvalidObservation
+        );
+        // Same-sign move and zero token side: a swap-sized move the derivation refused.
+        assert_eq!(
+            c(Some(&prev), &make_curve(31_000_000_000, 1_100_000_000), 901),
             DeltaMiss::UpstreamDropped
         );
-        // Dropped: self-inconsistent curve (both reserves moved up).
         assert_eq!(
-            classify_delta_miss(Some(&prev), &make_curve(31_000_000_000, 1_100_000_000)),
+            c(Some(&prev), &make_curve(31_000_000_000, 0), 901),
             DeltaMiss::UpstreamDropped
         );
-        // Dropped: degenerate post-trade reserves (zero token side).
+        // An older snapshot proves nothing about a lost trade.
         assert_eq!(
-            classify_delta_miss(Some(&prev), &make_curve(31_000_000_000, 0)),
-            DeltaMiss::UpstreamDropped
+            c(Some(&prev), &make_curve(31_000_000_000, 1_100_000_000), 899),
+            DeltaMiss::StaleSnapshot
         );
+        // Mapping to what gets recorded.
+        assert_eq!(DeltaMiss::NoPrint.missing_kind(), None);
+        assert_eq!(DeltaMiss::StaleSnapshot.missing_kind(), None);
+        assert!(DeltaMiss::InvalidObservation.missing_kind().is_some());
+        assert!(DeltaMiss::UpstreamDropped.missing_kind().is_some());
     }
 
-    /// Pin the classifier against the derivation on every rejection: each fixture is a
-    /// `None` from the derivation, and the classifier's label matches what was lost.
+    /// Pin the classifier against the derivation: every rejection fixture is a `None` from the
+    /// derivation and is labelled as pinned.
     #[test]
     fn classifier_agrees_with_the_derivation_on_every_rejection() {
         let prev = ReserveSnapshot {
             virtual_sol: 30_000_000_000,
             virtual_token: 1_000_000_000,
+            real_sol: 0,
+            real_token: 0,
             slot: 900,
         };
         let cases: [(Option<ReserveSnapshot>, PumpCurve, DeltaMiss); 6] = [
@@ -595,7 +777,7 @@ mod tests {
             (
                 Some(prev),
                 make_curve(u64::MAX, 1_000_000_000),
-                DeltaMiss::UpstreamDropped,
+                DeltaMiss::InvalidObservation,
             ),
             (
                 Some(prev),
@@ -618,11 +800,7 @@ mod tests {
                 Some(1_700_000_000_000),
             );
             assert!(derived.is_none(), "fixture must be a rejection: {want:?}");
-            assert_eq!(
-                classify_delta_miss(p.as_ref(), &cur),
-                want,
-                "classifier disagreed on {want:?}"
-            );
+            assert_eq!(classify_delta_miss(p.as_ref(), &cur, 1000), want);
         }
     }
 }

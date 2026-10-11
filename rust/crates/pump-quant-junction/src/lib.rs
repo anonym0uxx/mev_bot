@@ -37,6 +37,9 @@ pub enum ProvenanceSource {
     /// latency, self-healing (SDK-internal `from_slot` resume). Primary
     /// canonical ingest lane per criterion 61.
     LaserStream,
+    /// A pump.fun curve trade decoded from a VERIFIED-successful transaction's `TradeEvent`
+    /// self-CPI (`curve_trade_events`). The sole owner of curve trade history when enabled.
+    LaserStreamTradeEvent,
     /// Helius LaserStream gRPC `accountSubscribe` — bonding-curve PDA snapshots
     /// via the same gRPC stream. Rev-30: replaces Helius WS accountSubscribe
     /// when LS is active (primary data source).
@@ -111,12 +114,21 @@ pub struct OverflowStats {
 
 pub mod async_sink;
 pub mod autonomous_bridge;
+pub mod builder_txcost;
+pub mod capture_rehydrate;
 #[cfg(test)]
 mod chaos_tests;
+pub mod corpus_rows;
+pub mod curve_binding;
+pub mod curve_trade_events;
 pub mod decode;
+pub mod disk_budget;
+pub mod endpoint_retry;
 pub mod engine_replay; // Phase 3: config-driven engine re-simulation
+pub mod event_codec;
 pub mod event_stream;
 pub mod laserstream;
+pub mod launch_bootstrap;
 pub mod layout_fixtures;
 pub mod live_adapters;
 pub mod memory_bank;
@@ -125,8 +137,10 @@ pub mod narrative_lexicon;
 pub mod outbound;
 pub mod pumpportal;
 pub mod queue;
+pub mod report_inbox;
 pub mod reserve_delta;
 pub mod state_fetch;
+pub mod stream_recovery;
 pub mod tape_export;
 pub mod trade_join;
 pub mod trade_journal;

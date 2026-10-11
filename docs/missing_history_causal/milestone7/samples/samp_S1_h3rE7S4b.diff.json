@@ -1,0 +1,163 @@
+[
+ {
+  "t": 1788965712172,
+  "split": "train",
+  "n_fields": 61,
+  "n_diff": 0,
+  "identical_lines": 21,
+  "total_lines": 21,
+  "diffs": []
+ },
+ {
+  "t": 1788965742172,
+  "split": "train",
+  "n_fields": 61,
+  "n_diff": 0,
+  "identical_lines": 21,
+  "total_lines": 21,
+  "diffs": []
+ },
+ {
+  "t": 1788965772172,
+  "split": "train",
+  "n_fields": 61,
+  "n_diff": 0,
+  "identical_lines": 21,
+  "total_lines": 21,
+  "diffs": []
+ },
+ {
+  "t": 1788965802172,
+  "split": "train",
+  "n_fields": 61,
+  "n_diff": 9,
+  "identical_lines": 16,
+  "total_lines": 21,
+  "diffs": [
+   {
+    "field": "curve_k",
+    "rust": "32190000099734346526315257",
+    "corpus": "32190000100458755214849980",
+    "rel": -2.2504214250360193e-11
+   },
+   {
+    "field": "curve_price_sol_per_raw_token",
+    "rust": "0.000000000000113211",
+    "corpus": "0.000000000000114443",
+    "rel": -0.010765184414948963
+   },
+   {
+    "field": "curve_progress",
+    "rust": "0.357266",
+    "corpus": "0.361121",
+    "rel": -0.010675092282088421
+   },
+   {
+    "field": "mcap_sol_at_t",
+    "rust": "113.210723",
+    "corpus": "114.442985",
+    "rel": -0.010767475175520734
+   },
+   {
+    "field": "real_sol_reserves_sol",
+    "rust": "30.367650207",
+    "corpus": "30.695302108",
+    "rel": -0.010674333806755554
+   },
+   {
+    "field": "real_tokens_reserves",
+    "rust": "253332616962151",
+    "corpus": "250454063370185",
+    "rel": 0.011493339549901165
+   },
+   {
+    "field": "staleness_ms",
+    "rust": "432",
+    "corpus": "47",
+    "rel": 8.191489361702128
+   },
+   {
+    "field": "v_sol_reserves_sol",
+    "rust": "60.367650207",
+    "corpus": "60.695302108",
+    "rel": -0.005398307440944701
+   },
+   {
+    "field": "v_tokens_reserves",
+    "rust": "533232616962151",
+    "corpus": "530354063370185",
+    "rel": 0.005427607311376026
+   }
+  ]
+ },
+ {
+  "t": 1788965832172,
+  "split": "train",
+  "n_fields": 61,
+  "n_diff": 10,
+  "identical_lines": 17,
+  "total_lines": 21,
+  "diffs": [
+   {
+    "field": "buy_count",
+    "rust": "294",
+    "corpus": "293",
+    "rel": 0.0034129692832764505
+   },
+   {
+    "field": "buy_volume_lamports",
+    "rust": "61233453876",
+    "corpus": "61231536487",
+    "rel": 3.1313749580774915e-05
+   },
+   {
+    "field": "buyer_seller_ratio",
+    "rust": "3.19565",
+    "corpus": "3.21978",
+    "rel": -0.0074943008528532955
+   },
+   {
+    "field": "n_prior_trades",
+    "rust": "386",
+    "corpus": "384",
+    "rel": 0.005208333333333333
+   },
+   {
+    "field": "net_flow_lamports",
+    "rust": "24260341412",
+    "corpus": "24260297469",
+    "rel": 1.8113133219471324e-06
+   },
+   {
+    "field": "sell_count",
+    "rust": "92",
+    "corpus": "91",
+    "rel": 0.01098901098901099
+   },
+   {
+    "field": "sell_volume_lamports",
+    "rust": "36973112464",
+    "corpus": "36971239018",
+    "rel": 5.067306505708085e-05
+   },
+   {
+    "field": "top5_trader_share",
+    "rust": "0.34443",
+    "corpus": "0.34444",
+    "rel": -2.9032632679160377e-05
+   },
+   {
+    "field": "unique_traders",
+    "rust": "294",
+    "corpus": "293",
+    "rel": 0.0034129692832764505
+   },
+   {
+    "field": "vol_30s_bp",
+    "rust": "11662",
+    "corpus": "2784",
+    "rel": 3.1889367816091956
+   }
+  ]
+ }
+]

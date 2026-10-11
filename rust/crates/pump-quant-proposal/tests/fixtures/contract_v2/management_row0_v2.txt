@@ -1,0 +1,24 @@
+Decide the next action for a position you already hold. Only causal information is shown.
+MINT: ozuUP6r26BjZkgv8eGDR6ZPVLGqfDGvKF5MGKq4pump
+DECISION TIME (unix ms): 1788970583820
+STEP: 0
+
+MARKET STATE (at decision time):
+  venue: pumpswap  market: graduated_amm
+  pool depth: 1865 SOL
+  mark price (lamports per raw token): 0.0245422000546
+  mark price (SOL per raw token): 2.45422000546e-11
+  mark price (SOL per whole token): 2.45422000546e-05
+  execution cost: round trip 257 bp = 2 x execution fee (125 bp/side [curve@454754100:read_at_slot:tier0:125bp]) + 2 x clip impact (2.83 bp/leg for 0.53 SOL into 1865 SOL) + 2 x network+tip (0.380 bp/leg) + rent not refunded (0.095 bp); cashback, if any, is an entitlement, not cash
+
+POSITION STATE (at the decision instant, before any action):
+  entry price (lamports per raw token): 0.0232927563969
+  unrealized PnL: 536.4 bp
+  holding time: 120 s
+  max favourable so far: 19351.6 bp
+  max adverse so far: -2332.2 bp
+  inventory: 21.4659 raw tokens
+  cash: 0.5 SOL
+  position value at mark: 0.52682 SOL
+
+Choose exactly one action: HOLD, ADD, REDUCE, EXIT. Answer in the fixed format.

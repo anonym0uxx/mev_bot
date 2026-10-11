@@ -1,0 +1,127 @@
+{
+ "pool_records": 1411,
+ "classes": {
+  "WSOL|quote_is_WSOL_base_token|canonical|vault_mints_confirmed": 1179,
+  "OTHER|REVERSED_base_is_WSOL|n/a|vault_mints_confirmed": 108,
+  "USDC|no_WSOL_side|n/a|vault_mints_confirmed": 65,
+  "OTHER|no_WSOL_side|n/a|vault_mints_confirmed": 33,
+  "WSOL|quote_is_WSOL_base_token|noncanonical|vault_mints_confirmed": 26
+ },
+ "samples": {
+  "WSOL|quote_is_WSOL_base_token|canonical|vault_mints_confirmed": [
+   {
+    "pool": "9sprgiQ2rf7ayYWtbRixuXFGMGXoDktGUo3vCtexn49X",
+    "base": "x5XYDFNF2hLdWMnpgnK8HJpyQkQhpMPutBn3q4spump",
+    "quote": "So11111111111111111111111111111111111111112",
+    "idx": 0,
+    "len": 301
+   },
+   {
+    "pool": "HeQkLffwqBYTCNuhBzHi5nrw9LzMEvs425LL5tGkdM3E",
+    "base": "JsfSRjWvakXy9QN12YiTjNsokySbzFR4inXqMw8pump",
+    "quote": "So11111111111111111111111111111111111111112",
+    "idx": 0,
+    "len": 301
+   },
+   {
+    "pool": "CRTK4UrsyRmbQqLhMryFEurfMWQQtJa99giFq9NMKULf",
+    "base": "r7iXRPFHVrYEEP5nFSaFEehrmUoj2fJo1fYrwRypump",
+    "quote": "So11111111111111111111111111111111111111112",
+    "idx": 0,
+    "len": 301
+   }
+  ],
+  "OTHER|REVERSED_base_is_WSOL|n/a|vault_mints_confirmed": [
+   {
+    "pool": "3Nvjp9JEFMsnaGLT8BYGtU9PAHqjdZx1oqi6VaAu1Nfi",
+    "base": "So11111111111111111111111111111111111111112",
+    "quote": "7qFwADdfWguL5Jd6LoxaXMekMX5Y52V6KUiAqB2gfQAa",
+    "idx": 0,
+    "len": 301
+   },
+   {
+    "pool": "3g5wFsfC6a6MCehgPzD6jFv9G94GqS4GgSMdWqZG9SxF",
+    "base": "So11111111111111111111111111111111111111112",
+    "quote": "2NyTQKqmCVD7HV59EQhKkhCQr3ytqNYsGBQ14VdmH21v",
+    "idx": 0,
+    "len": 301
+   },
+   {
+    "pool": "GCFbTxzu1sxZRi6pC1oSow5ujXXX3uYZaGrc2oASgA4i",
+    "base": "So11111111111111111111111111111111111111112",
+    "quote": "2pGHYozDdhU4fiDHze9sDw5Rb5gmaKhYsjFAsohLFJaP",
+    "idx": 0,
+    "len": 301
+   }
+  ],
+  "WSOL|quote_is_WSOL_base_token|noncanonical|vault_mints_confirmed": [
+   {
+    "pool": "6d2gSLXRA6GVBwef1osre2vo5Ap6pWotRRzXUdyD4QVn",
+    "base": "AtNfXEt9vSZtHovxVYKXrfFwATfddmeMvApugZzcdWiQ",
+    "quote": "So11111111111111111111111111111111111111112",
+    "idx": 1,
+    "len": 301
+   },
+   {
+    "pool": "2QG7wbXo4YUUhw9LUdgd2c8vcFYJYK4Zdw69tRj8ssaT",
+    "base": "FMqh9mqR6drPZqqW6wPqLHxX4rqNDWGhYLaMfoaJpump",
+    "quote": "So11111111111111111111111111111111111111112",
+    "idx": 0,
+    "len": 301
+   },
+   {
+    "pool": "VJf32Y1CFnaeHhaPnEEspP7T9AyYTYadx1WBbxkx4KQ",
+    "base": "pumpCmXqMfrsAkQ5r49WcJnRayYRqmXz6ae8H7H9Dfn",
+    "quote": "So11111111111111111111111111111111111111112",
+    "idx": 0,
+    "len": 300
+   }
+  ],
+  "USDC|no_WSOL_side|n/a|vault_mints_confirmed": [
+   {
+    "pool": "2d3FB9hVD5npevjrgzcnBzPv3J526UqFsNXhb1YRwWFp",
+    "base": "dWgNyP6ebCghrppZYiAPoJdGfvGr9zTNccg3ggMpump",
+    "quote": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    "idx": 0,
+    "len": 301
+   },
+   {
+    "pool": "f9CYsrJAAHxWc4RsdxuSHcuC7T97yp5TYXAXRZsjp4W",
+    "base": "148ZFi1PBH3mS5SqfwhsQN8NUCVMTQHENRwR5yLdpump",
+    "quote": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    "idx": 0,
+    "len": 301
+   },
+   {
+    "pool": "8qU4biTxZjSiPfcHLBcuohNfqPSU8vcpJnwGKvTWokqN",
+    "base": "DvkMrkjJ35GNabSbCmqxjSRj2xTdaym5R9Bh6bjpump",
+    "quote": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    "idx": 0,
+    "len": 301
+   }
+  ],
+  "OTHER|no_WSOL_side|n/a|vault_mints_confirmed": [
+   {
+    "pool": "3SrWkCYSyrtCRh8aaG16wtduDG2zJ5BhwRg3SurztznQ",
+    "base": "3EMheh5MPVWpAGDdXnGBgs6uaukKL29zv65uuXxspump",
+    "quote": "6t6KEtuQdyAEAYz1ieUEB7f2DxPVgikE3AUK5wGYgSUk",
+    "idx": 0,
+    "len": 301
+   },
+   {
+    "pool": "7AmfS5ohzyhDyf5ya8noa347ACTWPrgJLCXB5stgeP3o",
+    "base": "3EMheh5MPVWpAGDdXnGBgs6uaukKL29zv65uuXxspump",
+    "quote": "CboMcTUYUcy9E6B3yGdFn6aEsGUnYV6yWeoeukw6pump",
+    "idx": 0,
+    "len": 261
+   },
+   {
+    "pool": "DS1SwNd56DhxsJn9sZaopziuNJk9cefSxe166WFC87F5",
+    "base": "DLGRpmkMGr7J4KD1xR5x2XjaGeQH64PLFQkyxNNSpump",
+    "quote": "Gw5uPEK6LUBxG3tQpJa3SakqaFhYK2NWEmudSa99pump",
+    "idx": 0,
+    "len": 301
+   }
+  ]
+ }
+}

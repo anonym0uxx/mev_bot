@@ -1,0 +1,27 @@
+{
+ "note": "trades.jsonl (full concatenation of corpus renormalize_raw.py per-part output) was deleted to free disk; its sha256 was recorded before deletion (trades.jsonl.sha256 sidecar). pf.jsonl = its pumpfun-venue success-only filter. Regenerate with ref/run_ref.sh (kept in scripts).",
+ "ref/20260909_144906_000490/pf.jsonl": {
+  "bytes": 153858308,
+  "sha256": "c55bb304e821f6c6c849c843d51486826fe4c935a85589a056d3c3d3039fa8a4"
+ },
+ "ref/20260909_144906_000490/trades.jsonl.sha256(sidecar)": "f7552080c26c4b3d5e9bd3230e390011894d903529640d18b9a103343ef1a31f  20260909_144906_000490/trades.jsonl",
+ "m1/20260909_144906_000490.out": {
+  "sha256": "14e830f962808cb448b9c9c7a154b25bc96db1aef548a19bb456e60b4d77d5fd"
+ },
+ "m1/20260909_144906_000490/wire": {
+  "files": 20,
+  "combined_sha256": "6b4b45892994ef361a901370bc457d99e2872ef15b8968351c74ed5342134cf1"
+ },
+ "ref/20260909_173928_000596/pf.jsonl": {
+  "bytes": 156914551,
+  "sha256": "c70794d79bc2bc2e23c23c1a9435a4b5ebd1670ce2048bd6c083cd98fefcd8a3"
+ },
+ "ref/20260909_173928_000596/trades.jsonl.sha256(sidecar)": "f6c93c90214b013ff3c6dea39da18c714933ad716d97b479142dbe81e2d329b8  20260909_173928_000596/trades.jsonl",
+ "m1/20260909_173928_000596.out": {
+  "sha256": "72d800adc0e0c6390f5414d70e1fae0bde7b8153974775c64d9d7e22b7327cdc"
+ },
+ "m1/20260909_173928_000596/wire": {
+  "files": 20,
+  "combined_sha256": "3057210541b980305d0f16261d5711e257fe4f97bdfb8b27635c86d01fb2715e"
+ }
+}

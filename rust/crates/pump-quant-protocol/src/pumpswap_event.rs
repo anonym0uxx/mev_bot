@@ -164,12 +164,212 @@ pub struct BuyEvent {
 /// never guessed. Evidence: 27 on-chain events, each equal to the pool account's own field.
 #[must_use]
 pub const fn virtual_quote_offset(is_buy: bool, payload_len: usize) -> Option<usize> {
+    // Extended 2026-10 from 27 more mainnet events (tests/fixtures/pumpswap_event_layouts_2026_10.json): the
+    // tail grew (cashback/buyback fields, `ix_name` string) and the length now also encodes the ix name.
     match (is_buy, payload_len) {
-        (true, 472) => Some(447),
-        (true, 457) => Some(432),
-        (false, 409) => Some(384),
+        // buy_exact_quote_in: 472 (pre-cashback-tail), 488 (cashback), 496 (current).
+        (true, 472 | 488 | 496) => Some(447),
+        // buy: 457 (pre), 473 (cashback), 481 (current).
+        (true, 457 | 473 | 481) => Some(432),
+        // buy_exact_quote_in_v2 (current): its longer ix name shifts the field by 3.
+        (true, 499) => Some(450),
+        (false, 409 | 425 | 433) => Some(384),
         _ => None,
     }
+}
+
+/// `(cashback_fee_basis_points, cashback)` of a Buy/Sell event payload: buy at `virtual_quote_offset - 32`,
+/// sell at 352, on every layout [`virtual_quote_offset`] knows (all of them carry the pair, cashback coin or
+/// not: 27/27 captured events). `None` on an unknown layout or a truncated payload. The cashback is withheld
+/// from the trader's immediate proceeds and credited to a claimable account.
+///
+/// Beyond discriminator + length, the payload must also match the layout's SEMANTICS
+/// ([`swap_layout_semantics_ok`]) and the rate must be a real rate (`bps <= CASHBACK_BPS_MAX`); otherwise
+/// `None` (so [`cashback_field`] reports `Unsupported`, never `Known`).
+#[must_use]
+pub fn cashback_fields(is_buy: bool, payload: &[u8]) -> Option<(u64, u64)> {
+    let vo = virtual_quote_offset(is_buy, payload.len())?;
+    if !swap_layout_semantics_ok(is_buy, payload) {
+        return None;
+    }
+    let o = if is_buy { vo.checked_sub(32)? } else { 352 };
+    let bps = read_u64_le(payload, o)?;
+    if bps > CASHBACK_BPS_MAX {
+        return None;
+    }
+    Some((bps, read_u64_le(payload, o.checked_add(8)?)?))
+}
+
+/// Upper bound of a supported `cashback_fee_basis_points` (100%). A larger value is not a rate: the layout
+/// was misread or is not the one the table names.
+pub const CASHBACK_BPS_MAX: u64 = 10_000;
+
+/// Payload offset of the BuyEvent `ix_name` Borsh string (u32 LE length + bytes): after
+/// `min_base_amount_out` (385..393) on every current buy layout.
+pub const BUY_IX_NAME_OFFSET: usize = 393;
+
+/// The `ix_name` each known BuyEvent length was observed with (fixture `pumpswap_event_layouts_2026_10.json`,
+/// SDK `decodeBuyEventAmm`). The length alone does not prove the name; [`swap_layout_semantics_ok`] checks it.
+#[must_use]
+pub const fn buy_layout_ix_name(payload_len: usize) -> Option<&'static [u8]> {
+    match payload_len {
+        457 | 473 | 481 => Some(b"buy"),
+        472 | 488 | 496 => Some(b"buy_exact_quote_in"),
+        499 => Some(b"buy_exact_quote_in_v2"),
+        _ => None,
+    }
+}
+
+/// Layout SEMANTICS of a Buy/Sell payload whose (discriminator, length) [`virtual_quote_offset`] knows: the
+/// bytes must decode as that layout, not merely have its length.
+/// * buy: `track_volume` (352) is a Borsh bool; `ix_name` at [`BUY_IX_NAME_OFFSET`] is exactly the name of
+///   this length ([`buy_layout_ix_name`]) and ends exactly where the cashback pair starts; `can_boost`
+///   (`virtual_quote_offset + 16`) is a Borsh bool.
+/// * sell: `can_boost` (`virtual_quote_offset + 16` = 400) is a Borsh bool.
+///
+/// `false` on an unknown length, a truncated payload, or any mismatch.
+#[must_use]
+pub fn swap_layout_semantics_ok(is_buy: bool, payload: &[u8]) -> bool {
+    let Some(vo) = virtual_quote_offset(is_buy, payload.len()) else {
+        return false;
+    };
+    let Some(can_boost_at) = vo.checked_add(16) else {
+        return false;
+    };
+    if read_bool(payload, can_boost_at).is_none() {
+        return false;
+    }
+    if !is_buy {
+        return true;
+    }
+    let Some(name) = buy_layout_ix_name(payload.len()) else {
+        return false;
+    };
+    if read_bool(payload, 352).is_none() {
+        return false;
+    }
+    let Some(len_bytes) = payload.get(BUY_IX_NAME_OFFSET..BUY_IX_NAME_OFFSET + 4) else {
+        return false;
+    };
+    let declared = u32::from_le_bytes([len_bytes[0], len_bytes[1], len_bytes[2], len_bytes[3]]);
+    if usize::try_from(declared).ok() != Some(name.len()) {
+        return false;
+    }
+    let start = BUY_IX_NAME_OFFSET + 4;
+    let end = start + name.len();
+    payload.get(start..end) == Some(name) && Some(end) == vo.checked_sub(32)
+}
+
+/// End of the creator-fee-era tail that precedes any cashback field: a `SellEvent` tail ends after
+/// `coin_creator_fee` (352), a `BuyEvent` tail after `track_volume` (353). Payload fields are only ever
+/// APPENDED and every cashback-bearing layout places the pair after this point, so a payload of length
+/// `SWAP_EVENT_FIXED_LEN..=this` positively does not carry it.
+#[must_use]
+pub const fn pre_cashback_tail_end(is_buy: bool) -> usize {
+    if is_buy {
+        353
+    } else {
+        352
+    }
+}
+
+/// The cashback pair of ONE swap event, with the layout it was read from. Four distinct states, never an
+/// `Option` of zero:
+/// * `Known` — the layout carries the field; `bps == 0` / `lamports == 0` is a KNOWN ZERO.
+/// * `Missing` — an older (pre-cashback) layout that cannot carry the field.
+/// * `Unsupported` — a layout this decoder does not know: the field may or may not be present.
+/// * `NotRecorded` — the value never reached this reader (e.g. an event-stream line written under a
+///   schema version that predates the field). Not a layout fact.
+///
+/// `layout_len` is the event payload length (the only layout identity the chain exposes, with the
+/// discriminator): schema provenance for every decoded value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CashbackField {
+    /// Field present in the event layout.
+    Known {
+        /// `cashback_fee_basis_points`.
+        bps: u64,
+        /// `cashback` (quote units withheld from the trader, credited to a claimable account).
+        lamports: u64,
+        /// Event payload length the pair was read from.
+        layout_len: u16,
+    },
+    /// The event layout predates the field.
+    Missing {
+        /// Event payload length.
+        layout_len: u16,
+    },
+    /// Unknown event layout.
+    Unsupported {
+        /// Event payload length.
+        layout_len: u16,
+    },
+    /// The value was never recorded on the path that delivered this event.
+    NotRecorded,
+}
+
+impl CashbackField {
+    /// Stable label of the state (for reports and the event-stream codec).
+    #[must_use]
+    pub const fn state(self) -> &'static str {
+        match self {
+            Self::Known { .. } => "known",
+            Self::Missing { .. } => "missing",
+            Self::Unsupported { .. } => "unsupported",
+            Self::NotRecorded => "not_recorded",
+        }
+    }
+    /// `(bps, lamports)` only when the layout carried the field.
+    #[must_use]
+    pub const fn known(self) -> Option<(u64, u64)> {
+        match self {
+            Self::Known { bps, lamports, .. } => Some((bps, lamports)),
+            _ => None,
+        }
+    }
+}
+
+/// Classify the cashback pair of a Buy/Sell event payload (see [`CashbackField`]). Known layouts read the
+/// pair via [`cashback_fields`]; a payload ending at or before [`pre_cashback_tail_end`] is `Missing`;
+/// anything else is `Unsupported` (never guessed from a nearby offset).
+#[must_use]
+pub fn cashback_field(is_buy: bool, payload: &[u8]) -> CashbackField {
+    let layout_len = u16::try_from(payload.len()).unwrap_or(u16::MAX);
+    if let Some((bps, lamports)) = cashback_fields(is_buy, payload) {
+        return CashbackField::Known {
+            bps,
+            lamports,
+            layout_len,
+        };
+    }
+    if payload.len() >= SWAP_EVENT_FIXED_LEN && payload.len() <= pre_cashback_tail_end(is_buy) {
+        CashbackField::Missing { layout_len }
+    } else {
+        CashbackField::Unsupported { layout_len }
+    }
+}
+
+/// [`cashback_field`] of a full event inner-instruction (tag + discriminator + payload). A wrong
+/// tag/discriminator is `Unsupported` with `layout_len` 0.
+#[must_use]
+pub fn cashback_field_of_event(data: &[u8], is_buy: bool) -> CashbackField {
+    swap_event_payload(data, is_buy).map_or(CashbackField::Unsupported { layout_len: 0 }, |p| {
+        cashback_field(is_buy, p)
+    })
+}
+
+/// The payload of a Buy/Sell event inner instruction (after tag + discriminator), for callers that
+/// need tail fields the typed decoders do not surface.
+#[must_use]
+pub fn swap_event_payload(data: &[u8], is_buy: bool) -> Option<&[u8]> {
+    event_payload(
+        data,
+        if is_buy {
+            &BUY_EVENT_DISCRIMINATOR
+        } else {
+            &SELL_EVENT_DISCRIMINATOR
+        },
+    )
 }
 
 /// The result of [`buy_exact_quote_in`].
@@ -236,6 +436,54 @@ pub fn buy_exact_quote_in(
         return None;
     }
     Some(ExactQuoteInFill {
+        net_quote_in: net,
+        base_out: out,
+    })
+}
+
+/// [`buy_exact_quote_in`] with the cashback component added to the fee stack (cashback coins charge it on
+/// buys too: `BuyEvent.cashback`). Same inferred `net - 1` rule; the extra component is ceil-rounded like
+/// the others. Reduces to [`buy_exact_quote_in`] at `cashback_bps == 0`.
+#[must_use]
+pub fn buy_exact_quote_in_cb(
+    base_reserve: u128,
+    quote_vault: u128,
+    virtual_quote: u128,
+    gross_in: u128,
+    fees: (u128, u128, u128),
+    cashback_bps: u128,
+) -> Option<ExactQuoteInFill> {
+    const D: u128 = 10_000;
+    let (lp_bps, protocol_bps, creator_bps) = fees;
+    let tot = |n: u128| -> Option<u128> {
+        let c = |bps: u128| n.checked_mul(bps).map(|x| x.div_ceil(D));
+        n.checked_add(c(lp_bps)?)?
+            .checked_add(c(protocol_bps)?)?
+            .checked_add(c(creator_bps)?)?
+            .checked_add(c(cashback_bps)?)
+    };
+    if gross_in == 0 {
+        return None;
+    }
+    let (mut lo, mut hi) = (0u128, gross_in);
+    while lo < hi {
+        let mid = lo + (hi - lo).div_ceil(2);
+        if tot(mid)? <= gross_in {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    let net = lo;
+    if net < 2 {
+        return None;
+    }
+    let eff = quote_vault.checked_add(virtual_quote)?;
+    let n1 = net - 1;
+    let out = base_reserve
+        .checked_mul(n1)?
+        .checked_div(eff.checked_add(n1)?)?;
+    (out > 0).then_some(ExactQuoteInFill {
         net_quote_in: net,
         base_out: out,
     })

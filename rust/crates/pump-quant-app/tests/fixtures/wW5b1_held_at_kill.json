@@ -1,0 +1,259 @@
+{
+  "decision": {
+    "dirty": [
+      [
+        "74721d6bc0ce3f2487905d821935a88361f67af447b299b104c70878ff1dde4f",
+        1788965365294
+      ],
+      [
+        "804a86fe22765107b0af553e16e14ab3c7f554da960307fc0ef3adf00de230ff",
+        1788965376222
+      ]
+    ],
+    "last_ask": [
+      [
+        "74721d6bc0ce3f2487905d821935a88361f67af447b299b104c70878ff1dde4f",
+        1788965364993
+      ],
+      [
+        "804a86fe22765107b0af553e16e14ab3c7f554da960307fc0ef3adf00de230ff",
+        1788965376005
+      ]
+    ],
+    "mgmt": [
+      [
+        "74721d6bc0ce3f2487905d821935a88361f67af447b299b104c70878ff1dde4f",
+        null,
+        -4611686018427387904
+      ],
+      [
+        "804a86fe22765107b0af553e16e14ab3c7f554da960307fc0ef3adf00de230ff",
+        null,
+        -4611686018427387904
+      ]
+    ],
+    "through_ms": 1788965379006
+  },
+  "faults": [],
+  "generation": 38,
+  "held": [
+    {
+      "amm": false,
+      "cost_lamports": 127059280,
+      "discovery_lane_index": 4,
+      "entry_price_fp": 71258,
+      "entry_spend": 127059280,
+      "fill_ms": 1788965365581,
+      "inventory_tokens": 1732541435110,
+      "lane_index": 3,
+      "mint": "74721d6bc0ce3f2487905d821935a88361f67af447b299b104c70878ff1dde4f",
+      "model_managed": true,
+      "peak_fp": 91443,
+      "position_order": 1,
+      "realized_acc": "0",
+      "remaining_bps": 10000,
+      "size_lamports": 125000000,
+      "step": 0,
+      "trough_fp": 70527,
+      "version": 1
+    },
+    {
+      "amm": false,
+      "cost_lamports": 127059280,
+      "discovery_lane_index": 4,
+      "entry_price_fp": 24865,
+      "entry_spend": 127059280,
+      "fill_ms": 1788965377279,
+      "inventory_tokens": 4965241337283,
+      "lane_index": 3,
+      "mint": "804a86fe22765107b0af553e16e14ab3c7f554da960307fc0ef3adf00de230ff",
+      "model_managed": true,
+      "peak_fp": 24865,
+      "position_order": 2,
+      "realized_acc": "0",
+      "remaining_bps": 10000,
+      "size_lamports": 125000000,
+      "step": 0,
+      "trough_fp": 16892,
+      "version": 1
+    }
+  ],
+  "lineage": "f30a334c9c51c668f8087ab257093446",
+  "mgmt_seq": 1,
+  "model_order_seq": 2,
+  "order_floor": 0,
+  "orders": [
+    {
+      "attempt": 1,
+      "clip": 125000000,
+      "filled_clip": 125000000,
+      "id": 1,
+      "mint": "74721d6bc0ce3f2487905d821935a88361f67af447b299b104c70878ff1dde4f",
+      "state": 2,
+      "terminal": null
+    },
+    {
+      "attempt": 1,
+      "clip": 125000000,
+      "filled_clip": 125000000,
+      "id": 2,
+      "mint": "804a86fe22765107b0af553e16e14ab3c7f554da960307fc0ef3adf00de230ff",
+      "state": 2,
+      "terminal": null
+    }
+  ],
+  "paper_fill": {
+    "divergences": [
+      {
+        "base_offsets": [
+          25580886906,
+          279900000000000
+        ],
+        "divergence": "shadow_divergence:curve_virtual_offset_changed",
+        "dropped_delta": [
+          "123456789",
+          "0",
+          "4965241337283",
+          "0"
+        ],
+        "inventory_tokens": 4965241337283,
+        "mint": "804a86fe22765107b0af553e16e14ab3c7f554da960307fc0ef3adf00de230ff",
+        "observed": [
+          17826471230,
+          1055308571285844,
+          333650112,
+          775408571285844
+        ],
+        "slot": 445637728,
+        "ts_ms": 1788965378639
+      }
+    ],
+    "divergences_dropped": 0,
+    "settlement": {
+      "applied": [
+        [
+          "74721d6bc0ce3f2487905d821935a88361f67af447b299b104c70878ff1dde4f",
+          "entry",
+          1,
+          1732541435110,
+          125000000,
+          10000,
+          2049280
+        ],
+        [
+          "804a86fe22765107b0af553e16e14ab3c7f554da960307fc0ef3adf00de230ff",
+          "entry",
+          2,
+          4965241337283,
+          125000000,
+          10000,
+          2049280
+        ]
+      ],
+      "cash": "1745881440",
+      "committed": "254118560",
+      "fixed_costs": "4098560",
+      "holdings": [
+        [
+          "74721d6bc0ce3f2487905d821935a88361f67af447b299b104c70878ff1dde4f",
+          1732541435110,
+          "127059280"
+        ],
+        [
+          "804a86fe22765107b0af553e16e14ab3c7f554da960307fc0ef3adf00de230ff",
+          4965241337283,
+          "127059280"
+        ]
+      ],
+      "network_estimate": "20000",
+      "realized": "0",
+      "seed": "2000000000",
+      "voided": []
+    },
+    "shadow_pool": {
+      "markets": [
+        {
+          "applied": [
+            [
+              "entry",
+              1,
+              1732541435110,
+              123456789
+            ]
+          ],
+          "curve_offsets": [
+            30000000000,
+            279900000000000
+          ],
+          "diverged": null,
+          "mint": "74721d6bc0ce3f2487905d821935a88361f67af447b299b104c70878ff1dde4f",
+          "pool_k": null,
+          "sol_in": "123456789",
+          "sol_out": "0",
+          "tok_in": "0",
+          "tok_out": "1732541435110",
+          "venue": "curve"
+        },
+        {
+          "applied": [
+            [
+              "entry",
+              2,
+              4965241337283,
+              123456789
+            ]
+          ],
+          "curve_offsets": [
+            25580886906,
+            279900000000000
+          ],
+          "diverged": "voffset",
+          "mint": "804a86fe22765107b0af553e16e14ab3c7f554da960307fc0ef3adf00de230ff",
+          "pool_k": null,
+          "sol_in": "0",
+          "sol_out": "0",
+          "tok_in": "0",
+          "tok_out": "0",
+          "venue": "curve"
+        }
+      ],
+      "version": "paper_fill_v2_shadow"
+    },
+    "unsettleable": 0,
+    "version": "paper_fill_v2_shadow"
+  },
+  "pending": [
+    {
+      "amm": false,
+      "attempt": 0,
+      "created_ms": 1788965378639,
+      "created_slot": 445637728,
+      "discovery_lane_index": 0,
+      "fee_bps": 0,
+      "fees": 0,
+      "filled": 0,
+      "gross": 0,
+      "id": 1,
+      "intended": 4965241337283,
+      "kind": "protect",
+      "lane_index": 0,
+      "max_spend": 0,
+      "mint": "804a86fe22765107b0af553e16e14ab3c7f554da960307fc0ef3adf00de230ff",
+      "price_limit_bits": null,
+      "protect": 1,
+      "simulated": false,
+      "snap_price_bits": 0,
+      "snap_t_dec_ms": 0,
+      "spent": 0,
+      "version": 0
+    }
+  ],
+  "realized_lamports": "0",
+  "schema": 6,
+  "seed_lamports": 2000000000,
+  "sell_faults": [],
+  "sell_floor": 0,
+  "sell_prefixes": [],
+  "sells": [],
+  "written_wall_ms": 1791586648838
+}

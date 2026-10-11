@@ -1,0 +1,79 @@
+{
+ "fixture": "cont_wire05 = s1 wire_0000..0004 concatenated (159,532 lines), 2026-09-09 14:49:07.168 -> 14:52:22.338 UTC",
+ "source": {
+  "lane": "laserstream",
+  "lines_total_s1": 679746,
+  "span_s": 703.12,
+  "max_recv_gap_ms": 542,
+  "max_slot_step": 2,
+  "distinct_slots": "2234 over slots 445637627..445639861",
+  "evidence": "single capture session 20260909_144906_000490 (s1.log); one lane; no reconnect/gap record in the log; the checks are recv gaps and slot steps on the recorded lines only",
+  "NOT_ESTABLISHED": "recorder-side drop counters are not recorded, so absence of loss inside the recording is inferred from recv-gap/slot-step bounds, not proven"
+ },
+ "wire_sha256": {
+  "wire_0000.ndjson": "2999be50dc613dab4c75236b5ca9472696526710b6b467e39c6e2ac43bc42bd7",
+  "wire_0001.ndjson": "07f13e3b07e5cea947d012fd79928d7f79fe4f90f13dc2291882ba48b35c4b86",
+  "wire_0002.ndjson": "26102ab9ffe991878b668c4158aed9f239ecdc65d1fce395003addb5df2e6d9e",
+  "wire_0003.ndjson": "fc82a3c71a31c024a6fa63466fbbfedcb3fab88252444a392f4a2c899ee8f96a",
+  "wire_0004.ndjson": "27a96ce00e5fc7770440a6d31858d872610865a49362531503885aff6d96403e"
+ },
+ "fixture_sha256": "2bade7eb01e7bfd018f646ba0dfb79694184dcb7d13ea33485fd2001aadc8140",
+ "history_scope": "cold_start:segment_09_09_14_49_07: fresh flow history initialized at the first fixture line; NO August state; zeros mean none observed in this declared history",
+ "not_established": [
+  "frozen-corpus parity",
+  "adequate live wallet history",
+  "profitability"
+ ],
+ "runs": {
+  "u1": {
+   "total": 42,
+   "entry": 37,
+   "mgmt": 5
+  },
+  "u2": {
+   "total": 44,
+   "entry": 40,
+   "mgmt": 4
+  },
+  "rA": {
+   "total": 9,
+   "entry": 9,
+   "mgmt": 0
+  },
+  "rB": {
+   "total": 14,
+   "entry": 12,
+   "mgmt": 2
+  },
+  "rC": {
+   "total": 6,
+   "entry": 6,
+   "mgmt": 0
+  },
+  "rC2": {
+   "total": 44,
+   "entry": 39,
+   "mgmt": 5
+  },
+  "rD1": {
+   "total": 1,
+   "entry": 1,
+   "mgmt": 0
+  },
+  "rD2": {
+   "total": 0,
+   "entry": 0,
+   "mgmt": 0
+  }
+ },
+ "checkpoints": {
+  "u1": "592873dd651270bb6b101d7ffcb02c26344e9eed1902f63c6ae2618a64d3fe89",
+  "u2": "592873dd651270bb6b101d7ffcb02c26344e9eed1902f63c6ae2618a64d3fe89",
+  "rA": "9aca5eb2e54e9e2d33bb9e6683c5295086aa2e108b46de19dd07cd34576db3fe",
+  "rB": "5b2d452bb84879183693fd0fcd3cf1aa066e10fb8acc21fd51d44144047cdacf",
+  "rC": "aecb265e3f6f63cb7e9114863a86db652433dae3b9cfd63b76a8edb5d7e84e95",
+  "rC2": "b9e3e599f405e6bd83eb968c4c933719a664b20c5d6a39d3bfe3e50476baf75a",
+  "rD1": "34c43e0f10c5d956d41a4bee2a8c7c4c051e950701d3be538e2d73276b07ee33",
+  "rD2": "e4f143d28e55fd8c77a4e09b19559e6ae72b249f9c9e92efffc2dd7a78889f1c"
+ }
+}

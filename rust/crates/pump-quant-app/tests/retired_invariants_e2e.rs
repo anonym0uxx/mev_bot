@@ -78,6 +78,8 @@ fn events(confirm_virtual: u64, confirm_real: u64) -> Vec<AppEvent> {
             fee_lamports: Some(60_000 + u64::from(i) * 100),
             cu_consumed: Some(90_000 + u64::from(i)),
             venue: Some(TradeVenue::PumpFun),
+            event_id: None,
+            feature: None,
         });
     }
     let t_last = T0 + 1_000 + 40 * 2_000;
@@ -89,6 +91,11 @@ fn events(confirm_virtual: u64, confirm_real: u64) -> Vec<AppEvent> {
         real_tokens: 569_000_000_000_000,
         recv_unix_ms: Some(t_last),
         slot: 2_000,
+    });
+    ev.push(AppEvent::CurveModeObserved {
+        mint: mint(),
+        mayhem: false,
+        slot: 0,
     });
     ev.push(AppEvent::OnchainConfirm {
         mint: mint(),
@@ -118,6 +125,11 @@ fn landing(e: &mut Engine) {
         real_tokens: 565_000_000_000_000,
         recv_unix_ms: Some(t_last + 1_500),
         slot: 2_100,
+    });
+    e.tick(AppEvent::CurveModeObserved {
+        mint: mint(),
+        mayhem: false,
+        slot: 0,
     });
     for _ in 0..6 {
         e.tick(AppEvent::Tick);

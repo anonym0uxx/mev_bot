@@ -30,6 +30,31 @@ use pump_quant_domain::ids::Mint;
 /// event sequence itself; the stream is strictly append-ordered).
 /// Malformed lines are skipped (fail-soft) but counted in the return.
 pub fn read_event_stream<P: AsRef<Path>>(path: P) -> io::Result<(Vec<AppEvent>, usize)> {
+    let c = read_event_stream_checked(path)?;
+    // `skipped` counts every line that is not a full-fidelity event: rejected lines AND legacy v1 lines
+    // of critical kinds (lossy). A caller that sees skipped > 0 has an incomplete replay.
+    let lossy: u64 = c
+        .by_kind
+        .iter()
+        .filter(|(k, _)| crate::event_codec::is_critical(k))
+        .map(|(_, v)| v.lossy_v1)
+        .sum();
+    let rejected: u64 = c.by_kind.values().map(|v| v.rejected).sum();
+    let skipped = usize::try_from(rejected.saturating_add(lossy)).unwrap_or(usize::MAX);
+    Ok((c.events, skipped))
+}
+
+/// Checked read with per-kind written/parsed/rejected/lossy reconciliation (see `event_codec`).
+pub fn read_event_stream_checked<P: AsRef<Path>>(
+    path: P,
+) -> io::Result<crate::event_codec::CheckedStream> {
+    let text = fs::read_to_string(path)?;
+    Ok(crate::event_codec::read_checked(&text, parse_event_line))
+}
+
+/// Legacy (v1, fail-soft) reader, kept for tests of the old format only.
+#[allow(dead_code)]
+fn read_event_stream_v1<P: AsRef<Path>>(path: P) -> io::Result<(Vec<AppEvent>, usize)> {
     let text = fs::read_to_string(path)?;
     let mut events = Vec::new();
     let mut skipped = 0usize;
@@ -97,6 +122,8 @@ fn parse_event_line(line: &str) -> Result<AppEvent, String> {
                 fee_lamports: None,
                 cu_consumed: None,
                 venue: None,
+                event_id: None,
+                feature: None,
             })
         }
         "OnchainConfirm" => {
@@ -200,6 +227,20 @@ fn parse_event_line(line: &str) -> Result<AppEvent, String> {
                 _ => return Err(format!("unknown creator action kind: {kind_str}")),
             };
             Ok(AppEvent::CreatorAction { mint, kind, slot })
+        }
+        "LaunchFromChain" => {
+            let mint = parse_mint(&extract_string_field(line, "mint").ok_or("missing mint")?)?;
+            let creator = parse_mint(
+                &extract_string_field(line, "chain_creator").ok_or("missing chain_creator")?,
+            )?;
+            Ok(AppEvent::LaunchFromChain {
+                mint,
+                creator: *creator.as_bytes(),
+                slot: u64_field(extract_int_field(line, "chain_slot"), "chain_slot")?,
+                block_time_s: extract_int_field(line, "chain_block_time_s"),
+                retrieved_unix_ms: extract_int_field(line, "retrieved_unix_ms")
+                    .ok_or("missing retrieved_unix_ms")?,
+            })
         }
         "Migration" => {
             let mint_str = extract_string_field(line, "mint").ok_or("missing mint")?;
@@ -412,7 +453,9 @@ impl EventStreamWriter {
     /// Format: `{"slot":N,"kind":"MarketTrade","mint":"<base58>","fields":{...}}\n`
     /// All values are integers or quoted strings. No floats (§22).
     pub fn write_event(&mut self, event: &AppEvent, slot: u64) -> io::Result<()> {
-        let json = event_to_json(event, slot);
+        // v2: full-fidelity, versioned (see `event_codec`). The v1 encoder below is kept only for
+        // its legacy tests; it is not on the production write path.
+        let json = crate::event_codec::encode(event, slot);
         self.writer.write_all(json.as_bytes())?;
         self.writer.write_all(b"\n")?;
         #[allow(clippy::arithmetic_side_effects)] // LINT-ALLOW(hot_arith): u64 events counter
@@ -434,6 +477,7 @@ impl EventStreamWriter {
     }
 }
 
+#[cfg(test)]
 /// Encode an AppEvent into a compact JSON string (no trailing newline).
 /// All numeric values are integers. Mint addresses are base58-encoded.
 fn event_to_json(event: &AppEvent, slot: u64) -> String {
@@ -456,6 +500,7 @@ fn event_to_json(event: &AppEvent, slot: u64) -> String {
     out
 }
 
+#[cfg(test)]
 /// Get the kind name for an AppEvent.
 fn event_kind(event: &AppEvent) -> &'static str {
     match event {
@@ -465,17 +510,21 @@ fn event_kind(event: &AppEvent) -> &'static str {
         AppEvent::WalletAction { .. } => "WalletAction",
         AppEvent::OnchainConfirm { .. } => "OnchainConfirm",
         AppEvent::CurveObserved { .. } => "CurveObserved",
+        AppEvent::CurveModeObserved { .. } => "CurveModeObserved",
         AppEvent::AmmSwap { .. } => "AmmSwap",
+        AppEvent::CorpusFlowRow { .. } => "CorpusFlowRow",
         AppEvent::LaunchObserved { .. } => "LaunchObserved",
         AppEvent::TokenMetadata { .. } => "TokenMetadata",
         AppEvent::CreatorAction { .. } => "CreatorAction",
         AppEvent::Migration { .. } => "Migration",
+        AppEvent::LaunchFromChain { .. } => "LaunchFromChain",
         // Rev-14 wangr intelligence: new event variants.
         AppEvent::MarketAuxiliary { .. } => "MarketAuxiliary",
         AppEvent::TimeSignal { .. } => "TimeSignal",
         AppEvent::NarrativeResolved { .. } => "NarrativeResolved",
         // Rev-19 on-chain feedback: new event variants.
         AppEvent::ModelOrderEvidence { .. } => "ModelOrderEvidence",
+        AppEvent::ModelMgmtReport { .. } => "ModelMgmtReport",
         AppEvent::OurBuyConfirmed { .. } => "OurBuyConfirmed",
         AppEvent::OurBuyFailed { .. } => "OurBuyFailed",
         AppEvent::OurSellConfirmed { .. } => "OurSellConfirmed",
@@ -484,11 +533,13 @@ fn event_kind(event: &AppEvent) -> &'static str {
     }
 }
 
+#[cfg(test)]
 /// Extract the mint from an event (if it has one).
 fn event_mint(event: &AppEvent) -> Option<Mint> {
     event.mint()
 }
 
+#[cfg(test)]
 /// Extract key fields as JSON key-value pairs (without surrounding braces).
 /// Only the most important fields for replay are captured — the replay
 /// engine re-derives the rest from the engine's internal state.
@@ -598,6 +649,23 @@ fn event_fields_json(event: &AppEvent) -> String {
             }
             parts.push(format!(r#""slot":{}"#, slot));
         }
+        AppEvent::CorpusFlowRow {
+            feature,
+            recv_unix_ms,
+            slot,
+            event_id,
+            ..
+        } => {
+            parts.push(format!(r#""sol_lamports":{}"#, feature.sol_lamports));
+            parts.push(format!(r#""tokens_raw":{}"#, feature.tokens_raw));
+            parts.push(format!(r#""event_id":"{:032x}""#, event_id));
+            if let Some(t) = recv_unix_ms {
+                parts.push(format!(r#""recv_unix_ms":{}"#, t));
+            }
+            if let Some(sl) = slot {
+                parts.push(format!(r#""slot":{}"#, sl));
+            }
+        }
         AppEvent::LaunchObserved { launch_unix_ms, .. } => {
             parts.push(format!(r#""launch_unix_ms":{}"#, launch_unix_ms));
         }
@@ -619,6 +687,21 @@ fn event_fields_json(event: &AppEvent) -> String {
         }
         AppEvent::Migration { slot, .. } => {
             parts.push(format!(r#""migration_slot":{}"#, slot));
+        }
+        AppEvent::LaunchFromChain {
+            creator,
+            slot,
+            block_time_s,
+            retrieved_unix_ms,
+            ..
+        } => {
+            let c = solana_program::pubkey::Pubkey::new_from_array(*creator);
+            parts.push(format!(r#""chain_creator":"{c}""#));
+            parts.push(format!(r#""chain_slot":{slot}"#));
+            if let Some(b) = block_time_s {
+                parts.push(format!(r#""chain_block_time_s":{b}"#));
+            }
+            parts.push(format!(r#""retrieved_unix_ms":{retrieved_unix_ms}"#));
         }
         // Rev-14 wangr intelligence: serialize auxiliary + time signals.
         AppEvent::MarketAuxiliary {
@@ -665,6 +748,24 @@ fn event_fields_json(event: &AppEvent) -> String {
                 None => parts.push(r#""filled":false"#.to_string()),
             }
         }
+        AppEvent::ModelMgmtReport {
+            order_id,
+            action,
+            intended,
+            cumulative_tokens,
+            cumulative_gross,
+            cumulative_fees,
+            terminal,
+            ..
+        } => {
+            parts.push(format!(r#""action":{action}"#));
+            parts.push(format!(r#""intended":{intended}"#));
+            parts.push(format!(r#""order_id":{order_id}"#));
+            parts.push(format!(r#""cumulative_tokens":{cumulative_tokens}"#));
+            parts.push(format!(r#""cumulative_gross":{cumulative_gross}"#));
+            parts.push(format!(r#""cumulative_fees":{cumulative_fees}"#));
+            parts.push(format!(r#""terminal":{terminal}"#));
+        }
         // Rev-19 on-chain feedback: serialize signature + slot for confirmation events.
         AppEvent::OurBuyConfirmed {
             signature, slot, ..
@@ -698,11 +799,16 @@ fn event_fields_json(event: &AppEvent) -> String {
             parts.push(format!(r#""err_code":{}"#, err_code));
             parts.push(format!(r#""confirm_slot":{}"#, slot));
         }
+        AppEvent::CurveModeObserved { mayhem, slot, .. } => {
+            parts.push(format!(r#""mayhem":{}"#, mayhem));
+            parts.push(format!(r#""slot":{}"#, slot));
+        }
         AppEvent::Tick => {}
     }
     parts.join(",")
 }
 
+#[cfg(test)]
 /// Encode a CreatorActionKind as a JSON key-value pair.
 fn creator_action_kind_json(kind: &CreatorActionKind) -> String {
     match kind {
@@ -742,12 +848,14 @@ fn creator_action_kind_json(kind: &CreatorActionKind) -> String {
     }
 }
 
+#[cfg(test)]
 /// Encode a Mint as a base58 string (Solana canonical format).
 fn mint_to_base58(mint: &Mint) -> String {
     use solana_program::pubkey::Pubkey;
     Pubkey::from(*mint.as_bytes()).to_string()
 }
 
+#[cfg(test)]
 /// **Rev-19**: Encode a 64-byte signature as a hex string (128 chars).
 fn sig_to_hex(sig: &[u8; 64]) -> String {
     sig.iter().map(|b| format!("{:02x}", b)).collect()
@@ -821,6 +929,8 @@ mod tests {
             fee_lamports: None,
             cu_consumed: None,
             venue: None,
+            event_id: None,
+            feature: None,
         };
         writer.write_event(&event, 12345).expect("write");
         writer.flush().expect("flush");
@@ -830,7 +940,10 @@ mod tests {
         assert_eq!(lines.len(), 1);
         assert!(lines[0].contains(r#""kind":"MarketTrade""#));
         assert!(lines[0].contains(r#""slot":12345"#));
-        assert!(lines[0].contains(r#""price_fp":1000000000"#));
+        // v2 carries i128 as a decimal string (JSON numbers cannot hold every i128).
+        assert!(lines[0].contains(r#""price_fp":"1000000000""#));
+        // Schema v3 (cashback field on AmmSwap); every other kind is byte-identical to v2.
+        assert!(lines[0].contains(r#""v":3"#));
         assert!(lines[0].contains(r#""buyer_entity":42"#));
         assert!(lines[0].contains(r#""age_slots":100"#));
         assert!(lines[0].contains(r#""mint":"#));
@@ -954,6 +1067,8 @@ mod tests {
             fee_lamports: None,
             cu_consumed: None,
             venue: None,
+            event_id: None,
+            feature: None,
         };
         writer.write_event(&event, 12345).expect("write");
         writer.flush().expect("flush");
@@ -1010,6 +1125,8 @@ mod tests {
                     fee_lamports: None,
                     cu_consumed: None,
                     venue: None,
+                    event_id: None,
+                    feature: None,
                 },
                 2,
             )
@@ -1087,6 +1204,8 @@ garbage line 2
             fee_lamports: None,
             cu_consumed: None,
             venue: None,
+            event_id: None,
+            feature: None,
         };
         let line = event_to_json(&stamped, 9);
         assert!(
@@ -1115,6 +1234,8 @@ garbage line 2
             fee_lamports: None,
             cu_consumed: None,
             venue: None,
+            event_id: None,
+            feature: None,
         };
         let line = event_to_json(&unstamped, 9);
         assert!(!line.contains("recv_unix_ms"), "nothing fabricated: {line}");
@@ -1145,6 +1266,8 @@ garbage line 2
             fee_lamports: None,
             cu_consumed: None,
             venue: None,
+            event_id: None,
+            feature: None,
         };
         let line = event_to_json(&stamped, 9);
         assert!(line.contains("trader_pubkey"), "{line}");
@@ -1169,6 +1292,8 @@ garbage line 2
             fee_lamports: None,
             cu_consumed: None,
             venue: None,
+            event_id: None,
+            feature: None,
         };
         let line = event_to_json(&anonymous, 9);
         assert!(!line.contains("trader_pubkey"), "{line}");

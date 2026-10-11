@@ -60,6 +60,11 @@ pub struct LaserStreamInstruction {
     pub data: Vec<u8>,
     /// Account key indices into the transaction's account list.
     pub accounts: Vec<u8>,
+    /// Invocation position, when the producer supplies it: the index of the OUTER instruction this one belongs to
+    /// (an outer instruction carries its own index) and its CPI stack height (outer = 1). `None` = the producer did
+    /// not say; invocation-level association is then unavailable and ambiguous attribution is refused.
+    pub outer: Option<u32>,
+    pub depth: Option<u32>,
 }
 
 /// A decoded LaserStream transaction notification.
@@ -71,6 +76,10 @@ pub struct LaserStreamTx {
     pub signature: [u8; 64],
     /// All account keys in the transaction (message.header + account keys).
     pub account_keys: Vec<[u8; 32]>,
+    /// Indices whose key string did not parse (bytes are zero placeholders, NOT the System Program). Sorted.
+    pub invalid_key_idx: Vec<usize>,
+    /// Count of the one archival repair applied (33 x '1' -> zero key); see the parser comment.
+    pub repaired_zero_keys: u32,
     /// Decoded instructions (outer + inner).
     pub instructions: Vec<LaserStreamInstruction>,
     /// Whether this is a live observation (true) or replay (false).
@@ -88,6 +97,13 @@ pub struct LaserStreamTx {
     /// Compute units CONSUMED (`meta.compute_units_consumed`), not requested/limit. `None` when
     /// absent. Same quantity as the corpus tape `cu_consumed`.
     pub cu_consumed: Option<u64>,
+    /// Whether the transaction VERIFIABLY succeeded (`meta.err` absent), parsed from the wire
+    /// line's `meta.tx_ok` (1/0). `None` = the line does not say, which is NOT success: the
+    /// curve trade-event path refuses it. A sidecar subscription filter is not per-line evidence.
+    pub tx_ok: Option<bool>,
+    /// Native + token balances before/after, from `meta` (processed-commitment data). `None` = the line does not
+    /// carry them (an older sidecar, or no meta): the corpus-definition rows are then REFUSED, never zero-filled.
+    pub balances: Option<crate::corpus_rows::BalanceMeta>,
 }
 
 /// pump.fun `create` instruction discriminator (`sha256("global:create")[..8]`).
@@ -112,6 +128,8 @@ pub struct AmmSwapFacts {
     pub fee_parts: Option<(u32, u32, u32)>,
     /// `Pool::virtual_quote_reserves` from the event; `None` when the layout is unverified.
     pub virtual_quote: Option<u64>,
+    /// The event's cashback pair with layout provenance (known / missing / unsupported); never zero-filled.
+    pub cashback: pump_quant_protocol::pumpswap_event::CashbackField,
     /// The trader bought the token.
     pub is_buy: bool,
     /// Tokens received (buy) / given (sell).
@@ -120,6 +138,9 @@ pub struct AmmSwapFacts {
     pub quote_lamports: u64,
     /// The trader wallet.
     pub trader: [u8; 32],
+    /// Index (in the flattened instruction list) of the swap instruction that EMITTED this event, found by INVOCATION
+    /// parent when the producer supplies positions; `None` when it was found by the weaker pool-name rule.
+    pub swap_ix: Option<usize>,
     /// `pool == canonical_pool_for(mint)` AND the quote account is WSOL. Reserve/amount fields are
     /// token-oriented ONLY when this is true; otherwise the swap is counted, never used.
     pub canonical: bool,
@@ -163,12 +184,21 @@ pub fn decode_amm_swaps(tx: &LaserStreamTx) -> (Vec<AmmSwapFacts>, u32) {
     use pump_quant_protocol::pumpswap_event::{decode_pumpswap_event, PumpSwapEvent};
     let mut out = Vec::new();
     let mut excluded = 0u32;
-    for ix in &tx.instructions {
+    for (ev_idx, ix) in tx.instructions.iter().enumerate() {
         if ix.program_id != PUMP_SWAP_PROGRAM {
             continue;
         }
         let Some(ev) = decode_pumpswap_event(&ix.data) else {
             continue;
+        };
+        let cashback = match &ev {
+            PumpSwapEvent::Buy(_) => {
+                pump_quant_protocol::pumpswap_event::cashback_field_of_event(&ix.data, true)
+            }
+            PumpSwapEvent::Sell(_) => {
+                pump_quant_protocol::pumpswap_event::cashback_field_of_event(&ix.data, false)
+            }
+            PumpSwapEvent::CreatePool(_) => continue,
         };
         let (pool, user, buy, tok_res, quote_res, tok_amt, quote_amt, lp, prot, creator, vq) =
             match ev {
@@ -208,17 +238,42 @@ pub fn decode_amm_swaps(tx: &LaserStreamTx) -> (Vec<AmmSwapFacts>, u32) {
         // swap instruction in this transaction names the same pool (or the transaction holds more
         // than one swap event for it), which event belongs to which instruction is ambiguous, so
         // the event is EXCLUDED and counted. Another instruction's economics are never attached.
+        let is_event_ix = |sib: &LaserStreamInstruction| {
+            sib.data.get(0..8) == Some(&[0xe4, 0x45, 0xa5, 0x2e, 0x51, 0xcb, 0x9a, 0x1d][..])
+        };
+        // INVOCATION association first: the event self-CPI's parent is the swap instruction that emitted it.
+        let (swap_ix, positions_given) = match invocation_parent(tx, ev_idx) {
+            Ok(p) => {
+                let sib = &tx.instructions[p];
+                if sib.program_id == PUMP_SWAP_PROGRAM
+                    && !is_event_ix(sib)
+                    && account_key_at(sib, tx, 0) == Some(pool)
+                {
+                    (Some(p), true)
+                } else {
+                    // Parent is not the swap instruction of this pool: refuse by exclusion, never fall back.
+                    excluded = excluded.saturating_add(1);
+                    continue;
+                }
+            }
+            Err("no_invocation_position") => (None, false),
+            Err(_) => {
+                excluded = excluded.saturating_add(1);
+                continue;
+            }
+        };
+        // Producer without positions: ASSOCIATION GUARD. An event carries its pool but no instruction index; if more
+        // than one swap instruction names the same pool the association is ambiguous, so the event is EXCLUDED.
         let swap_ixs_on_pool = tx
             .instructions
             .iter()
             .filter(|sib| {
                 sib.program_id == PUMP_SWAP_PROGRAM
-                    && sib.data.get(0..8)
-                        != Some(&[0xe4, 0x45, 0xa5, 0x2e, 0x51, 0xcb, 0x9a, 0x1d][..])
+                    && !is_event_ix(sib)
                     && account_key_at(sib, tx, 0) == Some(pool)
             })
             .count();
-        if swap_ixs_on_pool > 1 {
+        if !positions_given && swap_ixs_on_pool > 1 {
             #[allow(clippy::arithmetic_side_effects)]
             // LINT-ALLOW(hot_arith,hot_cast): u64 excluded counter ×2
             {
@@ -226,30 +281,38 @@ pub fn decode_amm_swaps(tx: &LaserStreamTx) -> (Vec<AmmSwapFacts>, u32) {
             }
             continue;
         }
-        let mut found: Option<([u8; 32], bool, bool)> = None;
-        for sib in &tx.instructions {
-            if sib.program_id != PUMP_SWAP_PROGRAM
-                || sib.data.get(0..8) == Some(&[0xe4, 0x45, 0xa5, 0x2e, 0x51, 0xcb, 0x9a, 0x1d][..])
-            {
-                continue;
-            }
-            if account_key_at(sib, tx, 0) != Some(pool) {
-                continue;
-            }
-            if let (Some(base), Some(quote)) =
+        let resolve = |sib_idx: usize, sib: &LaserStreamInstruction| {
+            let (Some(base), Some(quote)) =
                 (account_key_at(sib, tx, 3), account_key_at(sib, tx, 4))
-            {
-                let token = if base != WSOL_MINT_BYTES { base } else { quote };
-                let quote_is_wsol = quote == WSOL_MINT_BYTES;
-                found = Some((
-                    token,
-                    quote_is_wsol,
-                    quote_is_wsol && canonical_pool_for(&token) == pool,
-                ));
-                break;
-            }
-        }
-        let Some((mint, quote_is_wsol, canonical)) = found else {
+            else {
+                return None;
+            };
+            let token = if base != WSOL_MINT_BYTES { base } else { quote };
+            let quote_is_wsol = quote == WSOL_MINT_BYTES;
+            Some((
+                token,
+                quote_is_wsol,
+                quote_is_wsol && canonical_pool_for(&token) == pool,
+                sib_idx,
+            ))
+        };
+        let found: Option<([u8; 32], bool, bool, usize)> = match swap_ix {
+            // INVOCATION path: the parent check above (PumpSwap program, not an event, names this pool) is the
+            // SOLE authority binding this event to its swap instruction; the mints are read from that parent only.
+            Some(p) => tx.instructions.get(p).and_then(|sib| resolve(p, sib)),
+            // No positions: the single swap instruction naming this pool (ambiguity was excluded above).
+            None => tx
+                .instructions
+                .iter()
+                .enumerate()
+                .filter(|(_, sib)| {
+                    sib.program_id == PUMP_SWAP_PROGRAM
+                        && !is_event_ix(sib)
+                        && account_key_at(sib, tx, 0) == Some(pool)
+                })
+                .find_map(|(i, sib)| resolve(i, sib)),
+        };
+        let Some((mint, quote_is_wsol, canonical, found_ix)) = found else {
             #[allow(clippy::arithmetic_side_effects)]
             // LINT-ALLOW(hot_arith,hot_cast): u64 excluded counter ×2
             {
@@ -272,10 +335,12 @@ pub fn decode_amm_swaps(tx: &LaserStreamTx) -> (Vec<AmmSwapFacts>, u32) {
                 ))
             }),
             virtual_quote: vq,
+            cashback,
             is_buy: buy,
             token_amount: tok_amt,
             quote_lamports: quote_amt,
             trader: user,
+            swap_ix: positions_given.then_some(found_ix),
             canonical,
             quote_is_wsol,
         });
@@ -286,13 +351,16 @@ pub fn decode_amm_swaps(tx: &LaserStreamTx) -> (Vec<AmmSwapFacts>, u32) {
 /// Classification of a pump.fun instruction found in a LaserStream transaction.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PumpInstruction {
-    /// pump.fun buy (bonding curve): `amount_lamports` in, `min_tokens` out.
+    /// pump.fun buy (bonding curve). INSTRUCTION ARGUMENTS ONLY, never an executed quantity:
+    /// `token_amount_arg` (data[8..16], base units; equals the signer's token delta in 147 of 148
+    /// captured successful single-swap buys) and `max_sol_cost` (data[16..24], the spend LIMIT, which
+    /// may be `u64::MAX` = unlimited and is not the SOL actually spent).
     /// `buyer` is the signer's pubkey extracted from account index [6] of the
     /// buy instruction (the `ctx.user` per `venue_accounts::pump_buy_accounts`).
     Buy {
         mint: [u8; 32],
-        amount_lamports: u64,
-        min_tokens: u64,
+        token_amount_arg: u64,
+        max_sol_cost: u64,
         /// Buyer's wallet pubkey (account index [6] in the buy instruction).
         buyer: [u8; 32],
     },
@@ -301,8 +369,10 @@ pub enum PumpInstruction {
     /// sell instruction.
     Sell {
         mint: [u8; 32],
+        /// Tokens offered (instruction argument).
         amount_tokens: u64,
-        min_lamports: u64,
+        /// Minimum SOL out: a LIMIT, never the SOL received.
+        min_sol_out: u64,
         /// Seller's wallet pubkey (account index [6] in the sell instruction).
         seller: [u8; 32],
     },
@@ -310,8 +380,10 @@ pub enum PumpInstruction {
     /// `buyer` is the signer at account index [1] of the PumpSwap buy ix.
     PumpSwapBuy {
         pool: [u8; 32],
-        amount_lamports: u64,
-        min_tokens: u64,
+        /// `base_amount_out` (instruction argument: tokens requested).
+        base_amount_out: u64,
+        /// `max_quote_amount_in`: the spend LIMIT (may be `u64::MAX`), never the quote actually spent.
+        max_quote_amount_in: u64,
         /// Buyer's wallet pubkey (account index [1] in the PumpSwap buy ix).
         buyer: [u8; 32],
     },
@@ -319,8 +391,10 @@ pub enum PumpInstruction {
     /// `seller` is the signer at account index [1] of the PumpSwap sell ix.
     PumpSwapSell {
         pool: [u8; 32],
+        /// `base_amount_in` (instruction argument: tokens offered).
         amount_tokens: u64,
-        min_lamports: u64,
+        /// `min_quote_amount_out`: a LIMIT, never the quote received.
+        min_quote_amount_out: u64,
         /// Seller's wallet pubkey (account index [1] in the PumpSwap sell ix).
         seller: [u8; 32],
     },
@@ -358,14 +432,14 @@ pub fn classify_pump_instructions(tx: &LaserStreamTx) -> Vec<PumpInstruction> {
                     if let (Some(mint), Some(buyer)) =
                         (account_key_at(ix, tx, 2), account_key_at(ix, tx, 6))
                     {
-                        let amount =
+                        let token_amount_arg =
                             u64::from_le_bytes(ix.data[8..16].try_into().unwrap_or([0; 8]));
-                        let min_tokens =
+                        let max_sol_cost =
                             u64::from_le_bytes(ix.data[16..24].try_into().unwrap_or([0; 8]));
                         out.push(PumpInstruction::Buy {
                             mint,
-                            amount_lamports: amount,
-                            min_tokens,
+                            token_amount_arg,
+                            max_sol_cost,
                             buyer,
                         });
                     }
@@ -387,12 +461,12 @@ pub fn classify_pump_instructions(tx: &LaserStreamTx) -> Vec<PumpInstruction> {
                     {
                         let amount =
                             u64::from_le_bytes(ix.data[8..16].try_into().unwrap_or([0; 8]));
-                        let min_lamports =
+                        let min_sol_out =
                             u64::from_le_bytes(ix.data[16..24].try_into().unwrap_or([0; 8]));
                         out.push(PumpInstruction::Sell {
                             mint,
                             amount_tokens: amount,
-                            min_lamports,
+                            min_sol_out,
                             seller,
                         });
                     }
@@ -408,8 +482,8 @@ pub fn classify_pump_instructions(tx: &LaserStreamTx) -> Vec<PumpInstruction> {
                         {
                             out.push(PumpInstruction::PumpSwapBuy {
                                 pool,
-                                amount_lamports: args.max_quote_amount_in,
-                                min_tokens: args.base_amount_out,
+                                base_amount_out: args.base_amount_out,
+                                max_quote_amount_in: args.max_quote_amount_in,
                                 buyer,
                             });
                         }
@@ -422,7 +496,7 @@ pub fn classify_pump_instructions(tx: &LaserStreamTx) -> Vec<PumpInstruction> {
                             out.push(PumpInstruction::PumpSwapSell {
                                 pool,
                                 amount_tokens: args.base_amount_in,
-                                min_lamports: args.min_quote_amount_out,
+                                min_quote_amount_out: args.min_quote_amount_out,
                                 seller,
                             });
                         }
@@ -451,14 +525,55 @@ pub fn classify_pump_instructions(tx: &LaserStreamTx) -> Vec<PumpInstruction> {
     out
 }
 
+/// Invocation parent of the instruction at `idx` in the flattened (outer-then-inner) list: the nearest preceding
+/// instruction of the SAME outer group whose CPI stack height is exactly one less. An event self-CPI is invoked by
+/// the instruction that emitted it, so this is the invocation-level association between an event and its swap
+/// instruction. Refuses (`Err`) when the producer did not supply invocation positions, or the structure is
+/// inconsistent: association is never inferred from adjacency, mint/side equality, or population counts.
+pub fn invocation_parent(tx: &LaserStreamTx, idx: usize) -> Result<usize, &'static str> {
+    let me = tx.instructions.get(idx).ok_or("ix_out_of_range")?;
+    let (Some(outer), Some(depth)) = (me.outer, me.depth) else {
+        return Err("no_invocation_position");
+    };
+    if depth < 2 {
+        return Err("outer_instruction_has_no_parent");
+    }
+    let want = depth.saturating_sub(1); // depth >= 2 checked above
+    if want == 1 {
+        // The parent is the OUTER instruction itself (depth 1, carrying its own index).
+        return tx
+            .instructions
+            .iter()
+            .position(|i| i.outer == Some(outer) && i.depth == Some(1))
+            .ok_or("outer_parent_missing");
+    }
+    // Inner instructions of one group are recorded in invocation (pre-)order.
+    for j in (0..idx).rev() {
+        let c = &tx.instructions[j];
+        if c.outer != Some(outer) {
+            break;
+        }
+        match c.depth {
+            Some(d) if d == want => return Ok(j),
+            Some(d) if d < want => return Err("parent_not_found_in_group"),
+            Some(_) => {}
+            None => return Err("no_invocation_position"),
+        }
+    }
+    Err("parent_not_found_in_group")
+}
+
 /// Resolve an account key from an instruction's account index.
 /// Returns None if the index is out of bounds (fail-safe, not panic).
+/// The capture emitter's pre-33299734 spelling of the 32-byte all-zero key (a spurious extra digit).
+pub const ARCHIVAL_B58_ZERO_KEY: &str = "111111111111111111111111111111111";
+
 fn account_key_at(ix: &LaserStreamInstruction, tx: &LaserStreamTx, idx: usize) -> Option<[u8; 32]> {
     if idx >= ix.accounts.len() {
         return None;
     }
     let key_idx = ix.accounts[idx] as usize;
-    if key_idx >= tx.account_keys.len() {
+    if key_idx >= tx.account_keys.len() || tx.invalid_key_idx.contains(&key_idx) {
         return None;
     }
     Some(tx.account_keys[key_idx])
@@ -472,7 +587,7 @@ fn account_key_at(ix: &LaserStreamInstruction, tx: &LaserStreamTx, idx: usize) -
 /// `u64` handle for the `buyer_entity` field that the engine uses for holder
 /// de-duplication and bitset tracking. Collisions are negligible for the
 /// ~10⁶-wallet addressable space (birthday bound ~2³²).
-fn wallet_entity_id(pubkey: &[u8; 32]) -> u64 {
+pub fn wallet_entity_id(pubkey: &[u8; 32]) -> u64 {
     let lo = u64::from_le_bytes(pubkey[..8].try_into().unwrap_or([0; 8]));
     let hi = u64::from_le_bytes(pubkey[24..32].try_into().unwrap_or([0; 8]));
     // splitmix64 round: mix hi into lo
@@ -528,7 +643,7 @@ pub fn instructions_to_events_with_meta(
         match ix {
             PumpInstruction::Buy {
                 mint,
-                amount_lamports,
+                token_amount_arg,
                 buyer,
                 ..
             } => {
@@ -536,9 +651,12 @@ pub fn instructions_to_events_with_meta(
                     event: AppEvent::MarketTrade {
                         mint: Mint(*mint),
                         price_fp: 0, // Filled by reserve-delta or account snapshot
-                        quote_lamports: *amount_lamports,
+                        // An instruction carries a spend LIMIT, never the SOL spent: no executed quote is known
+                        // here, so none is claimed. Executed quantities come only from the verified event path.
+                        quote_lamports: 0,
                         liquidity_lamports: 0, // Filled by OnchainConfirm
-                        signed_base: i64::try_from(*amount_lamports).unwrap_or(i64::MAX),
+                        // Direction + the exact-out TOKEN argument (a token-side argument, not the limit).
+                        signed_base: i64::try_from(*token_amount_arg).unwrap_or(i64::MAX),
                         buyer_entity: wallet_entity_id(buyer),
                         trader_pubkey: Some(*buyer),
                         age_slots: 0, // Not available from ix data alone
@@ -547,6 +665,8 @@ pub fn instructions_to_events_with_meta(
                         fee_lamports,
                         cu_consumed,
                         venue: Some(pump_quant_app::event::TradeVenue::PumpFun),
+                        event_id: None,
+                        feature: None,
                     },
                     source: ProvenanceSource::LaserStream,
                     slot,
@@ -577,6 +697,8 @@ pub fn instructions_to_events_with_meta(
                         fee_lamports,
                         cu_consumed,
                         venue: Some(pump_quant_app::event::TradeVenue::PumpFun),
+                        event_id: None,
+                        feature: None,
                     },
                     source: ProvenanceSource::LaserStream,
                     slot,
@@ -585,7 +707,7 @@ pub fn instructions_to_events_with_meta(
             }
             PumpInstruction::PumpSwapBuy {
                 pool,
-                amount_lamports,
+                base_amount_out,
                 buyer,
                 ..
             } => {
@@ -593,9 +715,10 @@ pub fn instructions_to_events_with_meta(
                     event: AppEvent::MarketTrade {
                         mint: Mint(*pool),
                         price_fp: 0,
-                        quote_lamports: *amount_lamports,
+                        // `max_quote_amount_in` is a LIMIT (often u64::MAX): never a quote quantity.
+                        quote_lamports: 0,
                         liquidity_lamports: 0,
-                        signed_base: i64::try_from(*amount_lamports).unwrap_or(i64::MAX),
+                        signed_base: i64::try_from(*base_amount_out).unwrap_or(i64::MAX),
                         buyer_entity: wallet_entity_id(buyer),
                         trader_pubkey: Some(*buyer),
                         age_slots: 0,
@@ -604,6 +727,8 @@ pub fn instructions_to_events_with_meta(
                         fee_lamports,
                         cu_consumed,
                         venue: Some(pump_quant_app::event::TradeVenue::PumpSwap),
+                        event_id: None,
+                        feature: None,
                     },
                     source: ProvenanceSource::LaserStream,
                     slot,
@@ -634,6 +759,8 @@ pub fn instructions_to_events_with_meta(
                         fee_lamports,
                         cu_consumed,
                         venue: Some(pump_quant_app::event::TradeVenue::PumpSwap),
+                        event_id: None,
+                        feature: None,
                     },
                     source: ProvenanceSource::LaserStream,
                     slot,
@@ -652,6 +779,7 @@ pub fn instructions_to_events_with_meta(
                         fee_bps: f.fee_bps,
                         fee_parts: f.fee_parts,
                         virtual_quote: f.virtual_quote,
+                        cashback: f.cashback,
                         is_buy: f.is_buy,
                         token_amount: f.token_amount,
                         quote_lamports: f.quote_lamports,
@@ -821,14 +949,40 @@ pub fn parse_ndjson_line(line: &str) -> Option<LaserStreamUpdate> {
                 }
             }
 
-            // Parse account keys (array of base58 strings → [[u8;32]; N])
+            // Parse account keys (array of base58 strings -> [[u8;32]; N]).
+            // INDEX ALIGNMENT IS LOAD-BEARING: instruction accounts and balance arrays index into this list, so
+            // every key keeps its slot. A key that does not parse is recorded in `invalid_key_idx` and is NEVER
+            // usable as an account: `account_key_at` and the corpus resolver refuse it by name. Its bytes stay zero
+            // only to keep the vector rectangular; zero is also the real System Program key, so the invalid mask,
+            // not the bytes, is what distinguishes the two.
+            // ONE documented archival repair: the capture emitter built before 33299734 encoded the all-zero
+            // 32-byte key (System Program) as 33 '1's. That exact string, and only it, decodes to the zero key
+            // (`ARCHIVAL_B58_ZERO_KEY_REPAIRS` counts it). Anything else that fails stays invalid.
+            let mut invalid_key_idx: Vec<usize> = Vec::new();
+            let mut repaired_zero_keys: u32 = 0;
             let account_keys: Vec<[u8; 32]> = v
                 .get("account_keys")
                 .and_then(|a| a.as_array())
                 .map(|arr| {
                     arr.iter()
-                        .filter_map(|k| k.as_str())
-                        .filter_map(|s| Pubkey::from_str(s).ok().map(|p| p.to_bytes()))
+                        .enumerate()
+                        .map(|(i, k)| match k.as_str() {
+                            Some(s) if s == ARCHIVAL_B58_ZERO_KEY => {
+                                repaired_zero_keys = repaired_zero_keys.saturating_add(1);
+                                [0u8; 32]
+                            }
+                            Some(s) => match Pubkey::from_str(s) {
+                                Ok(p) => p.to_bytes(),
+                                Err(_) => {
+                                    invalid_key_idx.push(i);
+                                    [0u8; 32]
+                                }
+                            },
+                            None => {
+                                invalid_key_idx.push(i);
+                                [0u8; 32]
+                            }
+                        })
                         .collect()
                 })
                 .unwrap_or_default();
@@ -862,10 +1016,17 @@ pub fn parse_ndjson_line(line: &str) -> Option<LaserStreamUpdate> {
                                         .collect::<Option<Vec<u8>>>()?,
                                     None => Vec::new(),
                                 };
+                            let g = |k: &str| {
+                                ix.get(k)
+                                    .and_then(|n| n.as_u64())
+                                    .and_then(|v| u32::try_from(v).ok())
+                            };
                             Some(LaserStreamInstruction {
                                 program_id,
                                 data,
                                 accounts,
+                                outer: g("outer"),
+                                depth: g("depth"),
                             })
                         })
                         .collect()
@@ -882,14 +1043,20 @@ pub fn parse_ndjson_line(line: &str) -> Option<LaserStreamUpdate> {
             };
             let fee_lamports = meta_u64("fee", "fee_lamports");
             let cu_consumed = meta_u64("compute_units_consumed", "cu_consumed");
+            let tx_ok = meta_u64("tx_ok", "tx_ok").map(|n| n != 0);
+            let balances = parse_balance_meta(&v);
 
             Some(LaserStreamUpdate::Transaction(LaserStreamTx {
                 slot,
                 signature,
                 account_keys,
+                invalid_key_idx,
+                repaired_zero_keys,
                 instructions,
                 fee_lamports,
                 cu_consumed,
+                tx_ok,
+                balances,
                 is_live: true, // gRPC stream is always live (§65)
                 // Straight off the wire, into the event: this is the clock the corpus's
                 // causal windows are keyed on, and it is never re-derived.
@@ -920,6 +1087,39 @@ pub fn parse_ndjson_line(line: &str) -> Option<LaserStreamUpdate> {
         }
         _ => None,
     }
+}
+
+/// Parse `meta.{pre,post}_balances` and `meta.{pre,post}_token_balances`. All four must be present and well formed,
+/// else `None`: a partial balance set would yield a wrong trader delta, so it is refused as a whole.
+fn parse_balance_meta(
+    v: &pq_stream_capture::json::Value,
+) -> Option<crate::corpus_rows::BalanceMeta> {
+    use crate::corpus_rows::{BalanceMeta, TokBal};
+    use solana_program::pubkey::Pubkey;
+    use std::str::FromStr;
+    let m = v.get("meta")?;
+    let nums = |k: &str| -> Option<Vec<u64>> {
+        m.get(k)?.as_array()?.iter().map(|n| n.as_u64()).collect()
+    };
+    let toks = |k: &str| -> Option<Vec<TokBal>> {
+        m.get(k)?
+            .as_array()?
+            .iter()
+            .map(|e| {
+                Some(TokBal {
+                    mint: Pubkey::from_str(e.get("mint")?.as_str()?).ok()?.to_bytes(),
+                    owner: Pubkey::from_str(e.get("owner")?.as_str()?).ok()?.to_bytes(),
+                    amount: e.get("amount")?.as_str()?.parse::<u128>().ok()?,
+                })
+            })
+            .collect()
+    };
+    Some(BalanceMeta {
+        pre_sol: nums("pre_balances")?,
+        post_sol: nums("post_balances")?,
+        pre_tok: toks("pre_token_balances")?,
+        post_tok: toks("post_token_balances")?,
+    })
 }
 
 /// Minimal base58 (Bitcoin alphabet) decoder.
@@ -958,6 +1158,60 @@ fn b58_decode(s: &str) -> Option<Vec<u8>> {
     result.extend(std::iter::repeat_n(0u8, zeros));
     result.reverse();
     Some(result)
+}
+
+/// FEES R10 F8 feed: the owning token program of each mint traded in a SUCCESSFUL transaction, PROVEN by
+/// derivation rather than read from an account index. For a pump.fun buy/sell (mint = [2], user ATA = [5],
+/// user = [6]) or a PumpSwap buy/sell (user = [1], base mint = [3], user base ATA = [5]), a candidate program
+/// (SPL Token / Token-2022) is accepted only if `ATA(user, program, mint)` equals the listed user ATA, and only
+/// when EXACTLY ONE candidate matches. `tx_ok != Some(true)` yields nothing (a failed or unattested tx is not
+/// evidence). `skip(mint)` lets the caller avoid re-deriving mints it already knows. Never guesses a default.
+pub fn observed_token_programs(
+    tx: &LaserStreamTx,
+    skip: impl Fn(&[u8; 32]) -> bool,
+) -> Vec<([u8; 32], [u8; 32])> {
+    use pump_quant_protocol::ix::BUY_EXACT_SOL_IN_DISCRIMINATOR;
+    use pump_quant_protocol::venue_accounts::{TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID};
+    let mut out: Vec<([u8; 32], [u8; 32])> = Vec::new();
+    if tx.tx_ok != Some(true) {
+        return out;
+    }
+    for ix in &tx.instructions {
+        let Some(disc) = ix.data.get(..8) else {
+            continue;
+        };
+        let (mint_i, ata_i, user_i) = if ix.program_id == PUMP_FUN_PROGRAM
+            && (disc == BUY_DISCRIMINATOR
+                || disc == SELL_DISCRIMINATOR
+                || disc == BUY_EXACT_SOL_IN_DISCRIMINATOR)
+        {
+            (2, 5, 6)
+        } else if ix.program_id == PUMP_SWAP_PROGRAM
+            && (disc == BUY_DISCRIMINATOR || disc == SELL_DISCRIMINATOR)
+        {
+            (3, 5, 1)
+        } else {
+            continue;
+        };
+        let (Some(mint), Some(ata), Some(user)) = (
+            account_key_at(ix, tx, mint_i),
+            account_key_at(ix, tx, ata_i),
+            account_key_at(ix, tx, user_i),
+        ) else {
+            continue;
+        };
+        if skip(&mint) || out.iter().any(|(m, _)| *m == mint) {
+            continue;
+        }
+        let matches: Vec<[u8; 32]> = [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID]
+            .into_iter()
+            .filter(|tp| pump_quant_protocol::pda::derive_ata(&user, tp, &mint).ok() == Some(ata))
+            .collect();
+        if let [tp] = matches.as_slice() {
+            out.push((mint, *tp));
+        }
+    }
+    out
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────
@@ -1025,12 +1279,74 @@ mod tests {
             slot,
             signature: [0u8; 64],
             account_keys: vec![],
+            invalid_key_idx: vec![],
+            repaired_zero_keys: 0,
             instructions: vec![],
             is_live,
             recv_unix_ms: None,
             fee_lamports: None,
             cu_consumed: None,
+            tx_ok: None,
+            balances: None,
         }
+    }
+
+    /// FEES R10 F8 feed: the token program is accepted only when it reproduces the listed user ATA.
+    #[test]
+    fn observed_token_programs_are_proven_by_ata_derivation_and_refused_otherwise() {
+        use pump_quant_protocol::pda::derive_ata;
+        use pump_quant_protocol::venue_accounts::{TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID};
+        let (mint_a, mint_b, user) = ([0xA1; 32], [0xB2; 32], [0x42; 32]);
+        let ata_a = derive_ata(&user, &TOKEN_2022_PROGRAM_ID, &mint_a).unwrap();
+        let ata_b = derive_ata(&user, &TOKEN_PROGRAM_ID, &mint_b).unwrap();
+        let mut tx = make_tx(1, true);
+        // keys: 0 global, 1 fee, 2 mint_a, 3 curve, 4 assoc curve, 5 ata_a, 6 user, 7 mint_b, 8 ata_b, 9 pool
+        tx.account_keys = vec![
+            [1; 32], [2; 32], mint_a, [3; 32], [4; 32], ata_a, user, mint_b, ata_b, [9; 32],
+        ];
+        let mut data = BUY_DISCRIMINATOR.to_vec();
+        data.extend_from_slice(&[0u8; 16]);
+        // pump.fun buy on mint_a (Token-2022).
+        tx.instructions.push(LaserStreamInstruction {
+            program_id: PUMP_FUN_PROGRAM,
+            data: data.clone(),
+            accounts: vec![0, 1, 2, 3, 4, 5, 6],
+            outer: None,
+            depth: None,
+        });
+        // PumpSwap sell on mint_b (SPL): pool, user, global, base mint, quote mint, user base ATA.
+        let mut sdata = SELL_DISCRIMINATOR.to_vec();
+        sdata.extend_from_slice(&[0u8; 16]);
+        tx.instructions.push(LaserStreamInstruction {
+            program_id: PUMP_SWAP_PROGRAM,
+            data: sdata,
+            accounts: vec![9, 6, 0, 7, 1, 8],
+            outer: None,
+            depth: None,
+        });
+        // Unattested status: nothing.
+        assert!(observed_token_programs(&tx, |_| false).is_empty());
+        tx.tx_ok = Some(false);
+        assert!(observed_token_programs(&tx, |_| false).is_empty());
+        tx.tx_ok = Some(true);
+        assert_eq!(
+            observed_token_programs(&tx, |_| false),
+            vec![(mint_a, TOKEN_2022_PROGRAM_ID), (mint_b, TOKEN_PROGRAM_ID)]
+        );
+        // Skip hook honoured.
+        assert_eq!(
+            observed_token_programs(&tx, |m| *m == mint_a),
+            vec![(mint_b, TOKEN_PROGRAM_ID)]
+        );
+        // A listed ATA that no candidate program reproduces is refused (no default program).
+        tx.account_keys[5] = [0x77; 32];
+        assert_eq!(
+            observed_token_programs(&tx, |_| false),
+            vec![(mint_b, TOKEN_PROGRAM_ID)]
+        );
+        // Truncated account list: refused, no panic.
+        tx.instructions[1].accounts.truncate(4);
+        assert!(observed_token_programs(&tx, |_| false).is_empty());
     }
 
     #[test]
@@ -1060,14 +1376,16 @@ mod tests {
                 d
             },
             accounts: vec![0, 1, 2, 3, 4, 5, 6],
+            outer: None,
+            depth: None,
         });
 
         let classified = classify_pump_instructions(&tx);
         assert_eq!(classified.len(), 1);
         assert!(matches!(
             &classified[0],
-            PumpInstruction::Buy { mint, amount_lamports, buyer, .. }
-            if *mint == mint_bytes && *amount_lamports == 1_000_000 && *buyer != [0u8; 32]
+            PumpInstruction::Buy { mint, token_amount_arg, buyer, .. }
+            if *mint == mint_bytes && *token_amount_arg == 1_000_000 && *buyer != [0u8; 32]
         ));
     }
 
@@ -1095,6 +1413,8 @@ mod tests {
                 d
             },
             accounts: vec![0, 1, 2, 3, 4, 5, 6],
+            outer: None,
+            depth: None,
         });
 
         let classified = classify_pump_instructions(&tx);
@@ -1114,6 +1434,8 @@ mod tests {
             program_id: [0x0; 32],
             data: vec![0x2, 0x0, 0x0, 0x0],
             accounts: vec![0, 1],
+            outer: None,
+            depth: None,
         });
 
         let classified = classify_pump_instructions(&tx);
@@ -1125,8 +1447,8 @@ mod tests {
         let mint = [0xCC; 32];
         let instructions = vec![PumpInstruction::Buy {
             mint,
-            amount_lamports: 1_000_000,
-            min_tokens: 100,
+            token_amount_arg: 1_000_000,
+            max_sol_cost: 100,
             buyer: [0x42; 32],
         }];
 
@@ -1144,7 +1466,10 @@ mod tests {
             } => {
                 assert_eq!(m, &Mint(mint));
                 assert!(*signed_base > 0); // Buy = positive signed_base
-                assert_eq!(quote_lamports, &1_000_000u64);
+                assert_eq!(
+                    quote_lamports, &0u64,
+                    "an instruction carries a limit, not an executed quote"
+                );
             }
             _ => panic!("Expected MarketTrade event"),
         }
@@ -1156,7 +1481,7 @@ mod tests {
         let instructions = vec![PumpInstruction::Sell {
             mint,
             amount_tokens: 500_000,
-            min_lamports: 10,
+            min_sol_out: 10,
             seller: [0x43; 32],
         }];
 
@@ -1201,6 +1526,8 @@ mod tests {
             program_id: PUMP_FUN_PROGRAM,
             data,
             accounts: vec![1, 2, 0],
+            outer: None,
+            depth: None,
         }];
         let c = classify_pump_instructions(&tx);
         assert_eq!(
@@ -1255,6 +1582,8 @@ mod tests {
             program_id: [0; 32],
             data: vec![],
             accounts: vec![0, 1, 2],
+            outer: None,
+            depth: None,
         };
         assert!(account_key_at(&ix, &tx, 0).is_none());
     }
@@ -1300,6 +1629,8 @@ mod tests {
                 d
             },
             accounts: vec![0, 1, 2, 3, 4, 5, 6],
+            outer: None,
+            depth: None,
         });
 
         // Sell instruction: accounts [0,3,4,5,7,8,9,10] = PUMP_GLOBAL, fee, mint2, bonding_curve, assoc_curve, assoc_user, creator, seller
@@ -1313,6 +1644,8 @@ mod tests {
                 d
             },
             accounts: vec![0, 3, 4, 5, 7, 8, 9, 10],
+            outer: None,
+            depth: None,
         });
 
         let classified = classify_pump_instructions(&tx);
@@ -1327,8 +1660,8 @@ mod tests {
         let mint = [0xAA; 32];
         let instructions = vec![PumpInstruction::Buy {
             mint,
-            amount_lamports: 100,
-            min_tokens: 10,
+            token_amount_arg: 100,
+            max_sol_cost: 10,
             buyer: [0x42; 32],
         }];
 
@@ -1639,6 +1972,98 @@ mod tests {
         }
     }
 
+    /// `meta.tx_ok` as the sidecar's serializer writes it (`u64::from(err.is_none())`): 1 = success,
+    /// 0 = failed. An ABSENT field is `None` -- never success (an older sidecar must not read as ok).
+    #[test]
+    fn tx_ok_is_parsed_fail_closed_success_failure_and_missing() {
+        let ok = parsed(&tx_line(
+            r#","meta":{"fee":5000,"compute_units_consumed":1,"tx_ok":1}"#,
+        ));
+        let bad = parsed(&tx_line(
+            r#","meta":{"fee":5000,"compute_units_consumed":1,"tx_ok":0}"#,
+        ));
+        let old = parsed(&tx_line(
+            r#","meta":{"fee":5000,"compute_units_consumed":1}"#,
+        ));
+        assert_eq!(ok.tx_ok, Some(true));
+        assert_eq!(bad.tx_ok, Some(false));
+        assert_eq!(old.tx_ok, None, "missing status is unknown, not success");
+        // The sidecar writes JSON null when the notification carried no meta at all.
+        let nometa = parsed(&tx_line(
+            r#","meta":{"fee":null,"compute_units_consumed":null,"tx_ok":null}"#,
+        ));
+        assert_eq!(nometa.tx_ok, None, "null status is unknown, not success");
+    }
+
+    #[test]
+    fn an_unparseable_account_key_keeps_its_slot_so_later_indices_stay_aligned() {
+        let k1 = "11111111111111111111111111111111";
+        let line = format!(
+            r#"{{"kind":"transaction","slot":1,"recv_unix_ms":5,"signature_b58":"{}","account_keys":["{}","not-a-key!!","{}"],"instructions":[]}}"#,
+            "1".repeat(88),
+            k1,
+            k1
+        );
+        let t = parsed(&line);
+        assert_eq!(t.account_keys.len(), 3, "no key may be dropped");
+        assert_eq!(
+            t.invalid_key_idx,
+            vec![1],
+            "the bad key is explicitly invalid"
+        );
+        assert_eq!(t.repaired_zero_keys, 0);
+    }
+
+    #[test]
+    fn invalid_key_is_refused_as_an_account_without_shifting_later_indices() {
+        let good = "11111111111111111111111111111111";
+        let mut t = parsed(&format!(
+            r#"{{"kind":"transaction","slot":1,"recv_unix_ms":5,"signature_b58":"{}","account_keys":["{}","not-a-key!!","{}"],"instructions":[]}}"#,
+            "1".repeat(88),
+            good,
+            "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
+        ));
+        let ix = LaserStreamInstruction {
+            program_id: [0; 32],
+            data: vec![],
+            accounts: vec![1, 2, 0],
+            outer: None,
+            depth: None,
+        };
+        t.instructions.clear();
+        assert!(
+            account_key_at(&ix, &t, 0).is_none(),
+            "invalid key must not resolve (not a zero System key)"
+        );
+        assert_eq!(
+            account_key_at(&ix, &t, 1),
+            Some(PUMP_FUN_PROGRAM),
+            "later index unchanged"
+        );
+        assert_eq!(
+            account_key_at(&ix, &t, 2),
+            Some([0u8; 32]),
+            "a REAL System Program key still resolves"
+        );
+    }
+
+    #[test]
+    fn archival_33_ones_is_the_only_repaired_spelling() {
+        let t = parsed(&format!(
+            r#"{{"kind":"transaction","slot":1,"recv_unix_ms":5,"signature_b58":"{}","account_keys":["{}","{}"],"instructions":[]}}"#,
+            "1".repeat(88),
+            ARCHIVAL_B58_ZERO_KEY,
+            "1".repeat(34)
+        ));
+        assert_eq!(t.repaired_zero_keys, 1);
+        assert_eq!(
+            t.invalid_key_idx,
+            vec![1],
+            "34 ones is not the documented defect: stays invalid"
+        );
+        assert_eq!(t.account_keys[0], [0u8; 32]);
+    }
+
     #[test]
     fn fee_and_cu_are_read_from_nested_meta() {
         let t = parsed(&tx_line(
@@ -1672,14 +2097,14 @@ mod tests {
         let ixs = vec![
             PumpInstruction::Buy {
                 mint: [1; 32],
-                amount_lamports: 5,
-                min_tokens: 0,
+                token_amount_arg: 5,
+                max_sol_cost: 0,
                 buyer: [9; 32],
             },
             PumpInstruction::Sell {
                 mint: [2; 32],
                 amount_tokens: 7,
-                min_lamports: 0,
+                min_sol_out: 0,
                 seller: [8; 32],
             },
         ];

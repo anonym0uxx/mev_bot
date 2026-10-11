@@ -50,14 +50,17 @@
 #![forbid(unsafe_code)]
 
 pub mod curve;
+pub mod curve_sell_quote;
 pub mod decode;
 pub mod errors;
+pub mod fee_schedule;
 pub mod ix;
 pub mod layout;
 pub mod message;
 pub mod pda;
 pub mod pumpswap;
 pub mod pumpswap_event;
+pub mod pumpswap_fees;
 pub mod pumpswap_ix;
 pub mod registry;
 pub mod runtime_errors;

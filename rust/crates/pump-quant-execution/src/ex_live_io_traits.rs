@@ -138,6 +138,22 @@ pub trait LiveStateFetcher: Send + Sync {
         user: &[u8; 32],
         token_program: &[u8; 32],
     ) -> Result<u64, StateFetchError>;
+
+    /// SCOPE_TXCOST_R9 T2: the accounts a curve BUY may create (user ATA, user_volume_accumulator)
+    /// observed at ONE slot, plus `getMinimumBalanceForRentExemption` for the sizes involved read at
+    /// that same slot. The live sink plans deposits and named refusals from this; it never assumes
+    /// an account's state or a rent constant.
+    ///
+    /// The default is UNOBSERVED (an error): a fetcher that has not implemented the reads makes
+    /// every live BUY refuse by name (`deposit_unknown`) rather than build on an assumed state.
+    fn observe_buy_accounts(
+        &self,
+        _ctx: &pump_quant_protocol::venue_accounts::PumpCurveCtx,
+    ) -> Result<pump_quant_protocol::tx_build::BuyAccountObservation, StateFetchError> {
+        Err(StateFetchError::RpcError(
+            "buy account observation not implemented by this fetcher".to_string(),
+        ))
+    }
 }
 
 // ---------------------------------------------------------------------------

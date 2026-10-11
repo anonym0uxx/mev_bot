@@ -391,6 +391,11 @@ pub fn optimal_clip_lamports(vsol_lamports: u64, fixed_total_lamports: u64) -> O
 /// clip it is 203 bps of working capital: unrecovered, it is the single largest cost
 /// on the trade; recovered, it is 0.5 bps. A cost model that cannot tell those two
 /// cases apart cannot price a scalp.
+///
+/// FEES R10 F8: this is the LABELLED v0 LEGACY value only (`paper_rent_basis` absent =
+/// `rent_v0_legacy_constant`, historical replays). The chain's rent today differs
+/// (proc/CHAIN_READONLY_EVIDENCE.md §2); the engine's paper entry deposit and close refund come from
+/// [`crate::paper_deposit`] (the builder's `plan_buy_deposits` / `refund_on_close`), not from here.
 pub const ATA_RENT_LAMPORTS: u64 = 2_039_280;
 
 /// The cost of reclaiming [`ATA_RENT_LAMPORTS`]: one signature, 5_000 lamports.

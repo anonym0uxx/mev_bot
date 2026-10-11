@@ -11,8 +11,8 @@
 
 use super::*;
 use crate::safety_off::{
-    HeldRecord, PendingRecord, RearmRefusal, SafetyLoad, SafetyOff, CONSECUTIVE_ABANDONED_TRIP,
-    REASON_OPERATOR, REASON_SHUTDOWN,
+    EndpointMix, HeldRecord, PendingRecord, RearmRefusal, SafetyLoad, SafetyOff,
+    CONSECUTIVE_ABANDONED_TRIP, REASON_OPERATOR, REASON_SHUTDOWN,
 };
 
 /// What a controlled shutdown left, for the operator and the log.
@@ -69,6 +69,13 @@ impl Engine {
         self.model_safety.blocked
     }
 
+    /// The SAFETY_OFF transition counter (monotone, persisted). An operator re-arm request echoes it, so a request
+    /// written for one latch can never lift a later one.
+    #[must_use]
+    pub fn model_safety_epoch(&self) -> u64 {
+        self.model_safety.epoch
+    }
+
     /// The recorded reason.
     #[must_use]
     pub fn model_safety_reason(&self) -> &str {
@@ -99,6 +106,7 @@ impl Engine {
                 model_manage::MgmtKind::Reduce => "reduce",
                 model_manage::MgmtKind::Exit => "exit",
                 model_manage::MgmtKind::Add => "add",
+                model_manage::MgmtKind::Protect => "protect",
             },
             id: o.id,
             mint: *m,
@@ -154,7 +162,7 @@ impl Engine {
         if operator.trim().is_empty() {
             return Err(RearmRefusal::NoOperator);
         }
-        if !self.model_recon_faults.is_empty() {
+        if !self.model_recon_faults.is_empty() || !self.model_sell_faults.is_empty() {
             return Err(RearmRefusal::UnresolvedReconFault);
         }
         if self
@@ -162,6 +170,7 @@ impl Engine {
             .values()
             .any(|o| o.uncertain && o.confirmed.is_none())
             || self.model_mgmt.orders.values().any(|o| o.uncertain)
+            || self.model_mgmt.protect.values().any(|o| o.uncertain)
         {
             return Err(RearmRefusal::UncertainOrderPending);
         }
@@ -171,13 +180,17 @@ impl Engine {
         self.model_safety.epoch += 1;
         self.model_safety.rearmed_by = Some(operator.to_string());
         self.model_safety.consecutive_abandoned = 0;
+        self.model_safety.consecutive_local_expired = 0;
+        self.model_safety.endpoint_mix = EndpointMix::default();
+        self.model_safety.latch_mix = None;
         if !self.model_safety_persist() {
             // Not durable => did not happen: a restart would otherwise come back blocked while this
             // process runs armed.
             self.model_safety = prev;
             return Err(RearmRefusal::PersistFailed);
         }
-        self.model_table.set_entries_blocked(false);
+        // Re-derive: an active stop-table restriction (disk, feed, deadline, ...) keeps entries blocked.
+        self.model_stop_sync_entry_block();
         self.mrep("safety:rearmed");
         Ok(())
     }
@@ -256,21 +269,242 @@ impl Engine {
         self.model_safety_trip(REASON_OPERATOR)
     }
 
-    /// Fold one poll's endpoint health into the trip rule: consecutive failures/abandonments.
-    pub(super) fn model_safety_note_endpoint(&mut self, ok: u32, failed: u32) {
+    /// Endpoint-health failures counted toward the hung-endpoint trip since the last healthy answer
+    /// (each request id at most once). Trips at [`CONSECUTIVE_ABANDONED_TRIP`].
+    #[must_use]
+    pub fn model_safety_consecutive_failures(&self) -> u32 {
+        self.model_safety.consecutive_abandoned
+    }
+
+    /// Fold one poll's endpoint health into the trip rule: consecutive failures/abandonments. `failed` is the
+    /// poll's class mix (HEALTH_R10 Slice A); the streak counts `failed.total()` exactly as the old count did.
+    /// LATCH REASON BY CAUSE: every failure in the tripping streak a transport failure -> `model_endpoint_hung`;
+    /// otherwise `model_service_inadequate`. Same threshold, same block, same reset, same re-arm.
+    pub(super) fn model_safety_note_endpoint(&mut self, ok: u32, failed: EndpointMix) {
         if ok > 0 {
             self.model_safety.consecutive_abandoned = 0;
+            self.model_safety.consecutive_local_expired = 0;
+            self.model_safety.endpoint_mix = EndpointMix::default();
         }
-        if failed > 0 {
-            self.model_safety.consecutive_abandoned = self
-                .model_safety
-                .consecutive_abandoned
-                .saturating_add(failed);
+        let n = failed.total();
+        if n > 0 {
+            self.model_safety.consecutive_abandoned =
+                self.model_safety.consecutive_abandoned.saturating_add(n);
+            self.model_safety.endpoint_mix.add(&failed);
             if self.model_safety.consecutive_abandoned >= CONSECUTIVE_ABANDONED_TRIP
                 && !self.model_safety.blocked
             {
-                self.model_safety_trip(crate::safety_off::REASON_ENDPOINT_HUNG);
+                let mix = self.model_safety.endpoint_mix;
+                self.model_safety.latch_mix = Some(mix);
+                self.mrep(format!("safety:latch_class_mix:{}", mix.label()));
+                self.model_safety_trip(mix.latch_reason());
             }
         }
+    }
+
+    /// Class mix of the current endpoint (E) streak.
+    #[must_use]
+    pub fn model_safety_endpoint_mix(&self) -> EndpointMix {
+        self.model_safety.endpoint_mix
+    }
+
+    /// Class mix recorded with the E-streak latch (`None` if the block was not an E-streak latch).
+    #[must_use]
+    pub fn model_safety_latch_mix(&self) -> Option<EndpointMix> {
+        self.model_safety.latch_mix
+    }
+
+    /// Consecutive LOCAL queue expiries since the last healthy answer (the local-overload trip counter).
+    #[must_use]
+    pub fn model_local_expired_streak(&self) -> u32 {
+        self.model_safety.consecutive_local_expired
+    }
+
+    /// Fold LOCAL queue expiries (requests never sent) into the local-overload rule. Never touches endpoint health.
+    /// RULE (lead 14:05): `CONSECUTIVE_ABANDONED_TRIP` (3) consecutive local expiries with no healthy answer in between
+    /// latch SAFETY_OFF `model_local_overload` (same row as the hung endpoint). RESET: a healthy answer (in
+    /// `model_safety_note_endpoint`) or an explicit operator re-arm. LATCH: durable; a restart never re-arms; there is
+    /// no automatic re-arm.
+    pub(super) fn model_safety_note_local_expired(&mut self, n: u32) {
+        if n == 0 {
+            return;
+        }
+        self.model_safety.consecutive_local_expired = self
+            .model_safety
+            .consecutive_local_expired
+            .saturating_add(n);
+        if self.model_safety.consecutive_local_expired >= CONSECUTIVE_ABANDONED_TRIP
+            && !self.model_safety.blocked
+        {
+            self.mrep("local:overload_trip");
+            self.model_safety_trip(crate::safety_off::REASON_LOCAL_OVERLOAD);
+        }
+    }
+}
+
+/// HEALTH_R10 Slice A: classification and cause-based latch reason. The E/L transitions are those of 83d46566.
+#[cfg(test)]
+mod health_r10_tests {
+    use super::*;
+    use crate::config::Config;
+    use crate::safety_off::{
+        HealthClass, REASON_ENDPOINT_HUNG, REASON_LOCAL_OVERLOAD, REASON_SERVICE_INADEQUATE,
+    };
+    use crate::stop_policy::{OpsInputs, StopTrigger};
+
+    fn path(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("pq_hr10_{tag}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d.join("SAFETY_STATE.json")
+    }
+
+    fn engine(tag: &str) -> (Engine, std::path::PathBuf) {
+        let p = path(tag);
+        let mut e = Engine::new(Config::dev_portable(), RunMode::Paper);
+        e.model_safety_attach(&p);
+        (e, p)
+    }
+
+    fn one(c: HealthClass) -> EndpointMix {
+        let mut m = EndpointMix::default();
+        m.charge(c);
+        m
+    }
+
+    fn raised(e: &mut Engine) -> Vec<StopTrigger> {
+        e.model_stop_evaluate(0, OpsInputs::healthy())
+            .raised
+            .into_iter()
+            .map(|(t, _)| t)
+            .collect()
+    }
+
+    #[test]
+    fn three_transport_failures_latch_endpoint_hung_at_the_third() {
+        let (mut e, _) = engine("tx3");
+        for k in 1..=2u32 {
+            e.model_safety_note_endpoint(0, one(HealthClass::TransportFailure));
+            assert_eq!(e.model_safety_consecutive_failures(), k);
+            assert!(!e.model_safety_blocked());
+        }
+        e.model_safety_note_endpoint(0, one(HealthClass::TransportFailure));
+        assert!(e.model_safety_blocked());
+        assert_eq!(e.model_safety_reason(), REASON_ENDPOINT_HUNG);
+        let mix = e
+            .model_safety_latch_mix()
+            .expect("mix recorded with the latch");
+        assert_eq!(mix.transport_failure, 3);
+        assert_eq!(mix.total(), 3);
+        assert!(raised(&mut e).contains(&StopTrigger::EndpointHung));
+    }
+
+    #[test]
+    fn three_deadline_misses_latch_service_inadequate_with_the_same_block() {
+        let (mut e, p) = engine("dm3");
+        for _ in 0..2 {
+            e.model_safety_note_endpoint(0, one(HealthClass::DispatchedDeadlineMiss));
+            assert!(!e.model_safety_blocked());
+        }
+        e.model_safety_note_endpoint(0, one(HealthClass::DispatchedDeadlineMiss));
+        assert!(e.model_safety_blocked());
+        assert_eq!(e.model_safety_reason(), REASON_SERVICE_INADEQUATE);
+        assert!(e.model_entries_blocked(), "same block effect");
+        assert_eq!(
+            e.model_safety_latch_mix().unwrap().dispatched_deadline_miss,
+            3
+        );
+        let r = raised(&mut e);
+        assert!(r.contains(&StopTrigger::ModelServiceInadequate));
+        assert!(!r.contains(&StopTrigger::EndpointHung));
+        // Durable: the reason and the class mix survive a restart; the stop trigger is raised there too.
+        let mut e2 = Engine::new(Config::dev_portable(), RunMode::Paper);
+        e2.model_safety_attach(&p);
+        assert!(e2.model_safety_blocked());
+        assert_eq!(e2.model_safety_reason(), REASON_SERVICE_INADEQUATE);
+        assert_eq!(
+            e2.model_safety_latch_mix()
+                .unwrap()
+                .dispatched_deadline_miss,
+            3
+        );
+        assert!(raised(&mut e2).contains(&StopTrigger::ModelServiceInadequate));
+    }
+
+    #[test]
+    fn mixed_transport_and_deadline_miss_latch_service_inadequate_at_three() {
+        let (mut e, _) = engine("mix");
+        e.model_safety_note_endpoint(0, one(HealthClass::TransportFailure));
+        e.model_safety_note_endpoint(0, one(HealthClass::TransportFailure));
+        assert!(!e.model_safety_blocked());
+        e.model_safety_note_endpoint(0, one(HealthClass::DispatchedDeadlineMiss));
+        assert!(e.model_safety_blocked(), "threshold 3 unchanged");
+        assert_eq!(e.model_safety_reason(), REASON_SERVICE_INADEQUATE);
+        let m = e.model_safety_latch_mix().unwrap();
+        assert_eq!((m.transport_failure, m.dispatched_deadline_miss), (2, 1));
+        // invalid output also counts as non-transport.
+        let (mut e, _) = engine("mix_inv");
+        e.model_safety_note_endpoint(0, one(HealthClass::TransportFailure));
+        e.model_safety_note_endpoint(0, one(HealthClass::InvalidOutput));
+        e.model_safety_note_endpoint(0, one(HealthClass::TransportFailure));
+        assert_eq!(e.model_safety_reason(), REASON_SERVICE_INADEQUATE);
+    }
+
+    #[test]
+    fn a_timely_success_before_the_latch_resets_both_streaks_and_the_mix() {
+        let (mut e, _) = engine("reset");
+        e.model_safety_note_endpoint(0, one(HealthClass::DispatchedDeadlineMiss));
+        e.model_safety_note_endpoint(0, one(HealthClass::DispatchedDeadlineMiss));
+        e.model_safety_note_local_expired(2);
+        e.model_safety_note_endpoint(1, EndpointMix::default());
+        assert_eq!(e.model_safety_consecutive_failures(), 0);
+        assert_eq!(e.model_local_expired_streak(), 0);
+        assert_eq!(e.model_safety_endpoint_mix(), EndpointMix::default());
+        // A fresh all-transport streak after the reset is endpoint-hung: the earlier misses were cleared.
+        for _ in 0..3 {
+            e.model_safety_note_endpoint(0, one(HealthClass::TransportFailure));
+        }
+        assert_eq!(e.model_safety_reason(), REASON_ENDPOINT_HUNG);
+    }
+
+    #[test]
+    fn a_success_after_the_latch_keeps_the_block_and_the_reason() {
+        let (mut e, _) = engine("after");
+        for _ in 0..3 {
+            e.model_safety_note_endpoint(0, one(HealthClass::DispatchedDeadlineMiss));
+        }
+        let epoch = e.model_safety_epoch();
+        e.model_safety_note_endpoint(5, EndpointMix::default());
+        assert!(e.model_safety_blocked(), "no automatic re-arm");
+        assert_eq!(e.model_safety_reason(), REASON_SERVICE_INADEQUATE);
+        assert_eq!(e.model_safety_epoch(), epoch);
+        assert!(e.model_entries_blocked());
+        e.model_safety_rearm("alon").expect("explicit re-arm");
+        assert!(!e.model_safety_blocked());
+        assert_eq!(e.model_safety_latch_mix(), None);
+    }
+
+    #[test]
+    fn a_persisted_local_overload_latch_still_raises_its_stop_trigger() {
+        let (mut e, p) = engine("lo");
+        e.model_safety_note_local_expired(3);
+        assert_eq!(e.model_safety_reason(), REASON_LOCAL_OVERLOAD);
+        assert_eq!(e.model_safety_latch_mix(), None, "not an E-streak latch");
+        let mut e2 = Engine::new(Config::dev_portable(), RunMode::Paper);
+        e2.model_safety_attach(&p);
+        assert_eq!(e2.model_safety_reason(), REASON_LOCAL_OVERLOAD);
+        let r = raised(&mut e2);
+        assert!(r.contains(&StopTrigger::LocalModelOverload));
+        assert!(!r.contains(&StopTrigger::ModelServiceInadequate));
+    }
+
+    #[test]
+    fn local_expiry_is_never_an_endpoint_failure() {
+        let mut m = EndpointMix::default();
+        m.charge(HealthClass::LocalExpiry);
+        assert_eq!(m.total(), 0);
+        let (mut e, _) = engine("lx");
+        e.model_safety_note_endpoint(0, m);
+        assert_eq!(e.model_safety_consecutive_failures(), 0);
     }
 }

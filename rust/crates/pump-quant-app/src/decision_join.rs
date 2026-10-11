@@ -7,8 +7,13 @@
 //!
 //! WHAT IT WILL NOT DO (each is a named [`JoinRefusal`], counted, never defaulted):
 //! * invent a clock, a trader, a fee, a compute-unit figure or a launch time;
-//! * treat first observation as launch time (the history must START at the launch, within
-//!   [`LAUNCH_TOLERANCE_MS`], or the mint is refused as `HistoryStartsAfterLaunch`);
+//! * treat first observation as launch time. Launch time (from the launch record) and the first
+//!   OBSERVED trade are different facts and are kept apart: `age_s` is measured from the first
+//!   observed trade, exactly as the trained corpus measures it (`build_states_v2._episode`:
+//!   `age_s = (t_dec - tt[0]) / 1000`, `tt[0]` = the mint's first CAPTURED trade). A market first
+//!   seen mid-life is therefore eligible on the trained observation-history contract (sufficient
+//!   prior observations, continuity, completeness, freshness, creator inputs), and is never
+//!   refused merely because its history starts after its launch;
 //! * let a partial history read as a quiet market (any print that could not feed the flow reducer
 //!   poisons that mint's flow block -> `FlowMetaMissing`);
 //! * serve state from after the decision clock (`FutureStateInCache`).
@@ -33,10 +38,6 @@ use crate::enrichment::{enrich, EnrichmentGap, EnrichmentTrade};
 use crate::flow_feed::{flow_event_from_market_trade, flow_state_from_aggregates, zero_flow_state};
 use crate::state_ledger::{ClockRefusal, StateLedger, StateTrade, VenueLabel};
 
-/// How far after a mint's launch its first observed print may be and still count as "the history
-/// starts at the launch". Measured on the corpus tape: launch -> first trade is p10/p50/p90 =
-/// 0/0/3 ms (n=2530). A mint first seen later was already trading: its windows are partial.
-pub const LAUNCH_TOLERANCE_MS: i64 = 5_000;
 /// Per-mint enrichment ring bound (§99). `enrich` reads the WHOLE prefix, so a mint that
 /// overflows this is refused rather than silently truncated.
 pub const MAX_ENRICH_TRADES_PER_MINT: usize = 50_000;
@@ -47,9 +48,25 @@ const FLOW_UPSTREAM_DROP_RING: usize = 64;
 
 /// How many recent prints a duplicate check looks back over.
 const DEDUPE_LOOKBACK: usize = 64;
+/// How many recent event ids a per-mint replay check remembers. A redelivery older than this many
+/// ACCEPTED events of the same mint is not detected here (the producer's own dedup is the first layer).
+const DEDUPE_ID_LOOKBACK: usize = 512;
 
 /// One live print, as the join needs it. Built from `AppEvent::MarketTrade` plus the venue the
 /// provenance names (the event itself carries none).
+/// MUST stay bit-identical to `pump_quant_junction::laserstream::wallet_entity_id` (this crate cannot depend on the
+/// junction); pinned by a cross-crate test in the junction.
+pub fn wallet_entity_of(pubkey: &[u8; 32]) -> u64 {
+    let lo = u64::from_le_bytes(pubkey[..8].try_into().unwrap_or([0; 8]));
+    let hi = u64::from_le_bytes(pubkey[24..32].try_into().unwrap_or([0; 8]));
+    let mut z = lo.wrapping_add(hi);
+    z = z.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    let z = (z >> (z >> 61).wrapping_add(4)) ^ z;
+    let z = z.wrapping_mul(0xC2B9_5A82_79D4_CEA2);
+    let z = (z >> (z >> 61).wrapping_add(4)) ^ z;
+    z.wrapping_mul(0x9E37_79B9_7F4A_7C15)
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct TradeObs {
     pub mint: [u8; 32],
@@ -63,6 +80,16 @@ pub struct TradeObs {
     pub fee_lamports: Option<u64>,
     pub cu_consumed: Option<u64>,
     pub venue: VenueLabel,
+    /// Exact event identity (see `AppEvent::MarketTrade::event_id`). When present it is the ONLY
+    /// dedup key: two distinct events never collide and a replayed delivery always does, whatever
+    /// their slot/trader/size/time/price. `None` falls back to the heuristic key.
+    pub event_id: Option<u128>,
+    /// Corpus-definition basis for the TRAINED windows (see `event::FeatureBasis`). With an `event_id` (the
+    /// transaction-event producer) and `feature: None` the trade is outside the frozen corpus population: it is
+    /// counted (`outside_corpus`) and kept out of the trained windows. `price_fp`/`quote_lamports`/`signed_base`
+    /// above remain the executable reserve price and swap amounts and are not read by the trained windows when a
+    /// basis is present.
+    pub feature: Option<crate::event::FeatureBasis>,
 }
 
 /// What ingest did with a print. Every non-`Accepted` arm is counted.
@@ -81,15 +108,55 @@ pub enum Ingest {
     Duplicate,
 }
 
+/// A launch established from chain history. Every clock is separate: chain time (`slot`,
+/// `block_time_s`) is when the launch happened; `retrieved_unix_ms` is when we learned it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChainLaunch {
+    pub creator: [u8; 32],
+    pub slot: u64,
+    pub block_time_s: Option<i64>,
+    pub retrieved_unix_ms: i64,
+}
+
+/// Bound on chain-launch facts held (§99), same order as the creator registry.
+pub const CHAIN_LAUNCH_CAP: usize = 262_144;
+
 /// Why no prompt was produced. Stable labels via [`JoinRefusal::as_str`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum JoinRefusal {
     NoMint,
     /// No launch/creator record: `creator_known` would be 0, a state the corpus never trained on.
     LaunchUnknown,
-    /// The first observed print is later than the launch by more than the tolerance.
-    HistoryStartsAfterLaunch {
-        gap_ms: i64,
+    /// The launch is VERIFIED from chain history, but the trained `creator_past_launches` (an
+    /// observed capture-window, receive-order count) is not defined for it: the launch was not
+    /// observed by our own feed. Named, never served as 0 or as an RPC-derived lifetime count.
+    CreatorCountUndefinedChainOnly,
+    /// M2 cohort freeze: the launch is in the registry only from the pre-cutoff SEED; our feed never
+    /// saw its `LaunchObserved`. Entries are only for launches our feed observed.
+    LaunchSeedOnlyNotFeedObserved,
+    /// M2: the persistent creator registry is untrusted (unreadable / incompatible log, seed
+    /// mismatch, or a failed durable append). `why` is the stable registry refusal label.
+    CreatorRegistryUntrusted {
+        why: &'static str,
+    },
+    /// A RESTORED held position has no durable launch-identity record (ledger written before the record existed).
+    /// Management refuses by this name; nothing is inferred from the feed or the registry.
+    LaunchIdentityUnrecorded,
+    /// A restored held position's launch-identity record contradicts the registry / observed launch / flow creator
+    /// (`why` names which). Evidence kept, nothing served.
+    LaunchIdentityConflict {
+        why: &'static str,
+    },
+    /// A restored held position's state tape does not reproduce the tape pinned at its opening fill (different
+    /// origin, a different number of trades up to the pin, or evicted): the cumulative history is not the position's.
+    HeldTapeDiscontinuous,
+    /// RESTART: the mint launched BEFORE the restart instant and its pre-restart state tape was not rebuilt from a
+    /// capture covering it from launch (no capture, or the capture starts after the launch / ends before the restart
+    /// instant). The tape holds only post-restart prints: serving it would show a different (younger, thinner) market
+    /// than the uninterrupted run saw. Named; lost coverage is reported (`restart_lost_coverage`).
+    TapeTruncatedAtRestart {
+        launch_ms: i64,
+        restart_ms: i64,
     },
     /// The cache holds a print newer than the decision clock.
     FutureStateInCache {
@@ -123,6 +190,18 @@ pub enum JoinRefusal {
     FlowHistoryUnreconstructable {
         drop_ms: i64,
     },
+    /// Continuity of the persisted missing-history record could not be established on startup
+    /// (the record was unreadable or incompatible). Refused by name rather than assuming no gap
+    /// occurred. Cleared only by a reconstruction receipt, never by a bare acknowledgement.
+    HistoryContinuityUnknown,
+    /// The durable flow-history (wallet state) cannot be relied on for this decision, by dependency scope:
+    /// `late_event_in_window` (an unseen older event of this mint was recorded, not applied), `late_overflow`,
+    /// `feed_gap` (an unavailable interval before the decision; nothing in the process clears it), or `flow_state_untrusted`.
+    FlowStateScope {
+        why: &'static str,
+        from_ms: i64,
+        to_ms: i64,
+    },
     CurveAbsent(String),
     AmmAbsent(String),
     /// More than one pool was bound to the mint and the observation's pool is not the bound one.
@@ -145,7 +224,15 @@ impl JoinRefusal {
         match self {
             JoinRefusal::NoMint => "join_no_mint",
             JoinRefusal::LaunchUnknown => "join_launch_unknown",
-            JoinRefusal::HistoryStartsAfterLaunch { .. } => "join_history_starts_after_launch",
+            JoinRefusal::CreatorCountUndefinedChainOnly => {
+                "join_creator_count_undefined_chain_only"
+            }
+            JoinRefusal::LaunchSeedOnlyNotFeedObserved => "join_launch_seed_only_not_feed_observed",
+            JoinRefusal::CreatorRegistryUntrusted { .. } => "join_creator_registry_untrusted",
+            JoinRefusal::LaunchIdentityUnrecorded => "join_launch_identity_unrecorded",
+            JoinRefusal::LaunchIdentityConflict { .. } => "join_launch_identity_conflict",
+            JoinRefusal::HeldTapeDiscontinuous => "join_held_tape_discontinuous",
+            JoinRefusal::TapeTruncatedAtRestart { .. } => "join_tape_truncated_at_restart",
             JoinRefusal::FutureStateInCache { .. } => "join_future_state_in_cache",
             JoinRefusal::State(c) => c.as_str(),
             JoinRefusal::EnrichmentIdentityMissing { .. } => "join_enrichment_identity_missing",
@@ -157,6 +244,13 @@ impl JoinRefusal {
             JoinRefusal::FlowHistoryUnreconstructable { .. } => {
                 "join_flow_history_unreconstructable"
             }
+            JoinRefusal::HistoryContinuityUnknown => "join_history_continuity_unknown",
+            JoinRefusal::FlowStateScope { why, .. } => match *why {
+                "late_event_in_window" => "join_flow_late_event_in_window",
+                "late_overflow" => "join_flow_late_overflow",
+                "feed_gap" => "join_flow_feed_gap",
+                _ => "join_flow_state_untrusted",
+            },
             JoinRefusal::CurveAbsent(_) => "join_curve_absent",
             JoinRefusal::AmmAbsent(_) => "join_amm_absent",
             JoinRefusal::AmmPoolAmbiguous => "join_amm_pool_ambiguous",
@@ -186,6 +280,9 @@ pub struct PromptSnapshot {
     pub prompt_digest: u64,
     /// The cache's view of the mint when the snapshot was cut, for post-inference revalidation.
     pub marker: StateMarker,
+    /// M2 decision-record provenance of the `DEV HISTORY` count (registry seed/log + label).
+    /// Never rendered into the prompt.
+    pub creator_provenance: String,
 }
 
 /// Cheap fingerprint of one mint's cache state.
@@ -196,6 +293,13 @@ pub struct StateMarker {
 }
 
 /// Everything `prepare` read from the producers, shared by the entry and management snapshots.
+/// Who the prepared state is for: each audience gates only on the history it actually renders.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Audience {
+    Entry,
+    Management,
+}
+
 struct Prepared {
     state: crate::state_ledger::StateSnapshot,
     enriched: crate::enrichment::EnrichedSnapshot,
@@ -238,6 +342,10 @@ pub struct MgmtSnapshot {
     pub mark_price_lamports_per_raw_token: f64,
     pub prompt_digest: u64,
     pub marker: StateMarker,
+    /// The management-side ENRICHED / DEV HISTORY / LIVE FLOW state computed for this decision,
+    /// as `key=value` lines. A RECORD field only: the c12 management prompt does not render it
+    /// (`pump_quant_proposal::management::render_management_state`).
+    pub state_record: String,
 }
 
 /// The corpus's mint label (base58). Hex is NOT it: the prompt carries the base58 address.
@@ -259,6 +367,8 @@ struct MintCache {
     enrich_overflow: bool,
     venue: VenueLabel,
     recent: VecDeque<(Option<u64>, [u8; 32], i64, i64)>,
+    /// Exact event ids of the most recent id-carrying prints (see [`DEDUPE_ID_LOOKBACK`]).
+    recent_ids: VecDeque<u128>,
 }
 
 /// Per-mint pool binding for the AMM plane.
@@ -278,6 +388,8 @@ pub struct IngestCounters {
     pub duplicate: u64,
     /// Prints the feed derivation dropped before the reducer could see them.
     pub flow_upstream_drops: u64,
+    /// Producer-identified (event_id) trades with NO corpus basis: admitted for discovery/state, excluded from the trained windows.
+    pub outside_corpus: u64,
 }
 
 /// A low-frequency health view of upstream-dropped prints, so an operator can tell an
@@ -313,25 +425,202 @@ pub struct FlowDropSummary {
 ///   gated on unrelated mints, because a blanket freeze would be a policy change.
 /// * A configured lookback (e.g. `lookback_ms` = 7 d, `flow_lookback_d`) is a LOOKBACK/eviction
 ///   horizon; it is NOT evidence that any given feature depends on this print for 7 d.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MissingDeps {
+    /// Rolling 300 s flow block + ledger `ret_*`: bounded by the print's own window.
+    /// Needed by ENTRY and MANAGEMENT.
+    pub rolling_300s: bool,
+    /// Cumulative LEDGER counters rendered only in the ENTRY prompt (`n_prior_trades`, buy/sell
+    /// counts, volumes, top1/top5, buyer/seller ratio). NOT read by the management prompt, and
+    /// NOT part of the engine's reconciled position state (inventory, cost basis, held time).
+    pub ledger_cumulative: bool,
+    /// Cumulative HOLDER state (`holders_at_t`, `top1_float_share`, `holder_hhi`, bundle /
+    /// round-trip wallets, wash ratio) computed from the mint's whole trade list. Rendered by
+    /// ENTRY and by MANAGEMENT.
+    pub holder_enrichment: bool,
+    /// Wallet-derived flow features (`fresh_wallet_share`, `smart_*`, coentry). The refused
+    /// derivation never resolved a trader, so attribution is UNKNOWN. These read GLOBAL wallet
+    /// state (first-activity, co-entry graph), so other mints MAY carry a one-event error; that
+    /// is REPORTED (health counter), neither assumed zero nor used to freeze unrelated mints.
+    pub wallet_derived_uncertain: bool,
+}
+
+impl MissingDeps {
+    /// Everything a refused-but-coherent reserve move could have touched.
+    #[must_use]
+    pub fn all_market_history() -> Self {
+        Self {
+            rolling_300s: true,
+            ledger_cumulative: true,
+            holder_enrichment: true,
+            wallet_derived_uncertain: true,
+        }
+    }
+    fn union(self, o: Self) -> Self {
+        Self {
+            rolling_300s: self.rolling_300s || o.rolling_300s,
+            ledger_cumulative: self.ledger_cumulative || o.ledger_cumulative,
+            holder_enrichment: self.holder_enrichment || o.holder_enrichment,
+            wallet_derived_uncertain: self.wallet_derived_uncertain || o.wallet_derived_uncertain,
+        }
+    }
+    /// Does a CUMULATIVE gap with these deps make the ENTRY prompt incomplete?
+    #[must_use]
+    pub fn blocks_entry(&self) -> bool {
+        self.ledger_cumulative || self.holder_enrichment
+    }
+    /// Does it make the MANAGEMENT prompt incomplete? (Position inventory/cost/age are engine
+    /// state and are never inputs here.)
+    #[must_use]
+    pub fn blocks_management(&self) -> bool {
+        self.holder_enrichment
+    }
+}
+
+/// What the producer actually knows about the refused observation. A failed reserve-delta
+/// inference alone never proves a trade was lost, so `Confirmed` is deliberately NOT producible
+/// from the reserve path: it would need an independent transaction record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MissingKind {
+    /// Both reserves moved by representable amounts but the derivation refused the pair
+    /// (same-sign move, degenerate token side): a swap-sized move we could not turn into a print.
+    PossibleTrade,
+    /// A reserve delta outside `i64`: the account decoded to non-physical reserves. No trade is
+    /// shown to exist OR to be absent. Explicitly UNKNOWN; gated fail-closed like `PossibleTrade`
+    /// (relaxing that is an operator decision, not made here).
+    InvalidObservation,
+}
+
+impl MissingKind {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MissingKind::PossibleTrade => "possible_trade",
+            MissingKind::InvalidObservation => "invalid_observation_unknown",
+        }
+    }
+}
+
+/// Evidence that missing history was actually RECONSTRUCTED from an authoritative source and
+/// installed with a coverage boundary. A receipt is the ONLY way a cumulative gap is resolved:
+/// there is deliberately NO API that clears the gap without one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReconstructionReceipt {
+    /// Where the reconstructed events came from (capture path / replay run id). Must be non-empty.
+    pub provenance: String,
+    /// The reconstructed window must COVER the drop instant.
+    pub coverage_from_ms: i64,
+    pub coverage_to_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MissingObservation {
-    /// Receive instant of the dropped print.
+    /// Receive instant of the (earliest folded) refused observation.
     pub drop_ms: i64,
-    /// Set once the missing history has been reconstructed/reconciled. NEVER set by a timer.
-    pub reconciled: bool,
+    /// What the producer knows: possible trade vs invalid (unknown) observation.
+    pub kind: MissingKind,
+    /// How many refused observations this record stands for (compaction folds, never drops).
+    pub count: u32,
+    /// Source/event identity where the producer has one (empty when it does not).
+    pub source_id: String,
+    pub deps: MissingDeps,
+    /// Installed reconstruction receipt; `None` until the history is genuinely repaired.
+    pub receipt: Option<ReconstructionReceipt>,
+}
+
+/// Per-mint readiness for the low-frequency status writer: what is unavailable, and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MissingHistoryStatus {
+    pub mint: [u8; 32],
+    pub drop_ms: i64,
+    pub source_id: String,
+    pub deps: MissingDeps,
+    pub kind: MissingKind,
+    pub count: u32,
+    pub entry_unavailable: bool,
+    pub management_unavailable: bool,
+    /// `rolling_pending` | `reconstruction_unsupported` | `reconstructed` | `continuity_unknown`
+    pub recovery: &'static str,
+}
+
+/// Why a reconstruction was refused. Never silently accepted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReconcileRefusal {
+    NoGap,
+    AlreadyReconstructed,
+    EmptyProvenance,
+    CoverageDoesNotSpanTheGap,
+    UnorderedCoverage,
+    /// Production recovery requires an INSTALLER that reconstructs aggregates with provenance and
+    /// a coverage boundary. Metadata alone cannot unlock inference over unchanged incomplete
+    /// state, so this is returned even for a syntactically valid, covering receipt.
+    ReconstructionUnsupported,
+}
+
+/// Why restoring persisted missing-history state was refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RestoreRefusal {
+    /// The record could not be read/parsed: continuity is NOT assumed.
+    Unreadable,
+    /// The record is structurally incompatible with this build: continuity is NOT assumed.
+    Incompatible,
 }
 
 /// The decision-time cache. One owner (the engine); no interior mutability.
 pub struct DecisionCache {
     ledger: StateLedger,
     flow: FlowReducer,
+    /// Cursors / coverage / late records / acknowledgements for the durable flow history. `None` until durability is attached.
+    flow_meta: Option<crate::flow_checkpoint::FlowMeta>,
+    /// Set when a persisted flow checkpoint existed but could not be trusted: every prompt refuses by name.
+    flow_state_untrusted: Option<&'static str>,
+    /// Bumped on every change to the flow state (reducer or meta); the persister compares one integer.
+    flow_rev: u64,
     annotation: AnnotationState,
     creators: CreatorHistory,
     launch_ms: BTreeMap<[u8; 32], i64>,
+    /// Chain-derived launch facts (bootstrap RPC). Separate from `creators` / `launch_ms`.
+    chain_launch: BTreeMap<[u8; 32], ChainLaunch>,
     mints: BTreeMap<[u8; 32], MintCache>,
     pools: BTreeMap<[u8; 32], PoolBinding>,
     policy: BundlePolicy,
     counters: IngestCounters,
+    /// Set when startup continuity could NOT be established (unreadable or incompatible persisted
+    /// record). Refuses every prompt by [`JoinRefusal::HistoryContinuityUnknown`] until a
+    /// reconstruction receipt clears it — never by assuming no gap occurred.
+    history_continuity_unknown: bool,
+    /// Bumped on every change to the unresolved-gap set, so the persister can skip unchanged ticks
+    /// with one integer compare.
+    missing_rev: u64,
+    /// M2: set when the persistent creator registry could not be established or a durable append
+    /// failed. Every ENTRY prompt refuses by this name (management of held exposure is unaffected).
+    creator_registry_refusal: Option<&'static str>,
+    /// M2: provenance tag carried on every entry snapshot (decision record), with the
+    /// `observed history, not lifetime / complete chain coverage` label.
+    creator_provenance: String,
+    /// Per HELD mint: its launch identity (pinned at the opening fill, or restored from the held ledger).
+    held_launch: BTreeMap<[u8; 32], HeldLaunchState>,
+    /// Set only while a restart rebuilds held mints' state tapes from the previous process's durable capture: the
+    /// prints feed the state ledger and enrichment ONLY (the flow reducer is durable and already holds them).
+    rehydrating: bool,
+    /// RESTART floor: `(restart_ms, covered_from_ms)`. A launch strictly before `restart_ms` is served only when the
+    /// previous process's capture was rehydrated from `covered_from_ms <= launch`. `None` = not a restart.
+    restart_floor: Option<(i64, i64)>,
+}
+
+/// Launch identity of one held mint, as the management join sees it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HeldLaunchState {
+    /// The durable record. `verify_tape` = restored from disk and its tape pin not yet matched by the rebuilt tape
+    /// (an uninterrupted position's tape is its own and is never re-checked).
+    Pinned {
+        rec: crate::held_state::HeldLaunch,
+        verify_tape: bool,
+    },
+    /// Restored from a ledger with no record.
+    Unrecorded,
+    /// Restored record contradicts current evidence.
+    Conflict(&'static str),
 }
 
 impl Default for DecisionCache {
@@ -349,20 +638,356 @@ fn fnv1a(s: &str) -> u64 {
     h
 }
 
+/// Bounded compaction that NEVER discards an unresolved cumulative gap: when the ring is full,
+/// an unresolved record being evicted folds its earliest instant into the incoming record, so the
+/// gap survives compaction as a single earliest observation instead of vanishing.
+fn push_missing_bounded(ring: &mut VecDeque<MissingObservation>, mut new: MissingObservation) {
+    while ring.len() >= FLOW_UPSTREAM_DROP_RING {
+        let Some(old) = ring.pop_front() else { break };
+        if old.receipt.is_none() {
+            // Fold, never drop: earliest instant, UNION of dependencies, summed count, the more
+            // conservative kind, and a surviving source id.
+            new.drop_ms = new.drop_ms.min(old.drop_ms);
+            new.deps = new.deps.union(old.deps);
+            new.count = new.count.saturating_add(old.count);
+            if old.kind == MissingKind::PossibleTrade {
+                new.kind = MissingKind::PossibleTrade;
+            }
+            if new.source_id.is_empty() {
+                new.source_id = old.source_id;
+            }
+        }
+    }
+    ring.push_back(new);
+}
+
 impl DecisionCache {
     #[must_use]
     pub fn new() -> Self {
         Self {
             ledger: StateLedger::new(),
             flow: FlowReducer::new(),
+            flow_meta: None,
+            flow_state_untrusted: None,
+            flow_rev: 0,
             annotation: AnnotationState::new(),
             creators: CreatorHistory::new(),
             launch_ms: BTreeMap::new(),
+            chain_launch: BTreeMap::new(),
             mints: BTreeMap::new(),
             pools: BTreeMap::new(),
             policy: BundlePolicy::trained_only(),
             counters: IngestCounters::default(),
+            missing_rev: 0,
+            history_continuity_unknown: false,
+            creator_registry_refusal: None,
+            creator_provenance: format!(
+                "creator_registry=live_feed_only_unpersisted|{}",
+                crate::creator_registry::PROVENANCE_LABEL
+            ),
+            held_launch: BTreeMap::new(),
+            rehydrating: false,
+            restart_floor: None,
         }
+    }
+
+    /// RESTART: declare the restart instant and the start of the rehydrated capture coverage (`covered_from_ms >
+    /// restart_ms` when no capture covered anything). Set once, before the first tick.
+    pub fn set_restart_floor(&mut self, restart_ms: i64, covered_from_ms: i64) {
+        self.restart_floor = Some((restart_ms, covered_from_ms));
+    }
+
+    /// The declared restart floor.
+    #[must_use]
+    pub fn restart_floor(&self) -> Option<(i64, i64)> {
+        self.restart_floor
+    }
+
+    /// Markets whose pre-restart tape is NOT covered (lost coverage): `(mint, launch_ms)` for every feed-observed
+    /// launch strictly before the restart instant that the rehydrated capture does not cover from launch.
+    #[must_use]
+    pub fn restart_lost_coverage(&self) -> Vec<([u8; 32], i64)> {
+        let Some((r, from)) = self.restart_floor else {
+            return Vec::new();
+        };
+        self.launch_ms
+            .iter()
+            .filter(|(_, t)| **t < r && **t < from)
+            .map(|(m, t)| (*m, *t))
+            .collect()
+    }
+
+    /// RESTART: rebuild a held mint's state tape + enrichment from one print of the previous process's durable
+    /// capture. Never touches the flow reducer/cursors (durable on their own). Only mints with a restored pin whose
+    /// tape is not yet verified accept prints, and only prints strictly before the pinned instant.
+    pub fn rehydrate_trade(&mut self, t: &TradeObs) -> Option<Ingest> {
+        // Only prints the previous process applied before the restart instant (its durable flow/held barrier).
+        let (through, _) = self.restart_floor?;
+        if t.recv_unix_ms.is_none_or(|r| r > through) {
+            return None;
+        }
+        self.rehydrating = true;
+        let r = self.observe_trade(t);
+        self.rehydrating = false;
+        Some(r)
+    }
+
+    /// Earliest pinned instant among restored, not-yet-verified held tapes (`None` = nothing to rehydrate).
+    #[must_use]
+    pub fn held_tapes_pending(&self) -> Vec<([u8; 32], i64)> {
+        self.held_launch
+            .iter()
+            .filter_map(|(m, s)| match s {
+                HeldLaunchState::Pinned {
+                    rec,
+                    verify_tape: true,
+                } => rec.tape_through_ms.map(|t| (*m, t)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Build the durable launch-identity record of `mint` NOW (called at the opening fill), with the tape pinned at
+    /// `t_ms`. `None` when no launch is known for the mint (the restart will refuse it by name).
+    #[must_use]
+    pub fn launch_identity_now(
+        &self,
+        mint: &[u8; 32],
+        t_ms: i64,
+    ) -> Option<crate::held_state::HeldLaunch> {
+        let creator = self.flow.creator_of(mint)?;
+        let feed = self.launch_ms.get(mint).copied();
+        let launch_unix_ms = match feed {
+            Some(t) => t,
+            None => self.creators.get(mint)?.launch_unix_ms,
+        };
+        let dev = self.creators.dev_history(mint);
+        let ext = self.ledger.tape_extent(mint, t_ms);
+        Some(crate::held_state::HeldLaunch {
+            creator,
+            launch_unix_ms,
+            creator_past_launches: dev.creator_past_launches,
+            creator_known: u8::from(dev.creator_known == 1),
+            feed_observed: feed.is_some(),
+            provenance: self.creator_provenance.clone(),
+            tape_origin_ms: ext.map(|e| e.0),
+            tape_through_ms: ext.map(|_| t_ms),
+            tape_trades_before: ext.and_then(|e| e.1),
+        })
+    }
+
+    /// Pin a held mint's launch identity (opening fill). A position with no known launch is recorded Unrecorded.
+    pub fn pin_held_launch(&mut self, mint: [u8; 32], t_ms: i64) {
+        let st = match self.launch_identity_now(&mint, t_ms) {
+            Some(rec) => HeldLaunchState::Pinned {
+                rec,
+                verify_tape: false,
+            },
+            None => HeldLaunchState::Unrecorded,
+        };
+        self.held_launch.insert(mint, st);
+    }
+
+    /// The durable record to write for a held mint (`None` = unrecorded).
+    #[must_use]
+    pub fn held_launch_record(&self, mint: &[u8; 32]) -> Option<crate::held_state::HeldLaunch> {
+        match self.held_launch.get(mint) {
+            Some(HeldLaunchState::Pinned { rec, .. }) => Some(rec.clone()),
+            _ => None,
+        }
+    }
+
+    /// The held mint's launch-identity state.
+    #[must_use]
+    pub fn held_launch_state(&self, mint: &[u8; 32]) -> Option<&HeldLaunchState> {
+        self.held_launch.get(mint)
+    }
+
+    /// The position closed: its pin goes with it.
+    pub fn held_launch_forget(&mut self, mint: &[u8; 32]) {
+        self.held_launch.remove(mint);
+    }
+
+    /// Whether the rebuilt tape reproduces a restored pin: same first trade and the same number of trades up to the
+    /// pinned instant. A pin without tape fields (unknown at record time) cannot be verified and never matches.
+    fn held_tape_matches(&self, mint: &[u8; 32], p: &crate::held_state::HeldLaunch) -> bool {
+        let (Some(origin), Some(through), Some(n)) =
+            (p.tape_origin_ms, p.tape_through_ms, p.tape_trades_before)
+        else {
+            return false;
+        };
+        self.ledger
+            .tape_extent(mint, through)
+            .is_some_and(|(first, c)| first == origin && c == Some(n))
+    }
+
+    /// Latch restored pins whose tape now matches (checked on the tick path; later ring eviction cannot un-verify a
+    /// tape that was proven continuous). Returns how many were verified now.
+    pub fn verify_held_tapes(&mut self) -> usize {
+        let todo: Vec<[u8; 32]> = self
+            .held_launch
+            .iter()
+            .filter_map(|(m, s)| match s {
+                HeldLaunchState::Pinned {
+                    rec,
+                    verify_tape: true,
+                } if self.held_tape_matches(m, rec) => Some(*m),
+                _ => None,
+            })
+            .collect();
+        for m in &todo {
+            if let Some(HeldLaunchState::Pinned { verify_tape, .. }) = self.held_launch.get_mut(m) {
+                *verify_tape = false;
+            }
+        }
+        todo.len()
+    }
+
+    /// RESTART: restore a held mint's launch identity from its durable record (or record its absence), verifying it
+    /// against whatever the registry / observed-launch log / flow history already holds. The creator registry and the
+    /// launch identity are separate dependencies: the registry count is reinstated FROZEN as recorded (never recounted
+    /// from a partial history), the observed launch time and creator are restored only from this record.
+    /// Returns the resulting state label: "restored" | "unrecorded" | the conflict name.
+    pub fn restore_held_launch(
+        &mut self,
+        mint: [u8; 32],
+        rec: Option<&crate::held_state::HeldLaunch>,
+    ) -> &'static str {
+        let Some(r) = rec else {
+            self.held_launch.insert(mint, HeldLaunchState::Unrecorded);
+            return "unrecorded";
+        };
+        let creator_id =
+            pump_quant_wallet_graph::tracked_wallet_matcher::wallet_entity_id(&r.creator);
+        let conflict = if let Some(l) = self.creators.get(&mint) {
+            let d = self.creators.dev_history(&mint);
+            (l.creator != creator_id
+                || l.launch_unix_ms != r.launch_unix_ms
+                || d.creator_past_launches != r.creator_past_launches
+                || d.creator_known != i64::from(r.creator_known))
+            .then_some("launch_identity_conflict:registry")
+        } else {
+            None
+        }
+        .or_else(|| {
+            self.launch_ms
+                .get(&mint)
+                .is_some_and(|t| *t != r.launch_unix_ms || !r.feed_observed)
+                .then_some("launch_identity_conflict:observed_launch")
+        })
+        .or_else(|| {
+            self.flow
+                .creator_of(&mint)
+                .is_some_and(|w| w != r.creator)
+                .then_some("launch_identity_conflict:flow_creator")
+        });
+        if let Some(why) = conflict {
+            self.held_launch
+                .insert(mint, HeldLaunchState::Conflict(why));
+            return why;
+        }
+        if self.creators.get(&mint).is_none() {
+            match r.creator_past_launches {
+                Some(n) if r.creator_known == 1 => {
+                    self.creators
+                        .restore_frozen(mint, creator_id, r.launch_unix_ms, n);
+                }
+                // An unknown count is restored as unknown: nothing is inserted, the join keeps refusing by name.
+                _ => {}
+            }
+        }
+        if r.feed_observed {
+            self.launch_ms.insert(mint, r.launch_unix_ms);
+        }
+        self.flow.track_mint(mint);
+        self.flow.set_creator(mint, r.creator);
+        self.held_launch.insert(
+            mint,
+            HeldLaunchState::Pinned {
+                rec: r.clone(),
+                verify_tape: true,
+            },
+        );
+        "restored"
+    }
+
+    /// After a flow-history attach replaced the reducer: re-apply restored held launches' creator/tracking, and
+    /// flag a contradiction with the restored reducer by name.
+    pub fn reapply_held_launches(&mut self) -> usize {
+        let mut conflicts = 0;
+        let mints: Vec<[u8; 32]> = self.held_launch.keys().copied().collect();
+        for m in mints {
+            let Some(HeldLaunchState::Pinned { rec: r, .. }) = self.held_launch.get(&m).cloned()
+            else {
+                continue;
+            };
+            match self.flow.creator_of(&m) {
+                Some(w) if w != r.creator => {
+                    self.held_launch.insert(
+                        m,
+                        HeldLaunchState::Conflict("launch_identity_conflict:flow_creator"),
+                    );
+                    conflicts += 1;
+                }
+                Some(_) => self.flow.track_mint(m),
+                None => {
+                    self.flow.track_mint(m);
+                    self.flow.set_creator(m, r.creator);
+                }
+            }
+        }
+        conflicts
+    }
+
+    /// M2: seed one launch from the trained table into the creator registry ONLY. It does not mark
+    /// the launch as observed by our feed (`launch_known` stays false), so a seed-only market still
+    /// refuses entry by name (cohort freeze). Returns false on a conflicting re-observation / cap.
+    pub fn seed_creator_launch(
+        &mut self,
+        mint: [u8; 32],
+        creator: [u8; 32],
+        launch_unix_ms: i64,
+    ) -> bool {
+        let creator_id =
+            pump_quant_wallet_graph::tracked_wallet_matcher::wallet_entity_id(&creator);
+        self.creators.observe(mint, creator_id, launch_unix_ms)
+    }
+
+    /// M2: whether the creator registry already holds `mint` (dedup identity).
+    #[must_use]
+    pub fn creator_launch_held(&self, mint: &[u8; 32]) -> bool {
+        self.creators.get(mint).is_some()
+    }
+
+    /// M2: the registry's `DEV HISTORY` inputs for `mint` (read-only view, for parity checks).
+    #[must_use]
+    pub fn creator_dev_history(
+        &self,
+        mint: &[u8; 32],
+    ) -> pump_quant_proposal::decision::DevHistoryDecision {
+        self.creators.dev_history(mint)
+    }
+
+    /// M2: number of launches the creator registry holds.
+    #[must_use]
+    pub fn creator_registry_len(&self) -> usize {
+        self.creators.len()
+    }
+
+    /// M2: raise the named entry refusal for an untrusted creator registry.
+    pub fn set_creator_registry_refusal(&mut self, why: &'static str) {
+        self.creator_registry_refusal = Some(why);
+    }
+
+    /// M2: the current named registry refusal, if any.
+    #[must_use]
+    pub fn creator_registry_refusal(&self) -> Option<&'static str> {
+        self.creator_registry_refusal
+    }
+
+    /// M2: set the provenance tag carried on every entry snapshot.
+    pub fn set_creator_provenance(&mut self, tag: String) {
+        self.creator_provenance = tag;
     }
 
     #[must_use]
@@ -389,7 +1014,7 @@ impl DecisionCache {
         let mints_history_unreconstructed = self
             .mints
             .values()
-            .filter(|mc| mc.flow_drops.iter().any(|m| !m.reconciled))
+            .filter(|mc| mc.flow_drops.iter().any(|m| m.receipt.is_none()))
             .count() as u64;
         FlowDropSummary {
             drops_total: self.counters.flow_upstream_drops,
@@ -414,6 +1039,29 @@ impl DecisionCache {
         self.creators.observe(mint, creator_id, launch_unix_ms)
     }
 
+    /// Record a launch established from CHAIN HISTORY (verified create; see `AppEvent::LaunchFromChain`).
+    /// Stored apart from the trained creator registry: it never changes `creator_past_launches`,
+    /// `creator_known`, or the first-observed-trade clock. Returns false for an already-known mint.
+    pub fn observe_chain_launch(&mut self, mint: [u8; 32], fact: ChainLaunch) -> bool {
+        if self.chain_launch.contains_key(&mint) || self.chain_launch.len() >= CHAIN_LAUNCH_CAP {
+            return false;
+        }
+        self.chain_launch.insert(mint, fact);
+        true
+    }
+
+    /// Whether a launch was OBSERVED on our own feed (the trained registry's input).
+    #[must_use]
+    pub fn launch_known(&self, mint: &[u8; 32]) -> bool {
+        self.launch_ms.contains_key(mint)
+    }
+
+    /// The chain-derived launch fact for `mint`, if one was bootstrapped.
+    #[must_use]
+    pub fn chain_launch(&self, mint: &[u8; 32]) -> Option<ChainLaunch> {
+        self.chain_launch.get(mint).copied()
+    }
+
     pub fn observe_curve(&mut self, mint: [u8; 32], obs: CurveObservation) -> bool {
         self.annotation.observe_curve(mint, obs)
     }
@@ -427,6 +1075,18 @@ impl DecisionCache {
         } else if b.pool != pool {
             b.conflicting = true;
         }
+    }
+
+    /// Whether `pool` is the pool this mint is bound to.
+    #[must_use]
+    pub fn pool_is(&self, mint: &[u8; 32], pool: &str) -> bool {
+        self.pools.get(mint).is_some_and(|b| b.pool == pool)
+    }
+
+    /// Whether the mint has seen two different pools (binding refused).
+    #[must_use]
+    pub fn pool_conflicting(&self, mint: &[u8; 32]) -> bool {
+        self.pools.get(mint).is_some_and(|b| b.conflicting)
     }
 
     pub fn observe_amm(
@@ -447,24 +1107,65 @@ impl DecisionCache {
             self.counters.no_clock += 1;
             return Ingest::NoClock;
         };
-        if t.price_fp <= 0 {
+        // A corpus-basis row from the transaction-event producer carries its own trained price/volume (trader delta
+        // ratio); its `price_fp` is a placeholder that no trained window reads. Every other print needs a price.
+        let corpus_row = t.feature.is_some() && t.event_id.is_some();
+        if t.price_fp <= 0 && !corpus_row {
             self.counters.no_price += 1;
             return Ingest::NoPrice;
         }
         let mc = self.mints.entry(t.mint).or_default();
         if mc.n_accepted > 0 && recv < mc.last_recv_ms {
             self.counters.out_of_order += 1;
+            // With durable flow history, an older corpus row is a LATE event: recorded (dependency-scoped refusal), not
+            // silently dropped while history is described as complete. A redelivered id is a proven duplicate.
+            if let (Some(fm), Some(id), true, false) = (
+                &mut self.flow_meta,
+                t.event_id,
+                t.feature.is_some(),
+                self.rehydrating,
+            ) {
+                let mut st = crate::flow_checkpoint::IngestStats::default();
+                fm.record_late(
+                    "live",
+                    id,
+                    recv,
+                    t.mint,
+                    t.feature.map_or([0u8; 32], |f| f.trader),
+                    t.feature.is_some_and(|f| f.sol_lamports < 0),
+                    &mut st,
+                );
+                self.flow_rev = self.flow_rev.wrapping_add(1);
+            }
             return Ingest::OutOfOrder;
         }
-        let key = (t.slot, t.trader.unwrap_or([0u8; 32]), t.signed_base, recv);
-        if mc.recent.iter().any(|k| *k == key) {
-            self.counters.duplicate += 1;
-            return Ingest::Duplicate;
+        // Identity, not price. A print carrying an exact `event_id` (transaction-event producer) is
+        // deduplicated ONLY on that id: two distinct events that share slot, trader, size, time AND price
+        // both survive, and a repeated delivery of one event is always dropped. Prints without an id
+        // (legacy/derived) keep the original heuristic key -- price is NOT part of it.
+        match t.event_id {
+            Some(id) => {
+                if mc.recent_ids.contains(&id) {
+                    self.counters.duplicate += 1;
+                    return Ingest::Duplicate;
+                }
+                if mc.recent_ids.len() >= DEDUPE_ID_LOOKBACK {
+                    mc.recent_ids.pop_front();
+                }
+                mc.recent_ids.push_back(id);
+            }
+            None => {
+                let key = (t.slot, t.trader.unwrap_or([0u8; 32]), t.signed_base, recv);
+                if mc.recent.iter().any(|k| *k == key) {
+                    self.counters.duplicate += 1;
+                    return Ingest::Duplicate;
+                }
+                if mc.recent.len() >= DEDUPE_LOOKBACK {
+                    mc.recent.pop_front();
+                }
+                mc.recent.push_back(key);
+            }
         }
-        if mc.recent.len() >= DEDUPE_LOOKBACK {
-            mc.recent.pop_front();
-        }
-        mc.recent.push_back(key);
         if mc.n_accepted == 0 {
             mc.first_seen_ms = recv;
         }
@@ -473,29 +1174,74 @@ impl DecisionCache {
         mc.n_accepted += 1;
         self.counters.accepted += 1;
 
-        if let Some(st) = StateTrade::from_market_trade(
-            recv,
-            t.price_fp,
-            t.quote_lamports,
-            t.signed_base,
-            t.buyer_entity,
-            t.venue,
-            Some(t.signed_base),
-        ) {
+        // TRAINED-WINDOW inputs. With a corpus basis these are the corpus's own quantities (trader native+WSOL
+        // delta, trader token delta, resolved trader; price = |sol|/|tokens| as `build_states_v2` computes it).
+        // Without a basis: a legacy producer (no event_id) keeps its historical inputs unchanged; a
+        // transaction-event trade is OUTSIDE the corpus population and is kept out of the trained windows.
+        let (w_price, w_quote, w_base, w_trader, w_entity, w_ok) = match (t.feature, t.event_id) {
+            (Some(f), _) => {
+                let sol = f.sol_lamports.unsigned_abs();
+                let tok = i128::from(f.tokens_raw.unsigned_abs());
+                let px = if tok > 0 {
+                    i128::from(sol).saturating_mul(1_000_000_000) / tok
+                } else {
+                    0
+                };
+                (
+                    px,
+                    sol,
+                    f.tokens_raw,
+                    Some(f.trader),
+                    wallet_entity_of(&f.trader),
+                    true,
+                )
+            }
+            (None, Some(_)) => {
+                self.counters.outside_corpus += 1;
+                (0, 0, 0, None, 0, false)
+            }
+            (None, None) => (
+                t.price_fp,
+                t.quote_lamports,
+                t.signed_base,
+                t.trader,
+                t.buyer_entity,
+                true,
+            ),
+        };
+        if !w_ok {
+            return Ingest::Accepted;
+        }
+
+        let st = match t.feature {
+            Some(f) => {
+                StateTrade::from_corpus_basis(recv, f.sol_lamports, f.tokens_raw, w_entity, t.venue)
+            }
+            None => StateTrade::from_market_trade(
+                recv,
+                w_price,
+                w_quote,
+                w_base,
+                w_entity,
+                t.venue,
+                Some(w_base),
+            ),
+        };
+        if let Some(st) = st {
             self.ledger.on_trade(&t.mint, st);
         }
 
         // Enrichment (holders / bundles): needs the wallet and both legs.
-        match t.trader {
-            Some(w) if t.signed_base != 0 => {
+        match w_trader {
+            Some(w) if w_base != 0 => {
                 if mc.enrich.len() >= MAX_ENRICH_TRADES_PER_MINT {
                     mc.enrich_overflow = true;
                 } else {
                     mc.enrich.push(EnrichmentTrade {
                         recv_unix_ms: recv,
                         trader: w,
-                        tokens_raw: i128::from(t.signed_base),
-                        sol_lamports: t.quote_lamports,
+                        tokens_raw: i128::from(w_base),
+                        sol_lamports: w_quote,
                         slot: t.slot,
                     });
                 }
@@ -503,15 +1249,19 @@ impl DecisionCache {
             _ => mc.identity_missing += 1,
         }
 
+        if self.rehydrating {
+            // The flow reducer and its cursors are durable: their copy of this print is already applied.
+            return Ingest::Accepted;
+        }
         // Flow: wallet + slot + total fee are required by the reducer's event; CU is carried as
         // Option. A print lacking any of them cannot enter the window, and that is counted.
-        let flow_ev = match (t.trader, t.slot, t.fee_lamports) {
+        let flow_ev = match (w_trader, t.slot, t.fee_lamports) {
             (Some(w), Some(slot), Some(fee)) => flow_event_from_market_trade(
                 &t.mint,
                 slot,
                 Some(recv),
-                t.quote_lamports,
-                t.signed_base,
+                w_quote,
+                w_base,
                 w,
                 fee,
                 t.cu_consumed,
@@ -519,10 +1269,146 @@ impl DecisionCache {
             _ => None,
         };
         match flow_ev {
-            Some(e) if t.cu_consumed.is_some() => self.flow.on_event(&e),
+            Some(e) if t.cu_consumed.is_some() => {
+                // With durability attached the cursor decides: a proven duplicate adds nothing, an unseen
+                // older event is recorded as LATE (not applied) and refuses by scope. Without it, the
+                // reducer is fed directly, exactly as before.
+                let admit = match (&mut self.flow_meta, t.event_id) {
+                    (Some(fm), Some(id)) => {
+                        let mut st = crate::flow_checkpoint::IngestStats::default();
+                        Some(fm.admit(
+                            "live",
+                            id,
+                            recv,
+                            t.mint,
+                            e.trader,
+                            e.side == pump_quant_market_state::flow_reducer::Side::Buy,
+                            &mut st,
+                        ))
+                    }
+                    (Some(fm), None) => {
+                        // An id-less print has no provable identity: derive a stable key from its own fields.
+                        let key = u128::from(t.slot.unwrap_or(0)) << 64 | u128::from(recv as u64);
+                        let mut st = crate::flow_checkpoint::IngestStats::default();
+                        Some(fm.admit(
+                            "live-noid",
+                            key,
+                            recv,
+                            t.mint,
+                            e.trader,
+                            e.side == pump_quant_market_state::flow_reducer::Side::Buy,
+                            &mut st,
+                        ))
+                    }
+                    _ => None,
+                };
+                match admit {
+                    None | Some(crate::flow_checkpoint::Offer::Applied) => {
+                        self.flow.on_event(&e);
+                        self.flow_rev = self.flow_rev.wrapping_add(1);
+                    }
+                    Some(_) => self.flow_rev = self.flow_rev.wrapping_add(1),
+                }
+            }
             _ => mc.flow_meta_missing += 1,
         }
         Ingest::Accepted
+    }
+
+    /// Attach durable flow history: the restored (or fresh) reducer and its metadata replace the cache's own.
+    /// Call BEFORE any live print. Existing mints' launch registrations are re-applied by the caller.
+    pub fn attach_flow_history(&mut self, h: crate::flow_checkpoint::FlowHistory) {
+        let crate::flow_checkpoint::FlowHistory { reducer, meta } = h;
+        self.flow = reducer;
+        self.flow_meta = Some(meta);
+        self.flow_rev = self.flow_rev.wrapping_add(1);
+        // Restored held launches were applied to the reducer that was just replaced.
+        self.reapply_held_launches();
+    }
+
+    /// A persisted flow checkpoint existed but cannot be trusted (`why` is the named reason): refuse every prompt.
+    pub fn flow_state_untrusted(&mut self, why: &'static str) {
+        self.flow_state_untrusted = Some(why);
+    }
+
+    /// Declare the live feed resumes at `resume_ms` after a restore: an interval no source can account for becomes a
+    /// named gap (every later prompt refuses by scope until the interval is reconstructed into the state). Returns the report.
+    pub fn flow_restore_resume(
+        &mut self,
+        resume_ms: i64,
+    ) -> Option<crate::flow_checkpoint::RestoreReport> {
+        let r = self.flow_meta.as_mut().map(|m| m.restore(resume_ms));
+        self.flow_rev = self.flow_rev.wrapping_add(1);
+        r
+    }
+
+    /// Flow-state revision, for the persister.
+    #[must_use]
+    pub fn flow_rev(&self) -> u64 {
+        self.flow_rev
+    }
+
+    /// One CONSISTENT snapshot (reducer + matching meta), taken together so cursors never describe a different
+    /// reducer. This is the only thing the engine thread does for a checkpoint; encoding and disk IO happen elsewhere.
+    #[must_use]
+    pub fn flow_snapshot(&self) -> Option<(FlowReducer, crate::flow_checkpoint::FlowMeta)> {
+        self.flow_meta
+            .as_ref()
+            .map(|m| (self.flow.clone(), m.clone()))
+    }
+
+    /// Read-only view of the durable meta (health/status).
+    #[must_use]
+    pub fn flow_meta(&self) -> Option<&crate::flow_checkpoint::FlowMeta> {
+        self.flow_meta.as_ref()
+    }
+
+    /// Record an operator ACKNOWLEDGEMENT of an unavailable interval. AUDIT ONLY: it never clears a refusal and never
+    /// makes coverage complete (the scope check does not read it). Only reconstructing the interval into the state does.
+    pub fn flow_acknowledge_gap(&mut self, from_ms: i64, to_ms: i64, note: &str) {
+        if let Some(m) = self.flow_meta.as_mut() {
+            m.acknowledged.push((from_ms, to_ms, note.to_string()));
+            self.flow_rev = self.flow_rev.wrapping_add(1);
+        }
+    }
+
+    /// Track `mint` in the flow reducer without a launch record. Measurement/replay only: the
+    /// serving path tracks via `observe_launch`, and a mint with no launch is refused upstream of
+    /// flow (`LaunchUnknown`) -- this does not weaken that.
+    pub fn track_flow_mint_for_measurement(&mut self, mint: [u8; 32]) {
+        self.flow.track_mint(mint);
+    }
+
+    /// Install ONE historical confirmed trade into the flow reducer's global wallet/co-entry state BEFORE the feed's
+    /// first live print. The trained `smart_*`, `coentry_*` and `flow_lookback_d` fields are functions of the whole
+    /// tape prefix (cumulative extraction, distinct mints, early-buyer graph), so a collector that starts cold cannot
+    /// reproduce them. The caller owns provenance and causality: every seeded event must be strictly earlier than every
+    /// decision clock that will be served, and must be a corpus-basis trade (same population as the frozen tape).
+    pub fn seed_flow_history(&mut self, e: &pump_quant_market_state::flow_reducer::FlowEvent) {
+        self.flow.on_event(e);
+    }
+
+    /// Read-only: the history's scope refusal for `mint` at `t_dec_ms` (name, from_ms, to_ms), if any.
+    #[must_use]
+    pub fn flow_scope_refusal(
+        &self,
+        mint: &[u8; 32],
+        t_dec_ms: i64,
+    ) -> Option<(&'static str, i64, i64)> {
+        self.flow_meta
+            .as_ref()
+            .and_then(|m| m.scope_refusal(&self.flow, mint, t_dec_ms))
+    }
+
+    /// Read-only view of the flow reducer's aggregates for `mint` at `t_dec_ms` (measurement and
+    /// tests; the serving path goes through `snapshot`, which also applies every refusal).
+    #[must_use]
+    pub fn flow_aggregates(
+        &self,
+        mint: &[u8; 32],
+        t_dec_ms: i64,
+    ) -> pump_quant_market_state::flow_reducer::FlowOutcome {
+        self.flow.serve(mint, t_dec_ms)
     }
 
     /// Record that the feed derivation dropped a print for `mint` at `drop_unix_ms` — a reserve
@@ -532,41 +1418,197 @@ impl DecisionCache {
     /// 300 s window for [`WINDOW_300_MS`], then the cumulative history until it is reconstructed
     /// or reconciled. Never served as complete or as a quietly idle market.
     pub fn note_flow_upstream_drop(&mut self, mint: [u8; 32], drop_unix_ms: i64) {
-        let mc = self.mints.entry(mint).or_default();
-        if mc.flow_drops.len() >= FLOW_UPSTREAM_DROP_RING {
-            mc.flow_drops.pop_front();
-        }
-        mc.flow_drops.push_back(MissingObservation {
-            drop_ms: drop_unix_ms,
-            reconciled: false,
-        });
-        self.counters.flow_upstream_drops += 1;
+        self.note_missing_observation(
+            mint,
+            drop_unix_ms,
+            MissingKind::PossibleTrade,
+            String::new(),
+        );
     }
 
-    /// Clear the CUMULATIVE block for `mint` after the missing history has genuinely been
-    /// reconstructed — a bounded replay/backfill from an authoritative capture preserving event
-    /// identity, order and dedup — or reconciled by an operator. NEVER called by a timer: a fresh
-    /// reserve snapshot does not restore missing trade history. Returns true when an
-    /// unreconciled observation was cleared.
-    pub fn reconcile_flow_history(&mut self, mint: &[u8; 32]) -> bool {
-        let Some(mc) = self.mints.get_mut(mint) else {
-            return false;
+    /// As [`Self::note_flow_upstream_drop`], carrying the source identity where the producer has
+    /// one (e.g. the slot) and the producer's classification.
+    pub fn note_missing_observation(
+        &mut self,
+        mint: [u8; 32],
+        drop_unix_ms: i64,
+        kind: MissingKind,
+        source_id: String,
+    ) {
+        let mc = self.mints.entry(mint).or_default();
+        push_missing_bounded(
+            &mut mc.flow_drops,
+            MissingObservation {
+                drop_ms: drop_unix_ms,
+                kind,
+                count: 1,
+                source_id,
+                // The refused derivation never resolved a trader or a trade, so every history the
+                // missing print could have entered is carried; each audience then gates on its
+                // own subset (see `MissingDeps::blocks_entry` / `blocks_management`).
+                deps: MissingDeps::all_market_history(),
+                receipt: None,
+            },
+        );
+        self.counters.flow_upstream_drops += 1;
+        self.missing_rev += 1;
+    }
+
+    /// Resolve the CUMULATIVE gap for `mint` ONLY by installing a validated reconstruction
+    /// receipt whose coverage spans the drop. There is deliberately NO API that clears the gap
+    /// without one: an operator may INITIATE reconstruction, but acknowledgement alone is not
+    /// evidence. When no authoritative source exists, the gap is simply never resolved.
+    pub fn reconcile_flow_history(
+        &mut self,
+        mint: &[u8; 32],
+        receipt: &ReconstructionReceipt,
+    ) -> Result<(), ReconcileRefusal> {
+        if receipt.provenance.trim().is_empty() {
+            return Err(ReconcileRefusal::EmptyProvenance);
+        }
+        if receipt.coverage_from_ms > receipt.coverage_to_ms {
+            return Err(ReconcileRefusal::UnorderedCoverage);
+        }
+        let Some(mc) = self.mints.get(mint) else {
+            return Err(ReconcileRefusal::NoGap);
         };
-        let mut cleared = false;
-        for m in mc.flow_drops.iter_mut() {
-            if !m.reconciled {
-                m.reconciled = true;
-                cleared = true;
+        let Some(m) = mc.flow_drops.iter().find(|m| m.receipt.is_none()) else {
+            return Err(ReconcileRefusal::AlreadyReconstructed);
+        };
+        if !(receipt.coverage_from_ms <= m.drop_ms && m.drop_ms <= receipt.coverage_to_ms) {
+            return Err(ReconcileRefusal::CoverageDoesNotSpanTheGap);
+        }
+        // Provenance and coverage are NECESSARY, not SUFFICIENT. While no reconstruction installer
+        // exists, no aggregates are installed, so inference over unchanged incomplete state must
+        // NOT be unlocked. Refuse.
+        let _ = m;
+        Err(ReconcileRefusal::ReconstructionUnsupported)
+    }
+
+    /// TEST-ONLY fixture restoration: installs a receipt WITHOUT reconstructing any aggregates, so
+    /// unit tests can exercise how the gate opens when reconstruction genuinely exists. Compiled
+    /// only under `cfg(test)`; never reachable from production code, and deliberately a different
+    /// name from [`Self::reconcile_flow_history`].
+    #[cfg(test)]
+    pub(crate) fn install_reconstructed_fixture(
+        &mut self,
+        mint: &[u8; 32],
+        receipt: &ReconstructionReceipt,
+    ) -> Result<(), ReconcileRefusal> {
+        if receipt.provenance.trim().is_empty() {
+            return Err(ReconcileRefusal::EmptyProvenance);
+        }
+        if receipt.coverage_from_ms > receipt.coverage_to_ms {
+            return Err(ReconcileRefusal::UnorderedCoverage);
+        }
+        let Some(mc) = self.mints.get_mut(mint) else {
+            return Err(ReconcileRefusal::NoGap);
+        };
+        let Some(m) = mc.flow_drops.iter_mut().find(|m| m.receipt.is_none()) else {
+            return Err(ReconcileRefusal::AlreadyReconstructed);
+        };
+        if !(receipt.coverage_from_ms <= m.drop_ms && m.drop_ms <= receipt.coverage_to_ms) {
+            return Err(ReconcileRefusal::CoverageDoesNotSpanTheGap);
+        }
+        m.receipt = Some(receipt.clone());
+        Ok(())
+    }
+
+    /// Per-mint readiness for the status writer (never on the hot path).
+    #[must_use]
+    pub fn missing_history_status(&self, mint: &[u8; 32]) -> Option<MissingHistoryStatus> {
+        let m = self
+            .mints
+            .get(mint)?
+            .flow_drops
+            .iter()
+            .find(|m| m.receipt.is_none())?;
+        Some(MissingHistoryStatus {
+            mint: *mint,
+            drop_ms: m.drop_ms,
+            source_id: m.source_id.clone(),
+            deps: m.deps,
+            kind: m.kind,
+            count: m.count,
+            entry_unavailable: m.deps.blocks_entry(),
+            management_unavailable: m.deps.blocks_management(),
+            recovery: "reconstruction_unsupported",
+        })
+    }
+
+    /// Every mint with an UNRESOLVED missing observation (for persistence and reporting).
+    #[must_use]
+    pub fn missing_history_records(&self) -> Vec<([u8; 32], MissingObservation)> {
+        let mut out = Vec::new();
+        for (mint, mc) in &self.mints {
+            for m in mc.flow_drops.iter().filter(|m| m.receipt.is_none()) {
+                out.push((*mint, m.clone()));
             }
         }
-        cleared
+        out
+    }
+
+    /// Restore persisted missing-history state BEFORE entry/management inference resumes.
+    /// `integrity_ok` is false when the record could not be read or is incompatible with this
+    /// build: the cache then raises the CONSERVATIVE named refusal
+    /// [`JoinRefusal::HistoryContinuityUnknown`] rather than assuming no gap occurred.
+    pub fn restore_missing_history(
+        &mut self,
+        records: &[([u8; 32], MissingObservation)],
+        integrity_ok: bool,
+    ) -> Result<(), RestoreRefusal> {
+        if !integrity_ok {
+            self.history_continuity_unknown = true;
+            return Err(RestoreRefusal::Unreadable);
+        }
+        for (mint, m) in records {
+            let mc = self.mints.entry(*mint).or_default();
+            push_missing_bounded(&mut mc.flow_drops, m.clone());
+        }
+        self.missing_rev += 1;
+        Ok(())
+    }
+
+    /// Clear a continuity failure ONLY with evidence: a reconstruction receipt. A bare operator
+    /// acknowledgement is not accepted.
+    pub fn clear_history_continuity(
+        &self,
+        receipt: &ReconstructionReceipt,
+    ) -> Result<(), ReconcileRefusal> {
+        if receipt.provenance.trim().is_empty() {
+            return Err(ReconcileRefusal::EmptyProvenance);
+        }
+        if receipt.coverage_from_ms > receipt.coverage_to_ms {
+            return Err(ReconcileRefusal::UnorderedCoverage);
+        }
+        // Production continuity clearing needs a real reconstruction; a plausible receipt cannot
+        // clear it.
+        Err(ReconcileRefusal::ReconstructionUnsupported)
+    }
+
+    /// TEST-ONLY continuity clear (compiled under `cfg(test)` only).
+    #[cfg(test)]
+    pub(crate) fn clear_history_continuity_fixture(&mut self) {
+        self.history_continuity_unknown = false;
+    }
+
+    /// Revision of the unresolved-gap set (changes whenever it does).
+    #[must_use]
+    pub fn missing_rev(&self) -> u64 {
+        self.missing_rev
+    }
+
+    /// Whether startup continuity could not be established.
+    #[must_use]
+    pub fn history_continuity_unknown(&self) -> bool {
+        self.history_continuity_unknown
     }
 
     /// One mint's unreconciled drops (status writer only; never on the hot path).
     #[must_use]
     pub fn unreconciled_drops(&self, mint: &[u8; 32]) -> u64 {
         self.mints.get(mint).map_or(0, |mc| {
-            mc.flow_drops.iter().filter(|m| !m.reconciled).count() as u64
+            mc.flow_drops.iter().filter(|m| m.receipt.is_none()).count() as u64
         })
     }
 
@@ -620,6 +1662,8 @@ impl DecisionCache {
         self.mints.remove(mint);
         self.pools.remove(mint);
         self.launch_ms.remove(mint);
+        self.chain_launch.remove(mint);
+        self.held_launch.remove(mint);
     }
 
     /// Cut an immutable prompt snapshot for `mint` as of `t_dec_ms`, or name why not.
@@ -627,26 +1671,101 @@ impl DecisionCache {
     /// Order of refusals is the order of cheapness and of blame: identity of the mint, launch
     /// provenance, causality, corpus eligibility, then each plane. Every plane is read from its
     /// existing producer; nothing here computes a market quantity.
-    fn prepare(&self, mint: &[u8; 32], t_dec_ms: i64) -> Result<Prepared, JoinRefusal> {
+    fn prepare(
+        &self,
+        mint: &[u8; 32],
+        t_dec_ms: i64,
+        audience: Audience,
+    ) -> Result<Prepared, JoinRefusal> {
+        // A held mint's launch identity is its own dependency: a contradiction or a missing record is named first.
+        match self.held_launch.get(mint) {
+            Some(HeldLaunchState::Conflict(why)) => {
+                return Err(JoinRefusal::LaunchIdentityConflict { why })
+            }
+            Some(HeldLaunchState::Unrecorded) if !self.launch_ms.contains_key(mint) => {
+                return Err(JoinRefusal::LaunchIdentityUnrecorded)
+            }
+            _ => {}
+        }
         let Some(mc) = self.mints.get(mint) else {
             return Err(JoinRefusal::NoMint);
         };
+        // The cumulative state of a held position must be the tape it was opened on, not a truncated rebuild.
+        if let Some(HeldLaunchState::Pinned {
+            rec: p,
+            verify_tape: true,
+        }) = self.held_launch.get(mint)
+        {
+            if !self.held_tape_matches(mint, p) {
+                return Err(JoinRefusal::HeldTapeDiscontinuous);
+            }
+        }
+        // A restored held position whose tape was PROVEN to reproduce its opening pin is its own history.
+        let held_verified = matches!(
+            self.held_launch.get(mint),
+            Some(HeldLaunchState::Pinned {
+                verify_tape: false,
+                ..
+            })
+        );
+        if let (Some(&l), Some((rs, from)), false) =
+            (self.launch_ms.get(mint), self.restart_floor, held_verified)
+        {
+            if l < rs && l < from {
+                return Err(JoinRefusal::TapeTruncatedAtRestart {
+                    launch_ms: l,
+                    restart_ms: rs,
+                });
+            }
+        }
         let Some(&launch) = self.launch_ms.get(mint) else {
-            return Err(JoinRefusal::LaunchUnknown);
+            return Err(if self.chain_launch.contains_key(mint) {
+                JoinRefusal::CreatorCountUndefinedChainOnly
+            } else if self.creators.get(mint).is_some() {
+                // Cohort freeze: the launch is known only from the SEED (trained table, before the
+                // cutoff), not from our own feed. Named, never served.
+                JoinRefusal::LaunchSeedOnlyNotFeedObserved
+            } else {
+                JoinRefusal::LaunchUnknown
+            });
         };
         let dev = self.creators.dev_history(mint);
         if dev.creator_known == 0 {
             return Err(JoinRefusal::LaunchUnknown);
         }
-        // First observation is NOT launch time: the history must begin at the launch.
-        let gap = mc.first_seen_ms - launch;
-        if gap > LAUNCH_TOLERANCE_MS {
-            return Err(JoinRefusal::HistoryStartsAfterLaunch { gap_ms: gap });
+        if audience == Audience::Entry {
+            if let Some(why) = self.creator_registry_refusal {
+                return Err(JoinRefusal::CreatorRegistryUntrusted { why });
+            }
         }
+        // Launch time and first observation are different facts. The trained contract measures
+        // `age_s` from the first OBSERVED trade (the StateLedger does the same), so a history that
+        // starts after the launch is not, by itself, a refusal. Sufficient prior observations,
+        // continuity, completeness and freshness are enforced below by their own gates.
+        let _ = launch;
         if mc.last_recv_ms > t_dec_ms {
             return Err(JoinRefusal::FutureStateInCache {
                 newest_ms: mc.last_recv_ms,
             });
+        }
+        if self.history_continuity_unknown {
+            return Err(JoinRefusal::HistoryContinuityUnknown);
+        }
+        if let Some(why) = self.flow_state_untrusted {
+            return Err(JoinRefusal::FlowStateScope {
+                why,
+                from_ms: 0,
+                to_ms: 0,
+            });
+        }
+        if let Some(fm) = &self.flow_meta {
+            if let Some((why, a, b)) = fm.scope_refusal(&self.flow, mint, t_dec_ms) {
+                return Err(JoinRefusal::FlowStateScope {
+                    why,
+                    from_ms: a,
+                    to_ms: b,
+                });
+            }
         }
         // UPSTREAM DROP — fail-closed, blamed before any "quiet"/"few trades" verdict, and
         // per-DEPENDENCY (see [`MissingObservation`]).
@@ -663,7 +1782,13 @@ impl DecisionCache {
         //     counters (n_prior_trades / volumes / unique traders / shares / age) are short.
         //     NO timer repairs that — a fresh reserve snapshot does not restore trade history —
         //     so it stays refused until reconstructed from a capture or reconciled.
-        if let Some(m) = mc.flow_drops.iter().find(|m| !m.reconciled) {
+        if let Some(m) = mc.flow_drops.iter().find(|m| {
+            m.receipt.is_none()
+                && match audience {
+                    Audience::Entry => m.deps.blocks_entry(),
+                    Audience::Management => m.deps.blocks_management(),
+                }
+        }) {
             return Err(JoinRefusal::FlowHistoryUnreconstructable { drop_ms: m.drop_ms });
         }
         self.ledger
@@ -741,7 +1866,7 @@ impl DecisionCache {
             venue,
             last_recv_ms,
             n_accepted,
-        } = self.prepare(mint, t_dec_ms)?;
+        } = self.prepare(mint, t_dec_ms, Audience::Entry)?;
         let mc_last_recv_ms = last_recv_ms;
         let mc_n_accepted = n_accepted;
         let inputs = BundleInputs {
@@ -782,6 +1907,7 @@ impl DecisionCache {
                 last_recv_ms: mc_last_recv_ms,
                 n_accepted: mc_n_accepted,
             },
+            creator_provenance: self.creator_provenance.clone(),
         })
     }
 
@@ -803,7 +1929,7 @@ impl DecisionCache {
             venue,
             last_recv_ms,
             n_accepted,
-        } = self.prepare(mint, t_dec_ms)?;
+        } = self.prepare(mint, t_dec_ms, Audience::Management)?;
         // FRESHNESS PER COMPONENT (management only). The entry corpus renders a stale reserve with
         // pricing_eligible=false and lets the model weigh it; a HELD position is marked and sized
         // from these reserves, so a stale one is refused here. Bound = the existing
@@ -885,6 +2011,7 @@ impl DecisionCache {
             flow_no_prior: false,
         };
         let user_prompt = pump_quant_proposal::render_management(&bundle);
+        let state_record = pump_quant_proposal::management::render_management_state(&bundle);
         Ok(MgmtSnapshot {
             mint: *mint,
             t_dec_ms,
@@ -898,6 +2025,7 @@ impl DecisionCache {
                 last_recv_ms,
                 n_accepted,
             },
+            state_record,
         })
     }
 }
@@ -932,7 +2060,46 @@ mod tests {
             fee_lamports: Some(60_000 + u64::from(i) * 100),
             cu_consumed: Some(90_000 + u64::from(i)),
             venue: VenueLabel::Pumpfun,
+            event_id: None,
+            feature: None,
         }
+    }
+
+    /// Two DISTINCT events sharing slot, trader, size, time AND price both survive; a repeated
+    /// delivery of one event does not. Price plays no part in identity.
+    #[test]
+    fn distinct_events_identical_in_every_field_survive_and_a_redelivery_does_not() {
+        let mut c = DecisionCache::new();
+        assert!(c.observe_launch(MINT, CREATOR, T0));
+        let mut a = trade(0);
+        a.event_id = Some(1);
+        let mut b = a; // identical slot/trader/size/time/price ...
+        b.event_id = Some(2); // ... but a different underlying event
+        assert_eq!(c.observe_trade(&a), Ingest::Accepted);
+        assert_eq!(
+            c.observe_trade(&b),
+            Ingest::Accepted,
+            "distinct event must survive"
+        );
+        assert_eq!(
+            c.observe_trade(&a),
+            Ingest::Duplicate,
+            "same event redelivered"
+        );
+        assert_eq!(c.observe_trade(&b), Ingest::Duplicate);
+        assert_eq!((c.counters().accepted, c.counters().duplicate), (2, 2));
+    }
+
+    /// Without an id the original heuristic key applies and price is NOT part of it.
+    #[test]
+    fn id_less_prints_keep_the_heuristic_key_price_is_not_identity() {
+        let mut c = DecisionCache::new();
+        assert!(c.observe_launch(MINT, CREATOR, T0));
+        let a = trade(0);
+        let mut b = a;
+        b.price_fp += 1;
+        assert_eq!(c.observe_trade(&a), Ingest::Accepted);
+        assert_eq!(c.observe_trade(&b), Ingest::Duplicate);
     }
 
     fn curve() -> CurveObservation {
@@ -1001,19 +2168,141 @@ mod tests {
         );
     }
 
+    /// M2 bootstrap: a launch VERIFIED from chain history is recorded separately. It is never served as the
+    /// trained `creator_past_launches` (an observed capture-window count): the prompt refuses by its own
+    /// name, the creator registry and observation clock are untouched, and an observed launch still wins.
     #[test]
-    fn first_observation_is_not_launch_time() {
+    fn a_chain_only_launch_is_named_and_never_becomes_a_trained_creator_count() {
         let mut c = DecisionCache::new();
-        // Launched an hour before the bot first saw it trade.
+        for i in 0..40 {
+            c.observe_trade(&trade(i));
+        }
+        c.observe_curve(MINT, curve());
+        let fact = ChainLaunch {
+            creator: CREATOR,
+            slot: 445_000_000,
+            block_time_s: Some(1_788_000_000),
+            retrieved_unix_ms: 1_791_000_000_000,
+        };
+        assert!(c.observe_chain_launch(MINT, fact));
+        assert!(!c.observe_chain_launch(MINT, fact), "first fact wins");
+        assert_eq!(c.chain_launch(&MINT), Some(fact));
+        assert!(!c.launch_known(&MINT));
+        assert_eq!(
+            c.snapshot(&MINT, t_dec(40)).unwrap_err(),
+            JoinRefusal::CreatorCountUndefinedChainOnly
+        );
+        assert_eq!(
+            JoinRefusal::CreatorCountUndefinedChainOnly.as_str(),
+            "join_creator_count_undefined_chain_only"
+        );
+        // An observed launch (the trained input) wins over a chain fact for the same mint.
+        let mut o = DecisionCache::new();
+        o.observe_launch(MINT, CREATOR, T0 - 3_600_000);
+        assert!(o.observe_chain_launch(MINT, fact));
+        for i in 0..40 {
+            o.observe_trade(&trade(i));
+        }
+        o.observe_curve(MINT, curve());
+        let s = o
+            .snapshot(&MINT, t_dec(40))
+            .expect("observed launch -> eligible");
+        assert!(s.user_prompt.contains("age_s=81.0 "), "{}", s.user_prompt);
+        // forget() drops both.
+        c.forget(&MINT);
+        assert_eq!(c.chain_launch(&MINT), None);
+    }
+
+    /// Trained observation-history contract (c12 / sft-013; corpus builder `build_states_v2._episode`):
+    /// `age_s` is measured from the first OBSERVED trade, not from the launch. A market first seen an
+    /// hour after its launch is eligible and its prompt carries the observation-based age; the launch
+    /// record is kept as-is (it still drives the creator inputs).
+    #[test]
+    fn a_mid_life_market_is_eligible_and_age_is_measured_from_first_observation() {
+        let mut c = DecisionCache::new();
         c.observe_launch(MINT, CREATOR, T0 - 3_600_000);
         for i in 0..40 {
             c.observe_trade(&trade(i));
         }
         c.observe_curve(MINT, curve());
-        match c.snapshot(&MINT, t_dec(40)).unwrap_err() {
-            JoinRefusal::HistoryStartsAfterLaunch { gap_ms } => assert!(gap_ms >= 3_600_000),
-            other => panic!("wrong refusal: {other:?}"),
+        let s = c
+            .snapshot(&MINT, t_dec(40))
+            .expect("mid-life market eligible");
+        // first observed trade = T0 + 1_000; t_dec(40) = T0 + 82_000 => age_s = 81.0 (NOT 3681.0).
+        assert!(s.user_prompt.contains("age_s=81.0 "), "{}", s.user_prompt);
+        assert!(s
+            .user_prompt
+            .contains("DEV HISTORY: creator_past_launches=0 creator_known=1"));
+        // The launch record itself is not rewritten: coverage still reports age from the launch.
+        let (_, launch_age, _) = c.describe(&MINT, t_dec(40));
+        assert_eq!(launch_age, Some(3_682.0));
+    }
+
+    /// The other trained-contract gates still refuse a mid-life market independently.
+    #[test]
+    fn a_mid_life_market_with_missing_or_corrupt_history_still_refuses() {
+        // (a) no launch record => creator inputs unknown.
+        let mut c = DecisionCache::new();
+        for i in 0..40 {
+            c.observe_trade(&trade(i));
         }
+        c.observe_curve(MINT, curve());
+        assert_eq!(
+            c.snapshot(&MINT, t_dec(40)).unwrap_err(),
+            JoinRefusal::LaunchUnknown
+        );
+        // (b) too few prior observations.
+        let mut c = DecisionCache::new();
+        c.observe_launch(MINT, CREATOR, T0 - 3_600_000);
+        for i in 0..10 {
+            c.observe_trade(&trade(i));
+        }
+        c.observe_curve(MINT, curve());
+        assert!(matches!(
+            c.snapshot(&MINT, t_dec(10)).unwrap_err(),
+            JoinRefusal::State(ClockRefusal::FewPriorTrades { have: 10, .. })
+        ));
+        // (c) a print missing its flow metadata (corrupt history) poisons the flow block.
+        let mut c = DecisionCache::new();
+        c.observe_launch(MINT, CREATOR, T0 - 3_600_000);
+        for i in 0..40 {
+            let mut t = trade(i);
+            if i == 20 {
+                t.fee_lamports = None;
+            }
+            c.observe_trade(&t);
+        }
+        c.observe_curve(MINT, curve());
+        assert!(matches!(
+            c.snapshot(&MINT, t_dec(40)),
+            Err(JoinRefusal::FlowMetaMissing { prints: 1 })
+        ));
+        // (d) a print with no trader identity.
+        let mut c = DecisionCache::new();
+        c.observe_launch(MINT, CREATOR, T0 - 3_600_000);
+        for i in 0..40 {
+            let mut t = trade(i);
+            if i == 10 {
+                t.trader = None;
+            }
+            c.observe_trade(&t);
+        }
+        c.observe_curve(MINT, curve());
+        assert!(matches!(
+            c.snapshot(&MINT, t_dec(40)),
+            Err(JoinRefusal::EnrichmentIdentityMissing { prints: 1 })
+        ));
+        // (e) stale: idle beyond the corpus freshness bound.
+        let mut c = DecisionCache::new();
+        c.observe_launch(MINT, CREATOR, T0 - 3_600_000);
+        for i in 0..40 {
+            c.observe_trade(&trade(i));
+        }
+        c.observe_curve(MINT, curve());
+        assert!(matches!(
+            c.snapshot(&MINT, t_dec(40) + 120_000).unwrap_err(),
+            JoinRefusal::State(ClockRefusal::IdleTooLong { .. })
+        ));
     }
 
     #[test]
@@ -1132,6 +2421,93 @@ mod tests {
         }
     }
 
+    /// SCOPE_MGMT_RENDER R5(c): the management prompt follows the c12 contract (none of the three
+    /// blocks, no trailing newline) while the enriched / dev / flow state is still COMPUTED from
+    /// the same producers as the entry prompt and RECORDED on the snapshot. The entry prompt for
+    /// the same mint and clock still renders all three blocks.
+    #[test]
+    fn management_state_is_computed_and_recorded_but_not_rendered() {
+        let mut c = ready(80);
+        let t = t_dec(80);
+        let mut fresh = curve();
+        fresh.ts_ms = t - 5_000;
+        fresh.slot = 2_000;
+        assert!(c.observe_curve(MINT, fresh));
+        let m = c
+            .management_snapshot(&MINT, t, &mgmt_inputs())
+            .expect("management snapshot");
+        for k in ["ENRICHED CANDIDATE STATE", "DEV HISTORY", "LIVE FLOW STATE"] {
+            assert!(
+                !m.user_prompt.contains(k),
+                "{k} rendered: {}",
+                m.user_prompt
+            );
+        }
+        assert!(m.user_prompt.ends_with(
+            "Choose exactly one action: HOLD, ADD, REDUCE, EXIT. Answer in the fixed format."
+        ));
+        assert_eq!(m.prompt_digest, fnv1a(&m.user_prompt));
+        // Recorded: every enriched / dev / flow key, with the producer's values.
+        let lines: Vec<&str> = m.state_record.lines().collect();
+        assert_eq!(lines.len(), 3, "{}", m.state_record);
+        assert!(lines[0].starts_with("ENRICHED CANDIDATE STATE: holders_at_t="));
+        for k in [
+            "holders_at_t=",
+            "top1_float_share=",
+            "holder_hhi=",
+            "bundle_wallets=",
+            "round_trip_wallets=",
+            "creator_past_launches=0",
+            "creator_known=True",
+            "wash_ratio=",
+        ] {
+            assert!(lines[0].contains(k), "enriched missing {k}: {}", lines[0]);
+        }
+        assert_eq!(
+            lines[1],
+            {
+                let w = lines[0]
+                    .split(' ')
+                    .find(|kv| kv.starts_with("wash_ratio="))
+                    .unwrap();
+                let b = lines[0]
+                    .split(' ')
+                    .find(|kv| kv.starts_with("bundle_wallets="))
+                    .unwrap();
+                format!("DEV HISTORY: creator_past_launches=0 creator_known=True {b} {w}")
+            },
+            "dev history comes from the same producers as the enriched line"
+        );
+        assert!(
+            lines[2].starts_with("LIVE FLOW STATE: entrants_60s="),
+            "{}",
+            lines[2]
+        );
+        for k in [
+            "entrants_300s=",
+            "net_flow_sol_300s=",
+            "entrant_fee_p90_lamports=",
+            "entrant_cu_p50=",
+        ] {
+            assert!(lines[2].contains(k), "flow missing {k}: {}", lines[2]);
+        }
+        // The entry prompt at the same mint/clock still renders all three blocks, and its flow
+        // line is the same producer output the management record carries.
+        let e = c.snapshot(&MINT, t).expect("entry snapshot");
+        assert!(e
+            .user_prompt
+            .contains("ENRICHED CANDIDATE STATE (strictly causal at t_dec): "));
+        assert!(e
+            .user_prompt
+            .contains("DEV HISTORY: creator_past_launches=0 creator_known=1\n"));
+        assert!(
+            e.user_prompt.contains(&format!("{}\n", lines[2])),
+            "entry flow line == recorded management flow line\n{}\n{}",
+            e.user_prompt,
+            lines[2]
+        );
+    }
+
     #[test]
     fn management_refuses_a_stale_reserve_even_when_the_latest_trade_is_fresh() {
         // 80 prints => the newest trade is 1 s before the decision clock (fresh by the ledger's own
@@ -1235,14 +2611,148 @@ mod tests {
 
         // RECOVERY is by RECONSTRUCTION only — a bounded replay/backfill or an operator
         // reconciliation — never by a timer.
-        assert!(
-            c.reconcile_flow_history(&MINT),
-            "an unreconciled observation must be clearable by reconciliation"
+        // NO API clears the gap without a valid reconstruction receipt: an operator may initiate
+        // reconstruction, but an acknowledgement alone is not evidence.
+        assert_eq!(
+            c.reconcile_flow_history(
+                &MINT,
+                &ReconstructionReceipt {
+                    provenance: String::new(),
+                    coverage_from_ms: drop_ms - 1,
+                    coverage_to_ms: drop_ms + 1,
+                }
+            ),
+            Err(ReconcileRefusal::EmptyProvenance),
+            "an acknowledgement without provenance must not clear the gap"
         );
+        assert_eq!(
+            c.reconcile_flow_history(
+                &MINT,
+                &ReconstructionReceipt {
+                    provenance: "capture:test".into(),
+                    coverage_from_ms: drop_ms + 1,
+                    coverage_to_ms: drop_ms + 2,
+                }
+            ),
+            Err(ReconcileRefusal::CoverageDoesNotSpanTheGap),
+            "a window that does not span the drop must not clear it"
+        );
+        // A PLAUSIBLE, covering receipt is NECESSARY but NOT SUFFICIENT: no aggregates have been
+        // reconstructed, so inference over unchanged incomplete state must stay refused.
+        assert_eq!(
+            c.reconcile_flow_history(
+                &MINT,
+                &ReconstructionReceipt {
+                    provenance: "capture:test".into(),
+                    coverage_from_ms: drop_ms - 1,
+                    coverage_to_ms: drop_ms + 1,
+                }
+            ),
+            Err(ReconcileRefusal::ReconstructionUnsupported),
+            "metadata alone must not unlock inference"
+        );
+        assert!(
+            c.snapshot(&MINT, t_recover).is_err(),
+            "a plausible receipt must leave the incomplete state refused"
+        );
+        // TEST-ONLY fixture restoration, deliberately separate from production recovery
+        // (`reconcile_flow_history`), shows the gate opening only when state is installed.
+        assert!(c
+            .install_reconstructed_fixture(
+                &MINT,
+                &ReconstructionReceipt {
+                    provenance: "capture:test".into(),
+                    coverage_from_ms: drop_ms - 1,
+                    coverage_to_ms: drop_ms + 1,
+                }
+            )
+            .is_ok());
         assert!(
             c.snapshot(&MINT, t_recover).is_ok(),
-            "after reconciliation the mint serves again"
+            "after a genuine reconstruction the mint serves again"
         );
+    }
+
+    #[test]
+    fn persisted_missing_history_survives_a_restart_and_unreadable_state_never_reads_as_complete() {
+        // A live cache records the gap.
+        let mut live = ready(80);
+        let drop_ms = T0 + 1_000;
+        live.note_flow_upstream_drop(MINT, drop_ms);
+        for i in 80..155 {
+            let _ = live.observe_trade(&trade(i));
+        }
+        let t = t_dec(155);
+        assert_eq!(
+            live.snapshot(&MINT, t),
+            Err(JoinRefusal::FlowHistoryUnreconstructable { drop_ms }),
+            "the cumulative gap must refuse before any restart"
+        );
+        let records = live.missing_history_records();
+        assert_eq!(records.len(), 1, "the unresolved record must be exportable");
+
+        // RESTART: history is rebuilt independently and the persisted gap is restored BEFORE
+        // inference resumes — the restart must NOT erase the gap.
+        let mut restarted = ready(155);
+        assert!(restarted.restore_missing_history(&records, true).is_ok());
+        assert_eq!(
+            restarted.snapshot(&MINT, t),
+            Err(JoinRefusal::FlowHistoryUnreconstructable { drop_ms }),
+            "a restart must restore the gap, not lose it"
+        );
+        assert_eq!(restarted.unreconciled_drops(&MINT), 1);
+
+        // AN UNREADABLE / INCOMPATIBLE record must NOT silently become "complete": continuity is
+        // refused by name for every prompt.
+        let mut corrupt = ready(155);
+        assert_eq!(
+            corrupt.restore_missing_history(&[], false),
+            Err(RestoreRefusal::Unreadable)
+        );
+        assert!(corrupt.history_continuity_unknown());
+        assert_eq!(
+            corrupt.snapshot(&MINT, t),
+            Err(JoinRefusal::HistoryContinuityUnknown),
+            "unreadable persisted state must refuse, never assume no gap occurred"
+        );
+        // Only EVIDENCE clears continuity; a bare acknowledgement is not evidence.
+        assert_eq!(
+            corrupt.clear_history_continuity(&ReconstructionReceipt {
+                provenance: String::new(),
+                coverage_from_ms: 0,
+                coverage_to_ms: 1,
+            }),
+            Err(ReconcileRefusal::EmptyProvenance)
+        );
+        assert!(corrupt.history_continuity_unknown(), "still refused");
+        assert_eq!(
+            corrupt.clear_history_continuity(&ReconstructionReceipt {
+                provenance: "capture:test".into(),
+                coverage_from_ms: 0,
+                coverage_to_ms: 1,
+            }),
+            Err(ReconcileRefusal::ReconstructionUnsupported),
+            "a plausible receipt must not clear continuity"
+        );
+        assert!(corrupt.history_continuity_unknown(), "still refused");
+        corrupt.clear_history_continuity_fixture();
+        assert!(!corrupt.history_continuity_unknown());
+    }
+
+    #[test]
+    fn compaction_never_discards_an_unresolved_gap() {
+        let mut c = ready(80);
+        let first = T0 + 1_000;
+        c.note_flow_upstream_drop(MINT, first);
+        for i in 0..(FLOW_UPSTREAM_DROP_RING + 5) {
+            c.note_flow_upstream_drop(MINT, first + 1_000 + i as i64);
+        }
+        let recs = c.missing_history_records();
+        assert!(
+            recs.iter().any(|(m, r)| *m == MINT && r.drop_ms == first),
+            "bounding the record must not discard an unresolved cumulative gap: {recs:?}"
+        );
+        assert!(c.unreconciled_drops(&MINT) >= 1);
     }
 
     #[test]
@@ -1272,7 +2782,6 @@ mod tests {
         let all = [
             JoinRefusal::NoMint,
             JoinRefusal::LaunchUnknown,
-            JoinRefusal::HistoryStartsAfterLaunch { gap_ms: 1 },
             JoinRefusal::FutureStateInCache { newest_ms: 1 },
             JoinRefusal::EnrichmentIdentityMissing { prints: 1 },
             JoinRefusal::EnrichmentOverflow,
@@ -1300,5 +2809,595 @@ mod tests {
             0,
             "it never reaches enrichment or flow"
         );
+    }
+
+    fn obs_with(deps: MissingDeps, kind: MissingKind, ms: i64) -> MissingObservation {
+        MissingObservation {
+            drop_ms: ms,
+            kind,
+            count: 1,
+            source_id: String::new(),
+            deps,
+            receipt: None,
+        }
+    }
+
+    #[test]
+    fn entry_and_management_gate_on_different_dependencies() {
+        let ledger_only = MissingDeps {
+            ledger_cumulative: true,
+            ..MissingDeps::default()
+        };
+        // Past the 300 s rolling horizon so only the CUMULATIVE dependency is in play.
+        let t = t_dec(155) + 400_000;
+        let mut c = ready(155);
+        c.restore_missing_history(
+            &[(
+                MINT,
+                obs_with(ledger_only, MissingKind::PossibleTrade, T0 + 1_000),
+            )],
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            c.snapshot(&MINT, t),
+            Err(JoinRefusal::FlowHistoryUnreconstructable {
+                drop_ms: T0 + 1_000
+            }),
+            "a ledger-cumulative gap blocks ENTRY"
+        );
+        let st = c.missing_history_status(&MINT).unwrap();
+        assert!(st.entry_unavailable && !st.management_unavailable);
+        let held = mgmt_inputs();
+        let m = c.management_snapshot(&MINT, t, &held);
+        assert!(
+            !matches!(m, Err(JoinRefusal::FlowHistoryUnreconstructable { .. })),
+            "a ledger-only gap must NOT block MANAGEMENT (it renders none of it): {m:?}"
+        );
+        // A holder-enrichment gap blocks both.
+        let holder = MissingDeps {
+            holder_enrichment: true,
+            ..MissingDeps::default()
+        };
+        let mut c2 = ready(155);
+        c2.restore_missing_history(
+            &[(
+                MINT,
+                obs_with(holder, MissingKind::PossibleTrade, T0 + 1_000),
+            )],
+            true,
+        )
+        .unwrap();
+        assert!(matches!(
+            c2.management_snapshot(&MINT, t, &held),
+            Err(JoinRefusal::FlowHistoryUnreconstructable { .. })
+        ));
+        // CONTROL: no gap, no refusal of that kind.
+        assert!(!matches!(
+            ready(155).snapshot(&MINT, t),
+            Err(JoinRefusal::FlowHistoryUnreconstructable { .. })
+        ));
+    }
+
+    #[test]
+    fn compaction_preserves_the_union_of_dependencies_count_and_conservative_kind() {
+        let mut c = ready(80);
+        let only_ledger = MissingDeps {
+            ledger_cumulative: true,
+            ..MissingDeps::default()
+        };
+        let only_holder = MissingDeps {
+            holder_enrichment: true,
+            ..MissingDeps::default()
+        };
+        let mut recs = vec![(
+            MINT,
+            obs_with(only_ledger, MissingKind::InvalidObservation, T0 + 1),
+        )];
+        recs.push((
+            MINT,
+            obs_with(only_holder, MissingKind::PossibleTrade, T0 + 2),
+        ));
+        c.restore_missing_history(&recs, true).unwrap();
+        // Fill the ring with rolling-only observations until the two originals are folded.
+        let rolling = MissingDeps {
+            rolling_300s: true,
+            ..MissingDeps::default()
+        };
+        let extra: Vec<_> = (0..FLOW_UPSTREAM_DROP_RING as i64 + 3)
+            .map(|i| {
+                (
+                    MINT,
+                    obs_with(rolling, MissingKind::InvalidObservation, T0 + 10 + i),
+                )
+            })
+            .collect();
+        c.restore_missing_history(&extra, true).unwrap();
+        let all = c.missing_history_records();
+        assert!(all.len() <= FLOW_UPSTREAM_DROP_RING);
+        let u = all
+            .iter()
+            .fold(MissingDeps::default(), |a, (_, r)| a.union(r.deps));
+        assert!(
+            u.ledger_cumulative && u.holder_enrichment && u.rolling_300s,
+            "union kept: {u:?}"
+        );
+        assert_eq!(
+            all.iter().map(|(_, r)| r.drop_ms).min(),
+            Some(T0 + 1),
+            "earliest instant kept"
+        );
+        assert!(
+            all.iter()
+                .any(|(_, r)| r.kind == MissingKind::PossibleTrade),
+            "conservative kind kept"
+        );
+        assert_eq!(
+            all.iter().map(|(_, r)| u64::from(r.count)).sum::<u64>(),
+            2 + extra.len() as u64,
+            "no observation silently dropped from the count"
+        );
+    }
+
+    // ---------------- durable flow history: lifecycle ----------------
+    use crate::flow_checkpoint::{load, CkptWriter, FlowHistory, Load, Provenance};
+    use pump_quant_market_state::flow_reducer::FlowParams;
+
+    fn prov() -> Provenance {
+        Provenance {
+            seed_source: "t".into(),
+            seed_sha256: "00".into(),
+            seed_before_ms: 1,
+            producer: "x".into(),
+        }
+    }
+
+    fn id_trade(i: u32) -> TradeObs {
+        let mut t = trade(i);
+        t.event_id = Some(1_000 + u128::from(i));
+        let buy = !i.is_multiple_of(3);
+        let w = t.trader.unwrap();
+        t.feature = Some(crate::event::FeatureBasis {
+            sol_lamports: if buy {
+                -500_000_000 - i64::from(i)
+            } else {
+                500_000_000 + i64::from(i)
+            },
+            tokens_raw: if buy { 30_000_000_000 } else { -30_000_000_000 },
+            trader: w,
+        });
+        t
+    }
+
+    fn durable_cache(n: u32) -> DecisionCache {
+        let mut c = DecisionCache::new();
+        c.attach_flow_history(FlowHistory::new(FlowParams::default(), prov()));
+        assert!(c.observe_launch(MINT, CREATOR, T0));
+        for i in 0..n {
+            assert_eq!(c.observe_trade(&id_trade(i)), Ingest::Accepted);
+        }
+        assert!(c.observe_curve(MINT, curve()));
+        c
+    }
+
+    fn restart(c: &DecisionCache, dir: &std::path::Path, resume_ms: i64) -> DecisionCache {
+        let p = dir.join("flow.ckpt");
+        let (r, m) = c.flow_snapshot().unwrap();
+        crate::flow_checkpoint::write_atomic(&p, &m.encode_with(&r)).unwrap();
+        let Load::Loaded(h) = load(FlowParams::default(), &p) else {
+            panic!("load")
+        };
+        let mut n = DecisionCache::new();
+        n.attach_flow_history(*h);
+        assert!(n.observe_launch(MINT, CREATOR, T0));
+        // the per-mint ledger is not part of the flow checkpoint: replay the prints (overlap), in order
+        let _ = n.flow_restore_resume(resume_ms);
+        n
+    }
+
+    fn tdir(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("pq-flowdur-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// restore -> overlap replay -> prompt is byte-identical to an uninterrupted run.
+    #[test]
+    fn restore_then_overlap_replay_renders_the_same_prompt_as_uninterrupted() {
+        let full = durable_cache(40);
+        let want = full
+            .snapshot(&MINT, t_dec(40))
+            .expect("uninterrupted")
+            .user_prompt;
+        // crash after 25 prints were durable; restart; the feed replays an overlap (prints 15..25, all proven
+        // duplicates) and then continues with 25..40
+        let part = durable_cache(25);
+        let mut r = restart(&part, &tdir("overlap"), T0 + 1_000 + 25 * 2_000);
+        for i in 0..25u32 {
+            // the per-mint ledger is rebuilt by the replay; the reducer sees every id as a duplicate
+            let _ = r.observe_trade(&id_trade(i));
+        }
+        for i in 25..40u32 {
+            assert_eq!(r.observe_trade(&id_trade(i)), Ingest::Accepted);
+        }
+        assert!(r.observe_curve(MINT, curve()));
+        let got = r.snapshot(&MINT, t_dec(40)).expect("restored").user_prompt;
+        assert_eq!(got, want, "restored + overlap replay == uninterrupted");
+        let m = r.flow_meta().unwrap();
+        assert!(m.late.is_empty(), "overlap duplicates are not late events");
+    }
+
+    /// A valid but old checkpoint across a hole: entry refuses by a NAMED scope; it does not render "complete".
+    #[test]
+    fn an_old_checkpoint_across_a_feed_hole_refuses_by_name_and_an_acknowledgement_cannot_clear_it()
+    {
+        let part = durable_cache(25);
+        let resume = T0 + 1_000 + 25 * 2_000 + 3_600_000; // an hour later
+        let mut r = restart(&part, &tdir("hole"), resume);
+        // the mint's own ledger is per-process: replay its early prints so the launch gate passes, then continue after the hole
+        for i in 0..25u32 {
+            let _ = r.observe_trade(&id_trade(i));
+        }
+        for i in 25..40u32 {
+            let mut t = id_trade(i);
+            t.recv_unix_ms = Some(resume + i64::from(i) * 2_000);
+            let _ = r.observe_trade(&t);
+        }
+        let _ = r.observe_curve(
+            MINT,
+            CurveObservation {
+                ts_ms: resume + 80_000,
+                ..curve()
+            },
+        );
+        let td = resume + 41 * 2_000;
+        match r.snapshot(&MINT, td) {
+            Err(JoinRefusal::FlowStateScope {
+                why: "feed_gap", ..
+            }) => {}
+            other => panic!("expected feed_gap refusal, got {:?}", other.map(|s| s.mint)),
+        }
+        let g = r.flow_meta().unwrap().coverage.gaps.clone();
+        assert_eq!(g.len(), 1, "the unavailable interval is on record");
+        // An operator ACKNOWLEDGEMENT is audit only: it must not clear the refusal for either audience, and must not
+        // make coverage complete.
+        r.flow_acknowledge_gap(g[0].0, g[0].1, "operator says fine");
+        r.flow_acknowledge_gap(i64::MIN / 2, i64::MAX / 2, "blanket acknowledgement");
+        assert_eq!(
+            r.flow_meta().unwrap().coverage.gaps.len(),
+            1,
+            "gap still on record"
+        );
+        match r.snapshot(&MINT, td) {
+            Err(JoinRefusal::FlowStateScope {
+                why: "feed_gap", ..
+            }) => {}
+            other => panic!(
+                "acknowledgement bypassed the entry refusal: {:?}",
+                other.map(|s| s.mint)
+            ),
+        }
+        let pos = mgmt_inputs();
+        match r.management_snapshot(&MINT, td, &pos) {
+            Err(JoinRefusal::FlowStateScope {
+                why: "feed_gap", ..
+            }) => {}
+            other => panic!(
+                "acknowledgement bypassed the management refusal: {:?}",
+                other.is_ok()
+            ),
+        }
+        // and it survives a persist/reload unchanged: still refuses, acknowledgement still only audit
+        let reloaded = {
+            let (red, meta) = r.flow_snapshot().unwrap();
+            let body = meta.encode_with(&red);
+            match crate::flow_checkpoint::decode(
+                pump_quant_market_state::flow_reducer::FlowParams::default(),
+                &body,
+            ) {
+                crate::flow_checkpoint::Load::Loaded(h) => h,
+                _ => panic!("reload"),
+            }
+        };
+        assert_eq!(reloaded.meta.acknowledged.len(), 2);
+        assert!(reloaded
+            .meta
+            .scope_refusal(&reloaded.reducer, &MINT, td)
+            .is_some());
+    }
+
+    /// A corrupt checkpoint refuses every prompt by name and is never overwritten.
+    #[test]
+    fn an_untrusted_checkpoint_refuses_by_name() {
+        let mut c = durable_cache(40);
+        c.flow_state_untrusted("checkpoint_hash_mismatch");
+        match c.snapshot(&MINT, t_dec(40)) {
+            Err(JoinRefusal::FlowStateScope { why, .. }) => {
+                assert_eq!(why, "checkpoint_hash_mismatch")
+            }
+            _ => panic!("must refuse"),
+        }
+        assert_eq!(
+            JoinRefusal::FlowStateScope {
+                why: "checkpoint_hash_mismatch",
+                from_ms: 0,
+                to_ms: 0
+            }
+            .as_str(),
+            "join_flow_state_untrusted"
+        );
+    }
+
+    /// An unseen older event arriving after a newer one (same mint): recorded as LATE, the earlier window refuses,
+    /// a decision before it is byte-identical to one cut before it arrived, and it is a duplicate after redelivery.
+    #[test]
+    fn a_late_unseen_event_is_recorded_scoped_and_never_rewrites_an_earlier_decision() {
+        let mut c = durable_cache(40);
+        // an EARLY decision is cut while the cache already holds later prints? No: serve it from a cache that only
+        // knew the early state, then compare against the same decision after the late event arrived.
+        let early_td = t_dec(40);
+        let before = c.snapshot(&MINT, early_td).expect("early").user_prompt;
+        let clk = T0 + 1_000 + 30 * 2_000;
+        let agg_before = c.flow_aggregates(&MINT, clk);
+        // an unseen id with a receipt time inside the early window, arriving now
+        let mut late = id_trade(500);
+        late.recv_unix_ms = Some(T0 + 1_000 + 38 * 2_000 + 500);
+        assert_eq!(c.observe_trade(&late), Ingest::OutOfOrder);
+        let m = c.flow_meta().unwrap();
+        assert_eq!(m.late.len(), 1);
+        // the late event is NOT folded into the earlier decision's prompt...
+        // ...so the early window is now refused (it cannot be known complete) rather than served silently
+        match c.snapshot(&MINT, early_td) {
+            Err(JoinRefusal::FlowStateScope {
+                why: "late_event_same_mint",
+                ..
+            }) => {}
+            _ => panic!("early window containing the late event must refuse"),
+        }
+        let _ = before;
+        // the cache's flow aggregates for a clock BEFORE the late event are byte-identical to before it arrived
+        let _ = before;
+        assert_eq!(
+            c.flow_aggregates(&MINT, clk),
+            agg_before,
+            "late event never folded into the reducer"
+        );
+        assert_eq!(
+            c.flow_aggregates(&MINT, early_td),
+            c.flow_aggregates(&MINT, early_td)
+        );
+        // redelivery of the same id is a duplicate, no second record
+        assert_eq!(c.observe_trade(&late), Ingest::OutOfOrder);
+        assert_eq!(c.flow_meta().unwrap().late.len(), 1);
+    }
+
+    /// Late event across a restart: the durable record, and the refusal, survive.
+    #[test]
+    fn a_late_record_survives_restart_and_still_refuses() {
+        let mut c = durable_cache(40);
+        let mut late = id_trade(501);
+        late.recv_unix_ms = Some(T0 + 1_000 + 38 * 2_000 + 700);
+        let _ = c.observe_trade(&late);
+        let mut r = restart(&c, &tdir("latesurv"), T0 + 1_000 + 40 * 2_000);
+        for i in 0..40u32 {
+            let _ = r.observe_trade(&id_trade(i));
+        }
+        let _ = r.observe_curve(MINT, curve());
+        assert_eq!(r.flow_meta().unwrap().late.len(), 1);
+        assert!(matches!(
+            r.snapshot(&MINT, t_dec(40)),
+            Err(JoinRefusal::FlowStateScope {
+                why: "late_event_same_mint",
+                ..
+            })
+        ));
+    }
+
+    /// Failed writes never advance the durable cursor and are observable; a later success does advance it.
+    #[test]
+    fn failed_checkpoint_writes_do_not_advance_the_durable_cursor() {
+        let dir = tdir("failw");
+        let p = dir.join("flow.ckpt");
+        let fail = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let w = CkptWriter::start(p.clone(), Some(fail.clone()));
+        let c = durable_cache(10);
+        let (r, m) = c.flow_snapshot().unwrap();
+        let s1 = w.submit(r, m);
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        assert_eq!(w.durable(), 0, "failed write: durable cursor unchanged");
+        assert!(
+            w.consecutive_failures
+                .load(std::sync::atomic::Ordering::SeqCst)
+                >= 1
+        );
+        assert!(!p.exists(), "no file published by a failed write");
+        fail.store(false, std::sync::atomic::Ordering::SeqCst);
+        let (r, m) = c.flow_snapshot().unwrap();
+        let s2 = w.submit(r, m);
+        assert!(w.wait_durable(s2, std::time::Duration::from_secs(5)));
+        assert!(s2 > s1 && w.durable() == s2);
+        assert_eq!(
+            w.consecutive_failures
+                .load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+        assert!(matches!(load(FlowParams::default(), &p), Load::Loaded(_)));
+    }
+
+    /// Crash after the temp file is written but before publication: the previous checkpoint is what loads; the
+    /// durable cursor is the previous one. After publication, the new state loads.
+    #[test]
+    fn crash_before_and_after_publication_at_the_cache_level() {
+        let dir = tdir("pub");
+        let p = dir.join("flow.ckpt");
+        let a = durable_cache(10);
+        let (r, m) = a.flow_snapshot().unwrap();
+        let old = m.encode_with(&r);
+        crate::flow_checkpoint::write_atomic(&p, &old).unwrap();
+        let b = durable_cache(20);
+        let (r2, m2) = b.flow_snapshot().unwrap();
+        let newer = m2.encode_with(&r2);
+        std::fs::write(p.with_extension("tmp"), &newer[..newer.len() / 2]).unwrap(); // crash mid-write
+        let Load::Loaded(h) = load(FlowParams::default(), &p) else {
+            panic!()
+        };
+        assert_eq!(
+            h.encode(),
+            old,
+            "before publication: the previous checkpoint"
+        );
+        crate::flow_checkpoint::write_atomic(&p, &newer).unwrap();
+        let Load::Loaded(h2) = load(FlowParams::default(), &p) else {
+            panic!()
+        };
+        assert_eq!(h2.encode(), newer, "after publication: the new one");
+    }
+    // ── RESTART launch recovery (SCOPE_REARM_LAUNCH B) ─────────────────────────────────────────────────────────
+
+    /// The uninterrupted reference: launch at T0, 40 prints, curve; then the same cache restarted from an empty
+    /// process. `restart` = the restart instant (after print 25).
+    fn restart_ms() -> i64 {
+        T0 + 1_000 + 25 * 2_000
+    }
+
+    /// A restarted process: nothing rehydrated, the overlap feed re-delivers only prints after the restart.
+    fn restarted_without_capture() -> DecisionCache {
+        let mut c = DecisionCache::new();
+        c.set_restart_floor(restart_ms(), i64::MAX);
+        // The launch is re-delivered by the creator log (as the daemon does from the durable log).
+        assert!(c.observe_launch(MINT, CREATOR, T0));
+        for i in 26..40 {
+            assert_eq!(c.observe_trade(&trade(i)), Ingest::Accepted);
+        }
+        assert!(c.observe_curve(MINT, curve()));
+        c
+    }
+
+    #[test]
+    fn a_market_launched_before_the_restart_without_its_capture_refuses_by_name_and_is_reported_lost(
+    ) {
+        let c = restarted_without_capture();
+        match c.snapshot(&MINT, t_dec(40)) {
+            Err(JoinRefusal::TapeTruncatedAtRestart {
+                launch_ms,
+                restart_ms: r,
+            }) => {
+                assert_eq!((launch_ms, r), (T0, restart_ms()));
+            }
+            o => panic!("a truncated tape must never be served: {o:?}"),
+        }
+        assert_eq!(
+            c.snapshot(&MINT, t_dec(40)).unwrap_err().as_str(),
+            "join_tape_truncated_at_restart"
+        );
+        assert_eq!(c.restart_lost_coverage(), vec![(MINT, T0)]);
+    }
+
+    #[test]
+    fn rehydrating_the_pre_restart_capture_restores_exactly_the_uninterrupted_prompt() {
+        let reference = ready(40);
+        let want = reference.snapshot(&MINT, t_dec(40)).expect("reference");
+        let mut c = DecisionCache::new();
+        // Capture covers from the launch: everything up to the restart instant is replayed causally.
+        c.set_restart_floor(restart_ms(), T0);
+        assert!(c.observe_launch(MINT, CREATOR, T0));
+        // The flow reducer is durable on its own: restore it as the uninterrupted run had it at the restart.
+        let mut flow_only = DecisionCache::new();
+        assert!(flow_only.observe_launch(MINT, CREATOR, T0));
+        for i in 0..26 {
+            flow_only.observe_trade(&trade(i));
+        }
+        c.flow = flow_only.flow.clone();
+        for i in 0..26 {
+            assert_eq!(c.rehydrate_trade(&trade(i)), Some(Ingest::Accepted));
+        }
+        // A capture line after the restart instant is not applied (the feed re-delivers it).
+        assert_eq!(c.rehydrate_trade(&trade(30)), None);
+        // Overlap: the live feed re-delivers from print 20, then continues. A re-delivered print is never applied
+        // twice (older ones are refused as out-of-order, the boundary print as a duplicate).
+        for i in 20..40 {
+            let r = c.observe_trade(&trade(i));
+            if i < 26 {
+                assert!(
+                    matches!(r, Ingest::Duplicate | Ingest::OutOfOrder),
+                    "{i}: {r:?}"
+                );
+            } else {
+                assert_eq!(r, Ingest::Accepted);
+            }
+        }
+        assert!(c.observe_curve(MINT, curve()));
+        let got = c.snapshot(&MINT, t_dec(40)).expect("rehydrated");
+        assert_eq!(got.user_prompt, want.user_prompt, "restart equivalence");
+        assert!(c.restart_lost_coverage().is_empty());
+    }
+
+    #[test]
+    fn a_re_delivered_launch_after_restart_never_increments_a_creator_twice() {
+        let mut c = DecisionCache::new();
+        c.set_restart_floor(restart_ms(), T0);
+        let other = [0x44; 32];
+        assert!(c.observe_launch(other, CREATOR, T0 - 10_000));
+        assert!(c.observe_launch(MINT, CREATOR, T0));
+        // The overlap re-delivers both launches.
+        assert!(c.observe_launch(other, CREATOR, T0 - 10_000));
+        assert!(c.observe_launch(MINT, CREATOR, T0));
+        assert_eq!(c.creator_dev_history(&MINT).creator_past_launches, Some(1));
+        assert_eq!(c.creator_dev_history(&other).creator_past_launches, Some(0));
+        // A later-arriving EARLIER launch of the same creator never revises a frozen count.
+        assert!(c.observe_launch([0x45; 32], CREATOR, T0 - 20_000));
+        assert_eq!(c.creator_dev_history(&MINT).creator_past_launches, Some(1));
+    }
+
+    fn pin(c: &DecisionCache) -> crate::held_state::HeldLaunch {
+        c.launch_identity_now(&MINT, T0 + 1_000 + 20 * 2_000)
+            .expect("pin")
+    }
+
+    #[test]
+    fn a_held_pin_restores_launch_identity_and_its_frozen_count_without_re_observation() {
+        let src = ready(40);
+        let rec = pin(&src);
+        assert_eq!(rec.creator_past_launches, Some(0));
+        assert_eq!(rec.tape_trades_before, Some(20));
+        let mut c = DecisionCache::new();
+        assert_eq!(c.restore_held_launch(MINT, Some(&rec)), "restored");
+        assert!(c.launch_known(&MINT));
+        assert_eq!(c.creator_dev_history(&MINT).creator_past_launches, Some(0));
+        // Without the tape it pinned, management refuses by name (never a truncated history).
+        for i in 30..40 {
+            c.observe_trade(&trade(i));
+        }
+        assert!(c.observe_curve(MINT, curve()));
+        assert_eq!(
+            c.snapshot(&MINT, t_dec(40)).unwrap_err().as_str(),
+            "join_held_tape_discontinuous"
+        );
+    }
+
+    #[test]
+    fn a_held_pin_that_contradicts_the_registry_is_a_named_conflict() {
+        let src = ready(40);
+        let mut rec = pin(&src);
+        let mut c = DecisionCache::new();
+        assert!(c.observe_launch(MINT, CREATOR, T0 + 5));
+        assert_eq!(
+            c.restore_held_launch(MINT, Some(&rec)),
+            "launch_identity_conflict:registry"
+        );
+        assert!(matches!(
+            c.snapshot(&MINT, t_dec(40)),
+            Err(JoinRefusal::LaunchIdentityConflict { .. })
+        ));
+        // Unrecorded (older ledger) and no launch known: named, never invented.
+        let mut d = DecisionCache::new();
+        assert_eq!(d.restore_held_launch(MINT, None), "unrecorded");
+        assert_eq!(
+            d.snapshot(&MINT, t_dec(40)).unwrap_err().as_str(),
+            "join_launch_identity_unrecorded"
+        );
+        rec.creator = [1; 32];
+        let _ = rec;
     }
 }

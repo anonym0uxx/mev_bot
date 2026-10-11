@@ -57,6 +57,11 @@ pub struct CreatorHistory {
     by_mint: BTreeMap<[u8; 32], Launch>,
     /// Per creator, the launch times SORTED — the bisect the corpus's `prior_launches` performs.
     by_creator: BTreeMap<u64, Vec<i64>>,
+    /// M2 COUNT-BEFORE-INSERT: each mint's `creator_past_launches`, computed from the creator's
+    /// launches already held at the moment THIS launch is inserted (strict-before on recv time),
+    /// then frozen. A later-arriving launch can never rewrite a count a decision already read.
+    /// Fed in receive order this equals the corpus's bisect over the whole table.
+    prior_at_insert: BTreeMap<[u8; 32], i64>,
     refused: u64,
 }
 
@@ -104,6 +109,9 @@ impl CreatorHistory {
             return false;
         }
         let times = self.by_creator.entry(creator).or_default();
+        // Count BEFORE inserting the target launch: the mint never counts itself.
+        let prior_before = times.partition_point(|&x| x < launch_unix_ms) as i64;
+        self.prior_at_insert.insert(mint, prior_before);
         // ALWAYS insert: two of a creator's mints can share a millisecond, and the corpus's bisect
         // counts every launch, not every distinct timestamp. De-duplicating by time would drop one
         // of them and undercount the next launch's `creator_past_launches`. A re-observed MINT is
@@ -120,6 +128,45 @@ impl CreatorHistory {
         true
     }
 
+    /// Restore ONE launch from a durable per-position launch-identity record (held ledger), with the count that was
+    /// FROZEN when the launch was first inserted. Used only when this registry does not already hold the mint: the
+    /// recorded count is reinstated as-is (never recomputed from whatever subset of history this process happens to
+    /// hold), and the launch time joins the creator's sorted history so later launches still count it.
+    /// Returns `false` (nothing changed) when the mint is already held or the registry is full.
+    pub fn restore_frozen(
+        &mut self,
+        mint: [u8; 32],
+        creator: u64,
+        launch_unix_ms: i64,
+        frozen_prior: i64,
+    ) -> bool {
+        if self.by_mint.contains_key(&mint) {
+            return false;
+        }
+        if self.by_mint.len() >= MAX_TRACKED_LAUNCHES {
+            self.refused += 1;
+            return false;
+        }
+        let times = self.by_creator.entry(creator).or_default();
+        let at = times.partition_point(|&x| x < launch_unix_ms);
+        times.insert(at, launch_unix_ms);
+        self.prior_at_insert.insert(mint, frozen_prior);
+        self.by_mint.insert(
+            mint,
+            Launch {
+                creator,
+                launch_unix_ms,
+            },
+        );
+        true
+    }
+
+    /// The held launch record for `mint`, if any (dedup identity is the mint).
+    #[must_use]
+    pub fn get(&self, mint: &[u8; 32]) -> Option<Launch> {
+        self.by_mint.get(mint).copied()
+    }
+
     /// The `DEV HISTORY:` inputs for a mint, exactly as the corpus derives them.
     ///
     /// `creator_past_launches` is the number of the creator's launches STRICTLY before this mint's
@@ -133,10 +180,11 @@ impl CreatorHistory {
                 creator_known: 0,
             };
         };
-        let times = self.by_creator.get(&launch.creator);
-        let prior = times.map_or(0, |t| {
-            // `partition_point`: the count of entries `< launch_unix_ms` in the sorted vector.
-            t.partition_point(|&x| x < launch.launch_unix_ms) as i64
+        // The count frozen at insert time (see `prior_at_insert`); present for every held mint.
+        let prior = self.prior_at_insert.get(mint).copied().unwrap_or_else(|| {
+            self.by_creator.get(&launch.creator).map_or(0, |t| {
+                t.partition_point(|&x| x < launch.launch_unix_ms) as i64
+            })
         });
         DevHistoryDecision {
             creator_past_launches: Some(prior),
@@ -153,6 +201,31 @@ mod tests {
         let mut out = [0u8; 32];
         out[0] = b;
         out
+    }
+
+    #[test]
+    fn a_frozen_restore_of_an_already_held_mint_changes_nothing() {
+        // Dedupe on the restore path: a held mint restored again (registry + held record overlap) never inserts a
+        // second launch time, so a later launch of the same creator still counts it ONCE.
+        let mut h = CreatorHistory::new();
+        assert!(h.observe(m(1), 42, 1_000));
+        assert!(!h.restore_frozen(m(1), 42, 1_000, 0), "already held");
+        assert!(h.restore_frozen(m(2), 42, 2_000, 1));
+        assert!(
+            !h.restore_frozen(m(2), 42, 2_000, 1),
+            "re-restore is a no-op"
+        );
+        assert!(h.observe(m(3), 42, 3_000));
+        assert_eq!(
+            h.dev_history(&m(2)).creator_past_launches,
+            Some(1),
+            "frozen as recorded"
+        );
+        assert_eq!(
+            h.dev_history(&m(3)).creator_past_launches,
+            Some(2),
+            "each launch counted once"
+        );
     }
 
     #[test]

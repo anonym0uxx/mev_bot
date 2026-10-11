@@ -31,6 +31,9 @@ libc = "0.2"
 serde_json = "1"
 # Operator-approval digest for the CONFIG_PROMOTION gate (already in the lock via solana-program).
 sha2 = "0.10"
+# Launch bootstrap adapter (both already in the lock).
+bs58 = "0.5"
+ureq = { version = "2.12", default-features = false, features = ["tls", "json"] }
 
 [dev-dependencies]
 

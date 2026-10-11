@@ -80,6 +80,22 @@ async fn run_production(config: LaserstreamConfig) -> Result<(), Box<dyn std::er
 }
 
 
+/// Compact token-balance list for the daemon line: `[{"mint","owner","amount"}]` in wire order, `amount` a
+/// decimal string (u64 raw units, never a float).
+fn tb_json(
+    v: &[helius_laserstream::solana::storage::confirmed_block::TokenBalance],
+) -> Vec<serde_json::Value> {
+    v.iter()
+        .map(|t| {
+            serde_json::json!({
+                "mint": t.mint,
+                "owner": t.owner,
+                "amount": t.ui_token_amount.as_ref().map(|u| u.amount.clone()).unwrap_or_default(),
+            })
+        })
+        .collect()
+}
+
 /// One daemon-facing transaction line. Carries what the engine's decoders need and the old emitter
 /// dropped: INNER (CPI) instructions (PumpSwap swap events live there), loaded ALT addresses (so
 /// instruction account indices resolve), and `meta.fee` / `meta.compute_units_consumed`.
@@ -135,6 +151,14 @@ fn daemon_tx_line(
         "meta": {
             "fee": meta.map(|m| m.fee),
             "compute_units_consumed": meta.and_then(|m| m.compute_units_consumed),
+            // Per-line success evidence: `meta.err` absent. Absent meta => field omitted (unknown).
+            "tx_ok": meta.map(|m| u64::from(m.err.is_none())),
+            // Corpus-definition trader balance delta inputs (processed `meta` carries them): native pre/post
+            // balances (indexed like `account_keys`) and SPL token balances. Absent meta => omitted (unknown).
+            "pre_balances": meta.map(|m| m.pre_balances.clone()),
+            "post_balances": meta.map(|m| m.post_balances.clone()),
+            "pre_token_balances": meta.map(|m| tb_json(&m.pre_token_balances)),
+            "post_token_balances": meta.map(|m| tb_json(&m.post_token_balances)),
         },
     })
     .to_string()
@@ -236,7 +260,7 @@ mod emitted_line_acceptance {
     use super::*;
     use helius_laserstream::grpc::SubscribeUpdateTransactionInfo;
     use helius_laserstream::solana::storage::confirmed_block::{
-        CompiledInstruction, InnerInstruction, InnerInstructions, Message, Transaction, TransactionStatusMeta,
+        CompiledInstruction, InnerInstruction, InnerInstructions, Message, Transaction, TransactionError, TransactionStatusMeta,
     };
 
     fn b58_decode(s: &str) -> Vec<u8> {
@@ -270,6 +294,27 @@ mod emitted_line_acceptance {
             }
         }
         out
+    }
+
+    /// The real serializer's `tx_ok` for the three cases the daemon's parser must distinguish:
+    /// success -> 1, failed (meta.err set) -> 0, no meta at all -> null (parsed as UNKNOWN, never success).
+    #[test]
+    fn tx_ok_serializes_success_failure_and_missing_meta() {
+        let mut ok = SubscribeUpdateTransactionInfo { signature: vec![1; 64], ..Default::default() };
+        ok.meta = Some(TransactionStatusMeta { fee: 5000, compute_units_consumed: Some(7), ..Default::default() });
+        let mut bad = ok.clone();
+        bad.meta = Some(TransactionStatusMeta {
+            fee: 5000,
+            compute_units_consumed: Some(7),
+            err: Some(TransactionError { err: vec![1, 2, 3] }),
+            ..Default::default()
+        });
+        let mut none = ok.clone();
+        none.meta = None;
+        let v = |i: &SubscribeUpdateTransactionInfo| -> serde_json::Value { serde_json::from_str(&daemon_tx_line(9, i)).unwrap() };
+        assert_eq!(v(&ok)["meta"]["tx_ok"], 1);
+        assert_eq!(v(&bad)["meta"]["tx_ok"], 0);
+        assert!(v(&none)["meta"]["tx_ok"].is_null(), "no meta must serialize null, which the parser reads as unknown");
     }
 
     #[test]
@@ -309,9 +354,19 @@ mod emitted_line_acceptance {
                 ..Default::default()
             };
             let got: serde_json::Value = serde_json::from_str(&daemon_tx_line(line["slot"].as_u64().unwrap(), &info)).unwrap();
-            for k in ["lane", "kind", "slot", "signature_b58", "account_keys", "instructions", "meta"] {
+            for k in ["lane", "kind", "slot", "signature_b58", "account_keys", "instructions"] {
                 assert_eq!(got[k], line[k], "field {k} diverged");
             }
+            // `meta` = the fixture's fee/CU (frozen, compared exactly) PLUS `tx_ok` (added with the event
+            // path). The fixture txs carry no error, so the serializer must emit success = 1.
+            assert_eq!(got["meta"]["fee"], line["meta"]["fee"]);
+            assert_eq!(got["meta"]["compute_units_consumed"], line["meta"]["compute_units_consumed"]);
+            assert_eq!(got["meta"]["tx_ok"], 1, "no-error tx must serialize tx_ok=1");
+            for k in ["pre_balances", "post_balances", "pre_token_balances", "post_token_balances"] {
+                assert!(got["meta"][k].is_array(), "balance field {k} must be serialized");
+            }
+            assert_eq!(got["meta"]["pre_balances"].as_array().unwrap().len(), got["account_keys"].as_array().unwrap().len().min(got["meta"]["pre_balances"].as_array().unwrap().len()));
+            assert_eq!(got["meta"].as_object().unwrap().len(), 7, "meta = fee, CU, tx_ok + four balance fields");
             assert!(got["recv_unix_ms"].as_u64().unwrap() > 1_700_000_000_000, "the emitter stamps its own receive clock");
         }
     }

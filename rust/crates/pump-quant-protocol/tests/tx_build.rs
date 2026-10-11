@@ -8,7 +8,8 @@ use pump_quant_protocol::layout::{
 };
 use pump_quant_protocol::message::assemble_transaction;
 use pump_quant_protocol::tx_build::{
-    build_buy_data_with_volume_flag, build_pump_buy_message, build_pump_sell_message, BuildEnv,
+    build_buy_data_with_volume_flag, build_buy_exact_sol_in_data_with_volume_flag,
+    build_pump_buy_exact_sol_in_message, build_pump_buy_message, build_pump_sell_message, BuildEnv,
     ComputePlan, TipPlan, TxBuildError,
 };
 use pump_quant_protocol::venue_accounts::{
@@ -431,4 +432,146 @@ fn negative_control_token_2022_is_a_separate_layout() {
         e.unwrap_err(),
         TxBuildError::Layout(LayoutError::Unverified(_))
     ));
+}
+
+// -- W3/R5: buy_exact_sol_in --------------------------------------------------
+
+use pump_quant_protocol::ix::{BuyExactSolInParams, BUY_EXACT_SOL_IN_DISCRIMINATOR};
+
+/// The discriminator is sha256("global:buy_exact_sol_in")[..8], the value in BOTH the pinned IDL
+/// (pump-sdk 2.0.0, sha256 ffe966c4…) and the current public IDL; the args are IDL order
+/// (`spendable_sol_in` u64, `min_tokens_out` u64, `track_volume` OptionBool).
+#[test]
+fn buy_exact_sol_in_data_is_the_idl_layout() {
+    let d = pump_quant_protocol::sha256::sha256(b"global:buy_exact_sol_in");
+    assert_eq!(&d[..8], &BUY_EXACT_SOL_IN_DISCRIMINATOR);
+    assert_eq!(
+        BUY_EXACT_SOL_IN_DISCRIMINATOR,
+        [56, 252, 116, 8, 158, 223, 205, 95]
+    );
+    let p = BuyExactSolInParams {
+        spendable_sol_in: 0x0102_0304_0506_0708,
+        min_tokens_out: 0x1112_1314_1516_1718,
+    };
+    let data = build_buy_exact_sol_in_data_with_volume_flag(p);
+    let mut want = vec![56, 252, 116, 8, 158, 223, 205, 95];
+    want.extend_from_slice(&[8, 7, 6, 5, 4, 3, 2, 1]);
+    want.extend_from_slice(&[0x18, 0x17, 0x16, 0x15, 0x14, 0x13, 0x12, 0x11]);
+    want.push(0);
+    assert_eq!(data, want, "spend first, floor second, track_volume=false");
+    // Boundaries survive serialization.
+    for (a, b) in [(0u64, 0u64), (u64::MAX, 1), (1, u64::MAX)] {
+        let d = build_buy_exact_sol_in_data_with_volume_flag(BuyExactSolInParams {
+            spendable_sol_in: a,
+            min_tokens_out: b,
+        });
+        assert_eq!(u64::from_le_bytes(d[8..16].try_into().unwrap()), a);
+        assert_eq!(u64::from_le_bytes(d[16..24].try_into().unwrap()), b);
+    }
+}
+
+/// Same 18 accounts and flags as `buy` (IDL: identical 16 named accounts; mainnet: both at 18), same
+/// instruction sequence; only the pump instruction's data differs.
+#[test]
+fn buy_exact_sol_in_message_shares_the_buy_accounts_and_differs_only_in_data() {
+    let reg = verified_registry();
+    let pk_tail = FeeTail::BuybackVault(pk(0x77));
+    let e = env(&reg, pk_tail, bh());
+    let exact_in = build_pump_buy_exact_sol_in_message(
+        &ctx(),
+        BuyExactSolInParams {
+            spendable_sol_in: 500_000_000,
+            min_tokens_out: 2_514_850_190_375,
+        },
+        &e,
+    )
+    .unwrap();
+    let legacy = build_pump_buy_message(
+        &ctx(),
+        BuyParams {
+            min_tokens_out: 2_514_850_190_375,
+            max_sol_cost: 500_000_000,
+        },
+        &e,
+    )
+    .unwrap();
+    assert_eq!(exact_in.account_keys, legacy.account_keys);
+    assert_eq!(
+        (
+            exact_in.num_required_signatures,
+            exact_in.num_readonly_signed,
+            exact_in.num_readonly_unsigned
+        ),
+        (
+            legacy.num_required_signatures,
+            legacy.num_readonly_signed,
+            legacy.num_readonly_unsigned
+        )
+    );
+    assert_eq!(exact_in.bytes.len(), legacy.bytes.len());
+    let diff: Vec<usize> = (0..exact_in.bytes.len())
+        .filter(|&i| exact_in.bytes[i] != legacy.bytes[i])
+        .collect();
+    // Only the 8 discriminator bytes and the two swapped u64 args may differ.
+    let at = exact_in
+        .bytes
+        .windows(8)
+        .position(|w| w == BUY_EXACT_SOL_IN_DISCRIMINATOR)
+        .unwrap();
+    assert!(diff.iter().all(|&i| i >= at && i < at + 24), "{diff:?}");
+    let d = &exact_in.bytes[at..at + 25];
+    assert_eq!(
+        u64::from_le_bytes(d[8..16].try_into().unwrap()),
+        500_000_000
+    );
+    assert_eq!(
+        u64::from_le_bytes(d[16..24].try_into().unwrap()),
+        2_514_850_190_375
+    );
+    assert_eq!(d[24], 0);
+    // The account METAS (order, signer, writable) are the §4.1 buy list + tail: 18 accounts.
+    let metas =
+        pump_quant_protocol::venue_accounts::pump_buy_accounts_with_tail(&ctx(), pk_tail).unwrap();
+    assert_eq!(metas.len(), 18);
+    let flags: Vec<(bool, bool)> = metas.iter().map(|m| (m.is_signer, m.is_writable)).collect();
+    // IDL buy_exact_sol_in [0..16) writable/signer flags, then bonding_curve_v2 (ro), tail (w).
+    let idl = [
+        (false, false),
+        (false, true),
+        (false, false),
+        (false, true),
+        (false, true),
+        (false, true),
+        (true, true),
+        (false, false),
+        (false, false),
+        (false, true),
+        (false, false),
+        (false, false),
+        (false, false),
+        (false, true),
+        (false, false),
+        (false, false),
+        (false, false),
+        (false, true),
+    ];
+    assert_eq!(flags, idl);
+}
+
+/// The exact-in buy is behind the same layout gate: an empty registry builds nothing.
+#[test]
+fn negative_control_buy_exact_sol_in_is_gated_like_buy() {
+    let reg = LayoutRegistry::new();
+    let e = build_pump_buy_exact_sol_in_message(
+        &ctx(),
+        BuyExactSolInParams {
+            spendable_sol_in: 1,
+            min_tokens_out: 1,
+        },
+        &env(&reg, TAIL, bh()),
+    );
+    assert_eq!(
+        e.unwrap_err(),
+        TxBuildError::Layout(LayoutError::Unverified(lkey(Side::Buy)))
+    );
 }

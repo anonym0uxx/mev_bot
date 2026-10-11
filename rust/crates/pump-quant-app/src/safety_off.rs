@@ -22,6 +22,13 @@ use serde_json::{json, Value};
 
 /// Why entries are blocked, as a stable label.
 pub const REASON_ENDPOINT_HUNG: &str = "model_endpoint_hung";
+/// Local service inadequacy: consecutive requests expired in the LOCAL queue (never sent). Same block semantics as
+/// the hung endpoint; it is NOT endpoint evidence and is never charged to endpoint health.
+pub const REASON_LOCAL_OVERLOAD: &str = "model_local_overload";
+/// HEALTH_R10 Slice A: the endpoint (E) streak tripped and at least one failure in it was NOT a transport failure
+/// (a dispatched request that missed its deadline, or an invalid output). Same threshold, same block effect as
+/// [`REASON_ENDPOINT_HUNG`]; only the named cause differs. The class mix is recorded with the latch.
+pub const REASON_SERVICE_INADEQUATE: &str = "model_service_inadequate";
 /// Controlled daemon shutdown.
 pub const REASON_SHUTDOWN: &str = "controlled_shutdown";
 /// A state file existed but could not be trusted.
@@ -31,6 +38,116 @@ pub const REASON_OPERATOR: &str = "operator";
 
 /// Consecutive abandoned (deadline-expired, no answer) model requests that mean the endpoint is hung.
 pub const CONSECUTIVE_ABANDONED_TRIP: u32 = 3;
+
+/// HEALTH_R10: every model-health failure is classified into exactly ONE class at charge time; the class is never
+/// rewritten afterwards (a later arrival is evidence, counted under `health:late_<class>_after_deadline`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum HealthClass {
+    /// Dequeued past its engine deadline and never sent (L streak; never endpoint evidence).
+    LocalExpiry,
+    /// Sent, and no healthy answer arrived by its engine deadline (abandoned at expire, or answered after it).
+    DispatchedDeadlineMiss,
+    /// Timely transport failure (error / non-200 / unreadable body).
+    TransportFailure,
+    /// Timely answer that fails the termination contract or the trained grammar.
+    InvalidOutput,
+}
+
+impl HealthClass {
+    /// Stable label (`health:class:<label>`).
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::LocalExpiry => "local_expiry",
+            Self::DispatchedDeadlineMiss => "dispatched_deadline_miss",
+            Self::TransportFailure => "transport_failure",
+            Self::InvalidOutput => "invalid_output",
+        }
+    }
+}
+
+/// Class mix of endpoint (E-streak) failures. Increments and resets exactly with `consecutive_abandoned`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct EndpointMix {
+    /// [`HealthClass::TransportFailure`] count.
+    pub transport_failure: u32,
+    /// [`HealthClass::InvalidOutput`] count.
+    pub invalid_output: u32,
+    /// [`HealthClass::DispatchedDeadlineMiss`] count.
+    pub dispatched_deadline_miss: u32,
+}
+
+impl EndpointMix {
+    /// Count one failure of `class` (a local expiry is never an endpoint failure and is ignored).
+    pub fn charge(&mut self, class: HealthClass) {
+        match class {
+            HealthClass::TransportFailure => {
+                self.transport_failure = self.transport_failure.saturating_add(1);
+            }
+            HealthClass::InvalidOutput => {
+                self.invalid_output = self.invalid_output.saturating_add(1);
+            }
+            HealthClass::DispatchedDeadlineMiss => {
+                self.dispatched_deadline_miss = self.dispatched_deadline_miss.saturating_add(1);
+            }
+            HealthClass::LocalExpiry => {}
+        }
+    }
+
+    /// Fold another mix in.
+    pub fn add(&mut self, o: &EndpointMix) {
+        self.transport_failure = self.transport_failure.saturating_add(o.transport_failure);
+        self.invalid_output = self.invalid_output.saturating_add(o.invalid_output);
+        self.dispatched_deadline_miss = self
+            .dispatched_deadline_miss
+            .saturating_add(o.dispatched_deadline_miss);
+    }
+
+    /// Failures in the mix.
+    #[must_use]
+    pub fn total(&self) -> u32 {
+        self.transport_failure
+            .saturating_add(self.invalid_output)
+            .saturating_add(self.dispatched_deadline_miss)
+    }
+
+    /// The latch reason for a tripping E streak with this mix: ALL transport -> [`REASON_ENDPOINT_HUNG`] (unchanged
+    /// string); any other class present -> [`REASON_SERVICE_INADEQUATE`].
+    #[must_use]
+    pub fn latch_reason(&self) -> &'static str {
+        if self.invalid_output == 0 && self.dispatched_deadline_miss == 0 {
+            REASON_ENDPOINT_HUNG
+        } else {
+            REASON_SERVICE_INADEQUATE
+        }
+    }
+
+    /// Stable one-line label.
+    #[must_use]
+    pub fn label(&self) -> String {
+        format!(
+            "transport_failure={},invalid_output={},dispatched_deadline_miss={}",
+            self.transport_failure, self.invalid_output, self.dispatched_deadline_miss
+        )
+    }
+
+    fn to_json(self) -> Value {
+        json!({
+            "transport_failure": self.transport_failure,
+            "invalid_output": self.invalid_output,
+            "dispatched_deadline_miss": self.dispatched_deadline_miss,
+        })
+    }
+
+    fn from_json(v: &Value) -> Option<Self> {
+        let n = |k: &str| v[k].as_u64().and_then(|x| u32::try_from(x).ok());
+        Some(Self {
+            transport_failure: n("transport_failure")?,
+            invalid_output: n("invalid_output")?,
+            dispatched_deadline_miss: n("dispatched_deadline_miss")?,
+        })
+    }
+}
 
 /// A held position as recorded in the durable file.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -115,6 +232,14 @@ pub struct SafetyOff {
     pub persist_failures: u64,
     /// Consecutive abandoned requests since the last accepted answer.
     pub consecutive_abandoned: u32,
+    /// Consecutive LOCAL queue expiries (never sent) since the last healthy answer. Trips the local-overload block at
+    /// [`CONSECUTIVE_ABANDONED_TRIP`]. Reset by a healthy answer or an explicit re-arm only; never by an endpoint
+    /// failure, a restart (it is not persisted; the latch it sets is), or time.
+    pub consecutive_local_expired: u32,
+    /// Class mix of the current E streak (same increments/resets as `consecutive_abandoned`; not persisted).
+    pub endpoint_mix: EndpointMix,
+    /// The E-streak class mix at the moment it latched (persisted with the latch; cleared by an explicit re-arm).
+    pub latch_mix: Option<EndpointMix>,
 }
 
 fn hex(b: &[u8; 32]) -> String {
@@ -183,6 +308,7 @@ impl SafetyOff {
         st.epoch = epoch;
         st.reason = v["reason"].as_str().unwrap_or("").to_string();
         st.rearmed_by = v["rearmed_by"].as_str().map(str::to_string);
+        st.latch_mix = EndpointMix::from_json(&v["latch_class_mix"]);
         if blocked {
             let held = v["held"].as_array().map_or(0, Vec::len);
             let pending = v["pending"].as_array().map_or(0, Vec::len);
@@ -225,6 +351,7 @@ impl SafetyOff {
             "reason": self.reason,
             "epoch": self.epoch,
             "rearmed_by": self.rearmed_by,
+            "latch_class_mix": self.latch_mix.map(EndpointMix::to_json),
             "written_wall_ms": wall_ms(),
             "held": held.iter().map(|h| json!({
                 "mint": hex(&h.mint),

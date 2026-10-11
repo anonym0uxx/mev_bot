@@ -149,10 +149,35 @@ impl RequestTable {
         self.blocked
     }
 
+    /// The id most recently issued (0 before any). OFFLINE BARRIER bookkeeping reads it right after a submit.
+    #[must_use]
+    pub fn last_issued_id(&self) -> u64 {
+        self.next_id.saturating_sub(1)
+    }
+
     /// Outstanding requests, live and abandoned.
     #[must_use]
     pub fn outstanding(&self) -> usize {
         self.inflight.len()
+    }
+
+    /// The configured ceiling on outstanding requests (live + abandoned).
+    #[must_use]
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    /// Re-bound the table (min 1). Used once when the lane is armed with its worker count; never shrinks below
+    /// what is outstanding in effect (a submit is simply refused until enough requests resolve).
+    pub fn set_capacity(&mut self, capacity: usize) {
+        self.capacity = capacity.max(1);
+    }
+
+    /// Outstanding requests (live + abandoned) about `mint`. At most one is live (dedupe); abandoned ones count
+    /// against [`Self::capacity`] until their worker returns, so this is bounded by the capacity too.
+    #[must_use]
+    pub fn outstanding_for(&self, mint: &[u8; 32]) -> usize {
+        self.inflight.values().filter(|i| &i.mint == mint).count()
     }
 
     /// Live (non-abandoned) outstanding requests.
@@ -253,6 +278,16 @@ impl RequestTable {
         }
         self.counters.accepted += 1;
         Ok(entry)
+    }
+
+    /// The deadline of a LIVE (issued, not abandoned, not yet answered) request. HEALTH_R10 D2: the health charge reads
+    /// it to class an answer arriving after its deadline (but before the expire sweep) as a deadline miss.
+    #[must_use]
+    pub fn live_deadline(&self, id: RequestId) -> Option<i64> {
+        self.inflight
+            .get(&id)
+            .filter(|e| !e.abandoned)
+            .map(|e| e.deadline_ms)
     }
 
     /// Release a request that never reached a worker (the dispatch was refused). Returns true if

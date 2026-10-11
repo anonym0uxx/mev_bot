@@ -55,7 +55,7 @@ use pump_quant_junction::pumpportal::{
     handle_create_payload, handle_migration_payload, handle_trade_payload,
 };
 use pump_quant_junction::queue::BoundedJunctionQueue;
-use pump_quant_junction::reserve_delta::{derive_market_trade_from_delta, ReserveSnapshot};
+use pump_quant_junction::reserve_delta::ReserveSnapshot;
 use pump_quant_junction::trade_join::{JoinOutcome, TradeJoin};
 
 /// How many `(mint, slot)` keys the instruction-identity table holds before it drops the
@@ -236,31 +236,30 @@ const WS_READ_TIMEOUT_MS: u64 = 100;
 /// refreshed at most this often, decoupling health reporting from event
 /// throughput so the watchdog never kills a healthy-but-starved daemon.
 const STATUS_HEARTBEAT_SECS: u64 = 15;
+/// Upper bound on the curve-PDA -> mint identity map (memory bound; overflow is counted).
+const PDA_MAP_CAP: usize = 500_000;
 /// Bounded sleep on WS reconnect failures (was 5s which blocked the entire
 /// event loop). 500ms gives the server time to recover without starving
 /// the tick loop.
-const WS_RECONNECT_SLEEP_MS: u64 = 500;
+const WS_RECONNECT_SLEEP_MS: u64 =
+    pump_quant_junction::endpoint_retry::HELIUS_WS_RECONNECT.base_backoff_ms;
 /// Maximum reconnect attempts with exponential backoff before falling back
 /// to graceful degradation. The backoff ladder is: 500ms → 1s → 2s → 4s → 8s
 /// (capped). After MAX_RECONNECT_ATTEMPTS failures, the daemon keeps the old
 /// (broken) connection and continues with PumpPortal/LaserStream — it does
 /// NOT crash. The stale-check watchdog will retry on the next tick.
-const MAX_RECONNECT_ATTEMPTS: u32 = 5;
-/// Backoff cap in milliseconds. The exponential ladder doubles from
-/// WS_RECONNECT_SLEEP_MS (500ms) up to this cap. 10s is long enough to let
-/// a rate-limited server recover but short enough to not starve the tick loop.
-const RECONNECT_BACKOFF_CAP_MS: u64 = 10_000;
-/// Minimum seconds between LaserStream respawn attempts. Without this, a
-/// binary that exits immediately (e.g. wrong subcommand, missing creds)
-/// triggers a tight-loop respawn on every `Disconnected` poll, burning CPU
-/// and spamming logs. 15s is long enough to break the cycle but short
-/// enough to recover when the issue is transient (network blip).
-const LS_RESPAWN_COOLDOWN_SECS: u64 = 15;
+const MAX_RECONNECT_ATTEMPTS: u32 =
+    pump_quant_junction::endpoint_retry::HELIUS_WS_RECONNECT.max_attempts;
+/// The backoff cap (10 s) and the LaserStream respawn cooldown (15 s) are applied inside
+/// `pump_quant_junction::stream_recovery` straight from `endpoint_retry::{HELIUS_WS_RECONNECT, LASERSTREAM_RESPAWN}`.
 /// Maximum LaserStream respawn attempts before giving up and falling back
 /// to Helius WS permanently. Prevents infinite respawn loops against a
 /// fundamentally broken binary (e.g. pq-stream-capture.exe spawned without
 /// a subcommand, or pq-laserstream-grpc.exe with a bad endpoint).
-const LS_MAX_RESPAWN_ATTEMPTS: u32 = 5;
+const LS_MAX_RESPAWN_ATTEMPTS: u32 =
+    pump_quant_junction::endpoint_retry::LASERSTREAM_RESPAWN.max_attempts;
+/// Launch-bootstrap walk page budget (one mint).
+const BOOTSTRAP_MAX_PAGES: u32 = 20;
 
 /// Exit code on emergency stop.
 const EXIT_EMERGENCY: u8 = 99;
@@ -268,6 +267,11 @@ const EXIT_EMERGENCY: u8 = 99;
 const EXIT_MODEL_LIVE_CONFLICT: u8 = 98;
 /// A held-state ledger exists but cannot be applied: refusing to start rather than orphan exposure.
 const EXIT_HELD_STATE_REFUSED: u8 = 97;
+/// `PQ_FLOW_RESUME_MS` was set outside a declared offline paper replay, or its value is invalid.
+const EXIT_RESUME_CLOCK_REFUSED: u8 = 96;
+/// Exit code: the paper model lane found a live signing/submission capability at start (stop table row
+/// `refuse_start_live_capability`).
+const EXIT_LIVE_CAPABILITY: u8 = 95;
 /// Path (relative to CWD) for the graceful-shutdown sentinel file.
 const DAEMON_STOP_FILE: &str = "data/DAEMON_STOP";
 /// Path (relative to CWD) for the emergency-stop sentinel file.
@@ -295,6 +299,68 @@ const EVENT_STREAM_PATH: &str = "data/event_stream.jsonl";
 /// wipes the creator track record to "Unknown", starving the classifier.
 const LEDGER_PATH: &str = "data/creator_ledger.bin";
 
+/// M2 launch bootstrap worker (opt-in: `--launch-bootstrap`). Network I/O runs on THIS thread, never
+/// the engine's. Requests are mints; results are verified `LaunchFromChain` events or named outcomes.
+type BootstrapChannels = (
+    std::sync::mpsc::Sender<String>,
+    std::sync::mpsc::Receiver<Result<pump_quant_app::event::AppEvent, String>>,
+);
+fn spawn_launch_bootstrap(data_dir: &str) -> Option<BootstrapChannels> {
+    use pump_quant_junction::launch_bootstrap as lb;
+    let home = std::env::var("HOME").ok()?;
+    let key_path = std::path::PathBuf::from(home).join(".config/pump-quant/helius.env");
+    let key = match lb::load_key(&key_path) {
+        Ok(k) => k,
+        Err(e) => {
+            // CredError's Debug never carries the value.
+            eprintln!("[pq-daemon] launch bootstrap DISABLED: credential {e:?}");
+            return None;
+        }
+    };
+    let cache = lb::EvidenceCache::new(&std::path::Path::new(data_dir).join("launch_evidence"));
+    let (req_tx, req_rx) = std::sync::mpsc::channel::<String>();
+    let (res_tx, res_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let src = lb::HeliusHttp::new(key, std::time::Duration::from_secs(20));
+        use pump_quant_junction::endpoint_retry as er;
+        for mint in req_rx {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
+            // Named bound: per-page attempts + a per-walk retry budget (fresh per mint walk).
+            let rsrc = er::RetryingPages::new(
+                &src,
+                er::LAUNCH_BOOTSTRAP_PAGE,
+                er::LAUNCH_BOOTSTRAP_WALK_RETRY_BUDGET,
+            );
+            let out = lb::bootstrap_one(
+                &cache,
+                &rsrc,
+                &mint,
+                lb::Budget {
+                    max_pages: BOOTSTRAP_MAX_PAGES,
+                },
+                now,
+            )
+            .map_err(|o| format!("{mint} {o}"));
+            if rsrc.retries.get() > 0 || rsrc.exhausted.get() > 0 {
+                eprintln!(
+                    "[pq-daemon] {}: mint={mint} calls={} retries={} exhausted_pages={}",
+                    er::LAUNCH_BOOTSTRAP_PAGE.name,
+                    rsrc.calls.get(),
+                    rsrc.retries.get(),
+                    rsrc.exhausted.get()
+                );
+            }
+            if res_tx.send(out).is_err() {
+                break;
+            }
+        }
+    });
+    eprintln!("[pq-daemon] launch bootstrap worker started (read-only RPC)");
+    Some((req_tx, res_rx))
+}
+
 // ─── Args ──────────────────────────────────────────────────────────────────
 
 struct DaemonArgs {
@@ -319,6 +385,47 @@ struct DaemonArgs {
     /// Wallet address (base58) for live mode. Required if live_mode=true.
     /// Used to bind the keypair and reconcile the on-chain balance.
     wallet_address: String,
+    /// M2: resolve launch-unknown markets from chain history (read-only RPC). Off by default.
+    launch_bootstrap: bool,
+    /// Model worker threads (C2): `--model-workers N` or `PQ_MODEL_WORKERS`, N in {2, 4, 6}; default 2.
+    model_workers: usize,
+}
+
+/// OFFLINE PAPER REPLAY BARRIERS ONLY. Next LaserStream update, except that an update whose wire receive time is at or
+/// past the current barrier clock is HELD (and `ready` is raised) so the engine has applied exactly the prefix before
+/// that source-time clock. With no barrier left the held update is released and delivery is the plain `try_recv`.
+fn next_ls_update(
+    rx: &mpsc::Receiver<LaserStreamUpdate>,
+    hold: &mut Option<LaserStreamUpdate>,
+    limit: Option<i64>,
+    ready: &mut bool,
+) -> Result<LaserStreamUpdate, mpsc::TryRecvError> {
+    let Some(limit) = limit else {
+        if let Some(h) = hold.take() {
+            return Ok(h);
+        }
+        return rx.try_recv();
+    };
+    if *ready {
+        return Err(mpsc::TryRecvError::Empty);
+    }
+    let item = match hold.take() {
+        Some(h) => h,
+        None => rx.try_recv()?,
+    };
+    let ms = match &item {
+        LaserStreamUpdate::Transaction(tx) => tx.recv_unix_ms,
+        LaserStreamUpdate::Account { recv_unix_ms, .. } => *recv_unix_ms,
+        _ => None,
+    };
+    match ms {
+        Some(m) if m >= limit => {
+            *hold = Some(item);
+            *ready = true;
+            Err(mpsc::TryRecvError::Empty)
+        }
+        _ => Ok(item),
+    }
 }
 
 fn parse_args() -> Result<DaemonArgs, u8> {
@@ -333,7 +440,18 @@ fn parse_args() -> Result<DaemonArgs, u8> {
         strategy_label: String::from("unlabeled"),
         live_mode: false,
         wallet_address: String::new(),
+        launch_bootstrap: false,
+        model_workers: pump_quant_junction::model_lifecycle::DEFAULT_MODEL_WORKERS,
     };
+    if let Ok(v) = std::env::var("PQ_MODEL_WORKERS") {
+        match pump_quant_junction::model_lifecycle::parse_model_workers(&v) {
+            Ok(n) => a.model_workers = n,
+            Err(r) => {
+                eprintln!("[pq-daemon] FATAL: PQ_MODEL_WORKERS={v:?}: {r} (allowed: 2, 4, 6)");
+                return Err(2);
+            }
+        }
+    }
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -351,6 +469,23 @@ fn parse_args() -> Result<DaemonArgs, u8> {
                     return Err(2);
                 }
                 i += 2;
+            }
+            "--model-workers" if i + 1 < args.len() => {
+                match pump_quant_junction::model_lifecycle::parse_model_workers(&args[i + 1]) {
+                    Ok(n) => a.model_workers = n,
+                    Err(r) => {
+                        eprintln!(
+                            "[pq-daemon] FATAL: --model-workers {:?}: {r} (allowed: 2, 4, 6)",
+                            args[i + 1]
+                        );
+                        return Err(2);
+                    }
+                }
+                i += 2;
+            }
+            "--launch-bootstrap" => {
+                a.launch_bootstrap = true;
+                i += 1;
             }
             "--status-every-ticks" if i + 1 < args.len() => {
                 a.status_every_ticks = args[i + 1].parse().unwrap_or(500);
@@ -762,6 +897,8 @@ struct SessionStats {
     delta_trades_derived: u64,
     delta_no_trade: u64,
     delta_out_of_range: u64,
+    /// Snapshots whose curve is NOT Ordinary (Mayhem / mode unknown): no trade derived (offset slice).
+    delta_mode_unsupported: u64,
     pdas_derived: usize,
     pda_venue_matches: usize,
     pda_venue_present: usize,
@@ -785,6 +922,10 @@ struct SessionStats {
     ls_onchain_confirms_decoded: u64,
     /// Rev-30: LS account updates where PDA couldn't be resolved to a mint.
     ls_account_unresolved: u64,
+    pda_installed_from_tx: u64,
+    /// FEES R10 F8: mints whose token program was proven from a stream tx and fed to the engine.
+    token_program_observed: u64,
+    pda_map_full_refused: u64,
     fc_spawned: bool,
     fc_triggers_emitted: u64,
     fc_events_ingested: u64,
@@ -813,6 +954,7 @@ impl SessionStats {
             delta_trades_derived: 0,
             delta_no_trade: 0,
             delta_out_of_range: 0,
+            delta_mode_unsupported: 0,
             pdas_derived: 0,
             pda_venue_matches: 0,
             pda_venue_present: 0,
@@ -833,6 +975,9 @@ impl SessionStats {
             ls_account_received: 0,
             ls_onchain_confirms_decoded: 0,
             ls_account_unresolved: 0,
+            pda_installed_from_tx: 0,
+            token_program_observed: 0,
+            pda_map_full_refused: 0,
             fc_spawned: false,
             fc_triggers_emitted: 0,
             fc_events_ingested: 0,
@@ -1339,7 +1484,7 @@ fn construct_live_engine(
         RpcLiveStateFetcher,
     };
     use pump_quant_protocol::layout::LayoutRegistry;
-    use pump_quant_protocol::tx_build::{ComputePlan, TipPlan};
+    use pump_quant_protocol::tx_build::TipPlan;
     use pump_quant_protocol::venue_accounts::FeeTail;
     use std::sync::Arc;
 
@@ -1539,23 +1684,14 @@ fn construct_live_engine(
         .expect("observed layout fixtures must register");
 
     // ── 5. Sink config ─────────────────────────────────────────────────
-    let compute = ComputePlan {
-        unit_limit: 120_000,
-        unit_price_micro_lamports: 5_000,
-    };
-    // Helius Sender tip: required by all Sender tiers. We use SWQOS-only
-    // (swqos_only=true) whose minimum is 5,000 lamports (0.000005 SOL).
-    // Tip account: 2nyhqdwKcJZR2vcqCyrYsaPVdAnFoJjiksCXJ7hfEYgD (first of 12
-    // designated Helius tip accounts, from live endpoint error + docs).
+    // FEES R10 F1: compute envelope + Helius Sender SWQOS-only tip (5,000 minimum, account
+    // 2nyhqdwKcJZR2vcqCyrYsaPVdAnFoJjiksCXJ7hfEYgD) from the ONE versioned TxCostConfig, through the same
+    // `builder_plans` that `builder_txcost::tests` pins equal to paper's v1 planned leg.
     // See: https://www.helius.dev/docs/sending-transactions/sender-swqos-only
-    let tip: Option<TipPlan> = Some(TipPlan {
-        to: [
-            0x1a, 0xa2, 0xf0, 0x5a, 0x6f, 0x89, 0x50, 0xfc, 0xbf, 0x5d, 0xf9, 0xca, 0x39, 0x48,
-            0x1c, 0x6d, 0xf1, 0x33, 0x05, 0xc8, 0xb8, 0x7c, 0x64, 0x4f, 0x4d, 0x8c, 0x6d, 0x82,
-            0x0b, 0x37, 0x89, 0xa6,
-        ],
-        lamports: 5_000, // 0.000005 SOL — SWQOS-only minimum
-    });
+    let (compute, tip_plan) = pump_quant_junction::builder_txcost::builder_plans(
+        &pump_quant_junction::builder_txcost::BUILDER_TXCOST,
+    );
+    let tip: Option<TipPlan> = Some(tip_plan);
     let fee_tail = FeeTail::None;
 
     let sink_config = LiveSinkConfig {
@@ -1563,6 +1699,8 @@ fn construct_live_engine(
         tip,
         fee_tail,
         max_slippage_bps: 500,
+        // W3/R5: the live BUY quotes its clip with the SAME pinned curve fee rates as the paper fill.
+        curve_buy_fee_bps: pump_quant_app::exec_quote::curve_fees(),
         // Rev-36: pass the mcap band config to the live sink for TOCTOU
         // re-validation at execution time. Uses the SAME values the gate
         // uses (from the loaded CHAMPION_CONFIG.txt).
@@ -1642,6 +1780,69 @@ fn construct_live_engine(
 
 // ─── Main ──────────────────────────────────────────────────────────────────
 
+/// Every REQUIRED write destination of this daemon (item 2 of the m1acc follow-up): event stream, journals, flow
+/// checkpoint, held ledger, safety latch, stdout/stderr redirect targets, handoff/report outputs. Same env/defaults
+/// as the code that writes them.
+fn daemon_write_dests() -> Vec<pump_quant_junction::disk_budget::Dest> {
+    let sf = std::env::var("PQ_MODEL_SAFETY_FILE")
+        .unwrap_or_else(|_| pump_quant_junction::model_lifecycle::DEFAULT_SAFETY_FILE.to_string());
+    let hf = std::env::var("PQ_MODEL_HELD_FILE")
+        .unwrap_or_else(|_| pump_quant_junction::model_lifecycle::DEFAULT_HELD_FILE.to_string());
+    let fh = std::env::var("PQ_FLOW_HISTORY_FILE")
+        .unwrap_or_else(|_| "data/flow_history.ckpt".to_string());
+    let p = std::path::Path::new;
+    pump_quant_junction::disk_budget::required_destinations(
+        p(EVENT_STREAM_PATH),
+        &[
+            p(TAPE_PATH),
+            p(SESSION_HISTORY_PATH),
+            p("data/barrier_log.jsonl"),
+        ],
+        p(&fh),
+        p(&hf),
+        p(&sf),
+        &pump_quant_junction::disk_budget::std_redirect_targets(),
+        &[
+            p(pump_quant_junction::model_lifecycle::HANDOFF_REQUEST_FILE),
+            p(pump_quant_junction::model_lifecycle::PROTECTIVE_HANDOFF_ACK_FILE),
+            p(STATUS_PATH),
+            p("data/model_lane_report.json"),
+            // D3 (wire 9beff305): binding log + capture seal are REQUIRED recovery state.
+            p(pump_quant_junction::curve_binding::DEFAULT_CURVE_BINDING_FILE),
+            p(pump_quant_junction::capture_rehydrate::DEFAULT_CAPTURE_SEAL_FILE),
+        ],
+        23_400,
+    )
+}
+
+/// Seal the capture whenever the held ledger became durable at a NEW generation (the seal names the same lineage,
+/// generation and decision clock). The capture writer is flushed first so the sealed prefix holds every event the
+/// engine applied up to that ledger.
+fn capture_seal_if_new(
+    engine: &Engine,
+    w: &mut Option<EventStreamWriter>,
+    s: &mut Option<pump_quant_junction::capture_rehydrate::CaptureSealer>,
+    last: &mut u64,
+) {
+    let g = engine.model_held_generation();
+    if g == 0 || g == *last {
+        return;
+    }
+    if let (Some(w), Some(s)) = (w.as_mut(), s.as_mut()) {
+        let r = w.flush().and_then(|()| {
+            s.seal(
+                engine.model_held_lineage(),
+                g,
+                engine.model_held_through_ms_now(),
+            )
+        });
+        if let Err(e) = r {
+            eprintln!("[pq-daemon] ALERT: capture seal FAILED at held generation {g}: {e} - a restart from here refuses launch recovery by name");
+        }
+        *last = g;
+    }
+}
+
 fn main() -> ExitCode {
     let args = match parse_args() {
         Ok(a) => a,
@@ -1699,6 +1900,11 @@ fn main() -> ExitCode {
             eprintln!("[pq-daemon] no CHAMPION_CONFIG.txt — using compiled dev_portable defaults");
         }
     }
+    // FEES R10 F2: name the active paper txcost id (and flag a v0 parse) at startup, never silent.
+    eprintln!(
+        "{}",
+        pump_quant_junction::builder_txcost::startup_txcost_line(&cfg)
+    );
     let tick_period_ms = cfg.paper_tick_period_ms;
 
     eprintln!("[pq-daemon] === AUTONOMOUS DAEMON STARTING ===");
@@ -1759,6 +1965,13 @@ fn main() -> ExitCode {
 
     // ─── Engine + queue ──────────────────────────────────────────────────
     let queue = BoundedJunctionQueue::with_capacity(args.junction_cap);
+    let launch_bootstrap = if args.launch_bootstrap {
+        spawn_launch_bootstrap("data")
+    } else {
+        None
+    };
+    let mut bootstrap_requested: std::collections::BTreeSet<[u8; 32]> =
+        std::collections::BTreeSet::new();
     let mut dwell_samples: Vec<u64> = Vec::new();
 
     // ─── Live mode wiring ────────────────────────────────────────────────
@@ -1809,36 +2022,391 @@ fn main() -> ExitCode {
                 let safety = std::env::var("PQ_MODEL_SAFETY_FILE").unwrap_or_else(|_| {
                     pump_quant_junction::model_lifecycle::DEFAULT_SAFETY_FILE.to_string()
                 });
-                let armed = pump_quant_junction::model_lifecycle::arm_paper_model(
+                let armed = pump_quant_junction::model_lifecycle::arm_paper_model_with_workers(
                     &mut engine,
                     &endpoint,
                     std::path::Path::new(&safety),
-                );
+                    args.model_workers,
+                )
+                .expect("model_workers validated at argument parsing");
                 model_armed = true;
-                eprintln!(
-                    "[pq-daemon] paper model lane ARMED endpoint={endpoint} safety_file={safety} load={:?} blocked_at_start={}",
-                    armed.load, armed.blocked_at_start
+                // The event path supplies corpus-definition rows for PumpSwap: the AMM swap's own print must not
+                // also feed the trained windows (double count).
+                engine.set_corpus_flow_rows(
+                    std::env::var("PQ_CURVE_TRADE_SOURCE").as_deref() != Ok("snapshot_delta"),
                 );
+                eprintln!(
+                    "[pq-daemon] paper model lane ARMED endpoint={endpoint} safety_file={safety} load={:?} blocked_at_start={} model_workers={} bounds(entry,mgmt,queue)={:?}",
+                    armed.load, armed.blocked_at_start, engine.model_workers(), engine.model_bounds()
+                );
+                // A restart never re-arms: a re-arm request already on disk is refused (named) and removed.
+                if pump_quant_junction::model_lifecycle::refuse_stale_rearm_at_startup(
+                    &engine,
+                    std::path::Path::new(pump_quant_junction::model_lifecycle::OPERATOR_REARM_FILE),
+                    std::path::Path::new(
+                        pump_quant_junction::model_lifecycle::OPERATOR_REARM_RESULT_FILE,
+                    ),
+                ) {
+                    eprintln!(
+                        "[pq-daemon] OPERATOR_REARM refused: StaleAtStartup (request present before this process started; a restart never re-arms) safety_blocked={}",
+                        engine.model_safety_blocked()
+                    );
+                }
             }
         }
     }
     if model_armed {
+        // STOP TABLE row `refuse_start_live_capability`: the paper lane never starts next to a live signing or
+        // submission capability. A keypair is only ever loaded by the live constructor (`--live`).
+        if let Err(why) = pump_quant_junction::model_lifecycle::startup_paper_check(
+            &engine,
+            args.live_mode,
+            args.live_mode,
+        ) {
+            eprintln!(
+                "[pq-daemon] FATAL_LIVE_CAPABILITY_PRESENT: {why} - the paper model lane refuses to start with a live signing/submission capability"
+            );
+            return ExitCode::from(EXIT_LIVE_CAPABILITY);
+        }
+        eprintln!(
+            "[pq-daemon] startup paper check: no keypair, no --live, no submission sink (paper)"
+        );
+    }
+    // Curve markets the restored sealed capture proves the previous process tracked; their curve-account routing
+    // (pda_to_mint, process-local) is re-installed below so post-restart reserve updates are not dropped.
+    let mut restart_curve_mints: Vec<[u8; 32]> = Vec::new();
+    if model_armed {
+        // PAPER FILL MODEL (before restore: the held ledger's paper_fill section is validated against it).
+        // Unset = `paper_fill_v1_observed` (unchanged behaviour). An unknown label refuses startup by name.
+        match std::env::var("PQ_PAPER_FILL").ok().as_deref() {
+            None => {}
+            Some(lbl) => match pump_quant_app::shadow_pool::PaperFillVersion::parse(lbl) {
+                Some(v) => engine.model_set_paper_fill(v),
+                None => {
+                    eprintln!("[pq-daemon] FATAL_PAPER_FILL_UNKNOWN: PQ_PAPER_FILL={lbl:?} is not a known paper fill model");
+                    return ExitCode::from(2);
+                }
+            },
+        }
+        eprintln!(
+            "[pq-daemon] paper fill model: {}",
+            engine.model_paper_fill().label()
+        );
+        // FEES: every model-path quote is priced with the venue-fee configuration IN FORCE AT THE LANDING SLOT
+        // (pump_quant_protocol::fee_schedule): labelled provenance, or a named refusal when the slot predates
+        // every captured read / evidence window. Never today's config silently applied to history.
+        // `PQ_FEE_SELECTION=pinned` (labelled `pinned_slot_ignored` on every stamp) is the explicit opt-out used
+        // for before/after comparison; any other value refuses startup by name.
+        let fee_sel = match std::env::var("PQ_FEE_SELECTION").ok().as_deref() {
+            None | Some("by_slot") => pump_quant_protocol::fee_schedule::FeeSelection::BySlot,
+            Some("pinned") => pump_quant_protocol::fee_schedule::FeeSelection::Pinned,
+            Some(other) => {
+                eprintln!("[pq-daemon] FATAL_FEE_SELECTION_UNKNOWN: PQ_FEE_SELECTION={other:?} (by_slot|pinned)");
+                return ExitCode::from(2);
+            }
+        };
+        engine.model_set_fee_selection(fee_sel);
+        eprintln!("[pq-daemon] venue fee selection: {fee_sel:?}");
         let held_file = std::env::var("PQ_MODEL_HELD_FILE").unwrap_or_else(|_| {
             pump_quant_junction::model_lifecycle::DEFAULT_HELD_FILE.to_string()
         });
-        match pump_quant_junction::model_lifecycle::restore_held_state(
+        // OPERATOR EVIDENCE (offline paper replay only): the held ledger with this lineage was written by a process that
+        // ran ONLY the in-process paper executor. Lets a restored order WITHOUT a durable route record be reconciled
+        // against the paper record in that same file. Never inferred; ignored outside the offline replay harness.
+        if !args.live_mode && std::env::var("PQ_OFFLINE_PAPER_REPLAY").as_deref() == Ok("1") {
+            if let Ok(l) = std::env::var("PQ_ATTEST_PAPER_ROUTE_LINEAGE") {
+                eprintln!("[pq-daemon] operator evidence: held-ledger lineage {l} ran only the paper executor");
+                engine.model_attest_paper_route(&l);
+            }
+        }
+        let restore = pump_quant_junction::model_lifecycle::restore_held_state(
             &mut engine,
             std::path::Path::new(&held_file),
-        ) {
+        );
+        // Missing-history continuity is loaded BEFORE any inference, after the held restore so an
+        // absent ledger next to restored exposure is treated as untrusted, never as "no gap".
+        {
+            let mh_file = std::env::var("PQ_MODEL_MISSING_HISTORY_FILE").unwrap_or_else(|_| {
+                pump_quant_junction::model_lifecycle::DEFAULT_MISSING_HISTORY_FILE.to_string()
+            });
+            let held_restored = matches!(
+                restore,
+                pump_quant_junction::model_lifecycle::StartupRestore::Restored(_)
+            );
+            let st = pump_quant_junction::model_lifecycle::attach_missing_history(
+                &mut engine,
+                std::path::Path::new(&mh_file),
+                held_restored,
+            );
+            eprintln!("[pq-daemon] missing-history ledger {mh_file}: {st:?}");
+            if let pump_quant_junction::model_lifecycle::MissingHistoryStartup::ContinuityUnknown(
+                why,
+            ) = &st
+            {
+                eprintln!(
+                    "[pq-daemon] ALERT: missing-history continuity UNKNOWN ({why}) - Qwen entry and management refuse by name; monitoring, reconciliation and hard safeguards continue"
+                );
+            }
+        }
+        // Durable flow-history (trained smart/co-entry/lookback state) is restored and validated BEFORE inference. The resume
+        // time is the wall clock now: any interval between the checkpoint's cursors and it is a NAMED gap, never assumed covered.
+        {
+            let fh_file = std::env::var("PQ_FLOW_HISTORY_FILE")
+                .unwrap_or_else(|_| "data/flow_history.ckpt".to_string());
+            // The resume time is the wall clock. An operator-declared replay clock is accepted ONLY in an explicitly declared
+            // offline paper replay (see `resolve_flow_resume_clock`); anywhere else it is a startup refusal, never ignored.
+            let wall_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0);
+            let resume_ms = match pump_quant_junction::model_lifecycle::resolve_flow_resume_clock(
+                args.live_mode,
+                model_armed,
+                std::env::var("PQ_OFFLINE_PAPER_REPLAY").ok().as_deref(),
+                std::env::var("PQ_FLOW_RESUME_MS").ok().as_deref(),
+                wall_ms,
+            ) {
+                Ok((ms, declared)) => {
+                    if declared {
+                        eprintln!("[pq-daemon] OFFLINE PAPER REPLAY: flow-history resume clock DECLARED = {ms} (wall clock is {wall_ms}); no other clock is affected");
+                    }
+                    ms
+                }
+                Err(why) => {
+                    eprintln!("[pq-daemon] FATAL: PQ_FLOW_RESUME_MS refused ({why:?}). It is honoured only with PQ_OFFLINE_PAPER_REPLAY=1, no --live, and the paper model lane armed; refusing to start.");
+                    return ExitCode::from(EXIT_RESUME_CLOCK_REFUSED);
+                }
+            };
+            let prov = pump_quant_app::flow_checkpoint::Provenance {
+                seed_source: std::env::var("PQ_FLOW_SEED_SOURCE").unwrap_or_else(|_| "none".into()),
+                seed_sha256: std::env::var("PQ_FLOW_SEED_SHA256").unwrap_or_else(|_| "none".into()),
+                seed_before_ms: std::env::var("PQ_FLOW_SEED_BEFORE_MS")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(0),
+                producer: "pq-daemon/corpus-flow-rows".into(),
+            };
+            let a = engine.model_flow_attach(
+                std::path::Path::new(&fh_file),
+                pump_quant_market_state::flow_reducer::FlowParams::default(),
+                prov,
+                resume_ms,
+            );
+            eprintln!("[pq-daemon] flow-history {fh_file}: {a:?}");
+            // READINESS CLASS (reporting only; no refusal or trading behaviour changes here). An intentional cold start is
+            // DECLARED (`PQ_FLOW_SEED_SOURCE=cold_start:<label>`) and its zeros mean "none observed in the declared history".
+            // A fresh history with no declaration is a MISSING expected bootstrap; an untrusted file is a FAILED one.
+            {
+                let declared = std::env::var("PQ_FLOW_SEED_SOURCE").unwrap_or_default();
+                let class = match &a {
+                    pump_quant_app::engine::model_admit::FlowAttach::Fresh
+                        if declared.starts_with("cold_start:") =>
+                    {
+                        "cold_start_declared_history_limited"
+                    }
+                    pump_quant_app::engine::model_admit::FlowAttach::Fresh => {
+                        "bootstrap_missing_undeclared"
+                    }
+                    pump_quant_app::engine::model_admit::FlowAttach::Untrusted(_) => {
+                        "bootstrap_failed_untrusted"
+                    }
+                    pump_quant_app::engine::model_admit::FlowAttach::Restored {
+                        complete: true,
+                        ..
+                    } => "restored_complete",
+                    pump_quant_app::engine::model_admit::FlowAttach::Restored { .. } => {
+                        "restored_with_unavailable_interval"
+                    }
+                };
+                if class == "bootstrap_missing_undeclared" {
+                    eprintln!("[pq-daemon] ALERT: flow-history has NO checkpoint and NO declared cold start: the expected bootstrap is MISSING. Smart-wallet/co-entry/lookback fields are 'none observed', not 'none exist'.");
+                }
+                let _ = std::fs::write(
+                    "data/flow_readiness.json",
+                    format!("{{\"class\":\"{class}\",\"seed_source\":\"{}\",\"resume_clock_declared\":{},\"note\":\"history-limited classes: zeros mean none observed in this declared history, not none globally\"}}", declared.replace('"', "'"), std::env::var("PQ_FLOW_RESUME_MS").is_ok()),
+                );
+            }
+            match &a {
+                pump_quant_app::engine::model_admit::FlowAttach::Untrusted(why) => eprintln!(
+                    "[pq-daemon] ALERT: flow-history UNTRUSTED ({why}) - Qwen entry and management refuse by name; monitoring, reconciliation and hard safeguards continue; the file is left untouched"
+                ),
+                pump_quant_app::engine::model_admit::FlowAttach::Restored { unavailable_ms, complete: false, late } => eprintln!(
+                    "[pq-daemon] ALERT: flow-history restored across an UNAVAILABLE interval of {unavailable_ms} ms (late records: {late}) - every Qwen prompt after the gap refuses by scope until the interval is reconstructed into the state; an acknowledgement does not clear it; coverage is NOT complete"
+                ),
+                pump_quant_app::engine::model_admit::FlowAttach::Restored { late, .. } if *late > 0 => eprintln!(
+                    "[pq-daemon] ALERT: flow-history restored with {late} durable late-event records - affected windows refuse by scope"
+                ),
+                _ => {}
+            }
+        }
+        // LAUNCH RECOVERY (SCOPE_REARM_LAUNCH B). Creator-count history and per-market launch evidence are restored
+        // SEPARATELY, both bound to the restored held barrier: (1) the durable observed-launch log (counts frozen in
+        // receive order; records after the barrier are left for the feed to re-deliver); (2) the previous process's
+        // SEALED capture (lineage + barrier + sha256), replayed causally into the decision cache. A failure of either is
+        // named, and every market launched before the restart that is not covered refuses by name (lost coverage listed).
+        {
+            let through = matches!(
+                restore,
+                pump_quant_junction::model_lifecycle::StartupRestore::Restored(_)
+            )
+            .then(|| engine.model_replay_through_ms());
+            let log = std::env::var("PQ_CREATOR_LAUNCH_LOG")
+                .unwrap_or_else(|_| "data/creator_launch_log.jsonl".to_string());
+            let cutoff = std::env::var("PQ_CREATOR_SEED_CUTOFF_MS")
+                .ok()
+                .and_then(|v| v.parse::<i64>().ok())
+                .unwrap_or(0);
+            let seed = std::env::var("PQ_CREATOR_SEED").ok().map(|p| {
+                pump_quant_app::creator_registry::SeedSpec {
+                    path: std::path::PathBuf::from(p),
+                    cutoff_ms: cutoff,
+                    label: std::env::var("PQ_CREATOR_SEED_LABEL")
+                        .unwrap_or_else(|_| "unlabelled".into()),
+                    expect_sha256: std::env::var("PQ_CREATOR_SEED_SHA256").ok(),
+                }
+            });
+            match engine.model_creator_registry_attach_through(
+                seed.as_ref(),
+                std::path::Path::new(&log),
+                cutoff,
+                &pump_quant_junction::model_lifecycle::new_session_id(),
+                through,
+            ) {
+                Ok(st) => eprintln!(
+                    "[pq-daemon] CREATOR-REGISTRY {log}: seeded={} restored_from_log={} dedup_overlap={} deferred_after_restart={} provenance={}",
+                    st.seeded, st.restored_from_log, st.dedup_overlap, st.deferred_after_restart, st.provenance.record_tag()
+                ),
+                Err(e) => eprintln!(
+                    "[pq-daemon] ALERT: CREATOR-REGISTRY REFUSED ({}) for {log}: Qwen entry refuses creator_registry_untrusted by name",
+                    e.as_str()
+                ),
+            }
+            let cap = std::path::Path::new(EVENT_STREAM_PATH);
+            let seal = std::path::Path::new(
+                pump_quant_junction::capture_rehydrate::DEFAULT_CAPTURE_SEAL_FILE,
+            );
+            let out = pump_quant_junction::capture_rehydrate::rehydrate_from_capture(
+                &mut engine,
+                cap,
+                seal,
+            );
+            let lost_s = |lost: &Vec<([u8; 32], i64)>| -> String {
+                let (lo, hi) = lost
+                    .iter()
+                    .fold((i64::MAX, i64::MIN), |a, x| (a.0.min(x.1), a.1.max(x.1)));
+                let ms: Vec<String> = lost
+                    .iter()
+                    .take(50)
+                    .map(|(m, _)| solana_program::pubkey::Pubkey::new_from_array(*m).to_string())
+                    .collect();
+                if lost.is_empty() {
+                    "none".into()
+                } else {
+                    format!(
+                        "{} mints launch_ms=[{lo},{hi}] first50={}",
+                        lost.len(),
+                        ms.join(",")
+                    )
+                }
+            };
+            match &out {
+                pump_quant_junction::capture_rehydrate::RehydrateOutcome::NotARestart => {
+                    // A clean start owns no earlier capture: an existing file is moved aside, never sealed as ours.
+                    if let Some(p) =
+                        pump_quant_junction::capture_rehydrate::set_aside_unverified(cap)
+                    {
+                        eprintln!(
+                            "[pq-daemon] clean start: earlier capture moved aside to {}",
+                            p.display()
+                        );
+                    }
+                    // Same for an earlier binding log: it belongs to no restored ledger.
+                    pump_quant_junction::capture_rehydrate::set_aside_unverified(
+                        std::path::Path::new(
+                            pump_quant_junction::curve_binding::DEFAULT_CURVE_BINDING_FILE,
+                        ),
+                    );
+                }
+                pump_quant_junction::capture_rehydrate::RehydrateOutcome::Applied {
+                    restart_ms,
+                    covered_from_ms,
+                    stats,
+                    lost,
+                } => {
+                    eprintln!(
+                        "[pq-daemon] LAUNCH-RECOVERY applied: restart_ms={restart_ms} capture_covered_from_ms={covered_from_ms} applied={} launches={} prints={} reserves={} after_restart_skipped={} LOST-COVERAGE: {}",
+                        stats.applied, stats.launches, stats.prints, stats.reserves, stats.after_restart_skipped, lost_s(lost)
+                    );
+                    restart_curve_mints = stats.curve_mints.iter().copied().collect();
+                    // D3: durable mint -> curve bindings validated by pump.fun instructions at or before the restart
+                    // instant (sealed with the capture; schema 1 seals carry none and say so by name).
+                    let bpath = std::path::Path::new(
+                        pump_quant_junction::curve_binding::DEFAULT_CURVE_BINDING_FILE,
+                    );
+                    match pump_quant_junction::capture_rehydrate::restore_curve_bindings(
+                        &engine, seal, bpath,
+                    ) {
+                        pump_quant_junction::curve_binding::BindingRestore::Restored {
+                            bindings,
+                            after_restart_skipped,
+                            undated_skipped,
+                        } => {
+                            eprintln!(
+                                "[pq-daemon] CURVE-BINDINGS restored from the sealed log: {} (after_restart_skipped={after_restart_skipped} undated_skipped={undated_skipped})",
+                                bindings.len()
+                            );
+                            let mut seen: std::collections::BTreeSet<[u8; 32]> =
+                                restart_curve_mints.iter().copied().collect();
+                            for b in &bindings {
+                                if seen.insert(b.mint) {
+                                    restart_curve_mints.push(b.mint);
+                                }
+                            }
+                            pump_quant_junction::capture_rehydrate::set_aside_unsealed_binding_tail(
+                                bpath, seal,
+                            );
+                        }
+                        pump_quant_junction::curve_binding::BindingRestore::NotRecordedSchema1 => {
+                            eprintln!("[pq-daemon] ALERT: CURVE-BINDINGS NOT RECORDED (capture seal schema 1): curve markets bound only by an instruction before the restart stay unrouted until a post-restart instruction re-binds them");
+                            pump_quant_junction::capture_rehydrate::set_aside_unverified(bpath);
+                        }
+                        pump_quant_junction::curve_binding::BindingRestore::Refused(why) => {
+                            eprintln!("[pq-daemon] ALERT: CURVE-BINDINGS REFUSED ({why}): nothing restored from the binding log; curve markets bound only by an instruction before the restart stay unrouted until a post-restart instruction re-binds them");
+                            pump_quant_junction::capture_rehydrate::set_aside_unverified(bpath);
+                        }
+                    }
+                    // The sealed prefix is the causal capture; an unsealed tail (written after the last seal, before the
+                    // crash) is moved aside as evidence, never replayed, so the capture stays one causal sequence.
+                    pump_quant_junction::capture_rehydrate::set_aside_unsealed_tail(cap, seal);
+                }
+                pump_quant_junction::capture_rehydrate::RehydrateOutcome::Refused {
+                    why,
+                    restart_ms,
+                    lost,
+                } => {
+                    eprintln!(
+                        "[pq-daemon] ALERT: LAUNCH-RECOVERY REFUSED ({why}) restart_ms={restart_ms}: markets launched before the restart refuse join_tape_truncated_at_restart. LOST-COVERAGE: {}",
+                        lost_s(lost)
+                    );
+                    pump_quant_junction::capture_rehydrate::set_aside_unverified(cap);
+                    pump_quant_junction::capture_rehydrate::set_aside_unverified(
+                        std::path::Path::new(
+                            pump_quant_junction::curve_binding::DEFAULT_CURVE_BINDING_FILE,
+                        ),
+                    );
+                }
+            }
+        }
+        match restore {
             pump_quant_junction::model_lifecycle::StartupRestore::Clean => {
                 eprintln!("[pq-daemon] held-state: no ledger at {held_file} - clean start");
             }
             pump_quant_junction::model_lifecycle::StartupRestore::Restored(r) => {
                 eprintln!(
                     "[pq-daemon] held-state RESTORED from {held_file}: positions={} pending_orders_uncertain={} \
-                     committed_lamports={} realized_lamports={} inventory_unknown={} - management stays DEGRADED \
-                     until history + reserves are recovered; uncertain orders need a reconciled report",
-                    r.positions, r.pending_uncertain, r.committed_lamports, r.realized_lamports, r.inventory_unknown
+                     pending_orders_unsent={} committed_lamports={} realized_lamports={} inventory_unknown={} - management \
+                     stays DEGRADED until history + reserves are recovered; uncertain orders need a reconciled report",
+                    r.positions, r.pending_uncertain, r.pending_unsent, r.committed_lamports, r.realized_lamports, r.inventory_unknown
                 );
             }
             pump_quant_junction::model_lifecycle::StartupRestore::Refused(why) => {
@@ -1859,10 +2427,119 @@ fn main() -> ExitCode {
             pump_quant_junction::model_lifecycle::MIN_FREE_BYTES,
         );
         eprintln!("[pq-daemon] durable-state headroom at start: {h:?}");
+        // 6 h paper-run budget against THIS process's actual limits (cgroup memory.max/high, RLIMIT_NOFILE, free
+        // bytes on every written filesystem) and the REAL-TIME event-stream rate range. Reported, never assumed fine.
+        {
+            let hf = std::env::var("PQ_MODEL_HELD_FILE").unwrap_or_else(|_| {
+                pump_quant_junction::model_lifecycle::DEFAULT_HELD_FILE.to_string()
+            });
+            let b = pump_quant_junction::model_lifecycle::run_budget_now(
+                &[
+                    std::path::Path::new(&sf),
+                    std::path::Path::new(&hf),
+                    std::path::Path::new(EVENT_STREAM_PATH),
+                ],
+                23_400,
+            );
+            eprintln!("[pq-daemon] run budget (6h+30m, real-time stream rate): {b:?}");
+            eprintln!(
+                "[pq-daemon] MEMORY_BUDGET state={} host_floor_bytes={:?} host_term_bytes={:?} effective_available_bytes={:?} floor_bytes={} ok={:?} (shared headroom, re-evaluated every runtime check)",
+                pump_quant_junction::model_lifecycle::mem_state_label(&b.mem.state),
+                b.mem.host_floor,
+                b.mem.host_term,
+                b.mem.effective,
+                pump_quant_app::stop_policy::RAM_FLOOR_BYTES,
+                b.mem.ok
+            );
+            eprintln!(
+                "[pq-daemon] NOFILE soft={:?} need={} ok={:?}",
+                b.nofile_soft,
+                pump_quant_junction::model_lifecycle::FD_NEED,
+                b.nofile_ok
+            );
+            // Disk: EVERY required write destination grouped by filesystem (st_dev), need summed per filesystem,
+            // the LIMITING destination named. Need = SCENARIO estimate (~26 min of one day's capture), not a
+            // guaranteed bound. UNKNOWN (an unmeasurable required destination) is never PASS: new exposure is NOT
+            // armed (the stop table's disk row is raised before the first tick) and ALERT_DISK_BUDGET_UNKNOWN fires.
+            let dests = daemon_write_dests();
+            let t = pump_quant_junction::disk_budget::disk_table(
+                &dests,
+                &pump_quant_junction::disk_budget::probe_fs,
+                pump_quant_app::stop_policy::DISK_SOFT_FLOOR_BYTES,
+            );
+            for l in pump_quant_junction::disk_budget::render_table(&t) {
+                eprintln!("[pq-daemon] {l}");
+            }
+            let (startup_disk, alert) =
+                pump_quant_junction::disk_budget::startup_disk_gate(t.verdict);
+            if let Some(a) = alert {
+                eprintln!(
+                    "[pq-daemon] {a}: overall disk verdict {:?} (limiting row {:?}, unmeasurable {:?}); new exposure NOT armed",
+                    t.verdict,
+                    t.limiting.map(|i| &t.rows[i]),
+                    t.unmeasurable
+                );
+            }
+            if startup_disk != Some(true) {
+                // Not armed: the entry table refuses new asks from the first tick. No stop-table evaluation here (a
+                // restored book has no marks yet and must not be valued at startup); the first runtime check (tick 0)
+                // re-measures the same destinations and holds the disk row (BUY + ADD) while it stays short/UNKNOWN.
+                engine.set_model_entries_blocked(true);
+                eprintln!(
+                    "[pq-daemon] startup disk verdict {:?}: new exposure NOT armed (entries blocked)",
+                    t.verdict
+                );
+            }
+            if b.nofile_ok != Some(true) || b.mem_ok != Some(true) {
+                eprintln!("[pq-daemon] ALERT_RUN_BUDGET: a resource is short or unmeasured for the 6 h run: {b:?}");
+            }
+        }
+        // Loss-stop valuation metric: recorded at run start, immutable for the run. PROVISIONAL (exec quote) until
+        // the shadow slice supplies its estimate (a different metric id = a different run).
+        let m = engine
+            .model_stop_pin_valuation_metric(pump_quant_app::stop_policy::ESTIMATOR_EXEC_QUOTE);
+        eprintln!("[pq-daemon] loss-stop valuation metric pinned for this run: {m}");
     }
     let mut model_stop_last_alert = Instant::now() - Duration::from_secs(3600);
     let mut model_stop_session = pump_quant_junction::model_lifecycle::StopSession::new();
     let mut stale_callout = pump_quant_junction::model_lifecycle::StaleCallout::default();
+    // STOP TABLE (pump_quant_app::stop_policy): run deadline + drain bound, and the bootstrap RPC budget with a
+    // held-position reservation.
+    let (stop_deadline_ms, stop_drain_ms) = pump_quant_junction::model_lifecycle::run_deadline_from(
+        std::env::var("PQ_RUN_DEADLINE_MS").ok().as_deref(),
+        std::env::var("PQ_DRAIN_BOUND_MS").ok().as_deref(),
+    );
+    engine.model_stop_set_deadline(stop_deadline_ms, stop_drain_ms);
+    if model_armed {
+        eprintln!(
+            "[pq-daemon] stop table: run deadline {stop_deadline_ms} ms, drain bound {stop_drain_ms} ms, then protective handoff (never force-close)"
+        );
+    }
+    let mut rpc_budget = pump_quant_junction::model_lifecycle::bootstrap_budget();
+    // Management-sell report inbox (REDUCE/EXIT/ADD fills reported by the executor/operator). Cumulative reports are
+    // idempotent, so a restart that re-reads the whole file applies nothing twice.
+    let report_inbox_path = std::env::var("PQ_MGMT_REPORT_INBOX")
+        .unwrap_or_else(|_| "data/mgmt_reports.ndjson".to_string());
+    let mut report_inbox = pump_quant_junction::report_inbox::InboxReader::default();
+    let replay_harness = pump_quant_junction::report_inbox::inbox_enabled(
+        args.live_mode,
+        std::env::var("PQ_OFFLINE_PAPER_REPLAY").ok().as_deref(),
+    );
+    // OFFLINE REPLAY HARNESS ONLY: the inbox is the executor for management/protective sells (PQ_EXTERNAL_EXECUTION=1).
+    if replay_harness && model_armed && std::env::var("PQ_EXTERNAL_EXECUTION").as_deref() == Ok("1")
+    {
+        engine.model_set_external_execution(true);
+        eprintln!("[pq-daemon] harness: REDUCE/EXIT/protective orders are submitted to the external (inbox) executor");
+    }
+    eprintln!(
+        "[pq-daemon] management-report inbox: {} (harness-only; {})",
+        if replay_harness {
+            "ENABLED"
+        } else {
+            "disabled"
+        },
+        report_inbox_path
+    );
 
     // Run-mode tag for tape/journal exports — derived from the ENGINE's actual
     // RunMode, NOT the --live CLI flag. This prevents paper-mode fallback from
@@ -1975,6 +2652,27 @@ fn main() -> ExitCode {
         std::collections::HashMap::new();
 
     let mut reserve_tracker: HashMap<[u8; 32], ReserveSnapshot> = HashMap::new();
+    // Who owns pump.fun CURVE trade history. `events` (default): verified-successful TradeEvents
+    // only; snapshot deltas then supply reserve state and reconciliation, never trades, and the
+    // instruction-arg prints (no price, net quantities) are not queued as curve trades. A feed that
+    // cannot supply `meta.tx_ok` therefore yields named gaps, not silent snapshot-fed history.
+    let curve_trade_source = match std::env::var("PQ_CURVE_TRADE_SOURCE").as_deref() {
+        Ok("snapshot_delta") => {
+            pump_quant_junction::curve_trade_events::CurveTradeSource::SnapshotDelta
+        }
+        _ => pump_quant_junction::curve_trade_events::CurveTradeSource::Events,
+    };
+    let mut curve_dedup = pump_quant_junction::curve_trade_events::EventDedup::new(65_536);
+    let mut amm_row_stats = pump_quant_junction::curve_trade_events::AmmRowStats::default();
+    let mut amm_row_status_unknown: u64 = 0;
+    let mut curve_ev_produced: u64 = 0;
+    let mut curve_ev_duplicates: u64 = 0;
+    let mut curve_ev_incomplete: u64 = 0;
+    let mut curve_ev_incomplete_unnamed: u64 = 0;
+    let mut curve_compat = pump_quant_junction::curve_trade_events::ProducerCompat::default();
+    let mut curve_compat_announced = false;
+    let events_mode_health =
+        curve_trade_source == pump_quant_junction::curve_trade_events::CurveTradeSource::Events;
     // The instruction prints' wallets, waiting for their reserve prints (see `trade_join`).
     let mut trade_join = TradeJoin::new(TRADE_JOIN_CAP, TRADE_JOIN_HORIZON_SLOTS);
     // Wangr Rev-14: tracks which mints we've already emitted MarketAuxiliary
@@ -2016,6 +2714,28 @@ fn main() -> ExitCode {
     // STALE_SECS of connection establishment, the connection is declared
     // stale and reconnected — regardless of last_slot_seen.
     let mut helius_conn_established_at = Instant::now();
+    // ── Restart: curve-account routing for every curve market the sealed capture proves was tracked ──
+    // pda_to_mint is process-local. An uninterrupted process installed these PDAs when it first saw the mint (launch
+    // or curve instruction); without this, a restarted process drops their LaserStream account updates until some
+    // post-restart instruction re-installs the PDA. Routing only: nothing is dirtied, subscribed or dispatched here.
+    if !restart_curve_mints.is_empty() {
+        let mut installed = 0usize;
+        for m in &restart_curve_mints {
+            if pda_to_mint.len() >= PDA_MAP_CAP {
+                break;
+            }
+            if pda_to_mint
+                .insert(bonding_curve_pda(m).to_bytes(), *m)
+                .is_none()
+            {
+                installed += 1;
+            }
+        }
+        eprintln!(
+            "[pq-daemon] RESTART-ROUTING curve PDAs re-installed from the sealed capture: {installed}/{}",
+            restart_curve_mints.len()
+        );
+    }
     // ── Restored held positions: re-establish their feeds INDEPENDENTLY of discovery ──
     // A restart that rebuilt held positions (model_lifecycle::restore_held_state) has no live reserve or
     // print feed for them until something subscribes. Do it now: trade prints via PumpPortal, the PDA map
@@ -2057,7 +2777,9 @@ fn main() -> ExitCode {
     }
 
     // ─── LaserStream gRPC primary ingest lane ────────────────────────────
-    let (ls_tx, ls_rx) = mpsc::channel::<LaserStreamUpdate>();
+    // BOUNDED (stream_recovery::LS_QUEUE_CAP): a full queue back-pressures the reader thread / child pipe.
+    let (ls_tx, ls_rx) =
+        mpsc::sync_channel::<LaserStreamUpdate>(pump_quant_junction::stream_recovery::LS_QUEUE_CAP);
     let mut ls_child: Option<std::process::Child> = None;
     let ls_bin: Option<String> = std::env::var("PQ_LASERSTREAM_BIN")
         .ok()
@@ -2128,23 +2850,13 @@ fn main() -> ExitCode {
                     }
                 );
                 let stdout = child.stdout.take().expect("piped stdout");
-                let ls_tx_clone = ls_tx.clone();
-                std::thread::spawn(move || {
-                    use std::io::BufRead;
-                    let reader = std::io::BufReader::new(stdout);
-                    for line in reader.lines() {
-                        match line {
-                            Ok(text) => {
-                                if let Some(update) = parse_ndjson_line(&text) {
-                                    if ls_tx_clone.send(update).is_err() {
-                                        break;
-                                    }
-                                }
-                            }
-                            Err(_) => break,
-                        }
-                    }
-                });
+                // Reader thread (stream_recovery::spawn_line_reader): exits on EOF (child killed) or when the
+                // receiver is gone - respawns leak no threads.
+                let _reader = pump_quant_junction::stream_recovery::spawn_line_reader(
+                    stdout,
+                    ls_tx.clone(),
+                    parse_ndjson_line,
+                );
                 Some(child)
             }
             Err(e) => {
@@ -2175,8 +2887,8 @@ fn main() -> ExitCode {
             .push("LaserStream binary not found — Helius WS as fallback".to_string());
     }
     let _ls_state = LaserStreamState::new(); // reserved for future per-slot accounting
-    let mut ls_respawn_count: u32 = 0;
-    let mut ls_last_respawn: Option<Instant> = None;
+                                             // Respawn governor (stream_recovery): cooldown spacing + per-process limit, named exhaustion.
+    let mut ls_gov = pump_quant_junction::stream_recovery::RespawnGovernor::default();
 
     // ─── Firecrawl web-intelligence sidecar ─────────────────────────────────
     // Same sidecar pattern as LaserStream: spawn a child process, read its
@@ -2257,6 +2969,33 @@ fn main() -> ExitCode {
 
     let tick_period = Duration::from_millis(tick_period_ms);
     let mut next_tick = Instant::now() + tick_period;
+    // OFFLINE PAPER REPLAY decision barriers (inert unless PQ_OFFLINE_PAPER_REPLAY=1 with the model lane armed AND an
+    // explicit barrier list). Production cadence, timestamp checks and monotonic deadlines are untouched.
+    let barrier_clocks: Vec<i64> = if replay_harness && model_armed {
+        std::env::var("PQ_REPLAY_BARRIERS")
+            .ok()
+            .map(|v| v.split(',').filter_map(|x| x.trim().parse().ok()).collect())
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let barrier_mode = !barrier_clocks.is_empty();
+    let mut barrier_idx: usize = 0;
+    let mut barrier_ready = false;
+    let mut barrier_hold: Option<LaserStreamUpdate> = None;
+    let mut harness_post_poll = Instant::now();
+    let mut barrier_seen_count: u64 = 0;
+    let mut barrier_last_input = Instant::now();
+    if barrier_mode {
+        engine.barrier_enable();
+        eprintln!(
+            "[pq-daemon] OFFLINE PAPER REPLAY: {} decision barriers at fixed source-time clocks; the timed tick is replaced by barrier ticks",
+            barrier_clocks.len()
+        );
+        if let Ok(w) = std::env::var("PQ_REPLAY_WATCH_MINT") {
+            engine.barrier_watch(&w);
+        }
+    }
     let status_path = std::path::Path::new(STATUS_PATH);
     let mut tick_counter: u64 = 0;
     let mut last_status_write_tick: u64 = 0;
@@ -2330,6 +3069,28 @@ fn main() -> ExitCode {
     // Event stream capture for deterministic replay (§13 paper/live parity).
     // Fail-safe: if the file can't be opened, daemon continues without capture.
     let mut event_stream_writer = EventStreamWriter::open(EVENT_STREAM_PATH);
+    // The capture is SEALED (lineage + held generation + barrier clock + sha256) whenever the held ledger becomes
+    // durable at a new generation, so a restart can rebuild the per-market evidence the uninterrupted run used.
+    let mut capture_sealer = model_armed.then(|| {
+        pump_quant_junction::capture_rehydrate::CaptureSealer::with_bindings(
+            std::path::Path::new(EVENT_STREAM_PATH),
+            std::path::Path::new(pump_quant_junction::capture_rehydrate::DEFAULT_CAPTURE_SEAL_FILE),
+            std::path::Path::new(pump_quant_junction::curve_binding::DEFAULT_CURVE_BINDING_FILE),
+        )
+    });
+    // D3: one durable record per mint -> curve binding validated by a pump.fun instruction (sealed with the capture).
+    let mut curve_binding_writer = if model_armed {
+        let w = pump_quant_junction::curve_binding::BindingWriter::open(std::path::Path::new(
+            pump_quant_junction::curve_binding::DEFAULT_CURVE_BINDING_FILE,
+        ));
+        if w.is_none() {
+            eprintln!("[pq-daemon] ALERT: curve binding log could not be opened: a restart from here cannot restore instruction-only curve routing");
+        }
+        w
+    } else {
+        None
+    };
+    let mut capture_sealed_gen: u64 = u64::MAX;
     eprintln!("[pq-daemon] tape export path: {TAPE_PATH}");
 
     // ─── Cumulative PnL seed (restart-amnesia fix) ──────────────────────
@@ -2356,6 +3117,9 @@ fn main() -> ExitCode {
 
     // GAP #14: Track session start time for daemon_health.json uptime reporting.
     let session_start = Instant::now();
+    let disk_dests = daemon_write_dests();
+    let mut disk_monitor = pump_quant_junction::disk_budget::DiskMonitor::default();
+    let mut resource_last_sig = String::new();
 
     // ── GAP E: generate unique session_id ──────────────────────────────
     // A unique per-daemon-restart identifier (PID + start timestamp) so A/B
@@ -2410,12 +3174,22 @@ fn main() -> ExitCode {
                     handle_stop_request, StopGate, HANDOFF_REQUEST_FILE,
                     PROTECTIVE_HANDOFF_ACK_FILE,
                 };
-                match handle_stop_request(
+                let gate = handle_stop_request(
                     &mut engine,
                     &mut model_stop_session,
                     std::path::Path::new(HANDOFF_REQUEST_FILE),
                     std::path::Path::new(PROTECTIVE_HANDOFF_ACK_FILE),
-                ) {
+                );
+                // The controlled shutdown persisted the held ledger (a new generation and decision clock). Seal the
+                // capture to it BEFORE the loop can exit: otherwise the durable ledger is ahead of the sealed capture
+                // and a restart from it refuses launch recovery (capture_seal_behind_restart).
+                capture_seal_if_new(
+                    &engine,
+                    &mut event_stream_writer,
+                    &mut capture_sealer,
+                    &mut capture_sealed_gen,
+                );
+                match gate {
                     StopGate::CompleteFlat => {
                         eprintln!("[pq-daemon] DAEMON_STOP accepted: flat and reconciled");
                         clean_stop_sentinel();
@@ -2452,6 +3226,27 @@ fn main() -> ExitCode {
 
         let mut did_work = false;
 
+        // ── OPERATOR RE-ARM (model lane): the only daemon path to `model_safety_rearm`. A named operator writes
+        // data/OPERATOR_REARM.json {operator, safety_epoch}; it is consumed once and judged by the existing contract.
+        if model_armed
+            && std::path::Path::new(pump_quant_junction::model_lifecycle::OPERATOR_REARM_FILE)
+                .exists()
+        {
+            if let Some(o) = pump_quant_junction::model_lifecycle::handle_rearm_request(
+                &mut engine,
+                std::path::Path::new(pump_quant_junction::model_lifecycle::OPERATOR_REARM_FILE),
+                std::path::Path::new(
+                    pump_quant_junction::model_lifecycle::OPERATOR_REARM_RESULT_FILE,
+                ),
+            ) {
+                eprintln!(
+                    "[pq-daemon] OPERATOR_REARM {o:?} safety_blocked={} entries_blocked={}",
+                    engine.model_safety_blocked(),
+                    engine.model_entries_blocked()
+                );
+            }
+        }
+
         // ── SUBSCRIPTION CAP RECONNECT (self-healing) ───────────────────
         // If -32006 was detected on the previous iteration, force a full WS
         // reconnect NOW — before any other lane processing. This ensures
@@ -2463,53 +3258,62 @@ fn main() -> ExitCode {
             );
             // Send a proper WS Close frame so Helius immediately frees ALL
             // subscription slots on the old connection.
-            let _ = helius_conn.close();
             stats.helius_reconnects += 1;
             let active_mints_vec = sub_tracker.clear_server_subs();
             stats.sub_cap_errors = 0; // reset after reconnect
             stats.subs_leaked_no_ack = 0; // fresh connection, no leaks
                                           // Re-subscribe with the standard backoff ladder.
-            let mut backoff_ms = WS_RECONNECT_SLEEP_MS;
-            let mut reconnected = false;
-            for _ in 0..MAX_RECONNECT_ATTEMPTS {
-                if !reconnected {
-                    match WsConn::connect(&helius_url) {
-                        Ok(mut c) => {
-                            let _ = c.set_read_timeout(Duration::from_millis(WS_READ_TIMEOUT_MS));
-                            let _ = c.send_text(&helius_ws::slot_subscribe_request());
-                            for mint in &active_mints_vec {
-                                let pda = bonding_curve_pda(mint);
-                                let pda_str = pda.to_string();
-                                let req_id = next_req_id;
-                                next_req_id += 1;
-                                let req = helius_ws::account_subscribe_request(
-                                    req_id,
-                                    &pda_str,
-                                    &args.commitment,
-                                );
-                                let _ = c.send_text(&req);
-                                sub_tracker.record_request(req_id, *mint);
-                            }
-                            helius_conn_established_at = Instant::now();
-                            last_slot_time = Instant::now();
-                            reconnected = true;
-                            helius_conn = c;
-                            eprintln!(
+                                          // Extracted episode (stream_recovery): close old first, capped ladder, sleep after every failure,
+                                          // cancellable by the emergency stop, named exhaustion.
+            let reconnected = match pump_quant_junction::stream_recovery::ws_reconnect_episode(
+                &pump_quant_junction::endpoint_retry::HELIUS_WS_RECONNECT,
+                || {
+                    let _ = helius_conn.close();
+                },
+                || WsConn::connect(&helius_url),
+                |n, b, e| {
+                    eprintln!(
+                        "[pq-daemon] FORCE RECONNECT failed (attempt {n}, backoff={b}ms): {e}"
+                    );
+                    stats.ws_errors += 1;
+                },
+                &mut pump_quant_junction::stream_recovery::RealSleeper {
+                    cancelled: emergency_stop_requested,
+                },
+            ) {
+                pump_quant_junction::stream_recovery::WsOutcome::Connected {
+                    conn: mut c, ..
+                } => {
+                    let _ = c.set_read_timeout(Duration::from_millis(WS_READ_TIMEOUT_MS));
+                    let _ = c.send_text(&helius_ws::slot_subscribe_request());
+                    for mint in &active_mints_vec {
+                        let pda = bonding_curve_pda(mint);
+                        let pda_str = pda.to_string();
+                        let req_id = next_req_id;
+                        next_req_id += 1;
+                        let req = helius_ws::account_subscribe_request(
+                            req_id,
+                            &pda_str,
+                            &args.commitment,
+                        );
+                        let _ = c.send_text(&req);
+                        sub_tracker.record_request(req_id, *mint);
+                    }
+                    helius_conn_established_at = Instant::now();
+                    last_slot_time = Instant::now();
+                    helius_conn = c;
+                    eprintln!(
                                 "[pq-daemon] FORCE RECONNECT succeeded — {} active mints re-subscribed on fresh connection",
                                 sub_tracker.len()
                             );
-                        }
-                        Err(e) => {
-                            eprintln!(
-                                "[pq-daemon] FORCE RECONNECT failed (backoff={backoff_ms}ms): {e}"
-                            );
-                            stats.ws_errors += 1;
-                            std::thread::sleep(Duration::from_millis(backoff_ms));
-                            backoff_ms = (backoff_ms * 2).min(RECONNECT_BACKOFF_CAP_MS);
-                        }
-                    }
+                    true
                 }
-            }
+                pump_quant_junction::stream_recovery::WsOutcome::Cancelled { attempts } => {
+                    eprintln!("[pq-daemon] FORCE RECONNECT CANCELLED by emergency stop after {attempts} attempt(s)");
+                    false
+                }
+                pump_quant_junction::stream_recovery::WsOutcome::Exhausted { .. } => false,
+            };
             if !reconnected {
                 eprintln!(
                     "[pq-daemon] FORCE RECONNECT exhausted — stale-check will retry on next tick"
@@ -2594,6 +3398,18 @@ fn main() -> ExitCode {
             // Low-frequency (status-heartbeat) dropped-print health: lets an operator tell an
             // honestly QUIET market from one whose data is INCOMPLETE. Never on the hot path.
             let flow_drop = engine.model_flow_drop_summary();
+            let (mh_unflushed, _mh_fail_now, mh_fail_total) = engine.model_missing_persist_health();
+            let (
+                fh_durable,
+                fh_sub,
+                fh_fail_now,
+                fh_fail_total,
+                fh_clone_us,
+                fh_clone_max_us,
+                fh_bytes,
+                fh_enc_us,
+                fh_write_us,
+            ) = engine.model_flow_health();
             let health_json = format!(
                 concat!(
                     "{{",
@@ -2605,13 +3421,36 @@ fn main() -> ExitCode {
                     "\"ls_active\":{},",
                     "\"ls_account_received\":{},",
                     "\"ls_onchain_confirms_decoded\":{},",
-                    "\"ls_account_unresolved\":{},",
+                    "\"ls_account_unresolved\":{},\"pda_installed_from_tx\":{},\"pda_map_full_refused\":{},\"token_program_observed\":{},",
                     "\"delta_trades_derived\":{},",
                     "\"delta_no_trade\":{},",
                     "\"delta_out_of_range\":{},",
+                    "\"delta_mode_unsupported\":{},",
                     "\"flow_upstream_drops\":{},",
                     "\"flow_windows_incomplete\":{},",
                     "\"flow_missing_observations\":{},",
+                    "\"missing_history_unflushed\":{},",
+                    "\"missing_history_persist_failures\":{},",
+                    "\"missing_history_continuity_unknown\":{},",
+                    "\"flow_ckpt_durable_seq\":{},",
+                    "\"flow_ckpt_submitted_seq\":{},",
+                    "\"flow_ckpt_failures_now\":{},",
+                    "\"flow_ckpt_failures_total\":{},",
+                    "\"flow_ckpt_clone_us\":{},",
+                    "\"flow_ckpt_clone_max_us\":{},",
+                    "\"flow_ckpt_bytes\":{},",
+                    "\"flow_ckpt_encode_us\":{},",
+                    "\"flow_ckpt_write_us\":{},",
+                    "\"curve_trade_source\":\"{}\",",
+                    "\"curve_events_produced\":{},",
+                    "\"curve_events_duplicates\":{},",
+                    "\"curve_events_incomplete\":{},",
+                    "\"curve_events_incomplete_unnamed\":{},",
+                    "\"amm_rows_emitted\":{},",
+                    "\"amm_rows_resolver_rejects\":{},",
+                    "\"amm_rows_duplicates\":{},",
+                    "\"amm_rows_status_unknown\":{},",
+                    "\"curve_producer_ready\":{},",
                     "\"uptime_secs\":{},",
                     "\"tick\":{},",
                     "\"account_subs_active\":{},",
@@ -2629,12 +3468,43 @@ fn main() -> ExitCode {
                 stats.ls_account_received,
                 stats.ls_onchain_confirms_decoded,
                 stats.ls_account_unresolved,
+                stats.pda_installed_from_tx,
+                stats.pda_map_full_refused,
+                stats.token_program_observed,
                 stats.delta_trades_derived,
                 stats.delta_no_trade,
                 stats.delta_out_of_range,
+                stats.delta_mode_unsupported,
                 flow_drop.drops_total,
                 flow_drop.mints_incomplete_now,
                 flow_drop.mints_history_unreconstructed,
+                mh_unflushed,
+                mh_fail_total,
+                engine.model_history_continuity_unknown(),
+                fh_durable,
+                fh_sub,
+                fh_fail_now,
+                fh_fail_total,
+                fh_clone_us,
+                fh_clone_max_us,
+                fh_bytes,
+                fh_enc_us,
+                fh_write_us,
+                if events_mode_health {
+                    "events"
+                } else {
+                    "snapshot_delta"
+                },
+                curve_ev_produced,
+                curve_ev_duplicates,
+                curve_ev_incomplete,
+                curve_ev_incomplete_unnamed,
+                amm_row_stats.emitted,
+                amm_row_stats.resolver_rejects,
+                amm_row_stats.duplicates,
+                amm_row_status_unknown,
+                // Snapshot-delta mode has no producer-status requirement.
+                !events_mode_health || curve_compat.ready(),
                 uptime_secs,
                 tick_counter,
                 sub_tracker.len(),
@@ -2643,6 +3513,15 @@ fn main() -> ExitCode {
                 stats.sub_cap_errors,
             );
             let _ = std::fs::write("data/daemon_health.json", health_json);
+            // The model lane's own funnel counters (discovery / refusal reasons / dispatch), written next to the health
+            // file so an operator or test can see WHERE a market stopped, with exact counts.
+            if model_armed {
+                let rep: std::collections::BTreeMap<&String, &u64> =
+                    engine.model_lane_report().iter().collect();
+                if let Ok(j) = serde_json::to_string(&rep) {
+                    let _ = std::fs::write("data/model_lane_report.json", j);
+                }
+            }
 
             last_status_write_tick = tick_counter;
             last_status_write_wallclock = Instant::now();
@@ -2650,12 +3529,76 @@ fn main() -> ExitCode {
 
         // ── Poll LaserStream gRPC (PRIMARY ingest lane) ──────────────────
         loop {
-            match ls_rx.try_recv() {
+            match next_ls_update(
+                &ls_rx,
+                &mut barrier_hold,
+                barrier_clocks.get(barrier_idx).copied(),
+                &mut barrier_ready,
+            ) {
                 Ok(LaserStreamUpdate::Transaction(tx)) => {
                     did_work = true;
                     stats.ls_transactions_received += 1;
                     let classified = classify_pump_instructions(&tx);
+                    // FEES R10 F8: the paper deposit plan needs each mint's token program; prove it from this
+                    // successful tx's own ATA derivation (never an index guess, never a default program).
+                    for (m, tp) in
+                        pump_quant_junction::laserstream::observed_token_programs(&tx, |m| {
+                            engine.model_token_program_known(m)
+                        })
+                    {
+                        engine.model_observe_token_program(m, tp);
+                        stats.token_program_observed += 1;
+                    }
                     stats.ls_instructions_classified += classified.len() as u64;
+                    // CURVE IDENTITY from verified pump.fun instructions. The curve PDA is a pure function of
+                    // (pump program, mint), so deriving it from the mint named by a decoded pump.fun buy / sell /
+                    // create instruction is itself the ownership check: an account update whose pubkey equals this
+                    // derivation IS this mint's bonding curve. Required for markets first seen mid-life: no launch
+                    // or PumpPortal create event is needed, and none is pretended (launch history stays a separate,
+                    // named input). Bounded; a full map is counted, never silently grown.
+                    for c in &classified {
+                        use pump_quant_junction::curve_binding::BindingSource as BS;
+                        let m = match c {
+                            pump_quant_junction::laserstream::PumpInstruction::Buy {
+                                mint, ..
+                            } => Some((*mint, BS::IxBuy)),
+                            pump_quant_junction::laserstream::PumpInstruction::Sell {
+                                mint,
+                                ..
+                            } => Some((*mint, BS::IxSell)),
+                            pump_quant_junction::laserstream::PumpInstruction::Launch {
+                                mint,
+                                ..
+                            } => Some((*mint, BS::IxLaunch)),
+                            _ => None,
+                        };
+                        if let Some((m, src)) = m {
+                            let pda = bonding_curve_pda(&m).to_bytes();
+                            if !pda_to_mint.contains_key(&pda) {
+                                if pda_to_mint.len() >= PDA_MAP_CAP {
+                                    stats.pda_map_full_refused += 1;
+                                } else {
+                                    pda_to_mint.insert(pda, m);
+                                    stats.pda_installed_from_tx += 1;
+                                    // The binding is validated here (curve == PDA(mint) from a decoded pump.fun
+                                    // instruction): record it durably with its evidence (D3).
+                                    if let Some(w) = curve_binding_writer.as_mut() {
+                                        let b = pump_quant_junction::curve_binding::CurveBinding {
+                                            mint: m,
+                                            curve: pda,
+                                            source: src,
+                                            signature: tx.signature,
+                                            slot: tx.slot,
+                                            recv_ms: tx.recv_unix_ms,
+                                        };
+                                        if let Err(e) = w.record(&b) {
+                                            eprintln!("[pq-daemon] ALERT: curve binding record write FAILED: {e} - a restart from here may not restore this market's curve routing");
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                     let events = instructions_to_events_with_meta(
                         &classified,
                         tx.slot,
@@ -2664,6 +3607,91 @@ fn main() -> ExitCode {
                         tx.fee_lamports,
                         tx.cu_consumed,
                     );
+                    use pump_quant_junction::curve_trade_events::{ingest_curve_tx, EventIngest};
+                    let events_mode = curve_trade_source
+                        == pump_quant_junction::curve_trade_events::CurveTradeSource::Events;
+                    let events: Vec<_> = if events_mode {
+                        // Curve instruction-arg prints are NOT curve trades in event mode.
+                        events
+                            .into_iter()
+                            .filter(|e| {
+                                !(e.source == ProvenanceSource::LaserStream
+                                    && matches!(
+                                        e.event,
+                                        AppEvent::MarketTrade {
+                                            venue: Some(pump_quant_app::event::TradeVenue::PumpFun),
+                                            ..
+                                        }
+                                    ))
+                            })
+                            .collect()
+                    } else {
+                        events
+                    };
+                    if events_mode {
+                        curve_compat.note(&tx);
+                        if !curve_compat_announced {
+                            if let Some(r) = curve_compat.reason() {
+                                curve_compat_announced = true;
+                                eprintln!("FATAL-READINESS: curve trade source = events, but {r}");
+                            }
+                        }
+                        let mut ev_out = Vec::new();
+                        // PumpSwap corpus-definition FEATURE rows (wallet history; independent of execution scope).
+                        // Unknown tx status on a PumpSwap swap line is counted, never treated as success.
+                        if tx.instructions.iter().any(|i| {
+                            i.program_id == pump_quant_junction::laserstream::PUMP_SWAP_PROGRAM
+                        }) {
+                            if tx.tx_ok.is_none() {
+                                amm_row_status_unknown += 1;
+                            }
+                            pump_quant_junction::curve_trade_events::ingest_amm_rows(
+                                &tx,
+                                &mut curve_dedup,
+                                &mut amm_row_stats,
+                                &mut ev_out,
+                            );
+                        }
+                        match ingest_curve_tx(&tx, &mut curve_dedup, &mut ev_out) {
+                            EventIngest::Nothing => {}
+                            EventIngest::Produced {
+                                events: n,
+                                duplicates: d,
+                            } => {
+                                curve_ev_produced += n as u64;
+                                curve_ev_duplicates += d as u64;
+                            }
+                            EventIngest::Incomplete(reason) => {
+                                curve_ev_incomplete += 1;
+                                // Named gap per affected mint; no snapshot fallback.
+                                let mut named = false;
+                                for c in &classified {
+                                    let m = match c {
+                                        pump_quant_junction::laserstream::PumpInstruction::Buy { mint, .. }
+                                        | pump_quant_junction::laserstream::PumpInstruction::Sell { mint, .. } => Some(*mint),
+                                        _ => None,
+                                    };
+                                    if let (Some(m), Some(ms)) = (m, tx.recv_unix_ms) {
+                                        engine.note_missing_observation(
+                                            m,
+                                            ms,
+                                            pump_quant_app::decision_join::MissingKind::PossibleTrade,
+                                            format!("tx_event:{reason}:{}", tx.slot),
+                                        );
+                                        named = true;
+                                    }
+                                }
+                                if !named {
+                                    curve_ev_incomplete_unnamed += 1;
+                                }
+                            }
+                        }
+                        for pe in ev_out {
+                            if !queue.push(pe, tx.slot) {
+                                stats.junction_overflow_dropped += 1;
+                            }
+                        }
+                    }
                     // The instruction print is the ONLY one that knows the wallet. Note it
                     // against (mint, slot) so the reserve-delta print — which knows the price —
                     // can claim it when it is derived.
@@ -2728,6 +3756,14 @@ fn main() -> ExitCode {
                         if let Some((provenanced, curve)) =
                             decode_onchain_confirm_with_curve(&mb, &data, slot)
                         {
+                            // Model lane (operator decision 2026-10-09: SKIP Mayhem-mode coins): the decoded
+                            // curve mode, pushed BEFORE the confirm so the engine's mode-gated confirm sees it.
+                            // An unsupported/undecodable mode emits nothing -> the engine keeps it UNKNOWN.
+                            if let Some(m) =
+                                pump_quant_junction::decode::curve_mode_observed(&mb, &data, slot)
+                            {
+                                queue.push(m, slot);
+                            }
                             queue.push(provenanced, slot);
                             // Model lane: the full four-reserve observation with its wire clock.
                             // Additive; an update with no clock emits nothing.
@@ -2776,14 +3812,28 @@ fn main() -> ExitCode {
                             // The account notification's wire receive time is the print's
                             // clock: this is the only producer with a real `price_fp`, so it
                             // is the feed the live state ledger's windows key on.
-                            if let Some(mut trade_pe) = derive_market_trade_from_delta(
-                                &mb,
-                                prev,
-                                &curve,
-                                slot,
-                                true,
-                                recv_unix_ms,
-                            ) {
+                            // In event mode the snapshot is state/reconciliation ONLY: it neither
+                            // derives a trade nor records a drop (a net delta over several trades is
+                            // not a gap — the events own the history).
+                            let snapshot_trades = curve_trade_source.snapshot_may_feed_trades();
+                            // Offset slice: the constant-offset virtual-delta derivation applies ONLY to
+                            // an Ordinary curve; Mayhem / unknown derive nothing and are classified by mode.
+                            let delta_mode =
+                                pump_quant_junction::reserve_delta::DeltaMode::of_account(&data);
+                            let derived = if snapshot_trades {
+                                pump_quant_junction::reserve_delta::derive_market_trade_from_delta_for_mode(
+                                    &mb,
+                                    prev,
+                                    &curve,
+                                    slot,
+                                    true,
+                                    recv_unix_ms,
+                                    delta_mode,
+                                )
+                            } else {
+                                None
+                            };
+                            if let Some(mut trade_pe) = derived {
                                 // Join the two halves: this producer knows the price and both
                                 // legs, the instruction print knows the trader. An ambiguous or
                                 // missing match leaves `buyer_entity: 0` — the ledger reports
@@ -2824,7 +3874,7 @@ fn main() -> ExitCode {
                                 }
                                 queue.push(trade_pe, slot);
                                 stats.delta_trades_derived += 1;
-                            } else {
+                            } else if snapshot_trades {
                                 stats.delta_no_trade += 1;
 
                                 if !pump_quant_junction::reserve_delta::delta_representable(
@@ -2840,23 +3890,23 @@ fn main() -> ExitCode {
                                 // join refuses any 300 s flow window that would otherwise be
                                 // served as complete or quietly idle; an ordinary no-trade
                                 // (`NoPrint`) is left alone.
+                                if delta_mode
+                                    != pump_quant_junction::reserve_delta::DeltaMode::Ordinary
+                                {
+                                    stats.delta_mode_unsupported += 1;
+                                }
                                 let _ =
-                                    pump_quant_junction::reserve_delta::note_curve_snapshot_outcome(
+                                    pump_quant_junction::reserve_delta::note_curve_snapshot_outcome_for_mode(
                                         &mut engine,
                                         mb,
                                         prev.as_ref(),
                                         &curve,
+                                        slot,
                                         recv_unix_ms,
+                                        delta_mode,
                                     );
                             }
-                            reserve_tracker.insert(
-                                mb,
-                                ReserveSnapshot {
-                                    virtual_sol: curve.virtual_sol,
-                                    virtual_token: curve.virtual_token,
-                                    slot,
-                                },
-                            );
+                            reserve_tracker.insert(mb, ReserveSnapshot::of(&curve, slot));
                             // C1: publish these reserves into the curve cache. The hot path (and the
                             // outbound sink's state fetch) then answers from the stream instead of paying a
                             // cold 4-RTT fetch. Returns false for a mint whose ctx was never learned — the
@@ -2888,77 +3938,54 @@ fn main() -> ExitCode {
                     // fundamentally broken binary (e.g. wrong subcommand,
                     // missing creds, bad endpoint).
                     if stats.ls_spawned {
-                        // Check respawn cooldown + max attempts
-                        let now = Instant::now();
-                        let cooldown_ok = ls_last_respawn
-                            .map(|t| now.duration_since(t).as_secs() >= LS_RESPAWN_COOLDOWN_SECS)
-                            .unwrap_or(true);
-                        if !cooldown_ok {
-                            // Too soon — skip respawn this iteration
-                            break;
-                        }
-                        if ls_respawn_count >= LS_MAX_RESPAWN_ATTEMPTS {
-                            eprintln!(
-                                "[pq-daemon] LaserStream respawn limit reached ({}), \
-                                giving up — Helius WS as permanent fallback",
-                                ls_respawn_count
-                            );
-                            stats.stubbed_or_assumed.push(
-                                "LaserStream exhausted respawns — Helius WS fallback".to_string(),
-                            );
-                            // Mark ls_spawned false so we don't keep trying
-                            stats.ls_spawned = false;
-                            // Rev-30: LS is dead — activate WS fallback.
-                            ls_active = false;
-                            eprintln!(
-                                "[pq-daemon] ls_active=false — WS accountSubscribe now active as fallback data source"
-                            );
-                            break;
-                        }
-                        eprintln!(
-                            "[pq-daemon] LaserStream disconnected — respawn attempt {}/{}",
-                            ls_respawn_count + 1,
-                            LS_MAX_RESPAWN_ATTEMPTS
+                        use pump_quant_junction::stream_recovery::{respawn_step, RespawnDecision};
+                        let now_ms = session_start.elapsed().as_millis() as u64;
+                        let (dec, spawned) = respawn_step(
+                            &mut ls_gov,
+                            &pump_quant_junction::endpoint_retry::LASERSTREAM_RESPAWN,
+                            now_ms,
+                            &mut ls_child,
+                            |old| {
+                                // GAP #12: kill (and reap) the OLD child BEFORE spawning the new one - at most one
+                                // live LaserStream child, no orphan burning credits.
+                                eprintln!(
+                                    "[pq-daemon] killing old LaserStream child (pid={}) before respawn to prevent orphan leak",
+                                    old.id()
+                                );
+                                kill_process_tree(old);
+                            },
+                            || match &ls_bin {
+                                Some(bin_path) => spawn_ls(bin_path),
+                                None => None,
+                            },
                         );
-                        stats.ls_reconnects += 1;
-                        ls_respawn_count += 1;
-                        ls_last_respawn = Some(now);
-                        if let Some(bin_path) = &ls_bin {
-                            match spawn_ls(bin_path) {
-                                Some(child) => {
-                                    // GAP #12 FIX: Kill the OLD LS child before
-                                    // replacing. Without this, Rust's Drop for
-                                    // Child on Windows closes the handle but
-                                    // does NOT kill the process — the old LS
-                                    // survives as an orphan, keeps its gRPC
-                                    // connection to Helius alive, and burns
-                                    // credits while its stdout pipe goes
-                                    // nowhere. This is the root cause of the
-                                    // 2M credit leak.
-                                    if let Some(ref mut old) = ls_child {
-                                        eprintln!(
-                                            "[pq-daemon] killing old LaserStream child (pid={}) before respawn to prevent orphan leak",
-                                            old.id()
-                                        );
-                                        // On Windows, child.kill() calls
-                                        // TerminateProcess which kills only the
-                                        // immediate process. For wsl.exe-spawned
-                                        // LS, we also need taskkill /T to kill
-                                        // the WSL subprocess tree.
-                                        #[cfg(windows)]
-                                        {
-                                            let old_pid = old.id();
-                                            let _ = std::process::Command::new("taskkill")
-                                                .args(["/T", "/F", "/PID", &old_pid.to_string()])
-                                                .stdout(std::process::Stdio::null())
-                                                .stderr(std::process::Stdio::null())
-                                                .status();
-                                        }
-                                        let _ = old.kill();
-                                        let _ = old.wait();
-                                    }
+                        match dec {
+                            RespawnDecision::CooldownWait | RespawnDecision::GaveUp => {}
+                            RespawnDecision::Exhausted => {
+                                eprintln!(
+                                    "[pq-daemon] LaserStream respawn limit reached ({}), \
+                                    giving up — Helius WS as permanent fallback",
+                                    ls_gov.count
+                                );
+                                stats.stubbed_or_assumed.push(
+                                    "LaserStream exhausted respawns — Helius WS fallback"
+                                        .to_string(),
+                                );
+                                stats.ls_spawned = false;
+                                // Rev-30: LS is dead — activate WS fallback.
+                                ls_active = false;
+                                eprintln!(
+                                    "[pq-daemon] ls_active=false — WS accountSubscribe now active as fallback data source"
+                                );
+                            }
+                            RespawnDecision::Attempt(n) => {
+                                eprintln!(
+                                    "[pq-daemon] LaserStream disconnected — respawn attempt {}/{}",
+                                    n, LS_MAX_RESPAWN_ATTEMPTS
+                                );
+                                stats.ls_reconnects += 1;
+                                if spawned == Some(true) {
                                     eprintln!("[pq-daemon] LaserStream respawned");
-                                    ls_child = Some(child);
                                     // Rev-30: LS recovered — re-activate as primary.
                                     ls_active = true;
                                     // Close Helius WS account subscriptions
@@ -2972,8 +3999,7 @@ fn main() -> ExitCode {
                                             active_mints_vec.len()
                                         );
                                     }
-                                }
-                                None => {
+                                } else {
                                     eprintln!("[pq-daemon] LaserStream respawn FAILED");
                                     stats.ws_errors += 1;
                                 }
@@ -3374,6 +4400,15 @@ fn main() -> ExitCode {
                                                 slot,
                                             )
                                         {
+                                            if let Some(m) =
+                                                pump_quant_junction::decode::curve_mode_observed(
+                                                    &mb,
+                                                    &account_data,
+                                                    slot,
+                                                )
+                                            {
+                                                queue.push(m, slot);
+                                            }
                                             queue.push(provenanced, slot);
                                             stats.helius_onchain_confirms_decoded += 1;
                                             stats.last_confirm_tick = tick_counter;
@@ -3409,13 +4444,17 @@ fn main() -> ExitCode {
                                             // The WS feed records no receive time, so this
                                             // print cannot be windowed on a clock it does not
                                             // have. `None` is the honest value.
-                                            if let Some(trade_pe) = derive_market_trade_from_delta(
-                                                &mb, prev, &curve, slot, true, None,
+                                            let delta_mode = pump_quant_junction::reserve_delta::DeltaMode::of_account(&account_data);
+                                            if let Some(trade_pe) = pump_quant_junction::reserve_delta::derive_market_trade_from_delta_for_mode(
+                                                &mb, prev, &curve, slot, true, None, delta_mode,
                                             ) {
                                                 queue.push(trade_pe, slot);
                                                 stats.delta_trades_derived += 1;
                                             } else {
                                                 stats.delta_no_trade += 1;
+                                                if delta_mode != pump_quant_junction::reserve_delta::DeltaMode::Ordinary {
+                                                    stats.delta_mode_unsupported += 1;
+                                                }
 
                                                 if !pump_quant_junction::reserve_delta::delta_representable(prev.as_ref(), &curve) {
 
@@ -3423,14 +4462,8 @@ fn main() -> ExitCode {
 
                                                 }
                                             }
-                                            reserve_tracker.insert(
-                                                mb,
-                                                ReserveSnapshot {
-                                                    virtual_sol: curve.virtual_sol,
-                                                    virtual_token: curve.virtual_token,
-                                                    slot,
-                                                },
-                                            );
+                                            reserve_tracker
+                                                .insert(mb, ReserveSnapshot::of(&curve, slot));
                                             // C1: publish these reserves into the curve cache. The hot path (and the
                                             // outbound sink's state fetch) then answers from the stream instead of paying a
                                             // cold 4-RTT fetch. Returns false for a mint whose ctx was never learned — the
@@ -3486,6 +4519,15 @@ fn main() -> ExitCode {
                                                     slot,
                                                 )
                                             {
+                                                if let Some(m) =
+                                                    pump_quant_junction::decode::curve_mode_observed(
+                                                        &mb,
+                                                        &account_data,
+                                                        slot,
+                                                    )
+                                                {
+                                                    queue.push(m, slot);
+                                                }
                                                 queue.push(provenanced, slot);
                                                 stats.helius_onchain_confirms_decoded += 1;
                                                 stats.last_confirm_tick = tick_counter;
@@ -3520,15 +4562,19 @@ fn main() -> ExitCode {
                                                 }
 
                                                 let prev = reserve_tracker.get(&mb).copied();
+                                                let delta_mode = pump_quant_junction::reserve_delta::DeltaMode::of_account(&account_data);
                                                 if let Some(trade_pe) =
-                                                    derive_market_trade_from_delta(
-                                                        &mb, prev, &curve, slot, true, None,
+                                                    pump_quant_junction::reserve_delta::derive_market_trade_from_delta_for_mode(
+                                                        &mb, prev, &curve, slot, true, None, delta_mode,
                                                     )
                                                 {
                                                     queue.push(trade_pe, slot);
                                                     stats.delta_trades_derived += 1;
                                                 } else {
                                                     stats.delta_no_trade += 1;
+                                                    if delta_mode != pump_quant_junction::reserve_delta::DeltaMode::Ordinary {
+                                                        stats.delta_mode_unsupported += 1;
+                                                    }
 
                                                     if !pump_quant_junction::reserve_delta::delta_representable(prev.as_ref(), &curve) {
 
@@ -3536,14 +4582,8 @@ fn main() -> ExitCode {
 
                                                     }
                                                 }
-                                                reserve_tracker.insert(
-                                                    mb,
-                                                    ReserveSnapshot {
-                                                        virtual_sol: curve.virtual_sol,
-                                                        virtual_token: curve.virtual_token,
-                                                        slot,
-                                                    },
-                                                );
+                                                reserve_tracker
+                                                    .insert(mb, ReserveSnapshot::of(&curve, slot));
                                                 // C1: publish these reserves into the curve cache. The hot path (and the
                                                 // outbound sink's state fetch) then answers from the stream instead of paying a
                                                 // cold 4-RTT fetch. Returns false for a mint whose ctx was never learned — the
@@ -3625,7 +4665,6 @@ fn main() -> ExitCode {
                 eprintln!("[pq-daemon] Helius closed: {reason}, reconnecting…");
                 // Send WS Close on the old connection (may already be closed,
                 // but best-effort — ensures server-side subscription release).
-                let _ = helius_conn.close();
                 stats.helius_reconnects += 1;
                 let active_mints_vec = sub_tracker.clear_server_subs();
                 // GAP #11: Exponential backoff reconnect ladder.
@@ -3634,53 +4673,63 @@ fn main() -> ExitCode {
                 // two immediate retries both fail. The backoff ladder doubles
                 // the sleep from 500ms → 1s → 2s → 4s → 8s (capped at 10s),
                 // giving the server progressively more time to recover.
-                let mut backoff_ms = WS_RECONNECT_SLEEP_MS;
-                let mut reconnected = false;
-                for _ in 0..MAX_RECONNECT_ATTEMPTS {
-                    if !reconnected {
-                        match WsConn::connect(&helius_url) {
-                            Ok(mut c) => {
-                                let _ =
-                                    c.set_read_timeout(Duration::from_millis(WS_READ_TIMEOUT_MS));
-                                let _ = c.send_text(&helius_ws::slot_subscribe_request());
-                                // GAP #8: record_request() MUST be called for
-                                // each re-subscription. Without it, the ACK
-                                // from Helius arrives but record_ack() can't
-                                // map req_id → mint because record_request
-                                // never stored it. server_sub_to_mint stays
-                                // empty → all notifications are silently
-                                // dropped → 0 OnchainConfirms after reconnect.
-                                for mint in &active_mints_vec {
-                                    let pda = bonding_curve_pda(mint);
-                                    let pda_str = pda.to_string();
-                                    let req_id = next_req_id;
-                                    next_req_id += 1;
-                                    let req = helius_ws::account_subscribe_request(
-                                        req_id,
-                                        &pda_str,
-                                        &args.commitment,
-                                    );
-                                    let _ = c.send_text(&req);
-                                    // CRITICAL: register the req_id → mint
-                                    // mapping so the ACK can be resolved.
-                                    sub_tracker.record_request(req_id, *mint);
-                                }
-                                helius_conn_established_at = Instant::now();
-                                last_slot_time = Instant::now();
-                                reconnected = true;
-                                helius_conn = c;
-                            }
-                            Err(e) => {
-                                eprintln!(
-                                    "[pq-daemon] Helius reconnect failed (backoff={backoff_ms}ms): {e}"
-                                );
-                                stats.ws_errors += 1;
-                                std::thread::sleep(Duration::from_millis(backoff_ms));
-                                backoff_ms = (backoff_ms * 2).min(RECONNECT_BACKOFF_CAP_MS);
-                            }
+                // Extracted episode (stream_recovery): close old first, capped ladder, sleep after every failure,
+                // cancellable by the emergency stop, named exhaustion.
+                let reconnected = match pump_quant_junction::stream_recovery::ws_reconnect_episode(
+                    &pump_quant_junction::endpoint_retry::HELIUS_WS_RECONNECT,
+                    || {
+                        let _ = helius_conn.close();
+                    },
+                    || WsConn::connect(&helius_url),
+                    |n, b, e| {
+                        eprintln!(
+                            "[pq-daemon] Helius reconnect failed (attempt {n}, backoff={b}ms): {e}"
+                        );
+                        stats.ws_errors += 1;
+                    },
+                    &mut pump_quant_junction::stream_recovery::RealSleeper {
+                        cancelled: emergency_stop_requested,
+                    },
+                ) {
+                    pump_quant_junction::stream_recovery::WsOutcome::Connected {
+                        conn: mut c,
+                        ..
+                    } => {
+                        let _ = c.set_read_timeout(Duration::from_millis(WS_READ_TIMEOUT_MS));
+                        let _ = c.send_text(&helius_ws::slot_subscribe_request());
+                        // GAP #8: record_request() MUST be called for
+                        // each re-subscription. Without it, the ACK
+                        // from Helius arrives but record_ack() can't
+                        // map req_id → mint because record_request
+                        // never stored it. server_sub_to_mint stays
+                        // empty → all notifications are silently
+                        // dropped → 0 OnchainConfirms after reconnect.
+                        for mint in &active_mints_vec {
+                            let pda = bonding_curve_pda(mint);
+                            let pda_str = pda.to_string();
+                            let req_id = next_req_id;
+                            next_req_id += 1;
+                            let req = helius_ws::account_subscribe_request(
+                                req_id,
+                                &pda_str,
+                                &args.commitment,
+                            );
+                            let _ = c.send_text(&req);
+                            // CRITICAL: register the req_id → mint
+                            // mapping so the ACK can be resolved.
+                            sub_tracker.record_request(req_id, *mint);
                         }
+                        helius_conn_established_at = Instant::now();
+                        last_slot_time = Instant::now();
+                        helius_conn = c;
+                        true
                     }
-                }
+                    pump_quant_junction::stream_recovery::WsOutcome::Cancelled { attempts } => {
+                        eprintln!("[pq-daemon] Helius reconnect CANCELLED by emergency stop after {attempts} attempt(s)");
+                        false
+                    }
+                    pump_quant_junction::stream_recovery::WsOutcome::Exhausted { .. } => false,
+                };
                 if !reconnected {
                     eprintln!(
                         "[pq-daemon] Helius reconnect exhausted after {MAX_RECONNECT_ATTEMPTS} attempts — degrading, continuing with LaserStream/PumpPortal"
@@ -3716,51 +4765,58 @@ fn main() -> ExitCode {
                 // Send WS Close on the old connection (best-effort — the TCP
                 // socket may already be dead, but if it's half-open this
                 // accelerates server-side subscription release).
-                let _ = helius_conn.close();
                 stats.ws_errors += 1;
                 stats.helius_reconnects += 1;
                 let active_mints_vec = sub_tracker.clear_server_subs();
-                let mut backoff_ms = WS_RECONNECT_SLEEP_MS;
-                let mut reconnected = false;
-                for _ in 0..MAX_RECONNECT_ATTEMPTS {
-                    if !reconnected {
-                        match WsConn::connect(&helius_url) {
-                            Ok(mut c) => {
-                                let _ =
-                                    c.set_read_timeout(Duration::from_millis(WS_READ_TIMEOUT_MS));
-                                let _ = c.send_text(&helius_ws::slot_subscribe_request());
-                                for mint in &active_mints_vec {
-                                    let pda = bonding_curve_pda(mint);
-                                    let pda_str = pda.to_string();
-                                    let req_id = next_req_id;
-                                    next_req_id += 1;
-                                    let req = helius_ws::account_subscribe_request(
-                                        req_id,
-                                        &pda_str,
-                                        &args.commitment,
-                                    );
-                                    let _ = c.send_text(&req);
-                                    sub_tracker.record_request(req_id, *mint);
-                                }
-                                helius_conn_established_at = Instant::now();
-                                last_slot_time = Instant::now();
-                                reconnected = true;
-                                helius_conn = c;
-                                eprintln!(
-                                    "[pq-daemon] Helius Err-path reconnect succeeded after poll errors"
-                                );
-                            }
-                            Err(err) => {
-                                eprintln!(
-                                    "[pq-daemon] Helius Err-path reconnect failed (backoff={backoff_ms}ms): {err}"
-                                );
-                                stats.ws_errors += 1;
-                                std::thread::sleep(Duration::from_millis(backoff_ms));
-                                backoff_ms = (backoff_ms * 2).min(RECONNECT_BACKOFF_CAP_MS);
-                            }
+                // Extracted episode (stream_recovery): close old first, capped ladder, sleep after every failure,
+                // cancellable by the emergency stop, named exhaustion.
+                let reconnected = match pump_quant_junction::stream_recovery::ws_reconnect_episode(
+                    &pump_quant_junction::endpoint_retry::HELIUS_WS_RECONNECT,
+                    || {
+                        let _ = helius_conn.close();
+                    },
+                    || WsConn::connect(&helius_url),
+                    |n, b, e| {
+                        eprintln!("[pq-daemon] Helius Err-path reconnect failed (attempt {n}, backoff={b}ms): {e}");
+                        stats.ws_errors += 1;
+                    },
+                    &mut pump_quant_junction::stream_recovery::RealSleeper {
+                        cancelled: emergency_stop_requested,
+                    },
+                ) {
+                    pump_quant_junction::stream_recovery::WsOutcome::Connected {
+                        conn: mut c,
+                        ..
+                    } => {
+                        let _ = c.set_read_timeout(Duration::from_millis(WS_READ_TIMEOUT_MS));
+                        let _ = c.send_text(&helius_ws::slot_subscribe_request());
+                        for mint in &active_mints_vec {
+                            let pda = bonding_curve_pda(mint);
+                            let pda_str = pda.to_string();
+                            let req_id = next_req_id;
+                            next_req_id += 1;
+                            let req = helius_ws::account_subscribe_request(
+                                req_id,
+                                &pda_str,
+                                &args.commitment,
+                            );
+                            let _ = c.send_text(&req);
+                            sub_tracker.record_request(req_id, *mint);
                         }
+                        helius_conn_established_at = Instant::now();
+                        last_slot_time = Instant::now();
+                        helius_conn = c;
+                        eprintln!(
+                            "[pq-daemon] Helius Err-path reconnect succeeded after poll errors"
+                        );
+                        true
                     }
-                }
+                    pump_quant_junction::stream_recovery::WsOutcome::Cancelled { attempts } => {
+                        eprintln!("[pq-daemon] Helius Err-path reconnect CANCELLED by emergency stop after {attempts} attempt(s)");
+                        false
+                    }
+                    pump_quant_junction::stream_recovery::WsOutcome::Exhausted { .. } => false,
+                };
                 if !reconnected {
                     eprintln!(
                         "[pq-daemon] Helius Err-path reconnect exhausted after {MAX_RECONNECT_ATTEMPTS} attempts — degrading, stale-check will retry"
@@ -3795,47 +4851,54 @@ fn main() -> ExitCode {
             );
             // Send WS Close on the old connection to accelerate server-side
             // subscription slot release before opening a fresh connection.
-            let _ = helius_conn.close();
             stats.helius_reconnects += 1;
             let active_mints_vec = sub_tracker.clear_server_subs();
             // GAP #11: Same exponential backoff ladder as the Closed/Err paths.
-            let mut backoff_ms = WS_RECONNECT_SLEEP_MS;
-            let mut reconnected = false;
-            for _ in 0..MAX_RECONNECT_ATTEMPTS {
-                if !reconnected {
-                    match WsConn::connect(&helius_url) {
-                        Ok(mut c) => {
-                            let _ = c.set_read_timeout(Duration::from_millis(WS_READ_TIMEOUT_MS));
-                            let _ = c.send_text(&helius_ws::slot_subscribe_request());
-                            for mint in &active_mints_vec {
-                                let pda = bonding_curve_pda(mint);
-                                let pda_str = pda.to_string();
-                                let req_id = next_req_id;
-                                next_req_id += 1;
-                                let req = helius_ws::account_subscribe_request(
-                                    req_id,
-                                    &pda_str,
-                                    &args.commitment,
-                                );
-                                let _ = c.send_text(&req);
-                                sub_tracker.record_request(req_id, *mint);
-                            }
-                            helius_conn_established_at = Instant::now();
-                            last_slot_time = Instant::now();
-                            reconnected = true;
-                            helius_conn = c;
-                        }
-                        Err(e) => {
-                            eprintln!(
-                                "[pq-daemon] Helius stale-reconnect failed (backoff={backoff_ms}ms): {e}"
-                            );
-                            stats.ws_errors += 1;
-                            std::thread::sleep(Duration::from_millis(backoff_ms));
-                            backoff_ms = (backoff_ms * 2).min(RECONNECT_BACKOFF_CAP_MS);
-                        }
+            // Extracted episode (stream_recovery): close old first, capped ladder, sleep after every failure,
+            // cancellable by the emergency stop, named exhaustion.
+            let reconnected = match pump_quant_junction::stream_recovery::ws_reconnect_episode(
+                &pump_quant_junction::endpoint_retry::HELIUS_WS_RECONNECT,
+                || {
+                    let _ = helius_conn.close();
+                },
+                || WsConn::connect(&helius_url),
+                |n, b, e| {
+                    eprintln!("[pq-daemon] Helius stale-reconnect failed (attempt {n}, backoff={b}ms): {e}");
+                    stats.ws_errors += 1;
+                },
+                &mut pump_quant_junction::stream_recovery::RealSleeper {
+                    cancelled: emergency_stop_requested,
+                },
+            ) {
+                pump_quant_junction::stream_recovery::WsOutcome::Connected {
+                    conn: mut c, ..
+                } => {
+                    let _ = c.set_read_timeout(Duration::from_millis(WS_READ_TIMEOUT_MS));
+                    let _ = c.send_text(&helius_ws::slot_subscribe_request());
+                    for mint in &active_mints_vec {
+                        let pda = bonding_curve_pda(mint);
+                        let pda_str = pda.to_string();
+                        let req_id = next_req_id;
+                        next_req_id += 1;
+                        let req = helius_ws::account_subscribe_request(
+                            req_id,
+                            &pda_str,
+                            &args.commitment,
+                        );
+                        let _ = c.send_text(&req);
+                        sub_tracker.record_request(req_id, *mint);
                     }
+                    helius_conn_established_at = Instant::now();
+                    last_slot_time = Instant::now();
+                    helius_conn = c;
+                    true
                 }
-            }
+                pump_quant_junction::stream_recovery::WsOutcome::Cancelled { attempts } => {
+                    eprintln!("[pq-daemon] Helius stale-reconnect CANCELLED by emergency stop after {attempts} attempt(s)");
+                    false
+                }
+                pump_quant_junction::stream_recovery::WsOutcome::Exhausted { .. } => false,
+            };
             if !reconnected {
                 eprintln!(
                     "[pq-daemon] Helius stale-reconnect exhausted after {MAX_RECONNECT_ATTEMPTS} attempts — degrading"
@@ -3843,6 +4906,33 @@ fn main() -> ExitCode {
                 // Don't break — keep the daemon alive. Reset stale timer
                 // to avoid spam. The next loop iteration will retry.
                 last_slot_time = Instant::now();
+            }
+        }
+
+        // ── M2 launch bootstrap: request unknown launches, apply verified facts ──
+        if let Some((req_tx, res_rx)) = &launch_bootstrap {
+            while let Ok(r) = res_rx.try_recv() {
+                match r {
+                    Ok(ev) => engine.tick(ev),
+                    Err(why) => eprintln!("[pq-daemon] launch bootstrap refused: {why}"),
+                }
+            }
+            for m in engine.model_launch_unknown(8) {
+                if bootstrap_requested.contains(&m) {
+                    continue;
+                }
+                // Discovery spend never eats the held-position reservation. Charged at the WORST-CASE walk: the page
+                // budget plus the walk's named retry budget (endpoint_retry::bootstrap_walk_cost = 20 + 4).
+                let held_n = engine.model_held_mints().len() as u64;
+                let now_ms = session_start.elapsed().as_millis() as i64;
+                let cost =
+                    pump_quant_junction::endpoint_retry::bootstrap_walk_cost(BOOTSTRAP_MAX_PAGES);
+                if !rpc_budget.try_discovery(now_ms, held_n, cost) {
+                    break;
+                }
+                bootstrap_requested.insert(m);
+                let b58 = solana_program::pubkey::Pubkey::new_from_array(m).to_string();
+                let _ = req_tx.send(b58);
             }
         }
 
@@ -3861,6 +4951,13 @@ fn main() -> ExitCode {
                     eprintln!("[pq-daemon] event_stream write error: {}", e);
                 }
             }
+            // An event can make the held ledger durable (e.g. a SAFETY_OFF trip persists it immediately).
+            capture_seal_if_new(
+                &engine,
+                &mut event_stream_writer,
+                &mut capture_sealer,
+                &mut capture_sealed_gen,
+            );
         }
 
         // ── Poll Firecrawl bridge (social intelligence ingest) ──────────
@@ -3996,12 +5093,36 @@ fn main() -> ExitCode {
         } // close if let Some(ref mut child) = fc_child
 
         // ── Periodic Tick (engine evaluate) ──────────────────────────────
-        if Instant::now() >= next_tick {
+        // The FINAL barrier has no later update to trigger it: it fires when the (finite, captured) input has been idle
+        // for 3 s of wall time and nothing is held back. Offline replay only.
+        if barrier_mode {
+            let seen = stats.ls_transactions_received + stats.ls_account_received;
+            if seen != barrier_seen_count {
+                barrier_seen_count = seen;
+                barrier_last_input = Instant::now();
+            }
+            if !barrier_ready
+                && barrier_idx + 1 == barrier_clocks.len()
+                && barrier_hold.is_none()
+                && barrier_last_input.elapsed() > Duration::from_secs(3)
+            {
+                barrier_ready = true;
+            }
+        }
+        let barrier_fire = barrier_mode && barrier_ready;
+        if barrier_fire || (!barrier_mode && Instant::now() >= next_tick) {
             // ── Wangr Rev-14: inject TimeSignal before each Tick ──
             // The engine stores (dow, hour_utc) and enriches Features at
             // gate-evaluate time, enabling the wangr day-of-week and hour-of-day
             // entry filters. Computed from wall-clock UTC (no chrono dep).
-            let (dow, hour_utc) = utc_dow_hour(SystemTime::now());
+            // Barrier mode derives the time signal from the SOURCE clock, not the wall clock.
+            let (dow, hour_utc) = if barrier_fire {
+                utc_dow_hour(
+                    UNIX_EPOCH + Duration::from_millis(engine.model_clock_ms_now().max(0) as u64),
+                )
+            } else {
+                utc_dow_hour(SystemTime::now())
+            };
             let ts_event = AppEvent::TimeSignal { dow, hour_utc };
             engine.tick(ts_event);
             if let Some(ref mut writer) = event_stream_writer {
@@ -4022,8 +5143,105 @@ fn main() -> ExitCode {
                     eprintln!("[pq-daemon] event_stream tick write error: {}", e);
                 }
             }
+            // A held write in this tick: seal the capture to it (same generation, same decision clock).
+            capture_seal_if_new(
+                &engine,
+                &mut event_stream_writer,
+                &mut capture_sealer,
+                &mut capture_sealed_gen,
+            );
             next_tick = Instant::now() + tick_period;
             tick_counter += 1;
+            // ── OFFLINE PAPER REPLAY barrier: settle the verdicts for the state cut at this source-time clock, apply
+            // them (in logical id order) through further PRODUCTION ticks at the SAME clock, then record the logical
+            // state. Nothing else about the tick path changes.
+            if barrier_fire {
+                let mut missing = engine.barrier_settle(Duration::from_secs(20));
+                for _ in 0..3 {
+                    engine.tick(pump_quant_app::event::AppEvent::Tick);
+                    let again = engine.barrier_settle(Duration::from_secs(20));
+                    missing = again;
+                    if again == 0 && engine.barrier_staged() == 0 {
+                        break;
+                    }
+                }
+                if std::env::var("PQ_REPLAY_PERSIST_AT_BARRIERS").as_deref() == Ok("1") {
+                    let f = engine.model_flow_flush(Duration::from_secs(20));
+                    let h = engine.model_held_persist_now();
+                    eprintln!("[pq-daemon] replay barrier {barrier_idx}: flow flush durable={f} held persisted={h}");
+                    if h {
+                        capture_seal_if_new(
+                            &engine,
+                            &mut event_stream_writer,
+                            &mut capture_sealer,
+                            &mut capture_sealed_gen,
+                        );
+                    }
+                }
+                // Barrier mode only: the lane's funnel counters as of THIS barrier (the timed health writer is not run
+                // on a barrier schedule, so its copy would be stale).
+                if let Ok(j) = serde_json::to_string(&engine.model_lane_report()) {
+                    let _ = std::fs::write("data/model_lane_report.json", j);
+                }
+                if let Ok(j) = serde_json::to_string(&engine.model_funnel()) {
+                    let _ = std::fs::write("data/model_funnel.json", j);
+                }
+                let watch_lines = engine.barrier_watch_drain();
+                if !watch_lines.is_empty() {
+                    if let Ok(mut f) = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open("data/barrier_watch.log")
+                    {
+                        use std::io::Write as _;
+                        for w in &watch_lines {
+                            let _ = writeln!(f, "barrier={barrier_idx} {w}");
+                        }
+                    }
+                }
+                let waiting = engine.barrier_waiting_report();
+                let _ = std::fs::write("data/barrier_waiting.json", serde_json::json!({
+                    "barrier": barrier_idx, "clock": barrier_clocks[barrier_idx], "waiting": waiting,
+                }).to_string());
+                let lines = engine.barrier_state_lines();
+                let digest = engine.barrier_state_digest();
+                let log = engine.barrier_take_log();
+                let rec = serde_json::json!({
+                    "barrier": barrier_idx,
+                    "clock": barrier_clocks[barrier_idx],
+                    "engine_clock_ms": engine.model_clock_ms_now(),
+                    "state_digest": digest,
+                    "state": lines,
+                    "dispatches": log.iter().map(|d| serde_json::json!({
+                        "id": d.id, "kind": d.kind,
+                        "mint": d.mint.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+                        "prompt_sha256": d.prompt_sha256,
+                    })).collect::<Vec<_>>(),
+                    "foreign_verdicts": engine.barrier_foreign(),
+                    "unsettled": missing,
+                });
+                if let Ok(mut f) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open("data/barrier_log.jsonl")
+                {
+                    use std::io::Write as _;
+                    let _ = writeln!(f, "{rec}");
+                }
+                if let Some(pause) = std::env::var("PQ_REPLAY_PAUSE_AFTER_BARRIER")
+                    .ok()
+                    .and_then(|v| v.parse::<usize>().ok())
+                {
+                    if barrier_idx == pause {
+                        let _ = std::fs::write("data/BARRIER_PAUSED", barrier_idx.to_string());
+                        while std::path::Path::new("data/BARRIER_PAUSED").exists() {
+                            std::thread::sleep(Duration::from_millis(50));
+                        }
+                    }
+                }
+                barrier_idx += 1;
+                barrier_ready = false;
+            }
 
             // ── E3: drain finished async submissions ────────────────────
             // The decision thread handed these off without waiting. Reporting the
@@ -4193,8 +5411,169 @@ fn main() -> ExitCode {
                     pump_quant_junction::model_lifecycle::Headroom::Ok { .. } => {}
                 }
             }
+            // OFFLINE PAPER REPLAY HARNESS ONLY: a sentinel file asks for a blocking durable flow-history flush, so a test can
+            // compare checkpoints at a fixed cursor (graceful stop with held positions deliberately does not terminate, so the
+            // shutdown flush is unreachable there). Inert unless PQ_OFFLINE_PAPER_REPLAY=1; never reachable in a normal daemon.
+            if model_armed && replay_harness && std::path::Path::new("data/FLOW_FLUSH").exists() {
+                let ok = engine.model_flow_flush(std::time::Duration::from_secs(20));
+                let _ = std::fs::remove_file("data/FLOW_FLUSH");
+                let _ = std::fs::write("data/FLOW_FLUSHED", if ok { "ok" } else { "timeout" });
+                eprintln!("[pq-daemon] replay-harness flow flush: durable={ok}");
+            }
+            // OFFLINE PAPER REPLAY HARNESS ONLY: explicit, bounded synchronisation. Each harness tick the daemon publishes a
+            // read-only checkpoint of the management state (data/HARNESS_CKPT.json). A harness that has seen the state it
+            // needs writes data/HARNESS_HOLD; the daemon then persists the held ledger + flow history durably, writes
+            // data/HARNESS_HELD with the generation it published, and blocks until the file is removed (or it is killed).
+            // Inert unless PQ_OFFLINE_PAPER_REPLAY=1 and not --live; nothing here changes trading state.
+            if model_armed
+                && replay_harness
+                && std::env::var("PQ_HARNESS_CKPT").as_deref() == Ok("1")
+            {
+                let ck = engine.model_harness_checkpoint();
+                let _ = std::fs::write("data/HARNESS_CKPT.json.tmp", ck.to_string());
+                let _ = std::fs::rename("data/HARNESS_CKPT.json.tmp", "data/HARNESS_CKPT.json");
+                if std::path::Path::new("data/HARNESS_HOLD").exists() {
+                    let f = engine.model_flow_flush(Duration::from_secs(20));
+                    let h = engine.model_held_persist_now();
+                    let ck = engine.model_harness_checkpoint();
+                    let _ = std::fs::write(
+                        "data/HARNESS_HELD",
+                        serde_json::json!({"flow_durable": f, "held_persisted": h, "state": ck})
+                            .to_string(),
+                    );
+                    eprintln!("[pq-daemon] harness hold: flow durable={f} held persisted={h}");
+                    while std::path::Path::new("data/HARNESS_HOLD").exists() {
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                }
+            }
+            if model_armed && replay_harness && (tick_counter.is_multiple_of(5) || barrier_fire) {
+                let evs = report_inbox.poll(std::path::Path::new(&report_inbox_path));
+                if !evs.is_empty() || report_inbox.refused_total() > 0 {
+                    eprintln!(
+                        "[pq-daemon] INBOX offered={} accepted_total={} refused_total={} {:?}",
+                        evs.len(),
+                        report_inbox.accepted,
+                        report_inbox.refused_total(),
+                        report_inbox.refused
+                    );
+                }
+                for ev in evs {
+                    engine.tick(ev);
+                }
+                // HARNESS-ONLY forced protective trigger (offline replay only; never live).
+                if let Some((m, res)) =
+                    pump_quant_junction::model_lifecycle::harness_force_protect_from(
+                        &mut engine,
+                        replay_harness,
+                        std::path::Path::new(
+                            pump_quant_junction::model_lifecycle::HARNESS_FORCE_PROTECT_FILE,
+                        ),
+                    )
+                {
+                    eprintln!(
+                        "[pq-daemon] HARNESS_FORCE_PROTECT (harness-only, not a market trigger) mint={m} result(protect_order id,intended,filled,code)={res:?} safety_blocked={} new_risk_blocked={}",
+                        engine.model_safety_blocked(),
+                        engine.model_new_risk_blocked()
+                    );
+                }
+            }
             #[allow(clippy::manual_is_multiple_of)] // MSRV 1.85: is_multiple_of stabilised in 1.87
-            if model_armed && tick_counter % 20 == 0 {
+            if model_armed && (tick_counter % 20 == 0 || barrier_fire) {
+                // STOP TABLE: measured conditions -> named actions. Management, protection and reconciliation are
+                // never disabled here; risk rows latch SAFETY_OFF; the deadline drains then hands off.
+                let held_n = engine.model_held_mints().len() as u64;
+                // Disk: every required destination (daemon_write_dests) sampled through the run AND the drain: bytes
+                // written per destination, free per filesystem, time-to-floor projected from the measured growth.
+                // New exposure stops at the soft floor OR inside the EXIT RESERVE (bytes or time) so reconciliation,
+                // protection, durable writes and the handoff keep room. UNKNOWN restricts (never dropped); only a
+                // MEASURED hard-floor breach latches. RAM: the SAME shared rule as the startup budget (mem_rule).
+                // HARNESS-ONLY simulated pressure (offline replay only) is logged as SIMULATED_PRESSURE next to the
+                // measured values.
+                let sim = pump_quant_junction::model_lifecycle::simulated_pressure(replay_harness);
+                let dr = disk_monitor.sample(
+                    &disk_dests,
+                    session_start.elapsed().as_secs_f64(),
+                    sim.disk_free,
+                    sim.disk_unknown,
+                );
+                let mv = pump_quant_junction::model_lifecycle::mem_verdict_now();
+                if sim.any() {
+                    eprintln!(
+                        "[pq-daemon] SIMULATED_PRESSURE (harness-only, not a measured reading): {sim:?}; MEASURED mem effective={:?} state={}",
+                        mv.effective,
+                        pump_quant_junction::model_lifecycle::mem_state_label(&mv.state)
+                    );
+                }
+                let ram_ok = if sim.ram { Some(false) } else { mv.ok };
+                let disk_ok = dr.soft_ok;
+                let disk_hard_ok = dr.hard_ok;
+                let sig = format!("{disk_ok:?}/{disk_hard_ok:?}/{ram_ok:?}/{}", sim.any());
+                if sig != resource_last_sig || tick_counter % 2_000 == 0 {
+                    eprintln!(
+                        "[pq-daemon] RESOURCE_RUNTIME disk_soft_ok={disk_ok:?} disk_hard_ok={disk_hard_ok:?} ram_ok={ram_ok:?} mem_effective={:?} unmeasurable={:?} fs={:?}",
+                        mv.effective, dr.unmeasurable, dr.fs
+                    );
+                    resource_last_sig = sig;
+                }
+                let ops = pump_quant_app::stop_policy::OpsInputs {
+                    disk_ok,
+                    disk_hard_ok,
+                    ram_ok,
+                    feed_ok: last_slot_time.elapsed() <= Duration::from_secs(STALE_SECS),
+                    rpc_budget_ok: launch_bootstrap.is_none()
+                        || !rpc_budget.discovery_exhausted(held_n),
+                    // Under paper_fill_v2_shadow the engine ORs in the shadow book's divergence on held markets.
+                    shadow_divergence: false,
+                    deadline_passed: false,
+                };
+                let ev =
+                    engine.model_stop_evaluate(session_start.elapsed().as_millis() as i64, ops);
+                if ev
+                    .newly_raised
+                    .contains(&pump_quant_app::stop_policy::StopTrigger::ShadowDivergence)
+                {
+                    if let Some((m, d)) = engine.model_shadow_held_divergence() {
+                        eprintln!(
+                            "[pq-daemon] SHADOW-DIVERGENCE mint={} divergence={} (held exposure preserved; nothing closed)",
+                            m.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+                            d.label()
+                        );
+                    }
+                }
+                if let Some(l) = engine.model_settlement() {
+                    // Durable divergence evidence (persisted in held.json `paper_fill.divergences`; survives close/restart).
+                    let dl = engine.model_divergence_log();
+                    if let Some(d) = dl.last() {
+                        eprintln!(
+                            "[pq-daemon] SHADOW-DIVERGENCE-EVIDENCE records={} last: mint={} divergence={} slot={} ts_ms={} observed={:?} base_offsets={:?} dropped_delta={:?} inventory={:?}",
+                            dl.len(),
+                            d.mint.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+                            d.divergence.label(), d.slot, d.ts_ms, d.observed, d.base_offsets, d.dropped_delta, d.inventory_tokens
+                        );
+                    }
+                    eprintln!(
+                        "[pq-daemon] PAPER-FILL {} settlement: cash={} committed={} realized={} seed={} network_estimate={} fixed={} holdings={} invariant={} faults={:?} books_source={} bypasses={}",
+                        engine.model_paper_fill().label(),
+                        l.cash, l.committed, l.realized, l.seed, l.network_estimate, l.fixed_costs,
+                        l.holdings.len(), l.invariant_holds(), engine.model_settlement_faults(),
+                        engine.model_books_source(), engine.model_books_bypasses()
+                    );
+                }
+                for t in &ev.newly_raised {
+                    let a = pump_quant_app::stop_policy::action_for(*t);
+                    eprintln!(
+                        "[pq-daemon] {}: trigger={t:?} action={} latch={:?} model_valuation[{}]={:?} external_valuation={:?}",
+                        a.alert, a.name, a.latch, ev.estimator, ev.model_valuation, ev.external_valuation
+                    );
+                }
+                if ev.handoff_due
+                    && pump_quant_junction::model_lifecycle::request_deadline_handoff(
+                        std::path::Path::new(DAEMON_STOP_FILE),
+                    )
+                {
+                    eprintln!("[pq-daemon] ALERT_RUN_DEADLINE_DRAIN: drain bound elapsed - protective handoff requested via the stop protocol; books are NOT force-closed");
+                }
                 let now_ms = engine.model_clock_ms_now();
                 for l in stale_callout.evaluate(&engine, now_ms, 60_000) {
                     eprintln!(
@@ -4392,6 +5771,12 @@ fn main() -> ExitCode {
                 if let Some(ref mut writer) = event_stream_writer {
                     let _ = writer.flush();
                 }
+                capture_seal_if_new(
+                    &engine,
+                    &mut event_stream_writer,
+                    &mut capture_sealer,
+                    &mut capture_sealed_gen,
+                );
                 last_tape_flush_tick = tick_counter;
             }
 
@@ -4425,6 +5810,11 @@ fn main() -> ExitCode {
                     eprintln!(
                         "[pq-daemon] CONFIG HOT-RELOAD: {n} mutations applied. Summary: {}",
                         reload.summary
+                    );
+                    // FEES R10 F2: a reload may change txcost_version; re-state the active id.
+                    eprintln!(
+                        "{}",
+                        pump_quant_junction::builder_txcost::startup_txcost_line(&cfg)
                     );
 
                     // ── GAP B: record auto-revert state on promotion ──
@@ -4488,6 +5878,10 @@ fn main() -> ExitCode {
                         {
                             cfg = reverted_cfg;
                             auto_revert_state.reverted = true;
+                            eprintln!(
+                                "{}",
+                                pump_quant_junction::builder_txcost::startup_txcost_line(&cfg)
+                            );
                             write_auto_revert_state(&auto_revert_state);
                             eprintln!(
                                 "[pq-daemon] AUTO-REVERT: config restored to fingerprint {:#018x}",
@@ -4524,6 +5918,50 @@ fn main() -> ExitCode {
             }
         }
 
+        // OFFLINE PAPER REPLAY HARNESS ONLY: after the LAST barrier has fired the source clock never advances again, so
+        // the tick block (and with it the inbox poll and harness checkpoint) would never run. Keep serving the external
+        // executor's reports and the harness checkpoint/hold on a 200 ms wall timer, at the frozen source clock. No
+        // engine Tick is injected and no clock moves; only validated reports reach the engine. Inert outside replay.
+        if model_armed
+            && replay_harness
+            && barrier_mode
+            && barrier_idx >= barrier_clocks.len()
+            && harness_post_poll.elapsed() >= Duration::from_millis(200)
+        {
+            harness_post_poll = Instant::now();
+            let evs = report_inbox.poll(std::path::Path::new(&report_inbox_path));
+            if !evs.is_empty() {
+                eprintln!(
+                    "[pq-daemon] INBOX(post-barrier) offered={} accepted_total={} refused_total={} {:?}",
+                    evs.len(),
+                    report_inbox.accepted,
+                    report_inbox.refused_total(),
+                    report_inbox.refused
+                );
+            }
+            for ev in evs {
+                engine.tick(ev);
+            }
+            if std::env::var("PQ_HARNESS_CKPT").as_deref() == Ok("1") {
+                let ck = engine.model_harness_checkpoint();
+                let _ = std::fs::write("data/HARNESS_CKPT.json.tmp", ck.to_string());
+                let _ = std::fs::rename("data/HARNESS_CKPT.json.tmp", "data/HARNESS_CKPT.json");
+                if std::path::Path::new("data/HARNESS_HOLD").exists() {
+                    let f = engine.model_flow_flush(Duration::from_secs(20));
+                    let h = engine.model_held_persist_now();
+                    let ck = engine.model_harness_checkpoint();
+                    let _ = std::fs::write(
+                        "data/HARNESS_HELD",
+                        serde_json::json!({"flow_durable": f, "held_persisted": h, "state": ck})
+                            .to_string(),
+                    );
+                    eprintln!("[pq-daemon] harness hold (post-barrier): flow durable={f} held persisted={h}");
+                    while std::path::Path::new("data/HARNESS_HOLD").exists() {
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                }
+            }
+        }
         if !did_work {
             std::thread::sleep(Duration::from_millis(10));
         }
@@ -4567,6 +6005,19 @@ fn main() -> ExitCode {
         stats.dwell_p99_ms = dwell_samples[p99_idx as usize];
     }
 
+    // Durable flow history: force one consistent snapshot and wait (bounded) until it is on disk. A failure is reported and
+    // the previous checkpoint stays authoritative (the durable cursor does not advance).
+    if engine.paper_model_enabled() {
+        let ok = engine.model_flow_flush(std::time::Duration::from_secs(20));
+        eprintln!(
+            "[pq-daemon] flow-history final flush: {}",
+            if ok {
+                "durable"
+            } else {
+                "NOT durable (previous checkpoint remains authoritative)"
+            }
+        );
+    }
     // Final status write
     let st = engine.live_status();
     let _ = st.write_to_path(status_path);
@@ -4745,9 +6196,11 @@ fn main() -> ExitCode {
         );
     }
 
-    // Pin open positions BEFORE report() force-closes them
+    // Pin open positions BEFORE report(). report() force-closes only positions the model does NOT own;
+    // model-managed exposure survives it and is listed below from the engine's read-only exposure view.
     let open_positions = engine.open_positions_snapshot();
     let report = engine.report();
+    let model_exposure = engine.model_open_exposure();
     stats.junction_overflow_dropped = queue.overflow_stats().dropped;
 
     // ─── Final report ────────────────────────────────────────────────────
@@ -4826,6 +6279,25 @@ fn main() -> ExitCode {
         }
     }
     println!();
+    if !model_exposure.is_empty() {
+        // Unresolved model-managed exposure: NOT closed, NOT booked, NOT assessable. The estimate is a spot
+        // bound, never proceeds; `unavailable` names why none is given (unknown is not zero).
+        println!("-- Unresolved model-managed exposure (preserved; not settled) --");
+        for x in &model_exposure {
+            println!(
+                "  mint={} inventory={:?} remaining_cost_basis={:?} sell_reserved={} amm={} mark_ts_ms={:?} spot_estimate_lamports={:?} unavailable={:?}",
+                Pubkey::from(x.mint),
+                x.inventory_tokens,
+                x.remaining_cost_basis,
+                x.sell_reserved_tokens,
+                x.amm,
+                x.mark_ts_ms,
+                x.spot_estimate_lamports,
+                x.valuation_unavailable
+            );
+        }
+        println!();
+    }
     println!("-- Errors --");
     println!("  ws_errors:             {}", stats.ws_errors);
     println!();

@@ -1,0 +1,8 @@
+BUY  pop=canonical_wsol|buy_exact_out n=157658 no_virtual_quote=0 no_creator_tail=0 leg1_match=0 net_match=0 misses=157658 miss_min=Some(-26468320221) miss_median=Some(27765) miss_max=Some(2994937779343)
+BUY  pop=canonical_wsol|buy_exact_quote_in n=41545 no_virtual_quote=0 no_creator_tail=0 leg1_match=40604 net_match=0 misses=941 miss_min=Some(-218462141437) miss_median=Some(-543093793) miss_max=Some(122981)
+BUY  pop=canonical_wsol|buy_other_ix n=657 no_virtual_quote=0 no_creator_tail=0 leg1_match=574 net_match=0 misses=83 miss_min=Some(19589) miss_median=Some(980798325) miss_max=Some(3001438811333)
+BUY  pop=other|buy_exact_out n=9328 no_virtual_quote=0 no_creator_tail=0 leg1_match=38 net_match=0 misses=9290 miss_min=Some(-664081196) miss_median=Some(15415) miss_max=Some(1993589213030)
+BUY  pop=other|buy_exact_quote_in n=68511 no_virtual_quote=0 no_creator_tail=0 leg1_match=68504 net_match=0 misses=7 miss_min=Some(520) miss_median=Some(14238693) miss_max=Some(246466087)
+BUY  pop=other|buy_other_ix n=48432 no_virtual_quote=0 no_creator_tail=0 leg1_match=1350 net_match=0 misses=47082 miss_min=Some(292) miss_median=Some(26463810) miss_max=Some(1835737712349)
+SELL pop=canonical_wsol n=124255 no_virtual_quote=0 no_creator_tail=0 leg1_match=124255 net_match=121358 misses=2897 miss_min=Some(-193668656) miss_median=Some(82910) miss_max=Some(138375769)
+SELL pop=other n=195920 no_virtual_quote=0 no_creator_tail=0 leg1_match=195920 net_match=195655 misses=265 miss_min=Some(108) miss_median=Some(2301) miss_max=Some(2814224)

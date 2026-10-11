@@ -1,0 +1,49 @@
+A: run lines 1..80000, flush, SIGKILL
+drained True event_stream_bytes 40608058 elapsed_s 66
+flushed ok
+SIGKILL daemon (flush=True)
+[pq-daemon] flow-history /training/mh_build/proc/rA/data/flow.ckpt: Fresh
+model requests: 9
+
+rA {'payload_sha256': '259344e2478ffcf1', 'payload_len': 4538733, 'hw': [1788965446370], 'segments': [[1788965347168, 1788965446370]], 'gaps': [], 'late': 0, 'prov': 'cold_start:segment_09_09_14_49_07'}
+B: restart from rA ckpt, overlap replay lines 70001..159532, resume clock = recv of line 70001 1788965437936
+drained True event_stream_bytes 38909633 elapsed_s 66
+flushed ok
+SIGKILL daemon (flush=True)
+[pq-daemon] OFFLINE PAPER REPLAY: flow-history resume clock DECLARED = 1788965437936 (wall clock is 1791389768452); no other clock is affected
+[pq-daemon] flow-history /training/mh_build/proc/rB/data/flow.ckpt: Restored { unavailable_ms: 0, complete: true, late: 0 }
+model requests: 14
+
+rB {'payload_sha256': '95352e2bc013aec3', 'payload_len': 6777301, 'hw': [1788965542338], 'segments': [[1788965347168, 1788965542338]], 'gaps': [], 'late': 0, 'prov': 'cold_start:segment_09_09_14_49_07'}
+C: run lines 1..60000, SIGKILL with NO flush (checkpoint published only by the periodic writer, if at all)
+drained True event_stream_bytes 33747774 elapsed_s 58
+SIGKILL daemon (flush=False)
+[pq-daemon] flow-history /training/mh_build/proc/rC/data/flow.ckpt: Fresh
+model requests: 6
+
+rC {'payload_sha256': '91aea7b5039b26e9', 'payload_len': 3543291, 'hw': [1788965410114], 'segments': [[1788965347168, 1788965410114]], 'gaps': [], 'late': 0, 'prov': 'cold_start:segment_09_09_14_49_07'}
+C2: restart from rC ckpt (whatever was published), replay lines 1..159532, resume = recv of line 1 1788965347168
+tory resume clock DECLARED = 1788965347168 (wall clock is 1791389898343); no other clock is affected
+[pq-daemon] flow-history /training/mh_build/proc/rC2/data/flow.ckpt: Restored { unavailable_ms: 0, complete: true, late: 0 }
+[pq-daemon] ALERT: HELD-DATA ONSET held 74721d6b venue=curve MANAGEMENT UNAVAILABLE: idle_too_long (reserve_age=24669ms print_age=24669ms) degraded_for=0s
+model requests: 44
+
+rC2 {'payload_sha256': '95352e2bc013aec3', 'payload_len': 6777301, 'hw': [1788965542338], 'segments': [[1788965347168, 1788965542338]], 'gaps': [], 'late': 0, 'prov': 'cold_start:segment_09_09_14_49_07'}
+D1: run lines 1..20000, flush, SIGKILL
+drained True event_stream_bytes 12096367 elapsed_s 38
+flushed ok
+SIGKILL daemon (flush=True)
+[pq-daemon] flow-history /training/mh_build/proc/rD1/data/flow.ckpt: Fresh
+model requests: 1
+
+rD1 {'payload_sha256': 'd6cdcf073f51266a', 'payload_len': 2132149, 'hw': [1788965374938], 'segments': [[1788965347168, 1788965374938]], 'gaps': [], 'late': 0, 'prov': 'cold_start:segment_09_09_14_49_07'}
+D2: restart from rD1 ckpt with NO overlap: replay 150001..159532, resume=recv of line 150001 1788965527783 hole_ms 152844
+drained True event_stream_bytes 5624534 elapsed_s 32
+graceful exit
+[pq-daemon] OFFLINE PAPER REPLAY: flow-history resume clock DECLARED = 1788965527783 (wall clock is 1791390045236); no other clock is affected
+[pq-daemon] flow-history /training/mh_build/proc/rD2/data/flow.ckpt: Restored { unavailable_ms: 152845, complete: false, late: 0 }
+[pq-daemon] ALERT: flow-history restored across an UNAVAILABLE interval of 152845 ms (late records: 0) - every Qwen prompt after the gap refuses by scope until the interval is reconstructed into the state; an acknowledgement does not clear it; coverage is NOT 
+[pq-daemon] flow-history final flush: durable
+model requests: 0
+
+rD2 {'payload_sha256': '3eb3b287706c67d8', 'payload_len': 2701013, 'hw': [1788965542338], 'segments': [[1788965347168, 1788965374938], [1788965527783, 1788965542338]], 'gaps': [[1788965374938, 1788965527783]], 'late': 0, 'prov': 'cold_start:segment_09_09_14_49_07'}

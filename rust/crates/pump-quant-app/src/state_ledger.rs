@@ -238,6 +238,32 @@ impl StateTrade {
         })
     }
 
+    /// The trained trade from the CORPUS BASIS (trader native+WSOL delta and trader token delta), with the price computed
+    /// exactly as `build_states_v2` does: `|sol| / |tok|` in float64. Going through the 1e9 fixed-point `price_fp` would
+    /// truncate lamports-per-raw-token prices of order 1e-5 to ~5 significant digits.
+    #[must_use]
+    pub fn from_corpus_basis(
+        recv_unix_ms: i64,
+        sol_lamports: i64,
+        tokens_raw: i64,
+        trader: u64,
+        venue: VenueLabel,
+    ) -> Option<StateTrade> {
+        if sol_lamports == 0 || tokens_raw == 0 {
+            return None;
+        }
+        let px = sol_lamports.unsigned_abs() as f64 / tokens_raw.unsigned_abs() as f64; // LINT-ALLOW(money_float_cast): the corpus price is an f64 ratio
+        Some(StateTrade {
+            recv_unix_ms,
+            price_lamports_per_raw_token: Some(px),
+            sol_lamports_signed: sol_lamports,
+            base_qty: Some(tokens_raw),
+            is_buy: sol_lamports < 0,
+            trader,
+            venue,
+        })
+    }
+
     /// The trade's volume, `abs()` as the corpus takes it (`vol = np.abs(sv)`).
     #[must_use]
     pub fn volume_lamports(self) -> i64 {
@@ -442,6 +468,29 @@ impl StateLedger {
                 .values()
                 .map(|m| m.dropped_out_of_order)
                 .sum::<u64>()
+    }
+
+    /// The mint's tape origin: receive time of the FIRST trade this ledger accepted for it (the trained `age_s`
+    /// origin). `None` when the mint has no accepted trade.
+    #[must_use]
+    pub fn first_trade_ms(&self, mint: &[u8; 32]) -> Option<i64> {
+        self.mints.get(mint).and_then(|l| l.first_t_ms)
+    }
+
+    /// The mint's tape extent for a continuity check against a pinned instant `t`: (first trade, number of trades
+    /// STRICTLY before `t`). The count is `None` when the ring no longer reaches back to `t` (evicted: unknowable).
+    #[must_use]
+    pub fn tape_extent(&self, mint: &[u8; 32], t: i64) -> Option<(i64, Option<u64>)> {
+        let l = self.mints.get(mint)?;
+        let first = l.first_t_ms?;
+        let at_or_after = l
+            .ring
+            .iter()
+            .rev()
+            .take_while(|x| x.recv_unix_ms >= t)
+            .count() as u64;
+        let covered = l.evicted == 0 || l.ring.front().is_some_and(|f| f.recv_unix_ms < t);
+        Some((first, covered.then(|| l.n_trades - at_or_after)))
     }
 
     /// Drop a mint's history (used when a mint leaves the watchlist).
@@ -760,6 +809,33 @@ fn volatility_30s(before: &[&StateTrade], _price: f64, t_dec_ms: i64) -> Option<
 
 #[cfg(test)]
 mod tests {
+
+    /// The corpus price is the float64 ratio |sol|/|tok| of the trader basis, NOT a 1e9 fixed-point round trip: prices of
+    /// order 1e-5 lamports/raw-token would lose ~4 significant digits through `price_fp`.
+    #[test]
+    fn corpus_basis_price_is_the_exact_float_ratio_not_fixed_point() {
+        let t = StateTrade::from_corpus_basis(
+            1_000,
+            -1_374_127_528,
+            45_659_574_424_368,
+            7,
+            VenueLabel::Pumpfun,
+        )
+        .expect("trade");
+        assert_eq!(
+            t.price_lamports_per_raw_token,
+            Some(1_374_127_528f64 / 45_659_574_424_368f64)
+        );
+        assert!(t.is_buy && t.sol_lamports_signed < 0 && t.base_qty == Some(45_659_574_424_368));
+        let fp = (1_374_127_528i128 * 1_000_000_000) / 45_659_574_424_368i128; // what the old path kept
+        assert_ne!(
+            Some(fp as f64 / PRICE_SCALE),
+            t.price_lamports_per_raw_token,
+            "fixed point is lossy here"
+        );
+        assert!(StateTrade::from_corpus_basis(1, 0, 5, 1, VenueLabel::Pumpfun).is_none());
+        assert!(StateTrade::from_corpus_basis(1, 5, 0, 1, VenueLabel::Pumpfun).is_none());
+    }
     use super::*;
 
     /// A real print: `price_fp` = 2.5e10, i.e. 25 lamports per raw token (2.5e-8 SOL per raw),

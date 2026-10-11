@@ -309,6 +309,115 @@ impl Default for CurveDepth {
     }
 }
 
+/// The curve mode a depth constructor is told, from the decoded account (`classify_pump_curve` /
+/// `AppEvent::CurveModeObserved`). `Unknown` is NEVER treated as `Ordinary`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CurveDepthMode {
+    /// Non-Mayhem, SOL-quoted, supported layout: the population where `real_sol = vsol - 30 SOL` was observed.
+    Ordinary,
+    /// Mayhem: the virtual SOL offset is program-managed. Unsupported for trading.
+    Mayhem,
+    /// Not decoded / unsupported layout / unobserved quote. Unsupported for trading.
+    Unknown,
+}
+
+impl CurveDepthMode {
+    /// From the engine's decoded mode map (`Some(false)` = ordinary, `Some(true)` = Mayhem, `None` = unknown).
+    #[must_use]
+    pub const fn from_decoded_mayhem(m: Option<bool>) -> Self {
+        match m {
+            Some(false) => CurveDepthMode::Ordinary,
+            Some(true) => CurveDepthMode::Mayhem,
+            None => CurveDepthMode::Unknown,
+        }
+    }
+
+    /// From the protocol classification of raw account bytes.
+    #[must_use]
+    pub const fn from_class(c: pump_quant_protocol::decode::PumpCurveClass) -> Self {
+        use pump_quant_protocol::decode::PumpCurveClass;
+        match c {
+            PumpCurveClass::Ordinary { .. } => CurveDepthMode::Ordinary,
+            PumpCurveClass::Mayhem { .. } => CurveDepthMode::Mayhem,
+            PumpCurveClass::Unsupported(_) => CurveDepthMode::Unknown,
+        }
+    }
+}
+
+/// Why a mode-gated depth was refused. Named, never a zero.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DepthRefusal {
+    /// Mayhem curve: the constant-offset identity and the curve venue boundary do not apply.
+    MayhemModeUnsupported,
+    /// Mode not decoded: never assumed ordinary.
+    CurveModeUnknown,
+    /// Ordinary curve whose decoded pair contradicts the observed identity beyond tolerance (decoder alarm),
+    /// or an impossible reserve.
+    OrdinaryCrossCheckRefused,
+}
+
+impl DepthRefusal {
+    /// Stable report name.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            DepthRefusal::MayhemModeUnsupported => "depth_unsupported:mayhem_mode",
+            DepthRefusal::CurveModeUnknown => "depth_unsupported:curve_mode_unknown",
+            DepthRefusal::OrdinaryCrossCheckRefused => "depth_refused:ordinary_cross_check",
+        }
+    }
+}
+
+impl CurveDepth {
+    /// **The mode-gated decoded depth.** The constant-offset cross-check ([`CurveDepth::decoded`]) and the
+    /// reserve-only venue boundary run ONLY for [`CurveDepthMode::Ordinary`]. A Mayhem or unknown curve is
+    /// refused by name: it must not inherit the ordinary identity (measured: 52 live SOL-quoted Mayhem accounts
+    /// have vsol >= 115.005 SOL and the mode-blind path classified them `MigratedPool` with payout = vsol, ~28x
+    /// the decoded real SOL; proc/OFFSET_v4_REPORT.md §2).
+    ///
+    /// # Errors
+    /// [`DepthRefusal`] naming the mode or the failed ordinary cross-check.
+    pub fn decoded_for_mode(
+        mode: CurveDepthMode,
+        virtual_sol_lamports: u64,
+        real_sol_lamports: u64,
+    ) -> Result<Self, DepthRefusal> {
+        match mode {
+            CurveDepthMode::Mayhem => Err(DepthRefusal::MayhemModeUnsupported),
+            CurveDepthMode::Unknown => Err(DepthRefusal::CurveModeUnknown),
+            CurveDepthMode::Ordinary => {
+                let d = Self::decoded(virtual_sol_lamports, real_sol_lamports);
+                if d.is_unknown() {
+                    Err(DepthRefusal::OrdinaryCrossCheckRefused)
+                } else {
+                    Ok(d)
+                }
+            }
+        }
+    }
+
+    /// Mode-gated [`CurveDepth::from_pump_curve`] for a caller holding the raw account's classification.
+    ///
+    /// # Errors
+    /// As [`CurveDepth::decoded_for_mode`].
+    pub fn from_classified_curve(
+        class: pump_quant_protocol::decode::PumpCurveClass,
+        curve: &pump_quant_protocol::decode::PumpCurve,
+    ) -> Result<Self, DepthRefusal> {
+        match CurveDepthMode::from_class(class) {
+            CurveDepthMode::Ordinary => {
+                let d = Self::from_pump_curve(curve);
+                if d.is_unknown() {
+                    Err(DepthRefusal::OrdinaryCrossCheckRefused)
+                } else {
+                    Ok(d)
+                }
+            }
+            m => Self::decoded_for_mode(m, curve.virtual_sol, curve.real_sol),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

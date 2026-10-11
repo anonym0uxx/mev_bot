@@ -1,0 +1,61 @@
+{
+ "regenerable_artifacts_in_tmp": {
+  "20260909_144906_000490.pkl": {
+   "bytes": 1785198781,
+   "sha256": "70619512e30981837e297bdeaf1a632c4a20dd616c8a1a9998be3d892f4a6ff4"
+  },
+  "20260909_144906_000490.v2.pkl": {
+   "bytes": 1787765817,
+   "sha256": "4475cdf69ee7a6960c15ea024b4bed34cce310efb0b5464800037cfb8eee66db"
+  },
+  "20260909_144906_000490.v3.pkl": {
+   "bytes": 1853495769,
+   "sha256": "5a82d0e9b88918e5a725bf445712358db8882abaf4e96f7baa248fa9d9b8a142"
+  },
+  "20260909_173928_000596.pkl": {
+   "bytes": 1316834519,
+   "sha256": "9c13d6906893da871add5f9df7374cdcedd2c4e3996aea4dad7cff1bcd04ce6d"
+  },
+  "20260909_173928_000596.v2.pkl": {
+   "bytes": 1319304169,
+   "sha256": "ebe824c620cbd5a3d1b4844f786c05d3b6947274c5a62caf11e91fc6e2359ddf"
+  },
+  "20260909_173928_000596.v3.pkl": {
+   "bytes": 1379720906,
+   "sha256": "8e2e330563ed0e370701fd36db7416167ec8857be86678bd825d4206038faa94"
+  },
+  "create_20260909_144906_000490.jsonl": {
+   "bytes": 48372,
+   "sha256": "79c663005c5d527e077fdeedda8d720ad91e799872acbfd461bfa5cecc32f4e9"
+  },
+  "create_20260909_173928_000596.jsonl": {
+   "bytes": 46039,
+   "sha256": "8d5c323dc9d4a0ce9e8f0379b579211db842f2aac73bb964d191530befc9e968"
+  },
+  "mayhem_20260909_144906_000490.pkl": {
+   "bytes": 220412,
+   "sha256": "7b1b87bf0cb398d98c487b164582af715d733e9c6d35e9cc3c3438e91d280edf"
+  },
+  "mayhem_20260909_173928_000596.pkl": {
+   "bytes": 213511,
+   "sha256": "f9eb34d19b752b46342645b35bd072ba10234311446819b41febc15335c7299f"
+  }
+ },
+ "extraction_commands": [
+  "python3 scripts/extract.py <session>  -> work/<session>.pkl (snaps,txs,slots,other)",
+  "python3 scripts/extract2.py <session> -> work/<session>.v2.pkl (adds TradeEvent fields incl. real reserves)",
+  "bash scripts/ev_create.sh -> work/create_<session>.jsonl (create/create_pool events from the recorder events file)",
+  "python3 scripts/extract3.py <session> -> work/<session>.v3.pkl (adds instruction names from log lines; DOES NOT establish event attribution)"
+ ],
+ "scripts_version_commit_at_time": "3c16ca54b5722fe20eaa8adc44ce8070bee7f953",
+ "sessions": [
+  "20260909_144906_000490",
+  "20260909_173928_000596"
+ ],
+ "raw_input_hashes": "INPUT_HASHES.txt (410 lines)",
+ "logs": [
+  "scripts/extract3.log",
+  "extract.log/extract2.log in scripts/ where present"
+ ],
+ "note": "Pickles stay in /tmp (1.4-1.9 GB each) and are regenerable from the scripts + hashed raw inputs. v3 instruction names are log-line labels and do not attribute events to instructions."
+}

@@ -124,6 +124,9 @@ fn captured_history_through_the_real_engine_reports_coverage() {
                         recv_unix_ms: Some(t),
                         slot: v["slot"].as_u64().expect("slot"),
                     });
+                    // NO CurveModeObserved: the normalized tape carries no curve-mode byte, so the mode is UNKNOWN
+                    // and (operator decision 2026-10-09) these markets are refused as `curve_mode_unknown`. Injecting
+                    // `mayhem: false` here would be a guess.
                 }
                 n_market_trades += 1;
                 e.tick(AppEvent::MarketTrade {
@@ -140,6 +143,8 @@ fn captured_history_through_the_real_engine_reports_coverage() {
                     fee_lamports: v["fee"].as_u64(),
                     cu_consumed: v["cu"].as_u64(),
                     venue: Some(venue),
+                    event_id: None,
+                    feature: None,
                 });
             }
             _ => panic!("kind"),

@@ -99,6 +99,9 @@ fn main() -> ExitCode {
             let outcome = match r {
                 Err(_) => "transport_error",
                 Ok(c) if c.truncated() => "truncated",
+                // Termination contract (same check the engine applies): no/unaccepted finish_reason,
+                // a template marker in the content, or a repeated decision field.
+                Ok(c) if c.termination().is_err() => "unterminated",
                 Ok(c) => match parse_decision_payload(&c.text) {
                     Ok(_) => "valid",
                     Err(_) => "malformed",
@@ -126,7 +129,7 @@ fn main() -> ExitCode {
         let over = |b: f64| valid.iter().filter(|t| **t > b).count();
         report[kind] = serde_json::json!({
             "requests": sel.len(), "valid": valid.len(), "malformed": count("malformed"),
-            "truncated": count("truncated"), "transport_error": count("transport_error"),
+            "truncated": count("truncated"), "unterminated": count("unterminated"), "transport_error": count("transport_error"),
             "valid_latency_s": {"p50": pct(&valid,0.5), "p90": pct(&valid,0.9), "p99": pct(&valid,0.99), "max": pct(&valid,1.0)},
             "valid_over_3s": over(3.0), "valid_over_8s": over(8.0),
         });

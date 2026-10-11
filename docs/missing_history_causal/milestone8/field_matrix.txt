@@ -1,0 +1,38 @@
+clocks compared 39
+  25  buy_count                      future-dependent corpus rule (whole-run median band) + population
+  25  buy_volume_lamports            future-dependent corpus rule (whole-run median band) + population
+  25  buyer_seller_ratio             future-dependent corpus rule (whole-run median band) + population
+  25  n_prior_trades                 future-dependent corpus rule (whole-run median band) + population
+  25  net_flow_lamports              future-dependent corpus rule (whole-run median band) + population
+  25  unique_traders                 future-dependent corpus rule (whole-run median band) + population
+  23  top5_trader_share              future-dependent corpus rule (whole-run median band) + population
+  20  creator_past_launches          unavailable input (harness registers only this mint launch; creator prior launches not fed)
+  13  top1_trader_share              future-dependent corpus rule (whole-run median band) + population
+  12  staleness_ms                   implementation (curve snapshot timing vs corpus curve state)
+  10  smart_entrants_300s            unavailable input / population (needs PumpSwap rows in history; seed is pre-capture only)
+  10  smart_net_flow_sol_300s        unavailable input / population (as above)
+  10  vol_30s_bp                     future-dependent corpus rule (whole-run median band) + population
+   9  sell_count                     future-dependent corpus rule (whole-run median band) + population
+   9  sell_volume_lamports           future-dependent corpus rule (whole-run median band) + population
+   5  reason                         formatting (label text)
+   3  curve_k                        implementation (curve snapshot/last-trade timing differs from corpus state)
+   3  curve_price_sol_per_raw_token  implementation (curve snapshot/last-trade timing differs from corpus state)
+   3  curve_progress                 implementation (curve snapshot/last-trade timing differs from corpus state)
+   3  mcap_sol_at_t                  implementation (curve snapshot/last-trade timing differs from corpus state)
+   3  real_sol_reserves_sol          implementation (curve snapshot/last-trade timing differs from corpus state)
+   3  real_tokens_reserves           implementation (curve snapshot/last-trade timing differs from corpus state)
+   3  v_sol_reserves_sol             implementation (curve snapshot/last-trade timing differs from corpus state)
+   3  v_tokens_reserves              implementation (curve snapshot/last-trade timing differs from corpus state)
+   2  coentry_wallets_300s           unavailable input / population (as above)
+   1  last_trade_age_s               implementation (curve snapshot/last-trade timing differs from corpus state)
+   1  price_lamports_per_raw_token   implementation (curve snapshot/last-trade timing differs from corpus state)
+   1  price_sol_per_raw_token        implementation (curve snapshot/last-trade timing differs from corpus state)
+   1  price_sol_per_whole_token      implementation (curve snapshot/last-trade timing differs from corpus state)
+   1  ret_30s_bp                     future-dependent corpus rule (whole-run median band) + population
+   1  ret_5s_bp                      future-dependent corpus rule (whole-run median band) + population
+   1  holder_hhi                     UNCLASSIFIED
+   1  holders_at_t                   UNCLASSIFIED
+   1  top1_float_share               UNCLASSIFIED
+   1  top5_float_share               UNCLASSIFIED
+   1  volume_sol_at_t                UNCLASSIFIED
+   1  wash_ratio                     UNCLASSIFIED

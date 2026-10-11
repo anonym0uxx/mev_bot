@@ -15,10 +15,19 @@
 
 use std::time::Instant;
 
+pub mod books;
 pub mod model_admit;
+pub mod model_barrier;
+pub mod model_creator;
+mod model_deposit;
 pub mod model_manage;
+pub mod model_mayhem;
+pub mod model_protect;
+pub mod model_rehydrate;
 pub mod model_restore;
 pub mod model_safety;
+pub mod model_shadow;
+pub mod model_stop;
 use crate::analytics::ReflectionAnalytics;
 use crate::brain::{
     exit_reason_of, platform_of, AppBlobStore, BrainAuthorRecord, BrainEntry, BrainMetaState,
@@ -329,6 +338,8 @@ const TERMINAL_DELTA_T_TICKS: u64 = 240;
 const TERMINAL_CADENCE_VERSION: u32 = 1;
 /// §47a/§99 LAW 18 bound on the per-mint last-activity table (deterministic
 /// eviction of the lexicographically-smallest tracked mint past capacity).
+/// Recent executed-event identities remembered for aggregation dedup (bounded; oldest evicted).
+const AGG_SEEN_CAP: usize = 65_536;
 const LAST_TRADE_TABLE_CAP: usize = 8_192;
 
 /// Maximum number of `ReconTrade` records accumulated for tape export before
@@ -824,26 +835,55 @@ pub struct Engine {
     /// source is installed. Never a fallback order: OFF means legacy, ON-without-source means
     /// fail closed.
     paper_model_mode: bool,
+    /// When true the transaction-event producer supplies corpus-definition rows for PumpSwap trades, so the AMM swap
+    /// event no longer feeds the trained windows with its own (legacy-basis) print: it would double-count the trade.
+    corpus_flow_rows: bool,
+    /// Bounded recent executed-event identities already folded into the shared aggregates (numeric/VPIN/ledgers).
+    /// A redelivered identity is not folded twice (replay/overlap safety independent of the model lane).
+    agg_seen_ids: std::collections::VecDeque<u128>,
+    agg_seen_set: std::collections::HashSet<u128>,
     /// The model lane's decision-time cache (see `decision_join`). Fed only when armed.
     model_cache: crate::decision_join::DecisionCache,
+    /// M2: the durable append-only log of our own `LaunchObserved` (None until attached).
+    creator_log: Option<crate::creator_registry::LaunchLog>,
+    /// M2: session label written with each appended launch.
+    creator_log_session: String,
+    /// RESTART: durable log records deferred past the restored barrier (mint -> (creator, launch ms)). An exact
+    /// re-delivery by the feed is already durable and is not appended again.
+    creator_log_deferred: BTreeMap<[u8; 32], ([u8; 32], i64)>,
     /// Model-lane request discipline, worker pool, per-request bindings, pending paper orders and
     /// the coverage report. All inert unless the lane is armed (see `engine/model_admit.rs`).
     model_table: crate::model_lane::RequestTable,
     model_pool: Option<crate::model_worker::InferencePool>,
+    /// Model worker threads (C2; default 2). Queue depth and both request-table capacities are `2 * model_workers`.
+    model_workers: usize,
+    /// Per-request engine-clock timeline (C1), keyed by request id; bounded (oldest evicted).
+    model_req_records: BTreeMap<u64, crate::model_worker::RequestRecord>,
     model_meta: BTreeMap<crate::model_lane::RequestId, model_admit::ModelReqMeta>,
     model_orders: BTreeMap<[u8; 32], model_admit::ModelOrder>,
     /// Model-managed position lane (HOLD/REDUCE/EXIT). Inert unless the paper-model lane is armed.
     model_mgmt: model_manage::MgmtLane,
     /// Durable SAFETY_OFF state (see `crate::safety_off`).
     model_safety: crate::safety_off::SafetyOff,
+    /// Stop trigger -> action table state (`crate::stop_policy`, `engine/model_stop.rs`).
+    model_stop: model_stop::StopState,
     model_last_ask: BTreeMap<[u8; 32], i64>,
     model_first_cand: BTreeMap<[u8; 32], i64>,
     model_drift: pump_quant_inference::seam::DriftLedger,
     model_report: BTreeMap<String, u64>,
+    /// Request ids (entry + management) already charged ONCE to endpoint health by deadline abandonment. Their late
+    /// arrival is labelled but never charged again. Bounded: an id leaves when its worker returns, and abandoned ids
+    /// hold request-table capacity until then.
+    model_health_charged: BTreeSet<crate::model_lane::RequestId>,
     /// Stream-discovered markets (curve launches/prints, canonical PumpSwap swaps): registered
     /// BEFORE any legacy priced print or gate, and re-offered to the model only when a genuinely new
     /// observation arrives (`model_dirty`). See `engine/model_admit.rs`.
     model_registry: BTreeSet<[u8; 32]>,
+    /// Recovery point restored from the held ledger: observations at or before it are overlap replays.
+    model_replay_through_ms: i64,
+    /// Barrier-mode diagnostics only: hex prefix of a market to trace, and the lines recorded for it.
+    model_watch: Option<String>,
+    model_watch_log: Vec<String>,
     model_dirty: BTreeSet<[u8; 32]>,
     /// When each currently-dirty market first became dirty (clock ms): queue-age measurement.
     model_dirty_since: BTreeMap<[u8; 32], i64>,
@@ -853,7 +893,36 @@ pub struct Engine {
     /// Monotonic id of the next model order. Every order, fill, evidence report and fault is keyed by
     /// this, never by mint alone, so evidence for one order cannot touch another order's state.
     model_order_seq: u64,
+    /// Settled-order records at or below this id may have been compacted away (never silently "unknown").
+    model_order_floor: u64,
+    /// Management (REDUCE/EXIT/ADD) order log, own id namespace: identity, cumulative fills, terminal state.
+    model_sell_log: BTreeMap<u64, model_manage::SellRec>,
+    model_sell_prefix: BTreeMap<u64, Vec<(u64, u64, u64)>>,
+    model_sell_faults: BTreeMap<u64, model_manage::SellFault>,
+    model_sell_floor: u64,
+    /// SCOPE_FEES_R6 E4: price-only management reports (`model_mgmt_apply_reconciled_fill` /
+    /// `model_mgmt_ingest_report`) carry no gross and no fee. They book ONLY in this explicit, labelled legacy
+    /// replay-compatibility mode (default off; the daemon's report inbox always carries cumulative gross + fees).
+    model_legacy_price_only: bool,
+    /// SCOPE_FEES_R6 E3: durable record of every fill whose venue fee was NOT evidenced (price-only legacy fills):
+    /// the modelled estimate is kept here, by name, never as settled economics. Persisted in held.json.
+    model_fee_unresolved: Vec<crate::held_state::HeldFeeUnresolved>,
+    /// Fired protective triggers waiting for a protective order (deferred, or the last order ended with exposure left).
+    model_protect_pending: BTreeMap<[u8; 32], model_protect::PendingTrigger>,
+    /// Offline replay harness: an external executor (the report inbox) owns execution, so a new REDUCE/EXIT/protective
+    /// order is SUBMITTED there (unresolved until its report) instead of being simulated by the paper executor.
+    model_external_exec: bool,
+    /// Operator evidence: held-ledger lineage whose writer ran only the paper executor (see model_attest_paper_route).
+    model_paper_route_attest: Option<String>,
+    /// Process-session id stamped on every inference job (see `model_worker::Job::session`).
+    model_session: u64,
+    model_settled_order_cap: Option<usize>,
     model_held: model_restore::HeldPersist,
+    /// Paper fill model + shadow book + shared settlement ledger (inert under the default v1).
+    model_pf: model_shadow::PaperFillState,
+    /// Durable missing-history ledger (writer + bookkeeping); `None` until attached.
+    missing_store: model_admit::MissingStore,
+    flow_store: model_admit::FlowStore,
     /// Append-only-ish order book (bounded): identity, attempt, quantity, state and terminal evidence.
     model_order_log: BTreeMap<u64, model_admit::OrderRec>,
     /// Which order opened the currently-held model position on each mint.
@@ -863,13 +932,29 @@ pub struct Engine {
     /// Mints whose open position is a paper-model routing fill that is NOT assessable. Their exits
     /// settle cash but feed no assessment consumer (see `book_exit`).
     model_quarantine: std::collections::BTreeSet<[u8; 32]>,
+    /// OFFLINE PAPER REPLAY BARRIER STATE (inert unless the daemon's replay harness enables it).
+    barrier: model_barrier::BarrierState,
+    /// Held AMM positions: wire time of the last VERIFIED protection mark (an executed swap on the bound pool that
+    /// passed every protect check and was applied). Never advanced by a hint, a rejected swap or the clock.
+    model_protect_mark_ms: std::collections::BTreeMap<[u8; 32], i64>,
+    /// Held AMM positions: the named reason and time of the most recent swap that could NOT mark the position.
+    model_protect_ignored: std::collections::BTreeMap<[u8; 32], (&'static str, i64)>,
     /// Exits excluded from every economic assessment, with the reason. Visible, never zero-filled.
     model_excluded_exits: Vec<model_admit::ExcludedExit>,
     model_recon_faults: BTreeMap<u64, model_admit::ReconFault>,
-    /// Per-mint (fee parts, virtual quote, swap time) of the latest swap: executable economics.
+    /// Per-mint (fee parts, virtual quote, swap time, cashback with layout provenance) of the latest swap:
+    /// executable economics.
     #[allow(clippy::type_complexity)]
     // per-mint latest-swap economics tuple; a type alias would scatter the shape
-    model_amm_econ: BTreeMap<[u8; 32], (Option<(u32, u32, u32)>, Option<u64>, i64)>,
+    model_amm_econ: BTreeMap<
+        [u8; 32],
+        (
+            Option<(u32, u32, u32)>,
+            Option<u64>,
+            i64,
+            pump_quant_protocol::pumpswap_event::CashbackField,
+        ),
+    >,
     /// Non-canonical pools seen per mint (counted, never priced from): the honest `pools_total`.
     model_other_pools: BTreeMap<[u8; 32], BTreeSet<[u8; 32]>>,
     /// The feed's own clock (max wire receive time seen), ms. Decision age and request deadlines
@@ -881,6 +966,10 @@ pub struct Engine {
     model_swap_ctx: Option<(i64, u64)>,
     /// The last named refusal per registered market (for never-ready reporting).
     model_last_refusal: BTreeMap<[u8; 32], String>,
+    /// Operator decision 2026-10-09 (SKIP Mayhem-mode coins): the decoded `is_mayhem_mode` per market, from
+    /// `AppEvent::CurveModeObserved`. Absent = UNKNOWN (refused). Sticky-true: once a curve was observed in
+    /// Mayhem mode it stays excluded. Bounded by the registry cap. See `model_mayhem`.
+    model_curve_mayhem: BTreeMap<[u8; 32], bool>,
     /// The installed model source, when the lane is armed. `None` in legacy/replay.
     model_source: Option<std::sync::Arc<dyn ModelSource + Send + Sync>>,
     now: u64,
@@ -1103,6 +1192,14 @@ pub struct Engine {
     /// insert is REFUSED and the rent is charged anyway (the conservative direction:
     /// an untracked account is priced as a fresh one, never as free).
     ata_open: std::collections::BTreeSet<[u8; 32]>,
+    /// FEES R10 F8: lamports the PAPER wallet actually deposited into each open ATA (the plan value at the entry
+    /// that opened it). Bounded with `ata_open`. Absent for an open ATA = opened under the v0 legacy constant.
+    paper_ata_deposit: BTreeMap<[u8; 32], u64>,
+    /// FEES R10 F8: the mint's owning token program, where an event/ctx carried it. Absent = unknown, which the v1
+    /// paper rent basis refuses as `deposit_unknown` (no default program). Bounded by `ATA_OPEN_CAP`.
+    model_token_program: BTreeMap<[u8; 32], [u8; 32]>,
+    /// Observation order of `model_token_program` keys (FIFO eviction of non-open mints). Same bound.
+    model_token_program_order: std::collections::VecDeque<[u8; 32]>,
     /// mint → creator entity (from TokenMetadata), for the credibility haircut.
     mint_creator: BTreeMap<[u8; 32], u64>,
     /// creator → (lifetime launches, window start tick, launches in window).
@@ -1336,14 +1433,63 @@ impl Engine {
     where
         S: ModelSource + Send + Sync + 'static,
     {
+        self.enable_paper_model_with_workers(source, model_admit::MODEL_WORKERS)
+            .expect("the default worker count is allowed");
+    }
+
+    /// [`Self::enable_paper_model`] with an explicit worker count `n` in [`model_admit::MODEL_WORKERS_ALLOWED`]
+    /// ({2, 4, 6}). Bounds derived from it (C2): queue depth (total and per lane) = 2n, entry request-table capacity
+    /// = 2n, management request-table capacity = 2n; so at most n model calls run, at most 2n jobs wait, and at most
+    /// 4n requests are outstanding. n = 2 reproduces the previous constants (2 workers, queue 4, tables 4/4).
+    ///
+    /// # Errors
+    /// `"model_workers_not_allowed"` — nothing is armed.
+    pub fn enable_paper_model_with_workers<S>(
+        &mut self,
+        source: S,
+        workers: usize,
+    ) -> Result<(), &'static str>
+    where
+        S: ModelSource + Send + Sync + 'static,
+    {
+        if !model_admit::MODEL_WORKERS_ALLOWED.contains(&workers) {
+            return Err("model_workers_not_allowed");
+        }
         let src: std::sync::Arc<dyn ModelSource + Send + Sync> = std::sync::Arc::new(source);
-        self.model_pool = Some(crate::model_worker::InferencePool::new(
-            std::sync::Arc::clone(&src),
-            model_admit::MODEL_WORKERS,
-            model_admit::MODEL_QUEUE,
-        ));
+        let bound = model_admit::model_bound(workers);
+        self.model_workers = workers;
+        self.model_table.set_capacity(bound);
+        self.model_mgmt.table.set_capacity(bound);
+        let pool =
+            crate::model_worker::InferencePool::new(std::sync::Arc::clone(&src), workers, bound);
+        pool.publish_clock(self.model_clock_ms);
+        self.model_pool = Some(pool);
         self.paper_model_mode = true;
+        // Protective triggers on a model-managed position execute and settle through the shared order machinery.
+        self.positions.set_route_protection(true);
         self.model_source = Some(src);
+        Ok(())
+    }
+
+    /// Model worker threads in use (C2).
+    #[must_use]
+    pub fn model_workers(&self) -> usize {
+        self.model_workers
+    }
+
+    /// (entry, management) request-table capacities and the pool queue depth: `(cap_entry, cap_mgmt, queue)`.
+    #[must_use]
+    pub fn model_bounds(&self) -> (usize, usize, usize) {
+        (
+            self.model_table.capacity(),
+            self.model_mgmt.table.capacity(),
+            self.model_pool.as_ref().map_or(0, |p| p.queue_depth()),
+        )
+    }
+
+    /// Declare that corpus-definition trade rows arrive as `CorpusFlowRow` (set by the daemon with the event path).
+    pub fn set_corpus_flow_rows(&mut self, on: bool) {
+        self.corpus_flow_rows = on;
     }
 
     /// Whether the paper-model lane is armed.
@@ -1464,26 +1610,57 @@ impl Engine {
             cfg,
             mode,
             paper_model_mode: false,
+            corpus_flow_rows: false,
+            agg_seen_ids: std::collections::VecDeque::new(),
+            agg_seen_set: std::collections::HashSet::new(),
             model_cache: crate::decision_join::DecisionCache::new(),
+            creator_log: None,
+            creator_log_session: String::new(),
+            creator_log_deferred: BTreeMap::new(),
             model_table: crate::model_lane::RequestTable::default(),
             model_pool: None,
+            model_workers: model_admit::MODEL_WORKERS,
+            model_req_records: BTreeMap::new(),
             model_meta: BTreeMap::new(),
             model_orders: BTreeMap::new(),
             model_mgmt: model_manage::MgmtLane::new(),
             model_safety: crate::safety_off::SafetyOff::default(),
+            model_health_charged: BTreeSet::new(),
+            model_stop: model_stop::StopState::default(),
             model_last_ask: BTreeMap::new(),
             model_first_cand: BTreeMap::new(),
             model_registry: BTreeSet::new(),
+            model_replay_through_ms: 0,
+            model_watch: None,
+            model_watch_log: Vec::new(),
             model_dirty: BTreeSet::new(),
             model_dirty_since: BTreeMap::new(),
             model_uniq_seen: BTreeSet::new(),
             model_amm_fee: BTreeMap::new(),
             model_order_seq: 0,
+            model_sell_log: BTreeMap::new(),
+            model_sell_prefix: BTreeMap::new(),
+            model_sell_faults: BTreeMap::new(),
+            model_protect_pending: BTreeMap::new(),
+            model_external_exec: false,
+            model_paper_route_attest: None,
+            model_sell_floor: 0,
+            model_legacy_price_only: false,
+            model_fee_unresolved: Vec::new(),
+            model_order_floor: 0,
+            model_session: new_session_id(),
+            model_settled_order_cap: None,
             model_held: model_restore::HeldPersist::default(),
+            model_pf: model_shadow::PaperFillState::default(),
+            missing_store: model_admit::MissingStore::default(),
+            flow_store: model_admit::FlowStore::default(),
             model_order_log: BTreeMap::new(),
             model_position_order: BTreeMap::new(),
             model_fills: Vec::new(),
             model_quarantine: std::collections::BTreeSet::new(),
+            barrier: model_barrier::BarrierState::default(),
+            model_protect_mark_ms: std::collections::BTreeMap::new(),
+            model_protect_ignored: std::collections::BTreeMap::new(),
             model_excluded_exits: Vec::new(),
             model_recon_faults: BTreeMap::new(),
             model_amm_econ: BTreeMap::new(),
@@ -1494,6 +1671,7 @@ impl Engine {
             model_slot: 0,
             model_swap_ctx: None,
             model_last_refusal: BTreeMap::new(),
+            model_curve_mayhem: BTreeMap::new(),
             model_source: None,
             now: 0,
             numeric: NumericLane::new(),
@@ -1559,6 +1737,9 @@ impl Engine {
             theses: BTreeMap::new(),
             thesis_adverse: BTreeMap::new(),
             ata_open: std::collections::BTreeSet::new(),
+            paper_ata_deposit: BTreeMap::new(),
+            model_token_program: BTreeMap::new(),
+            model_token_program_order: std::collections::VecDeque::new(),
             mint_creator: BTreeMap::new(),
             creator_launches: BTreeMap::new(),
             first_slot_fees: BTreeMap::new(),
@@ -1636,7 +1817,7 @@ impl Engine {
     /// size off the paper seed.
     #[must_use]
     pub fn bankroll_balance(&self) -> u64 {
-        let b = i128::from(self.bankroll_origin.seed_lamports()) + self.bankroll_realized;
+        let b = i128::from(self.bankroll_origin.seed_lamports()) + self.books_realized();
         b.clamp(0, i128::from(u64::MAX)) as u64
     }
 
@@ -1729,7 +1910,7 @@ impl Engine {
             rejected: self.rejected,
             reject_counts: self.reject_counts,
             open_positions: self.positions.len() as u64,
-            net_realized_lamports: self.bankroll_realized,
+            net_realized_lamports: self.books_realized(),
             universe_filtered: self.universe_filtered,
             probes_budgeted: self.probes_budgeted,
             probe_spend_lamports: self.calibration.spent_lifetime,
@@ -1929,6 +2110,17 @@ impl Engine {
 
     /// Feed one event.
     pub fn tick(&mut self, ev: AppEvent) {
+        self.tick_inner(ev);
+        if self.paper_model_mode {
+            self.model_protect_drain();
+            // The reservation must describe the book AFTER this event (a report may have settled or released an
+            // order, a protective order may have been created): never leave it describing the pre-event book.
+            self.model_sync_sell_reservations();
+        }
+    }
+
+    fn tick_inner(&mut self, ev: AppEvent) {
+        self.model_sync_sell_reservations();
         match ev {
             AppEvent::MarketTrade {
                 mint,
@@ -1953,7 +2145,10 @@ impl Engine {
                 fee_lamports,
                 cu_consumed,
                 venue,
+                event_id,
+                feature,
             } => {
+                let mut replayed_print = false;
                 // Model-lane ingest. A no-op unless the paper-model lane is armed, so every legacy
                 // and golden path is byte-identical.
                 if self.paper_model_mode {
@@ -1961,7 +2156,7 @@ impl Engine {
                         self.model_note_clock(ms);
                     }
                     if price_fp > 0 {
-                        self.model_mgmt_note_price(mint.as_bytes(), price_fp);
+                        self.model_mgmt_note_price(mint.as_bytes(), price_fp, recv_unix_ms);
                     }
                     let venue = match venue {
                         Some(crate::event::TradeVenue::PumpFun) => {
@@ -1978,7 +2173,8 @@ impl Engine {
                     if price_fp > 0 && matches!(venue, crate::state_ledger::VenueLabel::Pumpfun) {
                         self.model_register(*mint.as_bytes());
                     }
-                    self.model_cache
+                    let ingest = self
+                        .model_cache
                         .observe_trade(&crate::decision_join::TradeObs {
                             mint: *mint.as_bytes(),
                             price_fp,
@@ -1991,331 +2187,379 @@ impl Engine {
                             fee_lamports,
                             cu_consumed,
                             venue,
+                            event_id,
+                            feature,
                         });
+                    // A redelivered executed print was already folded once: it must not be folded again.
+                    if matches!(ingest, crate::decision_join::Ingest::Duplicate) {
+                        self.mrep("replay:duplicate_print_not_aggregated");
+                        replayed_print = true;
+                    }
                 }
-                self.numeric.observe(
-                    mint,
-                    price_fp,
-                    quote_lamports,
-                    liquidity_lamports,
-                    signed_base,
-                    buyer_entity,
-                    age_slots,
-                    self.now,
-                );
-                // §47a LAW 18: record the mint's last-trade info-time (tick) for the
-                // terminal-state reflection cadence. Bounded (§99): a new mint past
-                // capacity evicts the lexicographically-smallest tracked mint.
-                {
-                    let m = *mint.as_bytes();
-                    if !self.last_trade_tick.contains_key(&m)
-                        && self.last_trade_tick.len() >= LAST_TRADE_TABLE_CAP
-                    {
-                        if let Some(&victim) = self.last_trade_tick.keys().next() {
-                            self.last_trade_tick.remove(&victim);
+                // An INSTRUCTION HINT (no executed price, no event identity, no corpus basis) tells us a swap was
+                // REQUESTED. Its amounts are instruction arguments (requested/bounded quantities), not executions, and
+                // its price is absent, so it is a discovery/clock hint only: it must not count as a trade, move
+                // imbalance, refresh executed-price freshness, feed VPIN/tick volume, or drive a held position's
+                // price-based protection (a price of 0 reads as a total collapse).
+                if let Some(id) = event_id {
+                    if self.agg_seen_set.contains(&id) {
+                        replayed_print = true;
+                    } else {
+                        if self.agg_seen_ids.len() >= AGG_SEEN_CAP {
+                            if let Some(o) = self.agg_seen_ids.pop_front() {
+                                self.agg_seen_set.remove(&o);
+                            }
                         }
-                    }
-                    self.last_trade_tick.insert(m, self.now);
-                }
-                // §70.1 CONTINUOUS HOLDER ACCOUNTING — the WATCH phase.
-                //
-                // Folded for EVERY decoded swap on EVERY mint, not just admitted
-                // ones, so that by the time a candidate reaches the gate its holder
-                // series already exists. This is the canonical (§6.1) derivation:
-                // the holder count comes from the `buyer_entity` + `signed_base` we
-                // decoded ourselves, never from a third-party holder endpoint (§6.6
-                // keeps Birdeye/DAS strictly corroboration-tier).
-                //
-                // The fold returns a sample only on the bounded
-                // `HOLDER_SAMPLE_INTERVAL_TICKS` cadence: the §70.1 acceleration
-                // estimator refuses comparison points closer than its 1 s minimum
-                // interval, so sampling per-swap would push samples that are simply
-                // dropped for a non-advancing information time. Three ticks
-                // (1.2 s at BRAIN_TICK_NS) is the smallest whole-tick cadence at or
-                // above that floor — asserted at compile time in `holder_flow`.
-                {
-                    let ns = self.now.saturating_mul(BRAIN_TICK_NS);
-                    // The swap's market age in slots is passed through so the
-                    // ledger can classify an entity's FIRST buy as a bundle
-                    // (creation slot) or a sniper (within
-                    // `holder_flow::SNIPER_SLOT_WINDOW`) — arXiv 2601.08641. It is
-                    // a first-sighting fact that cannot be recovered later, so it
-                    // is captured in the fold or not at all (§20).
-                    let fold = self.holder_flow.observe_swap_aged(
-                        mint.as_bytes(),
-                        buyer_entity,
-                        signed_base,
-                        self.now,
-                        ns,
-                        Some(age_slots),
-                    );
-                    if let Some(count) = fold.sample {
-                        self.measured
-                            .record_holder_count(fnv1a_64(mint.as_bytes()), count, ns);
-                        // …and, on the SAME bounded cadence, fold the tracked
-                        // cohort's INTERNAL concentration into its own series
-                        // (§21.7 parallel stream).
-                        //
-                        // Concentration used to be a point reading derived on
-                        // demand at admit. A point reading can answer "is this
-                        // concentrated?" but not "is it concentratING?", and the
-                        // second question is the one with a tradeable answer. The
-                        // derivation is `O(n)` over a bounded ledger and runs once
-                        // per 1.2 s of information time per mint — the same cost
-                        // discipline the holder sample already pays, reusing the
-                        // same compile-time-proven cadence rather than inventing a
-                        // second one.
-                        //
-                        // Note this is the INTERNAL statistic, gated on
-                        // `admits_growth` and therefore live on the delta-only
-                        // ledgers where the absolute share refuses. It is a
-                        // different quantity in a different type and can never be
-                        // read as a share of the float.
-                        let internal =
-                            internal_concentration_of(&self.holder_flow, mint.as_bytes());
-                        self.conc_trajectory
-                            .observe(mint.as_bytes(), internal, self.now, ns);
+                        self.agg_seen_ids.push_back(id);
+                        self.agg_seen_set.insert(id);
                     }
                 }
-                // On-chain-led category flow: a trade contributes to per-category
-                // MetaRotationState measures ONLY if its mint has a known (on-chain-
-                // assigned) category. Guarded by an O(1) `is_empty` check first, so a
-                // run that never ingests `TokenMetadata` pays a single branch and is
-                // byte-identical to one before this layer (the golden hot path).
-                // Unknown-category trades are NOT silently bucketed into UNCLASSIFIED
-                // (§6.4 UNKNOWN discipline).
-                if !self.mint_category.is_empty() {
-                    self.route_category_flow(*mint.as_bytes(), signed_base);
+                let instruction_hint = price_fp <= 0 && event_id.is_none() && feature.is_none();
+                if instruction_hint && self.paper_model_mode {
+                    self.mrep("hint:instruction_print_not_aggregated");
                 }
-                // Market context (§21.3 regime + §28 cluster breadth + phase) and the
-                // flow/wallet screens (§21.7 authenticity, §28 lagged-shadow feed).
-                self.context.on_trade(
-                    mint.as_bytes(),
-                    buyer_entity,
-                    signed_base >= 0,
-                    quote_lamports,
-                    signed_base.unsigned_abs(),
-                    liquidity_lamports,
-                );
-                self.flow_screen.record(
-                    mint.as_bytes(),
-                    buyer_entity,
-                    signed_base >= 0,
-                    quote_lamports,
-                );
-                // §21.6 trade-count bars + §21.5 activity window: O(1) fold per
-                // decoded trade (open-bar update + fixed-ring write).
-                self.structure.record(
-                    *mint.as_bytes(),
-                    &crate::structure::TradeObs {
-                        now: self.now,
+                if !(instruction_hint || replayed_print) {
+                    self.numeric.observe(
+                        mint,
                         price_fp,
-                        base_qty: signed_base.unsigned_abs(),
                         quote_lamports,
+                        liquidity_lamports,
+                        signed_base,
                         buyer_entity,
-                        is_buy: signed_base >= 0,
-                    },
-                );
-                self.wallet_screen.record(
-                    buyer_entity,
-                    mint.as_bytes(),
-                    signed_base >= 0,
-                    quote_lamports,
-                    self.now,
-                );
-                // §27 amendment (G5): record tracked-wallet buys for the trust
-                // boost corroboration counter. Only BUYs (signed_base >= 0)
-                // count toward corroboration. The `buyer_entity` is the u64
-                // entity id extracted from the LaserStream `account_keys[6]`
-                // (the buyer's wallet pubkey, hashed via splitmix64 — G1 fix).
-                if signed_base >= 0 {
-                    self.record_tracked_buy(mint.as_bytes(), buyer_entity, self.now);
-                }
-                // §27/§28 amendment (G6 wiring): record the most recent buyer or
-                // seller entity on this mint and build a funding edge between the
-                // current buyer and the previous seller (or current seller and
-                // previous buyer) on the same mint. This is the wallet-graph
-                // cluster-detection feed per arXiv:2505.09313 — the graph is
-                // BOUNDED (§99): `wallet_graph_node` grows the graph one node at
-                // a time and `add_edge` is O(1). The last-mint maps use the same
-                // bounded-eviction convention as `last_trade_tick` (§99).
-                {
-                    let m = *mint.as_bytes();
-                    let cap = self
-                        .cfg
-                        .watchlist_capacity
-                        .saturating_mul(self.cfg.confirmed_capacity_mult)
-                        .max(1);
-                    if signed_base >= 0 {
-                        // BUY: edge from this buyer to the last seller (if any).
-                        if let Some(&seller) = self.last_mint_seller.get(&m) {
-                            if seller != buyer_entity {
-                                self.add_wallet_funding_edge(buyer_entity, seller, self.now);
-                            }
-                        }
-                        // Update last buyer with bounded eviction.
-                        if !self.last_mint_buyer.contains_key(&m)
-                            && self.last_mint_buyer.len() >= cap
-                        {
-                            if let Some(&victim) = self.last_mint_buyer.keys().next() {
-                                self.last_mint_buyer.remove(&victim);
-                            }
-                        }
-                        self.last_mint_buyer.insert(m, buyer_entity);
-                    } else {
-                        // SELL: edge from the last buyer to this seller (if any).
-                        if let Some(&buyer) = self.last_mint_buyer.get(&m) {
-                            if buyer != buyer_entity {
-                                self.add_wallet_funding_edge(buyer, buyer_entity, self.now);
-                            }
-                        }
-                        // Update last seller with bounded eviction.
-                        if !self.last_mint_seller.contains_key(&m)
-                            && self.last_mint_seller.len() >= cap
-                        {
-                            if let Some(&victim) = self.last_mint_seller.keys().next() {
-                                self.last_mint_seller.remove(&victim);
-                            }
-                        }
-                        self.last_mint_seller.insert(m, buyer_entity);
-                    }
-                }
-                // VPIN-X toxicity accumulation (§21.7): fold the swap's exact-sign
-                // quote volume into the mint's volume-clocked buckets. O(1) amortized;
-                // bounded map with deterministic eviction (§99).
-                {
-                    let vp = self.vpin_params();
-                    let cap = self
-                        .cfg
-                        .watchlist_capacity
-                        .saturating_mul(self.cfg.confirmed_capacity_mult)
-                        .max(1);
-                    let key = *mint.as_bytes();
-                    if !self.vpin.contains_key(&key) && self.vpin.len() >= cap {
-                        if let Some(&victim) = self.vpin.keys().next() {
-                            self.vpin.remove(&victim);
-                        }
-                    }
-                    let st = self.vpin.entry(key).or_insert_with(|| VpinState::new(&vp));
-                    st.on_trade(signed_base >= 0, quote_lamports, self.now, &vp);
-                }
-                // Held-position lifecycle (§24 per-swap management): advance any open
-                // scalp on this market and book an exit if a trigger fires. Guarded by
-                // an O(1) `is_empty` so a run holding nothing pays only one branch.
-                if !self.positions.is_empty() {
-                    let signed_quote = if signed_base >= 0 {
-                        i128::from(quote_lamports)
-                    } else {
-                        -i128::from(quote_lamports)
-                    };
-                    let price_u = u64::try_from(price_fp.max(0)).unwrap_or(u64::MAX);
-                    self.tournament.on_trade(
-                        mint.as_bytes(),
-                        price_u,
-                        signed_quote,
+                        age_slots,
                         self.now,
+                    );
+                    // §47a LAW 18: record the mint's last-trade info-time (tick) for the
+                    // terminal-state reflection cadence. Bounded (§99): a new mint past
+                    // capacity evicts the lexicographically-smallest tracked mint.
+                    {
+                        let m = *mint.as_bytes();
+                        if !self.last_trade_tick.contains_key(&m)
+                            && self.last_trade_tick.len() >= LAST_TRADE_TABLE_CAP
+                        {
+                            if let Some(&victim) = self.last_trade_tick.keys().next() {
+                                self.last_trade_tick.remove(&victim);
+                            }
+                        }
+                        self.last_trade_tick.insert(m, self.now);
+                    }
+                    // §70.1 CONTINUOUS HOLDER ACCOUNTING — the WATCH phase.
+                    //
+                    // Folded for EVERY decoded swap on EVERY mint, not just admitted
+                    // ones, so that by the time a candidate reaches the gate its holder
+                    // series already exists. This is the canonical (§6.1) derivation:
+                    // the holder count comes from the `buyer_entity` + `signed_base` we
+                    // decoded ourselves, never from a third-party holder endpoint (§6.6
+                    // keeps Birdeye/DAS strictly corroboration-tier).
+                    //
+                    // The fold returns a sample only on the bounded
+                    // `HOLDER_SAMPLE_INTERVAL_TICKS` cadence: the §70.1 acceleration
+                    // estimator refuses comparison points closer than its 1 s minimum
+                    // interval, so sampling per-swap would push samples that are simply
+                    // dropped for a non-advancing information time. Three ticks
+                    // (1.2 s at BRAIN_TICK_NS) is the smallest whole-tick cadence at or
+                    // above that floor — asserted at compile time in `holder_flow`.
+                    {
+                        let ns = self.now.saturating_mul(BRAIN_TICK_NS);
+                        // The swap's market age in slots is passed through so the
+                        // ledger can classify an entity's FIRST buy as a bundle
+                        // (creation slot) or a sniper (within
+                        // `holder_flow::SNIPER_SLOT_WINDOW`) — arXiv 2601.08641. It is
+                        // a first-sighting fact that cannot be recovered later, so it
+                        // is captured in the fold or not at all (§20).
+                        let fold = self.holder_flow.observe_swap_aged(
+                            mint.as_bytes(),
+                            buyer_entity,
+                            signed_base,
+                            self.now,
+                            ns,
+                            Some(age_slots),
+                        );
+                        if let Some(count) = fold.sample {
+                            self.measured
+                                .record_holder_count(fnv1a_64(mint.as_bytes()), count, ns);
+                            // …and, on the SAME bounded cadence, fold the tracked
+                            // cohort's INTERNAL concentration into its own series
+                            // (§21.7 parallel stream).
+                            //
+                            // Concentration used to be a point reading derived on
+                            // demand at admit. A point reading can answer "is this
+                            // concentrated?" but not "is it concentratING?", and the
+                            // second question is the one with a tradeable answer. The
+                            // derivation is `O(n)` over a bounded ledger and runs once
+                            // per 1.2 s of information time per mint — the same cost
+                            // discipline the holder sample already pays, reusing the
+                            // same compile-time-proven cadence rather than inventing a
+                            // second one.
+                            //
+                            // Note this is the INTERNAL statistic, gated on
+                            // `admits_growth` and therefore live on the delta-only
+                            // ledgers where the absolute share refuses. It is a
+                            // different quantity in a different type and can never be
+                            // read as a share of the float.
+                            let internal =
+                                internal_concentration_of(&self.holder_flow, mint.as_bytes());
+                            self.conc_trajectory
+                                .observe(mint.as_bytes(), internal, self.now, ns);
+                        }
+                    }
+                    // On-chain-led category flow: a trade contributes to per-category
+                    // MetaRotationState measures ONLY if its mint has a known (on-chain-
+                    // assigned) category. Guarded by an O(1) `is_empty` check first, so a
+                    // run that never ingests `TokenMetadata` pays a single branch and is
+                    // byte-identical to one before this layer (the golden hot path).
+                    // Unknown-category trades are NOT silently bucketed into UNCLASSIFIED
+                    // (§6.4 UNKNOWN discipline).
+                    if !self.mint_category.is_empty() {
+                        self.route_category_flow(*mint.as_bytes(), signed_base);
+                    }
+                    // Market context (§21.3 regime + §28 cluster breadth + phase) and the
+                    // flow/wallet screens (§21.7 authenticity, §28 lagged-shadow feed).
+                    self.context.on_trade(
+                        mint.as_bytes(),
+                        buyer_entity,
+                        signed_base >= 0,
+                        quote_lamports,
+                        signed_base.unsigned_abs(),
                         liquidity_lamports,
                     );
-                    // Rev-31: In live mode, skip exits for unconfirmed positions.
-                    let skip_exit = self.mode == RunMode::Live
-                        && !self.positions.is_onchain_confirmed(mint.as_bytes());
-                    if !skip_exit {
-                        if let Some(exit) = self.positions.on_trade(
+                    self.flow_screen.record(
+                        mint.as_bytes(),
+                        buyer_entity,
+                        signed_base >= 0,
+                        quote_lamports,
+                    );
+                    // §21.6 trade-count bars + §21.5 activity window: O(1) fold per
+                    // decoded trade (open-bar update + fixed-ring write).
+                    self.structure.record(
+                        *mint.as_bytes(),
+                        &crate::structure::TradeObs {
+                            now: self.now,
+                            price_fp,
+                            base_qty: signed_base.unsigned_abs(),
+                            quote_lamports,
+                            buyer_entity,
+                            is_buy: signed_base >= 0,
+                        },
+                    );
+                    self.wallet_screen.record(
+                        buyer_entity,
+                        mint.as_bytes(),
+                        signed_base >= 0,
+                        quote_lamports,
+                        self.now,
+                    );
+                    // §27 amendment (G5): record tracked-wallet buys for the trust
+                    // boost corroboration counter. Only BUYs (signed_base >= 0)
+                    // count toward corroboration. The `buyer_entity` is the u64
+                    // entity id extracted from the LaserStream `account_keys[6]`
+                    // (the buyer's wallet pubkey, hashed via splitmix64 — G1 fix).
+                    if signed_base >= 0 {
+                        self.record_tracked_buy(mint.as_bytes(), buyer_entity, self.now);
+                    }
+                    // §27/§28 amendment (G6 wiring): record the most recent buyer or
+                    // seller entity on this mint and build a funding edge between the
+                    // current buyer and the previous seller (or current seller and
+                    // previous buyer) on the same mint. This is the wallet-graph
+                    // cluster-detection feed per arXiv:2505.09313 — the graph is
+                    // BOUNDED (§99): `wallet_graph_node` grows the graph one node at
+                    // a time and `add_edge` is O(1). The last-mint maps use the same
+                    // bounded-eviction convention as `last_trade_tick` (§99).
+                    {
+                        let m = *mint.as_bytes();
+                        let cap = self
+                            .cfg
+                            .watchlist_capacity
+                            .saturating_mul(self.cfg.confirmed_capacity_mult)
+                            .max(1);
+                        if signed_base >= 0 {
+                            // BUY: edge from this buyer to the last seller (if any).
+                            if let Some(&seller) = self.last_mint_seller.get(&m) {
+                                if seller != buyer_entity {
+                                    self.add_wallet_funding_edge(buyer_entity, seller, self.now);
+                                }
+                            }
+                            // Update last buyer with bounded eviction.
+                            if !self.last_mint_buyer.contains_key(&m)
+                                && self.last_mint_buyer.len() >= cap
+                            {
+                                if let Some(&victim) = self.last_mint_buyer.keys().next() {
+                                    self.last_mint_buyer.remove(&victim);
+                                }
+                            }
+                            self.last_mint_buyer.insert(m, buyer_entity);
+                        } else {
+                            // SELL: edge from the last buyer to this seller (if any).
+                            if let Some(&buyer) = self.last_mint_buyer.get(&m) {
+                                if buyer != buyer_entity {
+                                    self.add_wallet_funding_edge(buyer, buyer_entity, self.now);
+                                }
+                            }
+                            // Update last seller with bounded eviction.
+                            if !self.last_mint_seller.contains_key(&m)
+                                && self.last_mint_seller.len() >= cap
+                            {
+                                if let Some(&victim) = self.last_mint_seller.keys().next() {
+                                    self.last_mint_seller.remove(&victim);
+                                }
+                            }
+                            self.last_mint_seller.insert(m, buyer_entity);
+                        }
+                    }
+                    // VPIN-X toxicity accumulation (§21.7): fold the swap's exact-sign
+                    // quote volume into the mint's volume-clocked buckets. O(1) amortized;
+                    // bounded map with deterministic eviction (§99).
+                    {
+                        let vp = self.vpin_params();
+                        let cap = self
+                            .cfg
+                            .watchlist_capacity
+                            .saturating_mul(self.cfg.confirmed_capacity_mult)
+                            .max(1);
+                        let key = *mint.as_bytes();
+                        if !self.vpin.contains_key(&key) && self.vpin.len() >= cap {
+                            if let Some(&victim) = self.vpin.keys().next() {
+                                self.vpin.remove(&victim);
+                            }
+                        }
+                        let st = self.vpin.entry(key).or_insert_with(|| VpinState::new(&vp));
+                        st.on_trade(signed_base >= 0, quote_lamports, self.now, &vp);
+                    }
+                    // Held-position lifecycle (§24 per-swap management): advance any open
+                    // scalp on this market and book an exit if a trigger fires. Guarded by
+                    // an O(1) `is_empty` so a run holding nothing pays only one branch.
+                    if !self.positions.is_empty() {
+                        let signed_quote = if signed_base >= 0 {
+                            i128::from(quote_lamports)
+                        } else {
+                            -i128::from(quote_lamports)
+                        };
+                        let price_u = u64::try_from(price_fp.max(0)).unwrap_or(u64::MAX);
+                        self.tournament.on_trade(
                             mint.as_bytes(),
                             price_u,
                             signed_quote,
                             self.now,
                             liquidity_lamports,
-                        ) {
-                            self.book_exit(exit);
-                        } else if self.positions.has(mint.as_bytes()) {
-                            // §33 probe→confirm scale-in (one-shot; scale_in refuses after
-                            // any de-risking): in profit + authentic flow ⇒ full target.
-                            // §21.6 reduce-only structure block: never ADD risk while the
-                            // bar-structure trend contradicts the long (Downtrend). The
-                            // probe keeps managing itself — structure blocks additions,
-                            // never authorizes anything.
-                            if price_fp > 0
-                                && self
-                                    .structure
-                                    .trend(mint.as_bytes(), self.cfg.structure_min_bars)
-                                    != TrendStructure::Downtrend
-                            {
-                                // §6.4: the flow screen's thin-sample NEUTRAL PRIOR is a
-                                // label for missing evidence, never confirmation. Adding
-                                // risk requires an EVIDENCED authenticity reading at or
-                                // above the operator's bar — absence of evidence can no
-                                // longer scale a probe to full target.
-                                let (auth, _) = self.flow_screen.authenticity(mint.as_bytes());
-                                if self.flow_screen.has_auth_evidence(mint.as_bytes())
-                                    && auth >= self.cfg.scale_confirm_auth_min_bp
+                        );
+                        // Rev-31: In live mode, skip exits for unconfirmed positions.
+                        // A print received BEFORE the model position's own fill cannot be evidence about that position (the
+                        // overlap replay after a restart re-delivers the history; the restored position must not be driven
+                        // by prints it never lived through).
+                        let predates_fill = self.paper_model_mode
+                            && self
+                                .model_mgmt
+                                .pos
+                                .get(mint.as_bytes())
+                                .is_some_and(|m| recv_unix_ms.is_some_and(|r| r < m.fill_ms));
+                        if predates_fill {
+                            self.mrep("protect:print_predates_position_fill_ignored");
+                        }
+                        let skip_exit = predates_fill
+                            || (self.mode == RunMode::Live
+                                && !self.positions.is_onchain_confirmed(mint.as_bytes()));
+                        if !skip_exit {
+                            if let Some(exit) = self.positions.on_trade(
+                                mint.as_bytes(),
+                                price_u,
+                                signed_quote,
+                                self.now,
+                                liquidity_lamports,
+                            ) {
+                                self.book_exit(exit);
+                            } else if self.positions.has(mint.as_bytes()) {
+                                // §33 probe→confirm scale-in (one-shot; scale_in refuses after
+                                // any de-risking): in profit + authentic flow ⇒ full target.
+                                // §21.6 reduce-only structure block: never ADD risk while the
+                                // bar-structure trend contradicts the long (Downtrend). The
+                                // probe keeps managing itself — structure blocks additions,
+                                // never authorizes anything.
+                                if price_fp > 0
+                                    && self
+                                        .structure
+                                        .trend(mint.as_bytes(), self.cfg.structure_min_bars)
+                                        != TrendStructure::Downtrend
                                 {
-                                    if let Some(att) = self.open_lane.get(mint.as_bytes()).copied()
+                                    // §6.4: the flow screen's thin-sample NEUTRAL PRIOR is a
+                                    // label for missing evidence, never confirmation. Adding
+                                    // risk requires an EVIDENCED authenticity reading at or
+                                    // above the operator's bar — absence of evidence can no
+                                    // longer scale a probe to full target.
+                                    let (auth, _) = self.flow_screen.authenticity(mint.as_bytes());
+                                    if self.flow_screen.has_auth_evidence(mint.as_bytes())
+                                        && auth >= self.cfg.scale_confirm_auth_min_bp
                                     {
-                                        if att.scale_add > 0
-                                            && self.positions.scale_in(
-                                                mint.as_bytes(),
-                                                att.scale_add,
-                                                att.scale_cost,
-                                                // The mark the added lamports are ACTUALLY
-                                                // bought at — blends the cost basis so the
-                                                // add cannot book phantom profit.
-                                                price_u,
-                                            )
+                                        if let Some(att) =
+                                            self.open_lane.get(mint.as_bytes()).copied()
                                         {
-                                            if let Some(e) = self.open_lane.get_mut(mint.as_bytes())
+                                            if att.scale_add > 0
+                                                && self.positions.scale_in(
+                                                    mint.as_bytes(),
+                                                    att.scale_add,
+                                                    att.scale_cost,
+                                                    // The mark the added lamports are ACTUALLY
+                                                    // bought at — blends the cost basis so the
+                                                    // add cannot book phantom profit.
+                                                    price_u,
+                                                )
                                             {
-                                                e.scale_add = 0;
+                                                if let Some(e) =
+                                                    self.open_lane.get_mut(mint.as_bytes())
+                                                {
+                                                    e.scale_add = 0;
+                                                }
                                             }
                                         }
                                     }
                                 }
-                            }
-                            // §32 thesis evaluation: deterministic invalidation forces the
-                            // exit; no score may override it.
-                            // Rev-31: gate on on-chain confirmation in live mode.
-                            // A model-managed position's discretionary thesis/VPIN exits stand down;
-                            // the model is shown the same flow state and decides.
-                            let model_owned = self.positions.is_model_managed(mint.as_bytes());
-                            let thesis_exit = !model_owned
-                                && self.thesis_forces_exit(mint.as_bytes())
-                                && !(self.mode == RunMode::Live
-                                    && !self.positions.is_onchain_confirmed(mint.as_bytes()));
-                            if thesis_exit {
-                                if let Some(exit) = self.positions.close_at(
-                                    mint.as_bytes(),
-                                    price_u,
-                                    ExitReason::ThesisInvalidation,
-                                ) {
-                                    self.book_exit(exit);
-                                }
-                            } else {
-                                // VPIN exit escalation: the extreme sell-dominant tier is a
-                                // distributed multi-swap dump the single-print rug-precursor
-                                // cannot see — force the thesis-invalidation exit (§21.7/§32).
+                                // §32 thesis evaluation: deterministic invalidation forces the
+                                // exit; no score may override it.
                                 // Rev-31: gate on on-chain confirmation in live mode.
-                                let vpin_ok = !model_owned
+                                // A model-managed position's discretionary thesis/VPIN exits stand down;
+                                // the model is shown the same flow state and decides.
+                                let model_owned = self.positions.is_model_managed(mint.as_bytes());
+                                let thesis_exit = !model_owned
+                                    && self.thesis_forces_exit(mint.as_bytes())
                                     && !(self.mode == RunMode::Live
                                         && !self.positions.is_onchain_confirmed(mint.as_bytes()));
-                                if vpin_ok {
-                                    let vp = self.vpin_params();
-                                    let reading = self
-                                        .vpin
-                                        .get(mint.as_bytes())
-                                        .and_then(|v| v.reading(self.now, &vp));
-                                    if vpin_exit_escalates(reading, &self.vpin_thresholds()) {
-                                        if let Some(exit) = self.positions.close_at(
-                                            mint.as_bytes(),
-                                            price_u,
-                                            ExitReason::ThesisInvalidation,
-                                        ) {
-                                            self.book_exit(exit);
+                                if thesis_exit {
+                                    if let Some(exit) = self.positions.close_at(
+                                        mint.as_bytes(),
+                                        price_u,
+                                        ExitReason::ThesisInvalidation,
+                                    ) {
+                                        self.book_exit(exit);
+                                    }
+                                } else {
+                                    // VPIN exit escalation: the extreme sell-dominant tier is a
+                                    // distributed multi-swap dump the single-print rug-precursor
+                                    // cannot see — force the thesis-invalidation exit (§21.7/§32).
+                                    // Rev-31: gate on on-chain confirmation in live mode.
+                                    let vpin_ok = !model_owned
+                                        && !(self.mode == RunMode::Live
+                                            && !self
+                                                .positions
+                                                .is_onchain_confirmed(mint.as_bytes()));
+                                    if vpin_ok {
+                                        let vp = self.vpin_params();
+                                        let reading = self
+                                            .vpin
+                                            .get(mint.as_bytes())
+                                            .and_then(|v| v.reading(self.now, &vp));
+                                        if vpin_exit_escalates(reading, &self.vpin_thresholds()) {
+                                            if let Some(exit) = self.positions.close_at(
+                                                mint.as_bytes(),
+                                                price_u,
+                                                ExitReason::ThesisInvalidation,
+                                            ) {
+                                                self.book_exit(exit);
+                                            }
                                         }
                                     }
                                 }
-                            }
-                        } // close `else if self.positions.has(...)`
-                    } // Rev-31: close `if !skip_exit`
+                            } // close `else if self.positions.has(...)`
+                        } // Rev-31: close `if !skip_exit`
+                    }
                 }
             }
             AppEvent::Migration { mint, slot } => {
@@ -2442,6 +2686,51 @@ impl Engine {
                     );
                 }
             }
+            AppEvent::ModelMgmtReport {
+                mint,
+                order_id,
+                action,
+                intended,
+                cumulative_tokens,
+                cumulative_gross,
+                cumulative_fees,
+                terminal,
+            } => {
+                if self.paper_model_mode {
+                    let kind = match action {
+                        0 => Some(model_manage::MgmtKind::Reduce),
+                        1 => Some(model_manage::MgmtKind::Exit),
+                        2 => Some(model_manage::MgmtKind::Add),
+                        3 => Some(model_manage::MgmtKind::Protect),
+                        _ => None,
+                    };
+                    if let Some(kind) = kind {
+                        let _ = if terminal {
+                            self.model_mgmt_ingest_terminal(
+                                *mint.as_bytes(),
+                                order_id,
+                                kind,
+                                intended,
+                                cumulative_tokens,
+                                cumulative_gross,
+                                cumulative_fees,
+                            )
+                        } else {
+                            self.model_mgmt_ingest_evidence(
+                                *mint.as_bytes(),
+                                order_id,
+                                kind,
+                                intended,
+                                cumulative_tokens,
+                                cumulative_gross,
+                                cumulative_fees,
+                            )
+                        };
+                    } else {
+                        self.mrep("mgmt:evidence:rejected:bad_action");
+                    }
+                }
+            }
             AppEvent::OurBuyConfirmed {
                 mint, signature, ..
             } => {
@@ -2517,17 +2806,20 @@ impl Engine {
                         self.model_note_clock(ts_ms);
                         self.model_note_slot(slot);
                         self.model_register(*mint.as_bytes());
-                        self.model_cache.observe_curve(
-                            *mint.as_bytes(),
-                            crate::curve_annotation::CurveObservation {
-                                v_sol_lamports,
-                                v_tokens,
-                                real_sol_lamports,
-                                real_tokens,
-                                ts_ms,
-                                slot,
-                            },
-                        );
+                        let co = crate::curve_annotation::CurveObservation {
+                            v_sol_lamports,
+                            v_tokens,
+                            real_sol_lamports,
+                            real_tokens,
+                            ts_ms,
+                            slot,
+                        };
+                        let fresh = self.model_cache.observe_curve(*mint.as_bytes(), co);
+                        // v2 only: a fresh snapshot replaces the shadow's base and is reconciled against our
+                        // carried delta BEFORE any fill is priced on it.
+                        if fresh {
+                            self.model_shadow_on_curve(mint.as_bytes(), &co);
+                        }
                         // Event-driven: the first eligible landing state fills the order.
                         let c = self.model_clock_ms;
                         self.model_try_fills(c);
@@ -2540,8 +2832,40 @@ impl Engine {
                 launch_unix_ms,
             } => {
                 if self.paper_model_mode {
-                    self.model_cache
-                        .observe_launch(*mint.as_bytes(), creator, launch_unix_ms);
+                    self.model_observe_launch(*mint.as_bytes(), creator, launch_unix_ms);
+                    self.model_register(*mint.as_bytes());
+                }
+            }
+            AppEvent::CurveModeObserved { mint, mayhem, slot } => {
+                if self.paper_model_mode {
+                    self.model_observe_curve_mode(*mint.as_bytes(), mayhem, slot);
+                }
+            }
+            AppEvent::LaunchFromChain {
+                mint,
+                creator,
+                slot,
+                block_time_s,
+                retrieved_unix_ms,
+            } => {
+                // Bootstrap fact: registers the market (so it is tracked, subscribed and its readiness
+                // is reported by name) but never touches the trained creator registry or the
+                // first-observed-trade clock.
+                if self.paper_model_mode {
+                    let fresh = self.model_cache.observe_chain_launch(
+                        *mint.as_bytes(),
+                        crate::decision_join::ChainLaunch {
+                            creator,
+                            slot,
+                            block_time_s,
+                            retrieved_unix_ms,
+                        },
+                    );
+                    self.mrep(if fresh {
+                        "bootstrap:chain_launch_recorded"
+                    } else {
+                        "bootstrap:chain_launch_duplicate_or_cap"
+                    });
                     self.model_register(*mint.as_bytes());
                 }
             }
@@ -2555,6 +2879,7 @@ impl Engine {
                 fee_bps,
                 fee_parts,
                 virtual_quote,
+                cashback,
                 is_buy,
                 token_amount,
                 quote_lamports,
@@ -2568,6 +2893,7 @@ impl Engine {
                     self.model_on_amm_swap(model_admit::AmmSwapIn {
                         fee_parts,
                         virtual_quote,
+                        cashback,
                         mint,
                         pool,
                         canonical: pool_is_canonical,
@@ -2584,6 +2910,49 @@ impl Engine {
                         recv_unix_ms,
                         slot,
                     });
+                }
+            }
+            AppEvent::CorpusFlowRow {
+                mint,
+                venue,
+                feature,
+                recv_unix_ms,
+                slot,
+                fee_lamports,
+                cu_consumed,
+                event_id,
+            } => {
+                // FEATURE HISTORY ONLY. No numeric lane, no registration/discovery, no management price, no fills:
+                // the row has no reserve price or quote. Participation in wallet history is independent of whether
+                // the market is executable.
+                if self.paper_model_mode {
+                    if let Some(ms) = recv_unix_ms {
+                        self.model_note_clock(ms);
+                    }
+                    let venue = match venue {
+                        crate::event::TradeVenue::PumpFun => {
+                            crate::state_ledger::VenueLabel::Pumpfun
+                        }
+                        crate::event::TradeVenue::PumpSwap => {
+                            crate::state_ledger::VenueLabel::Pumpswap
+                        }
+                    };
+                    self.model_cache
+                        .observe_trade(&crate::decision_join::TradeObs {
+                            mint: *mint.as_bytes(),
+                            price_fp: 0,
+                            quote_lamports: 0,
+                            signed_base: 0,
+                            buyer_entity: 0,
+                            trader: Some(feature.trader),
+                            recv_unix_ms,
+                            slot,
+                            fee_lamports,
+                            cu_consumed,
+                            venue,
+                            event_id: Some(event_id),
+                            feature: Some(feature),
+                        });
                 }
             }
             AppEvent::Tick => self.evaluate(),
@@ -2970,6 +3339,21 @@ impl Engine {
     /// clamping the impossible value would have turned a decoder fault into a
     /// plausible-looking thin market and hidden it forever (§18.2).
     fn confirm(&mut self, mint: [u8; 32], virtual_sol: u64, real_sol: u64) {
+        // MODE GATE (armed model lane only; the legacy/golden path has no mode feed and is unchanged). The
+        // constant-offset cross-check below is valid only for an Ordinary curve. A Mayhem or mode-unknown
+        // confirm is not recorded and is counted by name. It is NOT a decoder fault and NOT a missing trade:
+        // its decoded reserves are legitimate, just unsupported for trading.
+        if self.paper_model_mode {
+            let mode = crate::curve_depth::CurveDepthMode::from_decoded_mayhem(
+                self.model_curve_mode(&mint),
+            );
+            if let Err(r) =
+                crate::curve_depth::CurveDepth::decoded_for_mode(mode, virtual_sol, real_sol)
+            {
+                self.mrep(format!("confirm:{}", r.as_str()));
+                return;
+            }
+        }
         if crate::curve_depth::CurveDepth::decoded(virtual_sol, real_sol).is_unknown() {
             return;
         }
@@ -3013,10 +3397,15 @@ impl Engine {
         // Model lane: collect finished verdicts / expire deadlines / try simulated fills. Non-blocking
         // by construction, and a no-op when the lane is not armed.
         if self.paper_model_mode {
+            if self.model_cache.verify_held_tapes() > 0 {
+                self.mrep("held_launch:tape_verified");
+            }
             self.model_poll();
             self.model_stream_schedule();
             self.model_mgmt_schedule();
             self.model_held_persist_if_changed();
+            self.model_missing_persist_if_changed();
+            self.model_flow_persist_if_changed();
         }
 
         // §Quant-Rev-7: prune expired re-entry cooldown entries. The set is bounded
@@ -3220,6 +3609,35 @@ impl Engine {
             self.cfg.promote_k,
             self.cfg.promote_min_rank,
         );
+        if let Some(w) = self.model_watch.clone() {
+            let ranked = self.watchlist.ranked(self.now);
+            let pos = ranked.iter().position(|(_, c)| {
+                c.mint
+                    .bytes()
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<String>()
+                    .starts_with(w.as_str())
+            });
+            let kth = ranked
+                .get(self.cfg.promote_k.saturating_sub(1))
+                .map(|(r, _)| *r);
+            let line = match pos {
+                Some(i) => {
+                    let (r, c) = &ranked[i];
+                    format!(
+                        "watchlist now={} size={} rank_pos={i} rank={r} score={} discovered_at={} lane={:?} kth_rank={kth:?} min_rank={}",
+                        self.now, ranked.len(), c.discovery_score, c.discovered_at, c.lane, self.cfg.promote_min_rank
+                    )
+                }
+                None => format!(
+                    "watchlist now={} size={} NOT_PRESENT kth_rank={kth:?}",
+                    self.now,
+                    ranked.len()
+                ),
+            };
+            self.model_watch_log.push(line);
+        }
         let quota = self.cfg.promote_corroboration_quota.min(self.cfg.promote_k);
         if quota > 0 {
             let have = promoted
@@ -3268,6 +3686,20 @@ impl Engine {
             // numeric age evidence pass through — the gate still demands
             // on-chain confirmation, so this can only remove dead weight,
             // never authorize anything.
+            if self.model_watch.as_ref().is_some_and(|w| {
+                cand.mint
+                    .bytes()
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<String>()
+                    .starts_with(w.as_str())
+            }) {
+                let ok = self.universe_promotable(&cand);
+                self.model_watch_log.push(format!(
+                    "promoted_candidate now={} universe_promotable={ok} discovery_score={} lane={:?}",
+                    self.now, cand.discovery_score, cand.lane
+                ));
+            }
             if !self.universe_promotable(&cand) {
                 self.universe_filtered += 1;
                 continue;
@@ -3842,9 +4274,7 @@ impl Engine {
             if self.ata_open.len() < ATA_OPEN_CAP {
                 self.ata_open.insert(e.mint);
             }
-            self.bankroll_committed = self
-                .bankroll_committed
-                .saturating_add(u128::from(e.entry_cost));
+            self.books_commit(books::BookSite::EntryOpen, e.entry_cost);
             self.open_lane.insert(
                 e.mint,
                 OpenAttribution {
@@ -3963,7 +4393,26 @@ impl Engine {
     /// the position fully closes, release its committed risk budget, ratchet the
     /// high-water mark, and attribute the market's total realized net back to its
     /// social callers (§82).
+    /// Remember an executed-event identity. `false` = already folded (a replay), `true` = new (now remembered).
+    pub(crate) fn agg_remember(&mut self, id: u128) -> bool {
+        if self.agg_seen_set.contains(&id) {
+            return false;
+        }
+        if self.agg_seen_ids.len() >= AGG_SEEN_CAP {
+            if let Some(o) = self.agg_seen_ids.pop_front() {
+                self.agg_seen_set.remove(&o);
+            }
+        }
+        self.agg_seen_ids.push_back(id);
+        self.agg_seen_set.insert(id);
+        true
+    }
+
     fn book_exit(&mut self, mut e: Exit) {
+        if self.paper_model_mode {
+            // Diagnostic only: which trigger closed a model-managed position (counted, never acted on).
+            self.mrep(format!("exit_reason:{:?}", e.reason));
+        }
         // E11: the sell leg's outbound-call duration, folded into the round-trip trace.
         let mut exit_call_us: u64 = 0;
         let mut exit_rpc_us: u64 = 0;
@@ -4073,9 +4522,12 @@ impl Engine {
         // only the engine knows whether an account exists for the mint. Applied
         // before any accountant reads `e.net_lamports`, so the refund reaches the
         // journal, the bankroll, the lane attribution and the analytics identically.
+        // FEES R10 F8: the refund is the paper account's ACTUAL deposited balance, never today's minimum.
+        let refund = self.paper_ata_close_refund(&e.mint);
         if e.closed && self.ata_open.remove(&e.mint) {
+            self.paper_ata_deposit.remove(&e.mint);
             e.net_lamports = e.net_lamports.saturating_add(i128::from(
-                crate::cost_model::ATA_RENT_LAMPORTS - crate::cost_model::ATA_CLOSE_LAMPORTS,
+                refund.saturating_sub(crate::cost_model::ATA_CLOSE_LAMPORTS),
             ));
         }
         // ASSESSABILITY GUARD: a paper-model routing fill (quote or landing unvalidated) settles cash
@@ -4163,7 +4615,7 @@ impl Engine {
         }
         // Realized-only bankroll accounting: every exit's net folds in immediately
         // (partial tranches included) — marks never do (§33).
-        self.bankroll_realized = self.bankroll_realized.saturating_add(e.net_lamports);
+        self.books_add_realized(books::BookSite::ExitRealize, e.net_lamports);
         if let Some(att) = self.open_lane.get_mut(&e.mint) {
             att.realized_acc = att.realized_acc.saturating_add(e.net_lamports);
         }
@@ -4204,9 +4656,7 @@ impl Engine {
                         e.mae_bps,
                     );
                 }
-                self.bankroll_committed = self
-                    .bankroll_committed
-                    .saturating_sub(u128::from(entry_spend));
+                self.books_release(books::BookSite::ExitRelease, entry_spend);
                 if quarantined {
                     self.model_quarantine.remove(&e.mint);
                     self.model_excluded_exits.push(model_admit::ExcludedExit {
@@ -4356,14 +4806,14 @@ impl Engine {
             return;
         }
         let numeric = &self.numeric;
-        // Rev-31: In live mode, force-close only confirmed positions.
-        let exits = if self.mode == RunMode::Live {
-            self.positions
-                .force_close_all_filtered(&|m| numeric.latest_price_fp(DomainMint::from_bytes(*m)))
-        } else {
-            self.positions
-                .force_close_all(&|m| numeric.latest_price_fp(DomainMint::from_bytes(*m)))
-        };
+        // Ownership decides, not whether inference is armed: a model-managed position (including one
+        // restored into an engine whose model lane is disarmed or SAFETY_OFF-latched) is real exposure
+        // that only a reconciled sell may remove. It is reported by `model_open_exposure`, never closed
+        // here. Unmanaged positions keep the legacy end-of-run rule (Rev-31: live = confirmed only).
+        let exits = self.positions.force_close_unmanaged(
+            &|m| numeric.latest_price_fp(DomainMint::from_bytes(*m)),
+            self.mode == RunMode::Live,
+        );
         for e in exits {
             self.book_exit(e);
         }
@@ -5802,11 +6252,10 @@ impl Engine {
         // Decrement admitted (incremented when the position opened).
         self.admitted = self.admitted.saturating_sub(1);
         // Release the committed bankroll (added when the position opened).
-        self.bankroll_committed = self
-            .bankroll_committed
-            .saturating_sub(u128::from(entry_cost));
+        self.books_release(books::BookSite::SinkRollback, entry_cost);
         // Remove from ata_open and open_lane (inserted when the position opened).
         self.ata_open.remove(&mint);
+        self.paper_ata_deposit.remove(&mint);
         self.open_lane.remove(&mint);
     }
 
@@ -6564,14 +7013,18 @@ mod e3_async_outbound {
         // The state open_pending leaves behind when the sink was handed the record.
         assert!(eng.positions.open(mint, 1_000, 500, 500, 0));
         eng.admitted = 1;
-        eng.bankroll_committed = u128::from(500u64);
+        eng.books_set_committed_for_test(u128::from(500u64));
         eng.ata_open.insert(mint);
         eng.note_inflight_outbound(7, inflight(mint, true, 500));
 
         assert!(eng.fail_async_outbound(7, 3_100));
         assert_eq!(eng.live_outbound_failures, 1);
         assert_eq!(eng.admitted, 0, "the admission is not a real one");
-        assert_eq!(eng.bankroll_committed, 0, "committed capital must not leak");
+        assert_eq!(
+            eng.books_committed_field_for_test(),
+            0,
+            "committed capital must not leak"
+        );
         assert!(eng.open_lane.is_empty());
         assert!(!eng.ata_open.contains(&mint));
         assert_eq!(eng.inflight_outbound_len(), 0);
@@ -6816,4 +7269,12 @@ mod reject_code_pins {
             "reject_counts has 32 slots"
         );
     }
+}
+
+/// A per-process session id: wall-clock nanoseconds mixed with the pid. Not persisted, never in any digest.
+fn new_session_id() -> u64 {
+    let n = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos() as u64);
+    (n ^ (u64::from(std::process::id()) << 40) ^ 0x9E37_79B9_7F4A_7C15) | 1
 }

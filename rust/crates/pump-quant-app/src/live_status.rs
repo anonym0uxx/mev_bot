@@ -269,6 +269,8 @@ mod tests {
                     fee_lamports: None,
                     cu_consumed: None,
                     venue: None,
+                    event_id: None,
+                    feature: None,
                 });
             }
             // RE-EXPRESSED (2026-07-28): this harness used to declare a 0.2 SOL

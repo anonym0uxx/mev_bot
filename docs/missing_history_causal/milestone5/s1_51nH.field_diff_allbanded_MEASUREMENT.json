@@ -1,0 +1,1714 @@
+[
+ {
+  "t": 1788965440942,
+  "split": "examination",
+  "n_fields": 61,
+  "n_diff": 14,
+  "identical_lines": 18,
+  "total_lines": 21,
+  "diffs": [
+   {
+    "field": "bot_uniform_share_300s",
+    "rust": "0.037037",
+    "corpus": "0.036585",
+    "rel": 0.012354790214568841
+   },
+   {
+    "field": "bundle_wallets",
+    "rust": "144",
+    "corpus": "145",
+    "rel": -0.006896551724137931
+   },
+   {
+    "field": "coentry_wallets_300s",
+    "rust": "0",
+    "corpus": "22",
+    "rel": -1.0
+   },
+   {
+    "field": "entrants_300s",
+    "rust": "76",
+    "corpus": "77",
+    "rel": -0.012987012987012988
+   },
+   {
+    "field": "entrants_60s",
+    "rust": "76",
+    "corpus": "77",
+    "rel": -0.012987012987012988
+   },
+   {
+    "field": "flow_lookback_d",
+    "rust": "0.0",
+    "corpus": "7.0",
+    "rel": -1.0
+   },
+   {
+    "field": "holders_at_t",
+    "rust": "43",
+    "corpus": "44",
+    "rel": -0.022727272727272728
+   },
+   {
+    "field": "net_flow_sol_300s",
+    "rust": "4.43213",
+    "corpus": "4.434024",
+    "rel": -0.0004271514994055202
+   },
+   {
+    "field": "reason",
+    "rust": "never_graduated",
+    "corpus": "no_event_before_t_dec",
+    "rel": null
+   },
+   {
+    "field": "smart_entrants_300s",
+    "rust": "0",
+    "corpus": "4",
+    "rel": -1.0
+   },
+   {
+    "field": "smart_net_flow_sol_300s",
+    "rust": "0.0",
+    "corpus": "3.710542",
+    "rel": -1.0
+   },
+   {
+    "field": "sniper_share_300s",
+    "rust": "0.078947",
+    "corpus": "0.077922",
+    "rel": 0.013154179820846462
+   },
+   {
+    "field": "volume_sol_at_t",
+    "rust": "69.375084",
+    "corpus": "69.376977",
+    "rel": -2.728570891746237e-05
+   },
+   {
+    "field": "wash_ratio",
+    "rust": "0.277108",
+    "corpus": "0.27381",
+    "rel": 0.012044848617654662
+   }
+  ]
+ },
+ {
+  "t": 1788965470942,
+  "split": "examination",
+  "n_fields": 61,
+  "n_diff": 19,
+  "identical_lines": 18,
+  "total_lines": 21,
+  "diffs": [
+   {
+    "field": "bot_uniform_share_300s",
+    "rust": "0.076923",
+    "corpus": "0.075342",
+    "rel": 0.02098431153938041
+   },
+   {
+    "field": "bundle_slots",
+    "rust": "73",
+    "corpus": "75",
+    "rel": -0.02666666666666667
+   },
+   {
+    "field": "bundle_wallets",
+    "rust": "258",
+    "corpus": "265",
+    "rel": -0.026415094339622643
+   },
+   {
+    "field": "coentry_wallets_300s",
+    "rust": "0",
+    "corpus": "29",
+    "rel": -1.0
+   },
+   {
+    "field": "entrant_fee_p90_lamports",
+    "rust": "1005000",
+    "corpus": "906335",
+    "rel": 0.10886151367871703
+   },
+   {
+    "field": "entrants_300s",
+    "rust": "118",
+    "corpus": "121",
+    "rel": -0.024793388429752067
+   },
+   {
+    "field": "entrants_60s",
+    "rust": "118",
+    "corpus": "121",
+    "rel": -0.024793388429752067
+   },
+   {
+    "field": "flow_lookback_d",
+    "rust": "0.0",
+    "corpus": "7.0",
+    "rel": -1.0
+   },
+   {
+    "field": "holder_hhi",
+    "rust": "0.065058",
+    "corpus": "0.063697",
+    "rel": 0.021366783364993657
+   },
+   {
+    "field": "holders_at_t",
+    "rust": "45",
+    "corpus": "46",
+    "rel": -0.021739130434782608
+   },
+   {
+    "field": "net_flow_sol_300s",
+    "rust": "6.727646",
+    "corpus": "6.728513",
+    "rel": -0.00012885462211344395
+   },
+   {
+    "field": "reason",
+    "rust": "never_graduated",
+    "corpus": "no_event_before_t_dec",
+    "rel": null
+   },
+   {
+    "field": "smart_entrants_300s",
+    "rust": "0",
+    "corpus": "6",
+    "rel": -1.0
+   },
+   {
+    "field": "smart_net_flow_sol_300s",
+    "rust": "0.0",
+    "corpus": "2.1688",
+    "rel": -1.0
+   },
+   {
+    "field": "sniper_share_300s",
+    "rust": "0.050847",
+    "corpus": "0.049587",
+    "rel": 0.025409885655514636
+   },
+   {
+    "field": "top1_float_share",
+    "rust": "0.164912",
+    "corpus": "0.163014",
+    "rel": 0.011643171752119517
+   },
+   {
+    "field": "top5_float_share",
+    "rust": "0.466411",
+    "corpus": "0.461043",
+    "rel": 0.01164316560494366
+   },
+   {
+    "field": "volume_sol_at_t",
+    "rust": "114.037476",
+    "corpus": "114.052835",
+    "rel": -0.00013466565736839137
+   },
+   {
+    "field": "wash_ratio",
+    "rust": "0.461538",
+    "corpus": "0.466165",
+    "rel": -0.009925670095352487
+   }
+  ]
+ },
+ {
+  "t": 1788965500942,
+  "split": "examination",
+  "n_fields": 61,
+  "n_diff": 19,
+  "identical_lines": 18,
+  "total_lines": 21,
+  "diffs": [
+   {
+    "field": "bot_uniform_share_300s",
+    "rust": "0.083333",
+    "corpus": "0.081522",
+    "rel": 0.022214862245774233
+   },
+   {
+    "field": "bundle_slots",
+    "rust": "97",
+    "corpus": "99",
+    "rel": -0.020202020202020204
+   },
+   {
+    "field": "bundle_wallets",
+    "rust": "316",
+    "corpus": "323",
+    "rel": -0.021671826625386997
+   },
+   {
+    "field": "coentry_wallets_300s",
+    "rust": "0",
+    "corpus": "33",
+    "rel": -1.0
+   },
+   {
+    "field": "entrant_cu_p50",
+    "rust": "93262",
+    "corpus": "93263",
+    "rel": -1.0722365782786313e-05
+   },
+   {
+    "field": "entrants_300s",
+    "rust": "146",
+    "corpus": "150",
+    "rel": -0.02666666666666667
+   },
+   {
+    "field": "entrants_60s",
+    "rust": "82",
+    "corpus": "85",
+    "rel": -0.03529411764705882
+   },
+   {
+    "field": "flow_lookback_d",
+    "rust": "0.0",
+    "corpus": "7.0",
+    "rel": -1.0
+   },
+   {
+    "field": "holder_hhi",
+    "rust": "0.083668",
+    "corpus": "0.081634",
+    "rel": 0.024916088884533505
+   },
+   {
+    "field": "holders_at_t",
+    "rust": "54",
+    "corpus": "56",
+    "rel": -0.03571428571428571
+   },
+   {
+    "field": "net_flow_sol_300s",
+    "rust": "2.709758",
+    "corpus": "2.712518",
+    "rel": -0.001017504768632067
+   },
+   {
+    "field": "reason",
+    "rust": "never_graduated",
+    "corpus": "no_event_before_t_dec",
+    "rel": null
+   },
+   {
+    "field": "smart_entrants_300s",
+    "rust": "0",
+    "corpus": "6",
+    "rel": -1.0
+   },
+   {
+    "field": "smart_net_flow_sol_300s",
+    "rust": "0.0",
+    "corpus": "-0.141145",
+    "rel": 1.0
+   },
+   {
+    "field": "sniper_share_300s",
+    "rust": "0.041096",
+    "corpus": "0.04",
+    "rel": 0.027399999999999994
+   },
+   {
+    "field": "top1_float_share",
+    "rust": "0.192006",
+    "corpus": "0.189438",
+    "rel": 0.013555886358597613
+   },
+   {
+    "field": "top5_float_share",
+    "rust": "0.547942",
+    "corpus": "0.540613",
+    "rel": 0.013556832706575738
+   },
+   {
+    "field": "volume_sol_at_t",
+    "rust": "143.795728",
+    "corpus": "143.81298",
+    "rel": -0.00011996135536592988
+   },
+   {
+    "field": "wash_ratio",
+    "rust": "0.448485",
+    "corpus": "0.449704",
+    "rel": -0.002710671908633168
+   }
+  ]
+ },
+ {
+  "t": 1788965530942,
+  "split": "examination",
+  "n_fields": 61,
+  "n_diff": 20,
+  "identical_lines": 18,
+  "total_lines": 21,
+  "diffs": [
+   {
+    "field": "bot_uniform_share_300s",
+    "rust": "0.084906",
+    "corpus": "0.082569",
+    "rel": 0.028303600624931775
+   },
+   {
+    "field": "bundle_slots",
+    "rust": "112",
+    "corpus": "114",
+    "rel": -0.017543859649122806
+   },
+   {
+    "field": "bundle_wallets",
+    "rust": "361",
+    "corpus": "370",
+    "rel": -0.024324324324324326
+   },
+   {
+    "field": "coentry_wallets_300s",
+    "rust": "0",
+    "corpus": "38",
+    "rel": -1.0
+   },
+   {
+    "field": "entrant_cu_p50",
+    "rust": "93238",
+    "corpus": "93262",
+    "rel": -0.00025733953807552916
+   },
+   {
+    "field": "entrant_fee_p90_lamports",
+    "rust": "906335",
+    "corpus": "604999",
+    "rel": 0.49807685632538234
+   },
+   {
+    "field": "entrants_300s",
+    "rust": "165",
+    "corpus": "171",
+    "rel": -0.03508771929824561
+   },
+   {
+    "field": "entrants_60s",
+    "rust": "55",
+    "corpus": "58",
+    "rel": -0.05172413793103448
+   },
+   {
+    "field": "flow_lookback_d",
+    "rust": "0.0",
+    "corpus": "7.0",
+    "rel": -1.0
+   },
+   {
+    "field": "holder_hhi",
+    "rust": "0.07749",
+    "corpus": "0.073442",
+    "rel": 0.05511832466436113
+   },
+   {
+    "field": "holders_at_t",
+    "rust": "55",
+    "corpus": "58",
+    "rel": -0.05172413793103448
+   },
+   {
+    "field": "net_flow_sol_300s",
+    "rust": "1.680626",
+    "corpus": "1.695682",
+    "rel": -0.008879023307436158
+   },
+   {
+    "field": "reason",
+    "rust": "never_graduated",
+    "corpus": "no_event_before_t_dec",
+    "rel": null
+   },
+   {
+    "field": "smart_entrants_300s",
+    "rust": "0",
+    "corpus": "6",
+    "rel": -1.0
+   },
+   {
+    "field": "smart_net_flow_sol_300s",
+    "rust": "0.0",
+    "corpus": "-0.141145",
+    "rel": 1.0
+   },
+   {
+    "field": "sniper_share_300s",
+    "rust": "0.036364",
+    "corpus": "0.035088",
+    "rel": 0.03636570907432739
+   },
+   {
+    "field": "top1_float_share",
+    "rust": "0.176951",
+    "corpus": "0.171878",
+    "rel": 0.02951512119061191
+   },
+   {
+    "field": "top5_float_share",
+    "rust": "0.5268",
+    "corpus": "0.511697",
+    "rel": 0.029515514063987263
+   },
+   {
+    "field": "volume_sol_at_t",
+    "rust": "157.152621",
+    "corpus": "157.18321",
+    "rel": -0.00019460729934190797
+   },
+   {
+    "field": "wash_ratio",
+    "rust": "0.474227",
+    "corpus": "0.475",
+    "rel": -0.0016273684210525647
+   }
+  ]
+ },
+ {
+  "t": 1788965560942,
+  "split": "examination",
+  "n_fields": 61,
+  "n_diff": 19,
+  "identical_lines": 18,
+  "total_lines": 21,
+  "diffs": [
+   {
+    "field": "bot_uniform_share_300s",
+    "rust": "0.079295",
+    "corpus": "0.077253",
+    "rel": 0.026432630448008518
+   },
+   {
+    "field": "bundle_slots",
+    "rust": "117",
+    "corpus": "120",
+    "rel": -0.025
+   },
+   {
+    "field": "bundle_wallets",
+    "rust": "376",
+    "corpus": "387",
+    "rel": -0.028423772609819122
+   },
+   {
+    "field": "coentry_wallets_300s",
+    "rust": "0",
+    "corpus": "38",
+    "rel": -1.0
+   },
+   {
+    "field": "entrant_cu_p50",
+    "rust": "93116",
+    "corpus": "93158",
+    "rel": -0.00045084694819553877
+   },
+   {
+    "field": "entrants_300s",
+    "rust": "171",
+    "corpus": "177",
+    "rel": -0.03389830508474576
+   },
+   {
+    "field": "entrants_60s",
+    "rust": "32",
+    "corpus": "34",
+    "rel": -0.058823529411764705
+   },
+   {
+    "field": "flow_lookback_d",
+    "rust": "0.0",
+    "corpus": "7.0",
+    "rel": -1.0
+   },
+   {
+    "field": "holder_hhi",
+    "rust": "0.102331",
+    "corpus": "0.095868",
+    "rel": 0.06741561313472703
+   },
+   {
+    "field": "holders_at_t",
+    "rust": "50",
+    "corpus": "52",
+    "rel": -0.038461538461538464
+   },
+   {
+    "field": "net_flow_sol_300s",
+    "rust": "-4.357343",
+    "corpus": "-4.34417",
+    "rel": -0.003032339894617407
+   },
+   {
+    "field": "reason",
+    "rust": "never_graduated",
+    "corpus": "no_event_before_t_dec",
+    "rel": null
+   },
+   {
+    "field": "smart_entrants_300s",
+    "rust": "0",
+    "corpus": "6",
+    "rel": -1.0
+   },
+   {
+    "field": "smart_net_flow_sol_300s",
+    "rust": "0.0",
+    "corpus": "-1.882919",
+    "rel": 1.0
+   },
+   {
+    "field": "sniper_share_300s",
+    "rust": "0.035088",
+    "corpus": "0.033898",
+    "rel": 0.035105315947843635
+   },
+   {
+    "field": "top1_float_share",
+    "rust": "0.213604",
+    "corpus": "0.206256",
+    "rel": 0.03562563028469472
+   },
+   {
+    "field": "top5_float_share",
+    "rust": "0.634907",
+    "corpus": "0.613064",
+    "rel": 0.03562923283702834
+   },
+   {
+    "field": "volume_sol_at_t",
+    "rust": "169.878914",
+    "corpus": "169.911386",
+    "rel": -0.00019111138320056017
+   },
+   {
+    "field": "wash_ratio",
+    "rust": "0.487805",
+    "corpus": "0.492891",
+    "rel": -0.01031871143924323
+   }
+  ]
+ },
+ {
+  "t": 1788965590942,
+  "split": "examination",
+  "n_fields": 61,
+  "n_diff": 19,
+  "identical_lines": 18,
+  "total_lines": 21,
+  "diffs": [
+   {
+    "field": "bot_uniform_share_300s",
+    "rust": "0.090164",
+    "corpus": "0.088",
+    "rel": 0.024590909090909083
+   },
+   {
+    "field": "bundle_slots",
+    "rust": "123",
+    "corpus": "126",
+    "rel": -0.023809523809523808
+   },
+   {
+    "field": "bundle_wallets",
+    "rust": "394",
+    "corpus": "405",
+    "rel": -0.027160493827160494
+   },
+   {
+    "field": "coentry_wallets_300s",
+    "rust": "0",
+    "corpus": "41",
+    "rel": -1.0
+   },
+   {
+    "field": "entrant_cu_p50",
+    "rust": "92292",
+    "corpus": "92300",
+    "rel": -8.66738894907909e-05
+   },
+   {
+    "field": "entrant_fee_p90_lamports",
+    "rust": "906335",
+    "corpus": "604999",
+    "rel": 0.49807685632538234
+   },
+   {
+    "field": "entrants_300s",
+    "rust": "177",
+    "corpus": "183",
+    "rel": -0.03278688524590164
+   },
+   {
+    "field": "flow_lookback_d",
+    "rust": "0.0",
+    "corpus": "7.0",
+    "rel": -1.0
+   },
+   {
+    "field": "holder_hhi",
+    "rust": "0.086412",
+    "corpus": "0.081685",
+    "rel": 0.05786864173348851
+   },
+   {
+    "field": "holders_at_t",
+    "rust": "43",
+    "corpus": "45",
+    "rel": -0.044444444444444446
+   },
+   {
+    "field": "net_flow_sol_300s",
+    "rust": "-1.863846",
+    "corpus": "-1.850673",
+    "rel": -0.007117951145340035
+   },
+   {
+    "field": "reason",
+    "rust": "never_graduated",
+    "corpus": "no_event_before_t_dec",
+    "rel": null
+   },
+   {
+    "field": "smart_entrants_300s",
+    "rust": "0",
+    "corpus": "6",
+    "rel": -1.0
+   },
+   {
+    "field": "smart_net_flow_sol_300s",
+    "rust": "0.0",
+    "corpus": "-1.882919",
+    "rel": 1.0
+   },
+   {
+    "field": "sniper_share_300s",
+    "rust": "0.033898",
+    "corpus": "0.032787",
+    "rel": 0.03388538140116513
+   },
+   {
+    "field": "top1_float_share",
+    "rust": "0.18392",
+    "corpus": "0.178446",
+    "rel": 0.03067594678502184
+   },
+   {
+    "field": "top5_float_share",
+    "rust": "0.57598",
+    "corpus": "0.558836",
+    "rel": 0.03067805223715016
+   },
+   {
+    "field": "volume_sol_at_t",
+    "rust": "182.242481",
+    "corpus": "182.274954",
+    "rel": -0.00017815393331554585
+   },
+   {
+    "field": "wash_ratio",
+    "rust": "0.518868",
+    "corpus": "0.522936",
+    "rel": -0.007779154619303243
+   }
+  ]
+ },
+ {
+  "t": 1788965620942,
+  "split": "examination",
+  "n_fields": 61,
+  "n_diff": 19,
+  "identical_lines": 18,
+  "total_lines": 21,
+  "diffs": [
+   {
+    "field": "bot_uniform_share_300s",
+    "rust": "0.111111",
+    "corpus": "0.108527",
+    "rel": 0.02380974319754534
+   },
+   {
+    "field": "bundle_slots",
+    "rust": "126",
+    "corpus": "129",
+    "rel": -0.023255813953488372
+   },
+   {
+    "field": "bundle_wallets",
+    "rust": "401",
+    "corpus": "412",
+    "rel": -0.02669902912621359
+   },
+   {
+    "field": "coentry_wallets_300s",
+    "rust": "0",
+    "corpus": "41",
+    "rel": -1.0
+   },
+   {
+    "field": "entrant_cu_p50",
+    "rust": "92290",
+    "corpus": "92292",
+    "rel": -2.1670350626273134e-05
+   },
+   {
+    "field": "entrant_fee_p90_lamports",
+    "rust": "906335",
+    "corpus": "604999",
+    "rel": 0.49807685632538234
+   },
+   {
+    "field": "entrants_300s",
+    "rust": "182",
+    "corpus": "188",
+    "rel": -0.031914893617021274
+   },
+   {
+    "field": "flow_lookback_d",
+    "rust": "0.0",
+    "corpus": "7.0",
+    "rel": -1.0
+   },
+   {
+    "field": "holder_hhi",
+    "rust": "0.127037",
+    "corpus": "0.119081",
+    "rel": 0.06681166600885115
+   },
+   {
+    "field": "holders_at_t",
+    "rust": "35",
+    "corpus": "37",
+    "rel": -0.05405405405405406
+   },
+   {
+    "field": "net_flow_sol_300s",
+    "rust": "-7.556005",
+    "corpus": "-7.542832",
+    "rel": -0.001746426275966388
+   },
+   {
+    "field": "reason",
+    "rust": "never_graduated",
+    "corpus": "no_event_before_t_dec",
+    "rel": null
+   },
+   {
+    "field": "smart_entrants_300s",
+    "rust": "0",
+    "corpus": "6",
+    "rel": -1.0
+   },
+   {
+    "field": "smart_net_flow_sol_300s",
+    "rust": "0.0",
+    "corpus": "-1.882919",
+    "rel": 1.0
+   },
+   {
+    "field": "sniper_share_300s",
+    "rust": "0.032967",
+    "corpus": "0.031915",
+    "rel": 0.0329625567914775
+   },
+   {
+    "field": "top1_float_share",
+    "rust": "0.243622",
+    "corpus": "0.235444",
+    "rel": 0.034734374203632366
+   },
+   {
+    "field": "top5_float_share",
+    "rust": "0.708583",
+    "corpus": "0.684799",
+    "rel": 0.03473135912873692
+   },
+   {
+    "field": "volume_sol_at_t",
+    "rust": "190.28613",
+    "corpus": "190.318602",
+    "rel": -0.00017061915997041788
+   },
+   {
+    "field": "wash_ratio",
+    "rust": "0.547085",
+    "corpus": "0.557018",
+    "rel": -0.017832457837987228
+   }
+  ]
+ },
+ {
+  "t": 1788965650942,
+  "split": "examination",
+  "n_fields": 61,
+  "n_diff": 18,
+  "identical_lines": 17,
+  "total_lines": 21,
+  "diffs": [
+   {
+    "field": "bot_uniform_share_300s",
+    "rust": "0.108108",
+    "corpus": "0.10566",
+    "rel": 0.02316865417376483
+   },
+   {
+    "field": "bundle_slots",
+    "rust": "134",
+    "corpus": "137",
+    "rel": -0.021897810218978103
+   },
+   {
+    "field": "bundle_wallets",
+    "rust": "422",
+    "corpus": "433",
+    "rel": -0.025404157043879907
+   },
+   {
+    "field": "coentry_wallets_300s",
+    "rust": "0",
+    "corpus": "41",
+    "rel": -1.0
+   },
+   {
+    "field": "entrant_cu_p50",
+    "rust": "92289",
+    "corpus": "92290",
+    "rel": -1.0835410120273053e-05
+   },
+   {
+    "field": "entrants_300s",
+    "rust": "184",
+    "corpus": "190",
+    "rel": -0.031578947368421054
+   },
+   {
+    "field": "flow_lookback_d",
+    "rust": "0.0",
+    "corpus": "7.0",
+    "rel": -1.0
+   },
+   {
+    "field": "holder_hhi",
+    "rust": "0.1599",
+    "corpus": "0.141043",
+    "rel": 0.13369681586466528
+   },
+   {
+    "field": "net_flow_sol_300s",
+    "rust": "-20.344062",
+    "corpus": "-20.331937",
+    "rel": -0.0005963524282020475
+   },
+   {
+    "field": "reason",
+    "rust": "never_graduated",
+    "corpus": "no_event_before_t_dec",
+    "rel": null
+   },
+   {
+    "field": "smart_entrants_300s",
+    "rust": "0",
+    "corpus": "6",
+    "rel": -1.0
+   },
+   {
+    "field": "smart_net_flow_sol_300s",
+    "rust": "0.0",
+    "corpus": "-1.882919",
+    "rel": 1.0
+   },
+   {
+    "field": "sniper_share_300s",
+    "rust": "0.032609",
+    "corpus": "0.031579",
+    "rel": 0.03261661230564603
+   },
+   {
+    "field": "staleness_ms",
+    "rust": "179",
+    "corpus": "178",
+    "rel": 0.0056179775280898875
+   },
+   {
+    "field": "top1_float_share",
+    "rust": "0.273905",
+    "corpus": "0.25518",
+    "rel": 0.07337957520181829
+   },
+   {
+    "field": "top5_float_share",
+    "rust": "0.78585",
+    "corpus": "0.732126",
+    "rel": 0.07338081149965989
+   },
+   {
+    "field": "volume_sol_at_t",
+    "rust": "207.360355",
+    "corpus": "207.393877",
+    "rel": -0.00016163447294061114
+   },
+   {
+    "field": "wash_ratio",
+    "rust": "0.567227",
+    "corpus": "0.576132",
+    "rel": -0.01545652732359935
+   }
+  ]
+ },
+ {
+  "t": 1788965680942,
+  "split": "examination",
+  "n_fields": 61,
+  "n_diff": 17,
+  "identical_lines": 18,
+  "total_lines": 21,
+  "diffs": [
+   {
+    "field": "bot_uniform_share_300s",
+    "rust": "0.10566",
+    "corpus": "0.103321",
+    "rel": 0.022638185847988383
+   },
+   {
+    "field": "bundle_slots",
+    "rust": "136",
+    "corpus": "139",
+    "rel": -0.02158273381294964
+   },
+   {
+    "field": "bundle_wallets",
+    "rust": "428",
+    "corpus": "439",
+    "rel": -0.025056947608200455
+   },
+   {
+    "field": "coentry_wallets_300s",
+    "rust": "0",
+    "corpus": "42",
+    "rel": -1.0
+   },
+   {
+    "field": "entrants_300s",
+    "rust": "186",
+    "corpus": "192",
+    "rel": -0.03125
+   },
+   {
+    "field": "flow_lookback_d",
+    "rust": "0.0",
+    "corpus": "7.0",
+    "rel": -1.0
+   },
+   {
+    "field": "holder_hhi",
+    "rust": "0.137144",
+    "corpus": "0.128018",
+    "rel": 0.0712868502866784
+   },
+   {
+    "field": "holders_at_t",
+    "rust": "24",
+    "corpus": "25",
+    "rel": -0.04
+   },
+   {
+    "field": "net_flow_sol_300s",
+    "rust": "-18.201649",
+    "corpus": "-18.189525",
+    "rel": -0.0006665374714292992
+   },
+   {
+    "field": "reason",
+    "rust": "never_graduated",
+    "corpus": "no_event_before_t_dec",
+    "rel": null
+   },
+   {
+    "field": "smart_entrants_300s",
+    "rust": "0",
+    "corpus": "7",
+    "rel": -1.0
+   },
+   {
+    "field": "smart_net_flow_sol_300s",
+    "rust": "0.0",
+    "corpus": "-1.842419",
+    "rel": 1.0
+   },
+   {
+    "field": "sniper_share_300s",
+    "rust": "0.032258",
+    "corpus": "0.03125",
+    "rel": 0.03225600000000006
+   },
+   {
+    "field": "top1_float_share",
+    "rust": "0.233073",
+    "corpus": "0.224629",
+    "rel": 0.03759087206015255
+   },
+   {
+    "field": "top5_float_share",
+    "rust": "0.776851",
+    "corpus": "0.748706",
+    "rel": 0.037591524577070275
+   },
+   {
+    "field": "volume_sol_at_t",
+    "rust": "212.678873",
+    "corpus": "212.712395",
+    "rel": -0.00015759307303167037
+   },
+   {
+    "field": "wash_ratio",
+    "rust": "0.544715",
+    "corpus": "0.553785",
+    "rel": -0.016378197314842444
+   }
+  ]
+ },
+ {
+  "t": 1788965710942,
+  "split": "examination",
+  "n_fields": 61,
+  "n_diff": 17,
+  "identical_lines": 18,
+  "total_lines": 21,
+  "diffs": [
+   {
+    "field": "bot_uniform_share_300s",
+    "rust": "0.105263",
+    "corpus": "0.102941",
+    "rel": 0.02255661009704579
+   },
+   {
+    "field": "bundle_slots",
+    "rust": "137",
+    "corpus": "140",
+    "rel": -0.02142857142857143
+   },
+   {
+    "field": "bundle_wallets",
+    "rust": "430",
+    "corpus": "441",
+    "rel": -0.024943310657596373
+   },
+   {
+    "field": "coentry_wallets_300s",
+    "rust": "0",
+    "corpus": "42",
+    "rel": -1.0
+   },
+   {
+    "field": "entrant_cu_p50",
+    "rust": "92289",
+    "corpus": "92290",
+    "rel": -1.0835410120273053e-05
+   },
+   {
+    "field": "entrants_300s",
+    "rust": "187",
+    "corpus": "193",
+    "rel": -0.031088082901554404
+   },
+   {
+    "field": "flow_lookback_d",
+    "rust": "0.0",
+    "corpus": "7.0",
+    "rel": -1.0
+   },
+   {
+    "field": "holder_hhi",
+    "rust": "0.191854",
+    "corpus": "0.168702",
+    "rel": 0.13723607307560082
+   },
+   {
+    "field": "net_flow_sol_300s",
+    "rust": "-23.499994",
+    "corpus": "-23.48787",
+    "rel": -0.0005161813310444934
+   },
+   {
+    "field": "reason",
+    "rust": "never_graduated",
+    "corpus": "no_event_before_t_dec",
+    "rel": null
+   },
+   {
+    "field": "smart_entrants_300s",
+    "rust": "0",
+    "corpus": "7",
+    "rel": -1.0
+   },
+   {
+    "field": "smart_net_flow_sol_300s",
+    "rust": "0.0",
+    "corpus": "-1.842419",
+    "rel": 1.0
+   },
+   {
+    "field": "sniper_share_300s",
+    "rust": "0.032086",
+    "corpus": "0.031088",
+    "rel": 0.03210241893978391
+   },
+   {
+    "field": "top1_float_share",
+    "rust": "0.290796",
+    "corpus": "0.27084",
+    "rel": 0.07368187859991128
+   },
+   {
+    "field": "top5_float_share",
+    "rust": "0.855318",
+    "corpus": "0.796624",
+    "rel": 0.0736784229448272
+   },
+   {
+    "field": "volume_sol_at_t",
+    "rust": "218.080712",
+    "corpus": "218.114233",
+    "rel": -0.00015368552312680785
+   },
+   {
+    "field": "wash_ratio",
+    "rust": "0.549801",
+    "corpus": "0.558594",
+    "rel": -0.015741307640254013
+   }
+  ]
+ },
+ {
+  "t": 1788965740942,
+  "split": "examination",
+  "n_fields": 61,
+  "n_diff": 17,
+  "identical_lines": 17,
+  "total_lines": 21,
+  "diffs": [
+   {
+    "field": "bot_uniform_share_300s",
+    "rust": "0.083019",
+    "corpus": "0.081481",
+    "rel": 0.01887556608289046
+   },
+   {
+    "field": "bundle_slots",
+    "rust": "162",
+    "corpus": "165",
+    "rel": -0.01818181818181818
+   },
+   {
+    "field": "bundle_wallets",
+    "rust": "543",
+    "corpus": "554",
+    "rel": -0.019855595667870037
+   },
+   {
+    "field": "coentry_wallets_300s",
+    "rust": "0",
+    "corpus": "40",
+    "rel": -1.0
+   },
+   {
+    "field": "entrant_cu_p50",
+    "rust": "92281",
+    "corpus": "92282",
+    "rel": -1.0836349450597083e-05
+   },
+   {
+    "field": "entrants_300s",
+    "rust": "177",
+    "corpus": "182",
+    "rel": -0.027472527472527472
+   },
+   {
+    "field": "flow_lookback_d",
+    "rust": "0.0",
+    "corpus": "7.0",
+    "rel": -1.0
+   },
+   {
+    "field": "holder_hhi",
+    "rust": "0.059305",
+    "corpus": "0.057768",
+    "rel": 0.026606425702811187
+   },
+   {
+    "field": "net_flow_sol_300s",
+    "rust": "2.072191",
+    "corpus": "2.082422",
+    "rel": -0.004913029155473819
+   },
+   {
+    "field": "reason",
+    "rust": "never_graduated",
+    "corpus": "no_event_before_t_dec",
+    "rel": null
+   },
+   {
+    "field": "smart_entrants_300s",
+    "rust": "0",
+    "corpus": "4",
+    "rel": -1.0
+   },
+   {
+    "field": "smart_net_flow_sol_300s",
+    "rust": "0.0",
+    "corpus": "-0.764767",
+    "rel": 1.0
+   },
+   {
+    "field": "staleness_ms",
+    "rust": "184",
+    "corpus": "183",
+    "rel": 0.00546448087431694
+   },
+   {
+    "field": "top1_float_share",
+    "rust": "0.129235",
+    "corpus": "0.127449",
+    "rel": 0.014013448516661425
+   },
+   {
+    "field": "top5_float_share",
+    "rust": "0.461015",
+    "corpus": "0.454641",
+    "rel": 0.014019853026893726
+   },
+   {
+    "field": "volume_sol_at_t",
+    "rust": "317.628488",
+    "corpus": "317.66201",
+    "rel": -0.00010552725521067167
+   },
+   {
+    "field": "wash_ratio",
+    "rust": "0.476821",
+    "corpus": "0.485342",
+    "rel": -0.01755669198214867
+   }
+  ]
+ },
+ {
+  "t": 1788965770942,
+  "split": "examination",
+  "n_fields": 61,
+  "n_diff": 18,
+  "identical_lines": 18,
+  "total_lines": 21,
+  "diffs": [
+   {
+    "field": "bot_uniform_share_300s",
+    "rust": "0.132948",
+    "corpus": "0.131429",
+    "rel": 0.011557571007920781
+   },
+   {
+    "field": "bundle_slots",
+    "rust": "230",
+    "corpus": "233",
+    "rel": -0.012875536480686695
+   },
+   {
+    "field": "bundle_wallets",
+    "rust": "873",
+    "corpus": "887",
+    "rel": -0.015783540022547914
+   },
+   {
+    "field": "coentry_wallets_300s",
+    "rust": "0",
+    "corpus": "46",
+    "rel": -1.0
+   },
+   {
+    "field": "entrant_cu_p50",
+    "rust": "92101",
+    "corpus": "92108",
+    "rel": -7.599774178138707e-05
+   },
+   {
+    "field": "entrants_300s",
+    "rust": "222",
+    "corpus": "226",
+    "rel": -0.017699115044247787
+   },
+   {
+    "field": "entrants_60s",
+    "rust": "154",
+    "corpus": "155",
+    "rel": -0.0064516129032258064
+   },
+   {
+    "field": "flow_lookback_d",
+    "rust": "0.0",
+    "corpus": "7.0",
+    "rel": -1.0
+   },
+   {
+    "field": "holder_hhi",
+    "rust": "0.027597",
+    "corpus": "0.026929",
+    "rel": 0.024805971257751806
+   },
+   {
+    "field": "holders_at_t",
+    "rust": "108",
+    "corpus": "109",
+    "rel": -0.009174311926605505
+   },
+   {
+    "field": "net_flow_sol_300s",
+    "rust": "-49.526018",
+    "corpus": "-49.515589",
+    "rel": -0.0002106205381097662
+   },
+   {
+    "field": "reason",
+    "rust": "never_graduated",
+    "corpus": "no_event_before_t_dec",
+    "rel": null
+   },
+   {
+    "field": "smart_entrants_300s",
+    "rust": "0",
+    "corpus": "4",
+    "rel": -1.0
+   },
+   {
+    "field": "smart_net_flow_sol_300s",
+    "rust": "0.0",
+    "corpus": "-2.337108",
+    "rel": 1.0
+   },
+   {
+    "field": "top1_float_share",
+    "rust": "0.07217",
+    "corpus": "0.071167",
+    "rel": 0.014093610802759763
+   },
+   {
+    "field": "top5_float_share",
+    "rust": "0.27903",
+    "corpus": "0.275154",
+    "rel": 0.014086656926666486
+   },
+   {
+    "field": "volume_sol_at_t",
+    "rust": "548.707511",
+    "corpus": "548.745695",
+    "rel": -6.958414498359046e-05
+   },
+   {
+    "field": "wash_ratio",
+    "rust": "0.438554",
+    "corpus": "0.44208",
+    "rel": -0.00797593195801659
+   }
+  ]
+ },
+ {
+  "t": 1788965800942,
+  "split": "examination",
+  "n_fields": 61,
+  "n_diff": 19,
+  "identical_lines": 17,
+  "total_lines": 21,
+  "diffs": [
+   {
+    "field": "bot_uniform_share_300s",
+    "rust": "0.19797",
+    "corpus": "0.19598",
+    "rel": 0.01015409735687325
+   },
+   {
+    "field": "bundle_slots",
+    "rust": "273",
+    "corpus": "277",
+    "rel": -0.01444043321299639
+   },
+   {
+    "field": "bundle_wallets",
+    "rust": "1018",
+    "corpus": "1034",
+    "rel": -0.015473887814313346
+   },
+   {
+    "field": "coentry_wallets_300s",
+    "rust": "0",
+    "corpus": "47",
+    "rel": -1.0
+   },
+   {
+    "field": "entrant_cu_p50",
+    "rust": "91935",
+    "corpus": "91976",
+    "rel": -0.0004457684613377403
+   },
+   {
+    "field": "entrants_300s",
+    "rust": "240",
+    "corpus": "244",
+    "rel": -0.01639344262295082
+   },
+   {
+    "field": "entrants_60s",
+    "rust": "159",
+    "corpus": "161",
+    "rel": -0.012422360248447204
+   },
+   {
+    "field": "flow_lookback_d",
+    "rust": "0.0",
+    "corpus": "7.0",
+    "rel": -1.0
+   },
+   {
+    "field": "holder_hhi",
+    "rust": "0.031363",
+    "corpus": "0.030467",
+    "rel": 0.02940886861194082
+   },
+   {
+    "field": "holders_at_t",
+    "rust": "125",
+    "corpus": "126",
+    "rel": -0.007936507936507936
+   },
+   {
+    "field": "net_flow_sol_300s",
+    "rust": "-67.677861",
+    "corpus": "-67.671422",
+    "rel": -9.515094865283154e-05
+   },
+   {
+    "field": "reason",
+    "rust": "never_graduated",
+    "corpus": "no_event_before_t_dec",
+    "rel": null
+   },
+   {
+    "field": "smart_entrants_300s",
+    "rust": "0",
+    "corpus": "5",
+    "rel": -1.0
+   },
+   {
+    "field": "smart_net_flow_sol_300s",
+    "rust": "0.0",
+    "corpus": "-6.878307",
+    "rel": 1.0
+   },
+   {
+    "field": "staleness_ms",
+    "rust": "126",
+    "corpus": "125",
+    "rel": 0.008
+   },
+   {
+    "field": "top1_float_share",
+    "rust": "0.080072",
+    "corpus": "0.078771",
+    "rel": 0.01651623059247706
+   },
+   {
+    "field": "top5_float_share",
+    "rust": "0.310302",
+    "corpus": "0.305257",
+    "rel": 0.016527057528574356
+   },
+   {
+    "field": "volume_sol_at_t",
+    "rust": "630.676335",
+    "corpus": "630.723806",
+    "rel": -7.526432258999461e-05
+   },
+   {
+    "field": "wash_ratio",
+    "rust": "0.379747",
+    "corpus": "0.384298",
+    "rel": -0.011842372325643048
+   }
+  ]
+ },
+ {
+  "t": 1788965830942,
+  "split": "examination",
+  "n_fields": 61,
+  "n_diff": 27,
+  "identical_lines": 14,
+  "total_lines": 21,
+  "diffs": [
+   {
+    "field": "bot_uniform_share_300s",
+    "rust": "0.224891",
+    "corpus": "0.223913",
+    "rel": 0.004367767838401552
+   },
+   {
+    "field": "bundle_slots",
+    "rust": "321",
+    "corpus": "325",
+    "rel": -0.012307692307692308
+   },
+   {
+    "field": "bundle_wallets",
+    "rust": "1207",
+    "corpus": "1225",
+    "rel": -0.014693877551020407
+   },
+   {
+    "field": "coentry_wallets_300s",
+    "rust": "0",
+    "corpus": "45",
+    "rel": -1.0
+   },
+   {
+    "field": "curve_k",
+    "rust": "32190000570510410201415438",
+    "corpus": "32190000570510552950899761",
+    "rel": -4.536467395958294e-15
+   },
+   {
+    "field": "curve_price_sol_per_raw_token",
+    "rust": "0.000000000000324302",
+    "corpus": "0.000000000000330058",
+    "rel": -0.017439359142938607
+   },
+   {
+    "field": "curve_progress",
+    "rust": "0.849092",
+    "corpus": "0.859712",
+    "rel": -0.012352974019206518
+   },
+   {
+    "field": "entrant_cu_p50",
+    "rust": "92002",
+    "corpus": "92011",
+    "rel": -9.781439175750725e-05
+   },
+   {
+    "field": "entrants_300s",
+    "rust": "277",
+    "corpus": "279",
+    "rel": -0.007168458781362007
+   },
+   {
+    "field": "entrants_60s",
+    "rust": "116",
+    "corpus": "117",
+    "rel": -0.008547008547008548
+   },
+   {
+    "field": "flow_lookback_d",
+    "rust": "0.0",
+    "corpus": "7.0",
+    "rel": -1.0
+   },
+   {
+    "field": "holder_hhi",
+    "rust": "0.029441",
+    "corpus": "0.028714",
+    "rel": 0.025318659887163003
+   },
+   {
+    "field": "holders_at_t",
+    "rust": "152",
+    "corpus": "153",
+    "rel": -0.006535947712418301
+   },
+   {
+    "field": "mcap_sol_at_t",
+    "rust": "324.301906",
+    "corpus": "330.05776",
+    "rel": -0.017438929477070923
+   },
+   {
+    "field": "net_flow_sol_300s",
+    "rust": "-76.043942",
+    "corpus": "-76.052092",
+    "rel": 0.00010716339006165071
+   },
+   {
+    "field": "real_sol_reserves_sol",
+    "rust": "72.172787697",
+    "corpus": "73.075503743",
+    "rel": -0.01235319634846126
+   },
+   {
+    "field": "real_tokens_reserves",
+    "rust": "35154539433454",
+    "corpus": "32395350510927",
+    "rel": 0.0851723743997251
+   },
+   {
+    "field": "reason",
+    "rust": "never_graduated",
+    "corpus": "no_event_before_t_dec",
+    "rel": null
+   },
+   {
+    "field": "smart_entrants_300s",
+    "rust": "0",
+    "corpus": "6",
+    "rel": -1.0
+   },
+   {
+    "field": "smart_net_flow_sol_300s",
+    "rust": "0.0",
+    "corpus": "-5.306587",
+    "rel": 1.0
+   },
+   {
+    "field": "staleness_ms",
+    "rust": "241",
+    "corpus": "4",
+    "rel": 59.25
+   },
+   {
+    "field": "top1_float_share",
+    "rust": "0.078485",
+    "corpus": "0.077371",
+    "rel": 0.014398159517131793
+   },
+   {
+    "field": "top5_float_share",
+    "rust": "0.300587",
+    "corpus": "0.296322",
+    "rel": 0.014393126396285186
+   },
+   {
+    "field": "v_sol_reserves_sol",
+    "rust": "102.172787697",
+    "corpus": "103.075503743",
+    "rel": -0.008757813575675098
+   },
+   {
+    "field": "v_tokens_reserves",
+    "rust": "315054539433454",
+    "corpus": "312295350510927",
+    "rel": 0.008835190527213621
+   },
+   {
+    "field": "volume_sol_at_t",
+    "rust": "738.534859",
+    "corpus": "738.584623",
+    "rel": -6.737751971852511e-05
+   },
+   {
+    "field": "wash_ratio",
+    "rust": "0.361511",
+    "corpus": "0.365079",
+    "rel": -0.009773227164531403
+   }
+  ]
+ }
+]

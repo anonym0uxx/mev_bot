@@ -95,6 +95,38 @@ pub fn curve_observed_from_curve(
     })
 }
 
+/// The curve's decoded MODE flag as a model-lane event (operator decision 2026-10-09: SKIP Mayhem-mode coins).
+///
+/// Delegates to [`pump_quant_protocol::decode::classify_pump_curve`] (verified fields, supported 151-byte layout
+/// only). `mayhem: false` is emitted ONLY for [`PumpCurveClass::Ordinary`] -- non-Mayhem, all-zero SOL quote, the
+/// population where the constant 30 SOL offset was observed. `mayhem: true` for any Mayhem curve. Returns `None`
+/// -- and the caller emits NOTHING -- for every `Unsupported` class (identity failure, other layout length,
+/// noncanonical flag, non-Mayhem with a non-SOL quote): the engine then keeps the market's mode UNKNOWN and
+/// refuses it by name (`curve_mode_unknown`). A failed or unsupported classification is never `mayhem: false`.
+#[must_use]
+pub fn curve_mode_observed(
+    mint_bytes: &[u8; 32],
+    account_data: &[u8],
+    slot: u64,
+) -> Option<ProvenancedEvent> {
+    use pump_quant_protocol::decode::{classify_pump_curve, PumpCurveClass};
+    let mayhem = match classify_pump_curve(account_data) {
+        PumpCurveClass::Ordinary { .. } => false,
+        PumpCurveClass::Mayhem { .. } => true,
+        PumpCurveClass::Unsupported(_) => return None,
+    };
+    Some(ProvenancedEvent {
+        event: AppEvent::CurveModeObserved {
+            mint: Mint(*mint_bytes),
+            mayhem,
+            slot,
+        },
+        source: ProvenanceSource::LaserStreamAccount,
+        slot,
+        is_live: true,
+    })
+}
+
 /// Construct an `OnchainConfirm` from a decoded `PumpCurve` without re-decoding.
 ///
 /// This is the API the wire-up calls when it already has a `PumpCurve` from

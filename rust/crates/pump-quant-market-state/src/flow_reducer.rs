@@ -220,7 +220,7 @@ struct WalletState {
 
 /// The live reducer. Feed it every confirmed trade in receive order; ask it for a mint's
 /// flow state at any clock.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FlowReducer {
     p: FlowParams,
     tape_t0: Option<i64>,
@@ -512,6 +512,360 @@ impl FlowReducer {
             entrant_fee_p90_lamports: pct90(&fees),
             entrant_cu_p50: pct50(&cus),
         })
+    }
+}
+
+/// Checkpoint payload schema of [`FlowReducer::encode_state`]. Bump on ANY change to what is encoded.
+pub const STATE_SCHEMA: u32 = 1;
+
+struct W(Vec<u8>);
+impl W {
+    fn u8(&mut self, v: u8) {
+        self.0.push(v);
+    }
+    fn u32(&mut self, v: u32) {
+        self.0.extend_from_slice(&v.to_le_bytes());
+    }
+    fn u64(&mut self, v: u64) {
+        self.0.extend_from_slice(&v.to_le_bytes());
+    }
+    fn i64(&mut self, v: i64) {
+        self.0.extend_from_slice(&v.to_le_bytes());
+    }
+    fn b32(&mut self, v: &[u8; 32]) {
+        self.0.extend_from_slice(v);
+    }
+}
+struct R<'a>(&'a [u8], usize);
+impl<'a> R<'a> {
+    fn take(&mut self, n: usize) -> Result<&'a [u8], &'static str> {
+        let end = self.1.checked_add(n).ok_or("state_truncated")?;
+        let b = self.0.get(self.1..end).ok_or("state_truncated")?;
+        self.1 = end;
+        Ok(b)
+    }
+    fn u8(&mut self) -> Result<u8, &'static str> {
+        Ok(self.take(1)?[0])
+    }
+    fn u32(&mut self) -> Result<u32, &'static str> {
+        Ok(u32::from_le_bytes(
+            self.take(4)?.try_into().map_err(|_| "state_truncated")?,
+        ))
+    }
+    fn u64(&mut self) -> Result<u64, &'static str> {
+        Ok(u64::from_le_bytes(
+            self.take(8)?.try_into().map_err(|_| "state_truncated")?,
+        ))
+    }
+    fn i64(&mut self) -> Result<i64, &'static str> {
+        Ok(i64::from_le_bytes(
+            self.take(8)?.try_into().map_err(|_| "state_truncated")?,
+        ))
+    }
+    fn b32(&mut self) -> Result<[u8; 32], &'static str> {
+        self.take(32)?.try_into().map_err(|_| "state_truncated")
+    }
+    /// A count that cannot exceed what the remaining bytes could hold (`min_item` bytes each).
+    fn count(&mut self, min_item: usize) -> Result<usize, &'static str> {
+        let n = self.u64()? as usize;
+        if n > (self.0.len() - self.1) / min_item.max(1) {
+            return Err("state_count_implausible");
+        }
+        Ok(n)
+    }
+}
+
+impl FlowReducer {
+    /// Deterministic byte encoding of the COMPLETE reducer state (wallet extraction totals, distinct-mint
+    /// samples, first/last-seen, the unpruned co-entry graph, per-mint windows/snipers/early buyers, creators,
+    /// seen mints, tape origin). Parameters are NOT encoded; the caller binds them via [`Self::params_fingerprint`].
+    /// Map iteration is sorted so equal states produce equal bytes. Nothing is pruned or rounded.
+    #[must_use]
+    pub fn encode_state(&self) -> Vec<u8> {
+        let mut w = W(Vec::new());
+        w.u32(STATE_SCHEMA);
+        match self.tape_t0 {
+            Some(t) => {
+                w.u8(1);
+                w.i64(t);
+            }
+            None => {
+                w.u8(0);
+                w.i64(0);
+            }
+        }
+        let mut ws: Vec<_> = self.wallets.iter().collect();
+        ws.sort_by_key(|(k, _)| **k);
+        w.u64(ws.len() as u64);
+        for (k, v) in ws {
+            w.b32(k);
+            w.i64(v.first_ms);
+            w.i64(v.last_ms);
+            w.i64(v.extracted_lamports);
+            w.u32(v.distinct_mints);
+            for m in &v.mint_samples {
+                w.b32(m);
+            }
+        }
+        let mut cp: Vec<_> = self.copartners.iter().collect();
+        cp.sort_by_key(|(k, _)| **k);
+        w.u64(cp.len() as u64);
+        for (k, m) in cp {
+            w.b32(k);
+            w.u64(m.len() as u64);
+            for (o, c) in m {
+                w.b32(o);
+                w.u32(*c);
+            }
+        }
+        let mut wins: Vec<_> = self.windows.iter().collect();
+        wins.sort_by_key(|(k, _)| **k);
+        w.u64(wins.len() as u64);
+        for (k, dq) in wins {
+            w.b32(k);
+            w.u64(dq.len() as u64);
+            for e in dq {
+                w.i64(e.recv);
+                w.b32(&e.trader);
+                w.u8(u8::from(e.side == Side::Buy));
+                w.i64(e.lamports);
+                w.u64(e.fee);
+                match e.cu {
+                    Some(c) => {
+                        w.u8(1);
+                        w.u64(c);
+                    }
+                    None => {
+                        w.u8(0);
+                        w.u64(0);
+                    }
+                }
+            }
+        }
+        let mut fs: Vec<_> = self.mint_first_slot.iter().collect();
+        fs.sort_by_key(|(k, _)| **k);
+        w.u64(fs.len() as u64);
+        for (k, v) in fs {
+            w.b32(k);
+            w.u64(*v);
+        }
+        for map in [&self.mint_snipers, &self.mint_wallets] {
+            let mut v: Vec<_> = map.iter().collect();
+            v.sort_by_key(|(k, _)| **k);
+            w.u64(v.len() as u64);
+            for (k, set) in v {
+                w.b32(k);
+                w.u64(set.len() as u64);
+                for x in set {
+                    w.b32(x);
+                }
+            }
+        }
+        let mut eb: Vec<_> = self.early_buyers.iter().collect();
+        eb.sort_by_key(|(k, _)| **k);
+        w.u64(eb.len() as u64);
+        for (k, v) in eb {
+            w.b32(k);
+            w.u64(v.len() as u64);
+            for x in v {
+                w.b32(x);
+            }
+        }
+        let mut co: Vec<_> = self.creator_of.iter().collect();
+        co.sort_by_key(|(k, _)| **k);
+        w.u64(co.len() as u64);
+        for (k, v) in co {
+            w.b32(k);
+            w.b32(v);
+        }
+        for set in [&self.creator_traded, &self.tracked, &self.seen_mints] {
+            w.u64(set.len() as u64);
+            for x in set {
+                w.b32(x);
+            }
+        }
+        w.0
+    }
+
+    /// Fingerprint of the parameter block, so a checkpoint is refused by a reducer configured differently.
+    #[must_use]
+    pub fn params_fingerprint(&self) -> [u64; 9] {
+        let p = &self.p;
+        [
+            p.window_300_ms as u64,
+            p.window_60_ms as u64,
+            p.fresh_ms as u64,
+            p.lookback_ms as u64,
+            p.smart_sol_lamports as u64,
+            p.smart_mints as u64,
+            p.early_n as u64,
+            u64::from(p.coentry_min),
+            p.sniper_slots,
+        ]
+    }
+
+    /// Rebuild a reducer from [`Self::encode_state`] bytes under `params`. Any malformation, trailing byte or
+    /// schema mismatch is an `Err` (never a partially-loaded reducer).
+    pub fn decode_state(params: FlowParams, bytes: &[u8]) -> Result<Self, &'static str> {
+        let mut r = R(bytes, 0);
+        if r.u32()? != STATE_SCHEMA {
+            return Err("state_schema_mismatch");
+        }
+        let mut f = Self::with_params(params);
+        let has = r.u8()?;
+        let t0 = r.i64()?;
+        f.tape_t0 = match has {
+            0 => None,
+            1 => Some(t0),
+            _ => return Err("state_bad_flag"),
+        };
+        for _ in 0..r.count(32 + 24 + 4 + 160)? {
+            let k = r.b32()?;
+            let mut v = WalletState {
+                first_ms: r.i64()?,
+                last_ms: r.i64()?,
+                extracted_lamports: r.i64()?,
+                distinct_mints: r.u32()?,
+                ..WalletState::default()
+            };
+            if v.distinct_mints > 5 {
+                return Err("state_bad_distinct");
+            }
+            for m in v.mint_samples.iter_mut() {
+                *m = r.b32()?;
+            }
+            f.wallets.insert(k, v);
+        }
+        for _ in 0..r.count(32 + 8)? {
+            let k = r.b32()?;
+            let mut m = BTreeMap::new();
+            for _ in 0..r.count(36)? {
+                let o = r.b32()?;
+                m.insert(o, r.u32()?);
+            }
+            f.copartners.insert(k, m);
+        }
+        for _ in 0..r.count(32 + 8)? {
+            let k = r.b32()?;
+            let mut dq = VecDeque::new();
+            for _ in 0..r.count(8 + 32 + 1 + 8 + 8 + 9)? {
+                let recv = r.i64()?;
+                let trader = r.b32()?;
+                let side = match r.u8()? {
+                    1 => Side::Buy,
+                    0 => Side::Sell,
+                    _ => return Err("state_bad_side"),
+                };
+                let lamports = r.i64()?;
+                let fee = r.u64()?;
+                let cu = match (r.u8()?, r.u64()?) {
+                    (1, c) => Some(c),
+                    (0, _) => None,
+                    _ => return Err("state_bad_flag"),
+                };
+                dq.push_back(Ev {
+                    recv,
+                    trader,
+                    side,
+                    lamports,
+                    fee,
+                    cu,
+                });
+            }
+            f.windows.insert(k, dq);
+        }
+        for _ in 0..r.count(40)? {
+            let k = r.b32()?;
+            f.mint_first_slot.insert(k, r.u64()?);
+        }
+        for which in 0..2 {
+            for _ in 0..r.count(40)? {
+                let k = r.b32()?;
+                let mut set = BTreeSet::new();
+                for _ in 0..r.count(32)? {
+                    set.insert(r.b32()?);
+                }
+                if which == 0 {
+                    f.mint_snipers.insert(k, set);
+                } else {
+                    f.mint_wallets.insert(k, set);
+                }
+            }
+        }
+        for _ in 0..r.count(40)? {
+            let k = r.b32()?;
+            let mut v = Vec::new();
+            for _ in 0..r.count(32)? {
+                v.push(r.b32()?);
+            }
+            f.early_buyers.insert(k, v);
+        }
+        for _ in 0..r.count(64)? {
+            let k = r.b32()?;
+            f.creator_of.insert(k, r.b32()?);
+        }
+        for which in 0..3 {
+            for _ in 0..r.count(32)? {
+                let x = r.b32()?;
+                match which {
+                    0 => {
+                        f.creator_traded.insert(x);
+                    }
+                    1 => {
+                        f.tracked.insert(x);
+                    }
+                    _ => {
+                        f.seen_mints.insert(x);
+                    }
+                }
+            }
+        }
+        if r.1 != bytes.len() {
+            return Err("state_trailing_bytes");
+        }
+        Ok(f)
+    }
+
+    /// Distinct buyers of `mint` in the 300 s window before `t_dec_ms` (same filter `serve` uses). Read-only.
+    #[must_use]
+    pub fn window_buyers(&self, mint: &MintId, t_dec_ms: i64) -> BTreeSet<Wallet> {
+        let lo = t_dec_ms - self.p.window_300_ms;
+        self.windows
+            .get(mint)
+            .map(|dq| {
+                dq.iter()
+                    .filter(|e| e.recv < t_dec_ms && e.recv >= lo && e.side == Side::Buy)
+                    .map(|e| e.trader)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// The first (up to `early_n`) distinct buyers of `mint`, in arrival order (co-entry graph membership). Read-only.
+    #[must_use]
+    pub fn early_buyers_of(&self, mint: &MintId) -> Vec<Wallet> {
+        self.early_buyers.get(mint).cloned().unwrap_or_default()
+    }
+
+    /// Whether `mint`'s early-buyer list can still grow (a late BUY could then change the co-entry graph).
+    #[must_use]
+    pub fn early_list_open(&self, mint: &MintId) -> bool {
+        self.early_buyers.get(mint).map_or(0, Vec::len) < self.p.early_n
+    }
+
+    /// The creator registered for `mint`, if any.
+    #[must_use]
+    pub fn creator_of(&self, mint: &MintId) -> Option<Wallet> {
+        self.creator_of.get(mint).copied()
+    }
+
+    /// Wallets / co-entry links held (resource accounting; the graph is unpruned by design).
+    #[must_use]
+    pub fn sizes(&self) -> (usize, usize) {
+        (
+            self.wallets.len(),
+            self.copartners.values().map(BTreeMap::len).sum(),
+        )
     }
 }
 

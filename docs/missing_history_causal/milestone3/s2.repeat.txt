@@ -1,0 +1,4 @@
+20260909_173928_000596 rows 283258 (sig,trader) groups 283257 groups with >1 row 1 of which identical sol on every row 1 extra rows 1
+  extra rows pct 0.0004 ; abs sol counted again pct 0.0000
+  side mixes {('sell', 'sell'): 1}
+  resolution in repeated rows {'net_position': 1, 'instruction_accounts': 1}

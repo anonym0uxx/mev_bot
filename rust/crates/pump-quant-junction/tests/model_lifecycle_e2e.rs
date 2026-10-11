@@ -67,6 +67,8 @@ fn events(n: u32) -> Vec<AppEvent> {
             fee_lamports: Some(60_000 + u64::from(i) * 100),
             cu_consumed: Some(90_000 + u64::from(i)),
             venue: Some(TradeVenue::PumpFun),
+            event_id: None,
+            feature: None,
         });
     }
     let t_last = T0 + 1_000 + i64::from(n) * 2_000;
@@ -78,6 +80,11 @@ fn events(n: u32) -> Vec<AppEvent> {
         real_tokens: 569_000_000_000_000,
         recv_unix_ms: Some(t_last),
         slot: 2_000,
+    });
+    ev.push(AppEvent::CurveModeObserved {
+        mint: mint(),
+        mayhem: false,
+        slot: 0,
     });
     ev.push(AppEvent::OnchainConfirm {
         mint: mint(),
@@ -104,6 +111,11 @@ fn curve(e: &mut Engine, ts: i64, slot: u64, dsol: u64) {
         recv_unix_ms: Some(ts),
         slot,
     });
+    e.tick(AppEvent::CurveModeObserved {
+        mint: mint(),
+        mayhem: false,
+        slot: 0,
+    });
     ticks(e, 6);
 }
 
@@ -118,6 +130,11 @@ fn curve_quiet(e: &mut Engine, ts: i64, slot: u64) {
         real_tokens: 565_000_000_000_000,
         recv_unix_ms: Some(ts),
         slot,
+    });
+    e.tick(AppEvent::CurveModeObserved {
+        mint: mint(),
+        mayhem: false,
+        slot: 0,
     });
 }
 
@@ -139,6 +156,8 @@ fn print(e: &mut Engine, i: u32, ts: i64, slot: u64) {
         fee_lamports: Some(60_000 + u64::from(i) * 100),
         cu_consumed: Some(90_000 + u64::from(i)),
         venue: Some(TradeVenue::PumpFun),
+        event_id: None,
+        feature: None,
     });
 }
 
@@ -281,6 +300,11 @@ struct Rig {
 fn rig(ep: &Endpoint, name: &str) -> Rig {
     let dir = tmp(name);
     let mut e = Engine::new(cfg(), RunMode::Paper);
+    // FEES R10 F0: LEGACY price-only replay mode (labelled, test-only). These fixtures test lifecycle state
+    // (intent is not a fill; only reconciled quantities move inventory) through the price-only
+    // `model_mgmt_apply_reconciled_fill`, which the R6 E4 gate refuses outside this explicit mode.
+    // Fee/gross accounting is not under test here (cumulative evidence is covered in model_sell_recovery_e2e).
+    e.model_set_legacy_price_only_reports(true);
     let armed = arm_paper_model(&mut e, &ep.url, &dir.join("safety.json"));
     assert!(!armed.blocked_at_start, "{armed:?}");
     for ev in events(40) {
@@ -849,6 +873,9 @@ fn a_crash_mid_reduce_restarts_through_the_daemons_restore_path_and_resolves_onl
     r.advance_to_order(120_000);
     let (id, kind, intended, _) = r.e.model_mgmt_pending(&MINT).expect("REDUCE in flight");
     assert_eq!(format!("{kind:?}"), "Reduce");
+    // In flight = handed to an executor whose acknowledgement is unknown (a never-handed-off intent restores UNSENT;
+    // that boundary is pinned in pump-quant-app tests/submission_boundary_e2e.rs).
+    assert!(r.e.model_mgmt_mark_ack_uncertain(&MINT, id));
     // One more tick lets the on-change persist write the in-flight order (no explicit flush).
     ticks(&mut r.e, 2);
     let inv_before = r.e.model_inventory_tokens(&MINT).unwrap();
@@ -860,6 +887,9 @@ fn a_crash_mid_reduce_restarts_through_the_daemons_restore_path_and_resolves_onl
     drop(r.e); // crash
 
     let mut e2 = Engine::new(cfg(), RunMode::Paper);
+    // FEES R10 F0: legacy price-only replay mode is NOT persisted or configurable; the restarted test engine
+    // opts in explicitly, exactly as the rig does (labelled, test-only).
+    e2.model_set_legacy_price_only_reports(true);
     let _ = arm_paper_model(&mut e2, &ep.url, &dir.join("safety2.json"));
     match restore_held_state(&mut e2, &held) {
         StartupRestore::Restored(rep) => {
@@ -961,6 +991,8 @@ fn the_stale_callout_is_edge_triggered_names_the_loss_of_protection_and_recovers
             fee_lamports: Some(5_000),
             cu_consumed: Some(1),
             venue: Some(TradeVenue::PumpFun),
+            event_id: None,
+            feature: None,
         });
     }
     let t1 = r.e.model_clock_ms_now();
@@ -1007,4 +1039,614 @@ fn the_stale_callout_is_edge_triggered_names_the_loss_of_protection_and_recovers
         r.e.model_held_degraded()
     );
     assert_eq!(c.degraded_count(), 0);
+}
+
+/// RESERVATION CALLOUT (onset / reminder / recovery) and the difference between "reservation released" and
+/// "protection restored": releasing the reservation with a still-stale reserve must NOT print a recovery of the
+/// price-based protection, and the stale-data callout keeps its own state.
+#[test]
+fn the_reservation_callout_has_onset_reminder_recovery_and_release_is_not_protection_restored() {
+    let ep = Endpoint::start(|step| if step == 0 { EXIT } else { HOLD });
+    let mut r = rig(&ep, "rescallout");
+    let mut c = StaleCallout::default();
+    r.advance_to_order(120_000);
+    let (id, _, intended, _) = r.e.model_mgmt_pending(&MINT).expect("EXIT pending");
+    assert!(r.e.model_mgmt_mark_ack_uncertain(&MINT, id));
+    ticks(&mut r.e, 2);
+    assert_eq!(
+        Some(intended),
+        r.e.model_inventory_tokens(&MINT),
+        "EXIT reserves everything"
+    );
+    let now = r.e.model_clock_ms_now();
+    // ONSET: named, an alert, and it says nothing is sold or resubmitted.
+    let on = c.evaluate(&r.e, now, 60_000);
+    let line = on
+        .iter()
+        .find(|l| l.text.contains("PROTECTION DEFERRED"))
+        .expect("onset line");
+    assert!(line.alert && line.text.starts_with("ONSET"), "{on:?}");
+    assert!(
+        line.text.contains("nothing is sold or resubmitted"),
+        "{}",
+        line.text
+    );
+    // Edge-triggered: same instant says nothing about the reservation again.
+    assert!(!c
+        .evaluate(&r.e, now, 60_000)
+        .iter()
+        .any(|l| l.text.contains("PROTECTION DEFERRED")));
+    // REMINDER after the interval, with the elapsed time.
+    let rem = c.evaluate(&r.e, now + 61_000, 60_000);
+    let rl = rem
+        .iter()
+        .find(|l| l.text.contains("PROTECTION DEFERRED"))
+        .expect("reminder");
+    assert!(
+        rl.alert && rl.text.starts_with("REMINDER") && rl.text.contains("degraded_for=61s"),
+        "{}",
+        rl.text
+    );
+    // Release with definitive not-executed evidence while the feed goes quiet (stale reserve and prints).
+    assert!(r.e.model_mgmt_resolve_uncertain_not_executed(&MINT, id));
+    let other = [0x77u8; 32];
+    for k in 1..=3 {
+        let t = now + k * 40_000;
+        r.e.tick(AppEvent::MarketTrade {
+            mint: DomainMint::from_bytes(other),
+            price_fp: 1_000,
+            quote_lamports: 1_000_000,
+            liquidity_lamports: 30_000_000_000,
+            signed_base: 5,
+            buyer_entity: 9,
+            age_slots: 30,
+            recv_unix_ms: Some(t),
+            trader_pubkey: Some(wallet(900 + k as u32)),
+            slot: Some(9_000 + k as u64),
+            fee_lamports: Some(5_000),
+            cu_consumed: Some(1),
+            venue: Some(TradeVenue::PumpFun),
+            event_id: None,
+            feature: None,
+        });
+    }
+    let t1 = r.e.model_clock_ms_now();
+    let after = c.evaluate(&r.e, t1, 60_000);
+    // The reservation is released ...
+    assert!(
+        after.iter().any(|l| !l.alert
+            && l.text.starts_with("RECOVERED")
+            && l.text.contains("unresolved sell was reconciled")),
+        "{after:?}"
+    );
+    // ... but price-based protection is NOT restored: the stale-data state is raised on its own.
+    assert!(
+        after
+            .iter()
+            .any(|l| l.alert && l.text.contains("UNPROTECTED")),
+        "released reservation with stale prices must still be named degraded: {after:?}"
+    );
+    assert_eq!(c.degraded_count(), 1, "only the staleness remains degraded");
+    // Fresh reserve + print restores readiness; that is a separate recovery.
+    r.clock = t1 + 1_000;
+    r.slot += 10;
+    curve(&mut r.e, r.clock, r.slot, 200_000_000);
+    print(&mut r.e, r.n + 1, r.clock, r.slot);
+    r.clock += 1_000;
+    r.slot += 1;
+    curve_quiet(&mut r.e, r.clock, r.slot);
+    print(&mut r.e, r.n + 2, r.clock, r.slot);
+    ticks(&mut r.e, 3);
+    let rec = c.evaluate(&r.e, r.clock, 60_000);
+    assert!(
+        rec.iter()
+            .any(|l| !l.alert && l.text.starts_with("RECOVERED")),
+        "{rec:?}"
+    );
+    assert_eq!(c.degraded_count(), 0);
+}
+
+/// M1: the daemon's final sequence AFTER an accepted protective handoff (stop gate -> report()) leaves the
+/// handed-off exposure exactly as acknowledged: same exposure digest, same inventory, same durable ledger.
+#[test]
+fn m1_final_report_after_an_accepted_handoff_preserves_the_acknowledged_exposure() {
+    let ep = Endpoint::start(|_| HOLD);
+    let mut r = rig(&ep, "m1_handoff");
+    let held = r.dir.join("held.json");
+    r.e.model_held_attach(&held);
+    let (ack, req) = (r.dir.join("ACK.json"), r.dir.join("REQ.json"));
+    let mut st = StopSession::new();
+    let _ = handle_stop_request(&mut r.e, &mut st, &req, &ack);
+    write_ack(&ack, &req, |_| {});
+    match handle_stop_request(&mut r.e, &mut st, &req, &ack) {
+        StopGate::CompleteHandedOff { .. } => {}
+        other => panic!("valid ack must complete: {other:?}"),
+    }
+    let acked: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&req).unwrap()).unwrap();
+    let inv0 = r.e.model_inventory_tokens(&MINT);
+    let led = |p: &std::path::Path| {
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap();
+        (
+            v["held"].clone(),
+            v["pending"].clone(),
+            v["realized_lamports"].clone(),
+        )
+    };
+    let l0 = led(&held);
+    // The daemon's post-loop path: snapshot, report(), exposure view.
+    let _snap = r.e.open_positions_snapshot();
+    let rep = r.e.report();
+    let x = r.e.model_open_exposure();
+    assert_eq!(rep.net_lamports, 0);
+    assert!(
+        r.e.model_position_open(&MINT),
+        "handed-off exposure is not closed by the final report"
+    );
+    assert_eq!(r.e.model_inventory_tokens(&MINT), inv0);
+    assert_eq!(x.len(), 1);
+    assert_eq!(
+        r.e.model_exposure_digest().0,
+        acked["exposure_digest"].as_str().unwrap(),
+        "exposure after report() is exactly what the recipient acknowledged"
+    );
+    assert!(r.e.model_held_persist_now());
+    assert_eq!(
+        led(&held),
+        l0,
+        "durable ledger unchanged by the final report"
+    );
+}
+
+/// Item 3 through the DAEMON's own code: the deadline comes from `run_deadline_from` (the env parser pq_daemon uses),
+/// the engine is armed by `arm_paper_model` (production HTTP client), and the handoff uses `request_deadline_handoff`.
+/// During the drain a valid REDUCE executes. The next valid ADD is refused BY THE DEADLINE ROW'S NAME and creates no
+/// order. When the drain bound elapses the handoff sentinel is raised, and the position is not force-closed.
+#[test]
+fn daemon_path_run_deadline_drain_refuses_add_by_name_executes_reduce_and_hands_off_without_closing(
+) {
+    use pump_quant_app::stop_policy::{action_for, OpsInputs, RunPhase, StopTrigger};
+    use pump_quant_junction::model_lifecycle::{request_deadline_handoff, run_deadline_from};
+    let ep = Endpoint::start(|step| match step {
+        0 => REDUCE,
+        1 => ADD,
+        _ => HOLD,
+    });
+    let mut r = rig(&ep, "drain_add");
+    let (d, dr) = run_deadline_from(Some("10000"), Some("5000"));
+    assert_eq!((d, dr), (10_000, 5_000), "an override may only shorten");
+    r.e.model_stop_set_deadline(d, dr);
+    let ev = r.e.model_stop_evaluate(10_000, OpsInputs::healthy());
+    assert_eq!(ev.phase, RunPhase::Drain { ends_at_ms: 15_000 });
+    assert!(r.e.model_entries_blocked() && !r.e.model_safety_blocked());
+    // Step 0: REDUCE over the wire -> order intent -> reconciled fill.
+    r.advance_to_order(120_000);
+    let (id, k, intended, _) =
+        r.e.model_mgmt_pending(&MINT)
+            .expect("REDUCE pending in the drain");
+    assert_eq!(format!("{k:?}"), "Reduce");
+    let inv0 = r.e.model_inventory_tokens(&MINT).unwrap();
+    r.e.model_mgmt_apply_reconciled_fill(MINT, id, intended, 22_000)
+        .unwrap();
+    assert_eq!(r.e.model_inventory_tokens(&MINT), Some(inv0 - intended));
+    // Step 1: ADD over the wire -> refused by the deadline row's name, no order.
+    let label = format!(
+        "mgmt:refuse:add_blocked_stop:{}",
+        action_for(StopTrigger::RunDeadline).name
+    );
+    for _ in 0..60 {
+        if r.rep(&label) >= 1 {
+            break;
+        }
+        r.advance(5_000);
+    }
+    assert!(
+        r.rep(&label) >= 1,
+        "ADD refused by name: {:?}",
+        r.e.model_lane_report()
+    );
+    assert!(
+        r.e.model_mgmt_pending(&MINT).is_none(),
+        "no ADD order in the drain"
+    );
+    assert_eq!(
+        r.e.model_inventory_tokens(&MINT),
+        Some(inv0 - intended),
+        "refused ADD moved nothing"
+    );
+    // Drain bound elapsed: the daemon's handoff sentinel, never a force close.
+    let ev = r.e.model_stop_evaluate(15_000, OpsInputs::healthy());
+    assert!(ev.handoff_due);
+    let stop = r.dir.join("STOP");
+    assert!(request_deadline_handoff(&stop) && stop.exists());
+    assert!(
+        !request_deadline_handoff(&stop),
+        "raised once, never overwritten"
+    );
+    assert!(
+        r.e.model_position_open(&MINT),
+        "the drain hands off; it does not close"
+    );
+}
+
+/// Item 4 through the PRODUCTION client (the serve_term runA shape): the endpoint hangs (12 s). The engine abandons
+/// each ask at its 3 s deadline and the 8 s socket timeout later returns a transport error for the SAME request.
+/// Initial count 0, threshold 3: two asks = 2 failures (deadline), and their two late `endpoint:transport_error`
+/// arrivals add 0. So the latch does not trip, where runA counted 4 for 2 asks and tripped at the 3rd increment.
+/// A third distinct ask trips it.
+#[test]
+fn daemon_path_two_hung_asks_with_socket_timeouts_do_not_trip_a_third_ask_does() {
+    let ep = Endpoint::start(|_| HOLD);
+    let mut r = rig(&ep, "once_per_id");
+    assert_eq!(r.e.model_safety_consecutive_failures(), 0);
+    ep.hang.store(true, Ordering::SeqCst);
+    for _ in 0..80 {
+        if r.rep("mgmt:request_abandoned_deadline") >= 2 {
+            break;
+        }
+        r.advance(5_000);
+    }
+    assert_eq!(
+        r.rep("mgmt:request_abandoned_deadline"),
+        2,
+        "{:?}",
+        r.e.model_lane_report()
+    );
+    assert_eq!(r.e.model_safety_consecutive_failures(), 2);
+    assert!(!r.e.model_safety_blocked());
+    // Hold the feed clock still (no new ask) while the 8 s socket timeouts fire on both workers.
+    for _ in 0..120 {
+        if r.rep("health:late_arrival_already_charged") >= 2 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+        ticks(&mut r.e, 1);
+    }
+    assert_eq!(
+        r.rep("endpoint:transport_error"),
+        2,
+        "{:?}",
+        r.e.model_lane_report()
+    );
+    assert_eq!(r.rep("health:late_arrival_already_charged"), 2);
+    assert_eq!(
+        r.e.model_safety_consecutive_failures(),
+        2,
+        "2 asks count 2, not 4"
+    );
+    assert!(
+        !r.e.model_safety_blocked(),
+        "two asks must not trip a threshold of three"
+    );
+    // A third distinct ask is abandoned -> 3 -> trip.
+    for _ in 0..80 {
+        if r.e.model_safety_blocked() {
+            break;
+        }
+        r.advance(5_000);
+    }
+    assert!(r.e.model_safety_blocked(), "{:?}", r.e.model_lane_report());
+    assert_eq!(r.rep("mgmt:request_abandoned_deadline"), 3);
+    assert!(
+        r.e.model_position_open(&MINT),
+        "tripping never closes the position"
+    );
+}
+
+// ─── Operator re-arm entry point (model_lifecycle::handle_rearm_request) ──────────────────────────────────────────
+
+use pump_quant_app::safety_off::RearmRefusal;
+use pump_quant_junction::model_lifecycle::{
+    handle_rearm_request, harness_force_protect_from, refuse_stale_rearm_at_startup, RearmOutcome,
+    RearmRequestRefusal,
+};
+
+fn rearm_req(r: &Rig, body: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+    let (req, res) = (r.dir.join("REARM.json"), r.dir.join("REARM_RESULT.json"));
+    std::fs::write(&req, body).unwrap();
+    (req, res)
+}
+
+fn refused(o: Option<RearmOutcome>) -> RearmRequestRefusal {
+    match o {
+        Some(RearmOutcome::Refused { why, .. }) => why,
+        other => panic!("expected a refusal: {other:?}"),
+    }
+}
+
+fn safety_file(r: &Rig) -> serde_json::Value {
+    serde_json::from_str(&std::fs::read_to_string(r.dir.join("safety.json")).unwrap()).unwrap()
+}
+
+#[test]
+fn operator_rearm_request_needs_a_named_operator_and_the_current_epoch_and_is_consumed_once() {
+    let ep = Endpoint::start(|_| HOLD);
+    let mut r = rig(&ep, "rearm_req");
+    r.e.model_safety_trip_operator();
+    let epoch = r.e.model_safety_epoch();
+    assert!(r.e.model_safety_blocked() && epoch >= 1);
+    // Each refused request is CONSUMED (removed) and changes nothing; the outcome file names the refusal.
+    let cases: [(String, RearmRequestRefusal); 5] = [
+        ("not json".into(), RearmRequestRefusal::Unreadable),
+        (
+            r#"{"operator":"alon"}"#.into(),
+            RearmRequestRefusal::EpochMissing,
+        ),
+        (
+            format!(r#"{{"operator":"alon","safety_epoch":{}}}"#, epoch + 7),
+            RearmRequestRefusal::EpochMismatch {
+                requested: epoch + 7,
+                current: epoch,
+            },
+        ),
+        (
+            format!(r#"{{"operator":"  ","safety_epoch":{epoch}}}"#),
+            RearmRequestRefusal::Contract(RearmRefusal::NoOperator),
+        ),
+        (
+            format!(r#"{{"safety_epoch":{epoch}}}"#),
+            RearmRequestRefusal::Contract(RearmRefusal::NoOperator),
+        ),
+    ];
+    for (body, want) in cases {
+        let (req, res) = rearm_req(&r, &body);
+        assert_eq!(
+            refused(handle_rearm_request(&mut r.e, &req, &res)),
+            want,
+            "{body}"
+        );
+        assert!(!req.exists(), "a request is consumed even when refused");
+        assert!(
+            r.e.model_safety_blocked(),
+            "refused => the block stands ({body})"
+        );
+        assert_eq!(r.e.model_safety_epoch(), epoch);
+        let out: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&res).unwrap()).unwrap();
+        assert_eq!(out["outcome"], "refused");
+        assert_eq!(out["safety_blocked"], true);
+    }
+    assert_eq!(safety_file(&r)["blocked"], true);
+    // No request file: nothing happens.
+    assert!(handle_rearm_request(&mut r.e, &r.dir.join("absent.json"), &r.dir.join("x")).is_none());
+    // A valid request lifts it, durably, recording who.
+    let (req, res) = rearm_req(
+        &r,
+        &format!(r#"{{"operator":"alon","safety_epoch":{epoch}}}"#),
+    );
+    match handle_rearm_request(&mut r.e, &req, &res) {
+        Some(RearmOutcome::Rearmed {
+            operator,
+            epoch: e2,
+            entries_blocked,
+            restrictions,
+        }) => {
+            assert_eq!(operator, "alon");
+            assert_eq!(e2, epoch + 1);
+            assert!(!entries_blocked && restrictions.is_empty());
+        }
+        other => panic!("valid request must re-arm: {other:?}"),
+    }
+    assert!(!req.exists());
+    assert!(!r.e.model_safety_blocked() && !r.e.model_entries_blocked());
+    let f = safety_file(&r);
+    assert_eq!(
+        (
+            f["blocked"].clone(),
+            f["rearmed_by"].clone(),
+            f["epoch"].as_u64()
+        ),
+        (
+            serde_json::json!(false),
+            serde_json::json!("alon"),
+            Some(epoch + 1)
+        )
+    );
+    // Replaying the SAME request after a new latch cannot lift it (epoch moved on twice: re-arm + trip).
+    r.e.model_safety_trip_operator();
+    let (req, res) = rearm_req(
+        &r,
+        &format!(r#"{{"operator":"alon","safety_epoch":{epoch}}}"#),
+    );
+    assert!(matches!(
+        refused(handle_rearm_request(&mut r.e, &req, &res)),
+        RearmRequestRefusal::EpochMismatch { .. }
+    ));
+    assert!(r.e.model_safety_blocked());
+    // Not blocked -> the contract's NotBlocked.
+    let e3 = r.e.model_safety_epoch();
+    let (req, res) = rearm_req(&r, &format!(r#"{{"operator":"alon","safety_epoch":{e3}}}"#));
+    assert!(matches!(
+        handle_rearm_request(&mut r.e, &req, &res),
+        Some(RearmOutcome::Rearmed { .. })
+    ));
+    let e4 = r.e.model_safety_epoch();
+    let (req, res) = rearm_req(&r, &format!(r#"{{"operator":"alon","safety_epoch":{e4}}}"#));
+    assert_eq!(
+        refused(handle_rearm_request(&mut r.e, &req, &res)),
+        RearmRequestRefusal::Contract(RearmRefusal::NotBlocked)
+    );
+}
+
+#[test]
+fn operator_rearm_with_an_active_resource_restriction_lifts_the_latch_but_entries_stay_blocked() {
+    let ep = Endpoint::start(|_| HOLD);
+    let mut r = rig(&ep, "rearm_restr");
+    // The disk hard floor latches SAFETY_OFF; RAM low is an active while-condition row.
+    let ops = pump_quant_app::stop_policy::OpsInputs {
+        disk_hard_ok: Some(false),
+        ram_ok: Some(false),
+        ..pump_quant_app::stop_policy::OpsInputs::healthy()
+    };
+    r.e.model_stop_evaluate(0, ops);
+    assert!(r.e.model_safety_blocked());
+    assert_eq!(r.e.model_safety_reason(), "disk_hard_floor");
+    // Disk recovered, RAM still low.
+    let ops2 = pump_quant_app::stop_policy::OpsInputs {
+        ram_ok: Some(false),
+        ..pump_quant_app::stop_policy::OpsInputs::healthy()
+    };
+    r.e.model_stop_evaluate(0, ops2);
+    assert!(
+        r.e.model_safety_blocked(),
+        "the latch survives the floor clearing"
+    );
+    let epoch = r.e.model_safety_epoch();
+    let (req, res) = rearm_req(
+        &r,
+        &format!(r#"{{"operator":"alon","safety_epoch":{epoch}}}"#),
+    );
+    match handle_rearm_request(&mut r.e, &req, &res) {
+        Some(RearmOutcome::Rearmed {
+            entries_blocked,
+            restrictions,
+            ..
+        }) => {
+            assert!(entries_blocked, "RAM restriction keeps entries blocked");
+            assert_eq!(restrictions, vec!["RamHeadroomLow".to_string()]);
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(!r.e.model_safety_blocked() && r.e.model_new_risk_blocked());
+    r.e.model_stop_evaluate(0, pump_quant_app::stop_policy::OpsInputs::healthy());
+    assert!(
+        !r.e.model_entries_blocked(),
+        "healthy again -> entries open"
+    );
+}
+
+#[test]
+fn operator_rearm_is_refused_while_a_protective_order_is_uncertain_and_when_it_cannot_persist() {
+    let ep = Endpoint::start(|_| HOLD);
+    let mut r = rig(&ep, "rearm_uncertain");
+    r.e.model_harness_force_protect(&MINT).unwrap();
+    let (id, ..) = r.e.model_protect_pending_order(&MINT).unwrap();
+    assert!(r.e.model_protect_mark_ack_uncertain(&MINT, id));
+    r.e.model_safety_trip_operator();
+    let epoch = r.e.model_safety_epoch();
+    let (req, res) = rearm_req(
+        &r,
+        &format!(r#"{{"operator":"alon","safety_epoch":{epoch}}}"#),
+    );
+    assert_eq!(
+        refused(handle_rearm_request(&mut r.e, &req, &res)),
+        RearmRequestRefusal::Contract(RearmRefusal::UncertainOrderPending)
+    );
+    assert!(r.e.model_safety_blocked());
+    // Unpersistable latch (the safety path is a directory): re-arm refused PersistFailed, block stands.
+    let dir = tmp("rearm_nowrite");
+    let bad = dir.join("safety_is_a_dir");
+    std::fs::create_dir_all(&bad).unwrap();
+    let mut e = Engine::new(cfg(), RunMode::Paper);
+    let _ = arm_paper_model(&mut e, &ep.url, &bad);
+    e.model_safety_trip_operator();
+    let ep2 = e.model_safety_epoch();
+    let req = dir.join("REARM.json");
+    std::fs::write(
+        &req,
+        format!(r#"{{"operator":"alon","safety_epoch":{ep2}}}"#),
+    )
+    .unwrap();
+    assert_eq!(
+        refused(handle_rearm_request(&mut e, &req, &dir.join("RES.json"))),
+        RearmRequestRefusal::Contract(RearmRefusal::PersistFailed)
+    );
+    assert!(e.model_safety_blocked());
+}
+
+#[test]
+fn a_rearm_request_present_at_startup_is_refused_and_removed() {
+    let ep = Endpoint::start(|_| HOLD);
+    let mut r = rig(&ep, "rearm_stale");
+    r.e.model_safety_trip_operator();
+    let epoch = r.e.model_safety_epoch();
+    let (req, res) = rearm_req(
+        &r,
+        &format!(r#"{{"operator":"alon","safety_epoch":{epoch}}}"#),
+    );
+    assert!(refuse_stale_rearm_at_startup(&r.e, &req, &res));
+    assert!(!req.exists());
+    let out: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&res).unwrap()).unwrap();
+    assert_eq!(out["why"], "StaleAtStartup");
+    assert!(r.e.model_safety_blocked());
+    assert!(!refuse_stale_rearm_at_startup(&r.e, &req, &res));
+    assert!(handle_rearm_request(&mut r.e, &req, &res).is_none());
+}
+
+// ─── HARNESS-ONLY forced protective trigger under pressure ───────────────────────────────────────────────────────
+
+#[test]
+fn a_forced_hard_stop_under_safety_off_and_a_resource_restriction_executes_through_the_protective_path(
+) {
+    let ep = Endpoint::start(|_| HOLD);
+    let mut r = rig(&ep, "force_protect");
+    let file = r.dir.join("FORCE");
+    // Not the harness: never read, never removed, nothing queued.
+    std::fs::write(&file, "ab".repeat(32)).unwrap();
+    assert!(harness_force_protect_from(&mut r.e, false, &file).is_none());
+    assert!(file.exists());
+    // Pressure: disk hard floor latches SAFETY_OFF, RAM low restricts.
+    r.e.model_stop_evaluate(
+        0,
+        pump_quant_app::stop_policy::OpsInputs {
+            disk_hard_ok: Some(false),
+            ram_ok: Some(false),
+            ..pump_quant_app::stop_policy::OpsInputs::healthy()
+        },
+    );
+    assert!(r.e.model_safety_blocked() && r.e.model_new_risk_blocked());
+    let inv0 = r.e.model_inventory_tokens(&MINT).unwrap();
+    assert!(inv0 > 0);
+    let (m, res) = harness_force_protect_from(&mut r.e, true, &file).unwrap();
+    assert_eq!(m, "ab".repeat(32));
+    assert!(!file.exists(), "consumed");
+    let (id, intended, filled, code) = res.unwrap().expect("a protective order is working");
+    assert!(id > 0);
+    assert_eq!(
+        (intended, filled, code),
+        (inv0, 0, 2),
+        "whole free inventory, HardStop code"
+    );
+    assert_eq!(r.rep("protect:harness_forced:HardStop"), 1);
+    assert_eq!(r.rep("protect:trigger:HardStop"), 1);
+    assert_eq!(r.rep("protect:order:HardStop"), 1);
+    // A second force while it works is refused by name.
+    std::fs::write(&file, "ab".repeat(32)).unwrap();
+    assert_eq!(
+        harness_force_protect_from(&mut r.e, true, &file).unwrap().1,
+        Err("harness_force_protect_refused:protective_order_working")
+    );
+    // The protective order fills on landing state despite SAFETY_OFF + the RAM restriction: only the fill closes.
+    r.advance(20_000);
+    assert!(r.rep("protect:fill") >= 1, "{:?}", r.e.model_lane_report());
+    assert!(
+        !r.e.model_position_open(&MINT),
+        "protective sell closed the position"
+    );
+    assert!(
+        r.e.model_safety_blocked(),
+        "the latch is untouched by protection"
+    );
+    // Not held now -> named refusal; bad mint -> named refusal.
+    std::fs::write(&file, "ab".repeat(32)).unwrap();
+    assert_eq!(
+        harness_force_protect_from(&mut r.e, true, &file).unwrap().1,
+        Err("harness_force_protect_refused:not_held")
+    );
+    std::fs::write(&file, "zz").unwrap();
+    assert_eq!(
+        harness_force_protect_from(&mut r.e, true, &file).unwrap().1,
+        Err("harness_force_protect_refused:bad_mint")
+    );
+}
+
+#[test]
+fn the_forced_trigger_is_refused_outside_a_paper_model_engine() {
+    let mut e = Engine::new(cfg(), RunMode::Paper);
+    assert_eq!(
+        e.model_harness_force_protect(&MINT),
+        Err("harness_force_protect_refused:not_paper_model")
+    );
 }

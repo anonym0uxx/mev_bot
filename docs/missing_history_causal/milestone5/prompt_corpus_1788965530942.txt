@@ -1,0 +1,21 @@
+DECISION CLOCK — assess this opportunity.
+t_dec_ms=1788965530942  age_s=120.0  last_trade_age_s=0.18
+venue=pumpfun  curve_present=True  evidence_status=complete
+n_prior_trades=472  buy_count=212  sell_count=260  unique_traders=194
+price_lamports_per_raw_token=7.204966683840507e-05  ret_5s_bp=-98.8678  ret_30s_bp=729.86  vol_30s_bp=1357
+buy_volume_lamports=79416623403  sell_volume_lamports=77735972861  net_flow_lamports=1680650542
+top1_trader_share=0.05197  top5_trader_share=0.20264  buyer_seller_ratio=0.81538
+ENRICHED CANDIDATE STATE (strictly causal at t_dec): mcap_sol_at_t=74.637948 mcap_source=curve holders_at_t=58 top1_float_share=0.171878 top5_float_share=0.511697 holder_hhi=0.073442 bundle_slots=114 bundle_wallets=370 volume_sol_at_t=157.18321 wash_ratio=0.475
+DEV HISTORY: creator_past_launches=0 creator_known=1
+LIVE FLOW STATE: entrants_60s=58 entrants_300s=171 net_flow_sol_300s=1.695682 fresh_wallet_share_300s=1.0 flow_lookback_d=7.0 sniper_share_300s=0.035088 bot_uniform_share_300s=0.082569 smart_entrants_300s=6 smart_net_flow_sol_300s=-0.141145 coentry_wallets_300s=38 creator_trading_own_mint=True entrant_fee_p90_lamports=604999 entrant_cu_p50=93262
+CURVE STATE (at decision time): curve_reserves=present src=laserstream staleness_ms=184 pricing_eligible=true v_sol_reserves_sol=49.016278614 v_tokens_reserves=656720605914385 real_sol_reserves_sol=19.016278614 real_tokens_reserves=376820605914385 curve_price_sol_per_raw_token=0.000000000000074638 curve_k=32190000191054391390462390 curve_progress=0.223721 curve_regime=bonding
+AMM POOL STATE (at decision time): amm_reserves=absent reason=no_event_before_t_dec
+PRICE UNITS: price_lamports_per_raw_token=7.204966684e-05 price_sol_per_raw_token=7.204966684e-14 price_sol_per_whole_token=7.204966684e-08
+
+Choose exactly one action: BUY, WATCH, SKIP. Respect the stated round-trip cost. Answer in the fixed format.
+SIZE OPTIONS (choose one on BUY; round-trip cost from the cost authority):
+  SMALL = 0.25 SOL - 292 bp round trip (pool depth 49.0 SOL)
+  MID = 0.50 SOL - 394 bp round trip (pool depth 49.0 SOL)
+  FULL = 1.00 SOL - 597 bp round trip (pool depth 49.0 SOL)
+  Size is a judgement: a bigger clip pays more impact in a thinner book.
+

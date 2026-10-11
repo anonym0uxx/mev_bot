@@ -66,6 +66,8 @@ fn feed(n: u32) -> Vec<AppEvent> {
             fee_lamports: Some(60_000 + u64::from(i) * 100),
             cu_consumed: Some(90_000 + u64::from(i)),
             venue: Some(TradeVenue::PumpFun),
+            event_id: None,
+            feature: None,
         });
     }
     ev.push(AppEvent::CurveObserved {
@@ -76,6 +78,11 @@ fn feed(n: u32) -> Vec<AppEvent> {
         real_tokens: 569_000_000_000_000,
         recv_unix_ms: Some(T0 + 1_000 + i64::from(n) * 2_000),
         slot: 2_000,
+    });
+    ev.push(AppEvent::CurveModeObserved {
+        mint: mint(),
+        mayhem: false,
+        slot: 0,
     });
     ev.push(AppEvent::OnchainConfirm {
         mint: mint(),
@@ -125,6 +132,11 @@ fn landing(e: &mut Engine, ts: i64, slot: u64) {
         real_tokens: 565_000_000_000_000,
         recv_unix_ms: Some(ts),
         slot,
+    });
+    e.tick(AppEvent::CurveModeObserved {
+        mint: mint(),
+        mayhem: false,
+        slot: 0,
     });
     pump(e, 4);
 }
@@ -397,6 +409,8 @@ fn lifecycle_o_closed_position_conflict_stays_blocked_with_durable_evidence() {
         fee_lamports: Some(70_000),
         cu_consumed: Some(95_000),
         venue: Some(pump_quant_app::event::TradeVenue::PumpFun),
+        event_id: None,
+        feature: None,
     });
     #[allow(clippy::explicit_counter_loop)]
     // `slot` advances with the loop but is passed into each event; range-as-slot would change the sequence
@@ -409,6 +423,11 @@ fn lifecycle_o_closed_position_conflict_stays_blocked_with_durable_evidence() {
             real_tokens: 900_000_000_000_000,
             recv_unix_ms: Some(ts),
             slot,
+        });
+        e.tick(AppEvent::CurveModeObserved {
+            mint: mint(),
+            mayhem: false,
+            slot: 0,
         });
         pump(&mut e, 2);
         ts += 400;
@@ -508,6 +527,8 @@ fn lifecycle_l_held_position_is_monitored_while_new_exposure_on_the_mint_is_bloc
         fee_lamports: Some(70_000),
         cu_consumed: Some(95_000),
         venue: Some(pump_quant_app::event::TradeVenue::PumpFun),
+        event_id: None,
+        feature: None,
     });
     #[allow(clippy::explicit_counter_loop)]
     // `slot` advances with the loop but is passed into each event; range-as-slot would change the sequence
@@ -520,6 +541,11 @@ fn lifecycle_l_held_position_is_monitored_while_new_exposure_on_the_mint_is_bloc
             real_tokens: 900_000_000_000_000,
             recv_unix_ms: Some(ts),
             slot,
+        });
+        e.tick(AppEvent::CurveModeObserved {
+            mint: mint(),
+            mayhem: false,
+            slot: 0,
         });
         pump(&mut e, 2);
         ts += 400;
@@ -587,6 +613,11 @@ fn lifecycle_f_funnel_counts_unique_markets_including_never_ready() {
         recv_unix_ms: Some(T0 + 500),
         slot: 5,
     });
+    e2.tick(AppEvent::CurveModeObserved {
+        mint: DomainMint::from_bytes([0x77; 32]),
+        mayhem: false,
+        slot: 0,
+    });
     pump(&mut e2, 3);
     let f2 = e2.model_funnel();
     let never: u64 = f2
@@ -625,16 +656,22 @@ fn lifecycle_i_older_report_paths_cannot_see_an_unvalidated_routing_fill() {
     assert!(e.model_position_open(&MINT));
     let cash_before = e.bankroll_balance();
     let r = e.report();
+    // M1: report() never removes exposure the model owns. The routing position stays held, nothing is
+    // closed (so nothing is excluded), and no cash is settled; it is reported as unresolved exposure.
     assert!(
-        !e.model_position_open(&MINT),
-        "report() closed the held position"
+        e.model_position_open(&MINT),
+        "report() must not close a model-owned position"
     );
-    // Visible, labelled, counted — and NOT a zero-return observation.
-    assert_eq!(e.model_excluded_exits().len(), 1);
+    assert!(
+        e.model_excluded_exits().is_empty(),
+        "nothing closed, nothing excluded"
+    );
     assert_eq!(
-        e.model_excluded_exits()[0].reason,
-        "routing_fill:landing_unvalidated"
+        e.bankroll_balance(),
+        cash_before,
+        "no settlement by report()"
     );
+    assert_eq!(e.model_open_exposure().len(), 1);
     assert!(e.model_assessable_fills().is_empty());
     // Every assessment feed saw nothing.
     assert!(
@@ -655,7 +692,7 @@ fn lifecycle_i_older_report_paths_cannot_see_an_unvalidated_routing_fill() {
         !e.promotion_stat_verdict().fdr_blocks,
         "no candidate trades"
     );
-    // Cash is real simulator state, so it is settled (and distinct from the assessment feeds).
+    // Cash is untouched: report() settles nothing for model-owned exposure.
     let _ = cash_before;
 }
 
@@ -688,6 +725,8 @@ fn lifecycle_j_operational_reconciliation_and_protection_are_not_skipped_for_rou
         fee_lamports: Some(70_000),
         cu_consumed: Some(95_000),
         venue: Some(pump_quant_app::event::TradeVenue::PumpFun),
+        event_id: None,
+        feature: None,
     });
     #[allow(clippy::explicit_counter_loop)]
     // `slot` advances with the loop but is passed into each event; range-as-slot would change the sequence
@@ -700,6 +739,11 @@ fn lifecycle_j_operational_reconciliation_and_protection_are_not_skipped_for_rou
             real_tokens: 900_000_000_000_000,
             recv_unix_ms: Some(ts),
             slot,
+        });
+        e.tick(AppEvent::CurveModeObserved {
+            mint: mint(),
+            mayhem: false,
+            slot: 0,
         });
         pump(&mut e, 2);
         ts += 400;
