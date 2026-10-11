@@ -1401,7 +1401,9 @@ impl Engine {
                 done.push(v);
             }
         }
-        let (mut ok_n, mut bad_n) = (0u32, 0u32);
+        let mut ok_n = 0u32;
+        // HEALTH_R10 Slice A: every failure is classed ONCE, at charge time; the E streak counts `bad.total()`.
+        let mut bad = crate::safety_off::EndpointMix::default();
         // ENDPOINT HEALTH is a property of the transport and the contract, never of the decision:
         //   failure  = transport error / non-200 / unreadable body (Err), a completion that fails the
         //              TERMINATION contract (truncated / no or unaccepted finish_reason / template
@@ -1429,6 +1431,7 @@ impl Engine {
                 }
                 self.model_local_expired_release(v.id, v.kind, clock);
                 local_n += 1;
+                self.model_health_class(crate::safety_off::HealthClass::LocalExpiry);
                 continue;
             }
             rest.push(v);
@@ -1447,6 +1450,8 @@ impl Engine {
                     }
                     Ok(_) => "endpoint:late_valid",
                 });
+                // Q1: the class was fixed at charge time (dispatched_deadline_miss); this is evidence only, +0.
+                self.mrep(Self::model_late_evidence_label(&v.result));
                 continue;
             }
             let healthy = match &v.result {
@@ -1456,16 +1461,40 @@ impl Engine {
                 }
                 Err(_) => false,
             };
-            if healthy {
+            // D2: an answer arriving after its engine deadline (even before this poll's expire sweep) is NEVER
+            // healthy: it is ONE dispatched_deadline_miss, charged here. `accept` consumes the table entry below
+            // (discard:late), so the expire sweep can never charge it a second time.
+            let past_deadline = v.session == self.model_session
+                && self.model_live_deadline(v.id).is_some_and(|d| clock > d);
+            if past_deadline {
+                self.mrep("health:late_before_expire");
+                if !healthy {
+                    self.mrep(match &v.result {
+                        Err(_) => "endpoint:transport_error",
+                        Ok(c) if c.truncated() => "endpoint:truncated",
+                        Ok(c) if c.termination().is_err() => "endpoint:unterminated",
+                        Ok(_) => "endpoint:malformed",
+                    });
+                }
+                self.mrep(Self::model_late_evidence_label(&v.result));
+                bad.charge(crate::safety_off::HealthClass::DispatchedDeadlineMiss);
+                self.model_health_class(crate::safety_off::HealthClass::DispatchedDeadlineMiss);
+            } else if healthy {
                 ok_n += 1;
             } else {
-                bad_n += 1;
                 self.mrep(match &v.result {
                     Err(_) => "endpoint:transport_error",
                     Ok(c) if c.truncated() => "endpoint:truncated",
                     Ok(c) if c.termination().is_err() => "endpoint:unterminated",
                     Ok(_) => "endpoint:malformed",
                 });
+                let class = if v.result.is_err() {
+                    crate::safety_off::HealthClass::TransportFailure
+                } else {
+                    crate::safety_off::HealthClass::InvalidOutput
+                };
+                bad.charge(class);
+                self.model_health_class(class);
             }
         }
         for v in done {
@@ -1495,6 +1524,7 @@ impl Engine {
                     crate::model_worker::LocalStatus::CancelledQueued => {
                         self.model_local_expired_release(id, kind, clock);
                         local_n += 1;
+                        self.model_health_class(crate::safety_off::HealthClass::LocalExpiry);
                     }
                     crate::model_worker::LocalStatus::ExpiredUnsent => {
                         // The worker refused it unsent; the verdict is on its way. Not endpoint evidence. Keep the
@@ -1511,13 +1541,16 @@ impl Engine {
                         });
                         self.model_rec_outcome(id, clock, "abandoned_deadline");
                         if self.model_health_charged.insert(id) {
-                            bad_n += 1;
+                            bad.charge(crate::safety_off::HealthClass::DispatchedDeadlineMiss);
+                            self.model_health_class(
+                                crate::safety_off::HealthClass::DispatchedDeadlineMiss,
+                            );
                         }
                     }
                 }
             }
         }
-        self.model_safety_note_endpoint(ok_n, bad_n);
+        self.model_safety_note_endpoint(ok_n, bad);
         self.model_safety_note_local_expired(local_n);
         self.model_try_fills(clock);
         self.model_mgmt_try_fills(clock);
@@ -1577,6 +1610,36 @@ impl Engine {
 
     /// Release ONE local-queue-expired request (never sent): its table slot and its binding, exactly once, and count
     /// it under the local class. Never touches endpoint health.
+    /// Per-class health counter (`health:class:<name>`), bumped exactly once per charged failure.
+    fn model_health_class(&mut self, class: crate::safety_off::HealthClass) {
+        self.mrep(format!("health:class:{}", class.as_str()));
+    }
+
+    /// Deadline of a live request in whichever table issued it (management ids live in their own namespace).
+    fn model_live_deadline(&self, id: crate::model_lane::RequestId) -> Option<i64> {
+        if id.0 >= super::model_manage::MGMT_ID_BASE {
+            self.model_mgmt.table.live_deadline(id)
+        } else {
+            self.model_table.live_deadline(id)
+        }
+    }
+
+    /// Q1/Q2 evidence label for an arrival after its deadline: `health:late_<class>_after_deadline` (+0 to streaks).
+    fn model_late_evidence_label(
+        r: &Result<pump_quant_inference::Completion, pump_quant_inference::InferenceError>,
+    ) -> &'static str {
+        match r {
+            Err(_) => "health:late_transport_after_deadline",
+            Ok(c)
+                if c.termination().is_err()
+                    || pump_quant_inference::seam::parse_decision_payload(&c.text).is_err() =>
+            {
+                "health:late_invalid_after_deadline"
+            }
+            Ok(_) => "health:late_valid_after_deadline",
+        }
+    }
+
     fn model_local_expired_release(
         &mut self,
         id: crate::model_lane::RequestId,

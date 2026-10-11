@@ -378,7 +378,11 @@ fn a_hung_endpoint_trips_safety_off_without_stalling_the_engine() {
         assert!(e.model_safety_consecutive_failures() < 3);
         assert!(rep("local_queue_expired") >= 3);
     } else {
-        assert_eq!(reason, pump_quant_app::safety_off::REASON_ENDPOINT_HUNG);
+        // HEALTH_R10 Slice A: sent asks abandoned at their deadline are dispatched deadline misses.
+        assert_eq!(
+            reason,
+            pump_quant_app::safety_off::REASON_SERVICE_INADEQUATE
+        );
         assert!(rep("request_abandoned_deadline") >= 3);
     }
     // Durable: a fresh engine on the same file starts blocked.
@@ -604,9 +608,16 @@ fn two_abandoned_asks_whose_late_errors_arrive_do_not_trip_three_distinct_asks_d
     );
     assert_eq!(rep(&e, "request_abandoned_deadline"), 3);
     assert!(e.model_safety_blocked(), "{:?}", e.model_lane_report());
+    // HEALTH_R10 Slice A (Q1): three dispatched deadline misses latch by cause; the class is fixed at charge time and
+    // the late transport errors are evidence only. Trip timing and counts above are unchanged.
     assert_eq!(
         e.model_safety_reason(),
-        pump_quant_app::safety_off::REASON_ENDPOINT_HUNG
+        pump_quant_app::safety_off::REASON_SERVICE_INADEQUATE
     );
+    assert_eq!(
+        e.model_safety_latch_mix().unwrap().dispatched_deadline_miss,
+        3
+    );
+    assert_eq!(rep(&e, "health:late_transport_after_deadline"), 2);
     open.store(true, Ordering::SeqCst);
 }

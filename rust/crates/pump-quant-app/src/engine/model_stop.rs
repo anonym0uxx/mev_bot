@@ -362,6 +362,11 @@ impl Engine {
             raised.insert(StopTrigger::EndpointHung);
         }
         if self.model_safety.blocked
+            && self.model_safety.reason == crate::safety_off::REASON_SERVICE_INADEQUATE
+        {
+            raised.insert(StopTrigger::ModelServiceInadequate);
+        }
+        if self.model_safety.blocked
             && self.model_safety.reason == crate::safety_off::REASON_LOCAL_OVERLOAD
         {
             raised.insert(StopTrigger::LocalModelOverload);
