@@ -278,7 +278,11 @@ impl InferencePool {
                         Err(InferenceError::Transport("local_queue_expired".into()))
                     } else {
                         stamps.http_send_ms = stamp(&clock);
-                        let r = source.complete_meta(&job.system, &job.user);
+                        let fam = match job.kind {
+                            JobKind::Entry => pump_quant_inference::RequestFamily::Entry,
+                            JobKind::Mgmt => pump_quant_inference::RequestFamily::Management,
+                        };
+                        let r = source.complete_meta_for(fam, &job.system, &job.user);
                         stamps.completion_ms = stamp(&clock);
                         r
                     };

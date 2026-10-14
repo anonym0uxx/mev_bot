@@ -62,6 +62,18 @@ pub trait ModelSource {
             finish_reason: Some("stop".to_string()),
         })
     }
+
+    /// [`complete_meta`](Self::complete_meta) for a known request family. Default: the family is
+    /// ignored (single-model sources, test doubles). The production client overrides it to route
+    /// by family when — and only when — candidate routing is configured.
+    fn complete_meta_for(
+        &self,
+        _family: pump_quant_inference::RequestFamily,
+        system: &str,
+        user: &str,
+    ) -> Result<Completion, InferenceError> {
+        self.complete_meta(system, user)
+    }
 }
 
 impl ModelSource for InferenceClient {
@@ -72,6 +84,15 @@ impl ModelSource for InferenceClient {
     /// The live client KNOWS the server's stop reason; it must never be dropped (F5b).
     fn complete_meta(&self, system: &str, user: &str) -> Result<Completion, InferenceError> {
         InferenceClient::complete_with_meta(self, system, user)
+    }
+
+    fn complete_meta_for(
+        &self,
+        family: pump_quant_inference::RequestFamily,
+        system: &str,
+        user: &str,
+    ) -> Result<Completion, InferenceError> {
+        InferenceClient::complete_with_meta_for(self, family, system, user)
     }
 }
 
@@ -200,7 +221,11 @@ pub fn decide_entry<S: ModelSource + ?Sized>(
     ledger: &mut DriftLedger,
 ) -> EntryAuthority {
     resolve_entry(
-        source.complete_meta(req.system_prompt, req.user_prompt),
+        source.complete_meta_for(
+            pump_quant_inference::RequestFamily::Entry,
+            req.system_prompt,
+            req.user_prompt,
+        ),
         req,
         ledger,
     )
@@ -946,7 +971,11 @@ pub fn decide_management<S: ModelSource + ?Sized>(
 ) -> ManagementAuthority {
     // `complete_meta`, not `complete`: the server's stop reason must reach the termination contract.
     resolve_management(
-        source.complete_meta(req.system_prompt, req.user_prompt),
+        source.complete_meta_for(
+            pump_quant_inference::RequestFamily::Management,
+            req.system_prompt,
+            req.user_prompt,
+        ),
         req,
         ledger,
     )

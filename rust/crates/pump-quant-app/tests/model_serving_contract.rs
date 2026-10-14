@@ -58,9 +58,15 @@ fn the_worker_acts_only_on_a_complete_completion() {
     let src =
         std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/model_worker.rs"))
             .unwrap();
+    // probe_mg_v3 routing: the worker calls the FAMILY-ROUTED full-completion method (same non-streaming
+    // `complete_with_meta_for` wire path; the family only selects the served model id).
     assert!(
-        src.contains("source.complete_meta("),
-        "the worker must use the full-completion call"
+        src.contains("source.complete_meta_for("),
+        "the worker must use the full-completion call (family-routed)"
+    );
+    assert!(
+        !src.contains("complete_streaming") && !src.contains(".headline("),
+        "the worker must not act on a partial completion"
     );
 }
 

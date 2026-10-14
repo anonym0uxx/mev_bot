@@ -71,7 +71,11 @@ pub fn arm_paper_model_with_workers(
     safety_path: &Path,
     workers: usize,
 ) -> Result<Armed, &'static str> {
-    let client = InferenceClient::new(endpoint, CLIENT_TIMEOUT);
+    // Model-id routing (probe_mg_v3 candidate serving). Unset PQ_MODEL_ROUTE = Base = production body unchanged.
+    // Candidate mode refuses to arm on a missing/unknown/unserved adapter id: no fallback to the base model.
+    let route = pump_quant_inference::ModelRoute::from_env().map_err(|_| "model_route_refused")?;
+    let client = InferenceClient::new(endpoint, CLIENT_TIMEOUT).with_route(route);
+    client.verify_route().map_err(|_| "model_route_refused")?;
     engine.enable_paper_model_with_workers(client, workers)?;
     let load = engine.model_safety_attach(safety_path);
     Ok(Armed {

@@ -14,7 +14,10 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+pub mod route;
 pub mod seam;
+
+pub use route::{routed_request_body, served_ids, ModelRoute, RequestFamily, RouteError};
 
 pub use seam::{
     management_base, management_fraction_bps, parse_decision_payload, parse_headline,
@@ -152,6 +155,8 @@ pub struct InferenceClient {
     endpoint: String,
     timeout: Duration,
     agent: ureq::Agent,
+    /// Model-id routing by request family. [`ModelRoute::Base`] (default) = production body, no `"model"` field.
+    route: ModelRoute,
 }
 
 /// The pinned SFT chat-template kwargs, mirrored from the training renderer.
@@ -238,7 +243,42 @@ impl InferenceClient {
             endpoint: endpoint.into().trim_end_matches('/').to_string(),
             timeout,
             agent: builder.build(),
+            route: ModelRoute::Base,
         }
+    }
+
+    /// The same client with candidate routing. Production never calls this (route stays Base).
+    #[must_use]
+    pub fn with_route(mut self, route: ModelRoute) -> Self {
+        self.route = route;
+        self
+    }
+
+    /// The configured route.
+    #[must_use]
+    pub fn route(&self) -> &ModelRoute {
+        &self.route
+    }
+
+    /// Candidate mode: GET `/v1/models` and require every routed id to be served (no fallback). Base mode: Ok without a call.
+    ///
+    /// # Errors
+    /// Transport failure, an unparseable listing, or [`RouteError::NotServed`] (as `Transport` text naming the id).
+    pub fn verify_route(&self) -> Result<(), InferenceError> {
+        if self.route == ModelRoute::Base {
+            return Ok(());
+        }
+        let body = self
+            .agent
+            .get(&format!("{}/v1/models", self.endpoint))
+            .call()
+            .map_err(|e| InferenceError::Transport(e.to_string()))?
+            .into_string()
+            .map_err(|e| InferenceError::Transport(e.to_string()))?;
+        let ids = served_ids(&body).map_err(|e| InferenceError::Transport(e.to_string()))?;
+        self.route
+            .verify_served(&ids)
+            .map_err(|e| InferenceError::Transport(format!("model_route_refused: {e:?}")))
     }
 
     /// Timeout for this client.
@@ -264,8 +304,27 @@ impl InferenceClient {
         system: &str,
         user: &str,
     ) -> Result<Completion, InferenceError> {
-        let body = request_body(system, user);
+        match &self.route {
+            ModelRoute::Base => self.post_body(request_body(system, user)),
+            // A routed client must be told the family; guessing would silently pick the wrong adapter.
+            ModelRoute::Candidate { .. } => Err(InferenceError::Transport(
+                "model_route_family_unspecified".into(),
+            )),
+        }
+    }
 
+    /// [`complete_with_meta`](Self::complete_with_meta) for a known request family: the body is
+    /// [`routed_request_body`] (production body + `"model"` only in candidate mode).
+    pub fn complete_with_meta_for(
+        &self,
+        family: RequestFamily,
+        system: &str,
+        user: &str,
+    ) -> Result<Completion, InferenceError> {
+        self.post_body(routed_request_body(&self.route, family, system, user))
+    }
+
+    fn post_body(&self, body: serde_json::Value) -> Result<Completion, InferenceError> {
         let resp = self
             .agent
             .post(&format!("{}/v1/chat/completions", self.endpoint))
