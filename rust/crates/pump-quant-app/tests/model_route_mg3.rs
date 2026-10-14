@@ -128,8 +128,13 @@ fn candidate_route_alternating_families_never_cross() {
             "probe-mg3-mgmt"
         };
         assert_eq!(b["model"], want);
+        // candidate profile on the real wire: production fields + max_tokens 128 + return_token_ids + model
+        assert_eq!(b["max_tokens"], 128);
         let mut b2 = b.clone();
-        b2.as_object_mut().unwrap().remove("model");
+        let o = b2.as_object_mut().unwrap();
+        o.remove("model");
+        o.remove("return_token_ids");
+        o.insert("max_tokens".into(), request_body("SYS", u)["max_tokens"].clone());
         assert_eq!(b2, request_body("SYS", u));
     }
 }

@@ -123,7 +123,15 @@ impl ModelRoute {
     }
 }
 
-/// The chat body for `family` under `route`: [`crate::request_body`] plus `"model"` only in candidate mode.
+/// Candidate request profile answer budget: the evaluation's 128-token acceptance limit (gen_eval_v3a / probe_mg3 gates), so the
+/// candidate is served under exactly the budget it was evaluated under. Production (Base) keeps its own unchanged body.
+pub const CANDIDATE_MAX_TOKENS: u32 = 128;
+
+/// The chat body for `family` under `route`.
+/// * Base: [`crate::request_body`] unchanged (production profile; no `"model"`).
+/// * Candidate: same messages / temperature 0 / non-streaming / `enable_thinking=false` / no stop strings, plus the pinned
+///   candidate profile: `"model"` = the family's adapter id, `"max_tokens"` = [`CANDIDATE_MAX_TOKENS`], `"return_token_ids"` = true
+///   (readout only; does not change generation). The probe_mg3 evaluator builds byte-identical bodies (golden parity test).
 #[must_use]
 pub fn routed_request_body(
     route: &ModelRoute,
@@ -134,6 +142,8 @@ pub fn routed_request_body(
     let mut b = crate::request_body(system, user);
     if let Some(id) = route.model_for(family) {
         b["model"] = serde_json::json!(id);
+        b["max_tokens"] = serde_json::json!(CANDIDATE_MAX_TOKENS);
+        b["return_token_ids"] = serde_json::json!(true);
     }
     b
 }
@@ -184,10 +194,19 @@ mod tests {
         let m = routed_request_body(&route, RequestFamily::Management, "S", "U");
         assert_eq!(e["model"], "probe-mg3-entry");
         assert_eq!(m["model"], "probe-mg3-mgmt");
-        // everything except "model" is the production body
+        // candidate profile = production body with exactly model / max_tokens 128 / return_token_ids changed or added
+        assert_eq!(e["max_tokens"], 128);
+        assert_eq!(e["return_token_ids"], true);
         let mut e2 = e.clone();
-        e2.as_object_mut().unwrap().remove("model");
+        let o = e2.as_object_mut().unwrap();
+        o.remove("model");
+        o.remove("return_token_ids");
+        o.insert(
+            "max_tokens".into(),
+            crate::request_body("S", "U")["max_tokens"].clone(),
+        );
         assert_eq!(e2, crate::request_body("S", "U"));
+        assert!(e.get("stop").is_none(), "no stop strings in either profile");
         // same prompts, different family -> different model; same family, different prompt -> same model
         let m2 = routed_request_body(&route, RequestFamily::Management, "OTHER", "TEXT");
         assert_eq!(m2["model"], m["model"]);
