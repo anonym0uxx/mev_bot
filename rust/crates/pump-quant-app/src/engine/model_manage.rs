@@ -265,6 +265,18 @@ impl Engine {
             let Some(mp) = self.model_mgmt.pos.get(&mint).copied() else {
                 continue;
             };
+            if let super::ManagementPolicy::ProdHoldControl { barrier_ms } = self.management_policy {
+                // PROD_HOLD control: never ask; HOLD until the barrier, then EXIT all remaining
+                // inventory through the ordinary order/fill path (landing state, fees, slippage,
+                // TTL failure rules). Protection already runs in the position store.
+                if clock - mp.fill_ms >= barrier_ms {
+                    self.mrep("mgmt:prod_hold:barrier_exit");
+                    self.model_mgmt_place(mint, MgmtKind::Exit, 10_000, clock);
+                } else {
+                    self.mrep("mgmt:prod_hold:hold");
+                }
+                continue;
+            }
             let due = mp
                 .last_ask_ms
                 .map_or(mp.fill_ms + MGMT_MIN_HOLD_MS, |t| t + MGMT_CADENCE_MS);
@@ -405,6 +417,7 @@ impl Engine {
                     ManagementNoAction::ModelUnreachable => "model_unreachable".to_string(),
                     ManagementNoAction::OffContract(c) => format!("off_contract:{c:?}"),
                     ManagementNoAction::EntryVerbOnManagementPrompt => "entry_verb".to_string(),
+                    ManagementNoAction::IncompleteAnswer => "incomplete_answer".to_string(),
                     ManagementNoAction::StaleDecision(_) => "stale_decision".to_string(),
                 };
                 self.mrep(format!("mgmt:noaction:{k}"));

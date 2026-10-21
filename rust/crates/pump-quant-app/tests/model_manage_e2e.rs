@@ -913,3 +913,30 @@ fn the_ledger_follows_the_exposure_through_reduce_and_exit_and_a_restart_after_t
         assert!(e2.model_position_open(&MINT));
     }
 }
+
+/// ENTRY-BASELINE cohort: the v16 PROD_HOLD control. Entry still comes from the model; management
+/// never asks the model (no management prompt is rendered or dispatched), the position is HELD, and
+/// at fill + barrier an EXIT of ALL inventory is placed through the ordinary order path (intent, not a
+/// fill). Protection (rug precursor / hard stop) is the position store's and is not touched here.
+#[test]
+fn prod_hold_control_never_asks_the_model_and_exits_all_inventory_at_the_barrier() {
+    use pump_quant_app::engine::ManagementPolicy;
+    let mut r = rig(|_| REDUCE); // a REDUCE script that must never be consulted
+    r.e.set_management_policy(ManagementPolicy::ProdHoldControl { barrier_ms: 300_000 });
+    assert_eq!(r.e.management_policy(), ManagementPolicy::ProdHoldControl { barrier_ms: 300_000 });
+    let entry_prompts = r.prompts.lock().unwrap().len();
+    let inv0 = r.e.model_inventory_tokens(&MINT).expect("fill established inventory");
+    r.advance(200_000);
+    assert_eq!(r.rep("mgmt:dispatched"), 0, "{:?}", r.e.model_lane_report());
+    assert!(r.rep("mgmt:prod_hold:hold") >= 1, "{:?}", r.e.model_lane_report());
+    assert_eq!(r.prompts.lock().unwrap().len(), entry_prompts, "no management prompt rendered");
+    assert!(r.e.model_mgmt_pending(&MINT).is_none(), "no order before the barrier");
+    assert_eq!(r.e.model_inventory_tokens(&MINT), Some(inv0));
+    r.advance_to_order(200_000);
+    let (_, _, intended, filled) = r.e.model_mgmt_pending(&MINT).expect("barrier EXIT order placed");
+    assert_eq!(filled, 0, "an intent, not a fill");
+    assert_eq!(intended, inv0, "EXIT = all remaining inventory");
+    assert_eq!(r.rep("mgmt:prod_hold:barrier_exit"), 1);
+    assert_eq!(r.rep("mgmt:dispatched"), 0, "the model was never asked for management");
+    assert_eq!(r.rep("mgmt:order:exit"), 1);
+}

@@ -32,7 +32,8 @@ use std::env;
 
 use futures::StreamExt;
 use helius_laserstream::grpc::{
-    CommitmentLevel, SubscribeRequest, SubscribeRequestFilterTransactions,
+    CommitmentLevel, SubscribeRequest, SubscribeRequestFilterAccounts, SubscribeRequestFilterSlots,
+    SubscribeRequestFilterTransactions,
 };
 use helius_laserstream::{subscribe, LaserstreamConfig};
 
@@ -55,6 +56,25 @@ async fn run_production(config: LaserstreamConfig) -> Result<(), Box<dyn std::er
             .push("pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA".to_string());
     }
     request.transactions = HashMap::from([("pumpfun".to_string(), filter)]);
+    // Rev-30 account lane (restored): bonding-curve PDAs (owner = pump.fun program) and PumpSwap
+    // pools. The daemon's ONLY price producer is the reserve-delta print derived from these account
+    // snapshots; when LS is active the daemon skips its WS accountSubscribe fallback, so without
+    // this subscription every candidate is refused `no_price`/`join_no_mint`. Slots feed the
+    // daemon's slot clock. (The training-capture rewrite had dropped both from production mode.)
+    request.accounts = HashMap::from([(
+        "pq_pools_and_curves".to_string(),
+        SubscribeRequestFilterAccounts {
+            owner: vec![
+                "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P".to_string(),
+                "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA".to_string(),
+            ],
+            ..Default::default()
+        },
+    )]);
+    request.slots = HashMap::from([(
+        "pq_slots".to_string(),
+        SubscribeRequestFilterSlots { filter_by_commitment: Some(true), ..Default::default() },
+    )]);
     request.commitment = Some(CommitmentLevel::Processed as i32);
 
     let (stream, _handle) = subscribe(config, request);
@@ -63,12 +83,24 @@ async fn run_production(config: LaserstreamConfig) -> Result<(), Box<dyn std::er
     while let Some(result) = stream.next().await {
         match result {
             Ok(update) => {
-                if let Some(helius_laserstream::grpc::subscribe_update::UpdateOneof::Transaction(tx_update)) = update.update_oneof {
-                    if let Some(tx_info) = tx_update.transaction {
-                        // The daemon's line contract (`parse_ndjson_line`). Emitted on STDOUT only;
-                        // diagnostics stay on stderr so they can never corrupt the NDJSON stream.
-                        println!("{}", daemon_tx_line(tx_update.slot, &tx_info));
+                use helius_laserstream::grpc::subscribe_update::UpdateOneof;
+                match update.update_oneof {
+                    Some(UpdateOneof::Transaction(tx_update)) => {
+                        if let Some(tx_info) = tx_update.transaction {
+                            // The daemon's line contract (`parse_ndjson_line`). Emitted on STDOUT only;
+                            // diagnostics stay on stderr so they can never corrupt the NDJSON stream.
+                            println!("{}", daemon_tx_line(tx_update.slot, &tx_info));
+                        }
                     }
+                    Some(UpdateOneof::Account(acct)) => {
+                        if let Some(a) = acct.account.as_ref() {
+                            println!("{}", daemon_account_line(acct.slot, &a.pubkey, &a.owner, &a.data));
+                        }
+                    }
+                    Some(UpdateOneof::Slot(s)) => {
+                        println!("{}", serde_json::json!({"lane": "laserstream", "kind": "slot", "slot": s.slot}));
+                    }
+                    _ => {}
                 }
             }
             Err(e) => {
@@ -79,6 +111,21 @@ async fn run_production(config: LaserstreamConfig) -> Result<(), Box<dyn std::er
     Ok(())
 }
 
+
+/// One daemon-facing account line (`parse_ndjson_line` "account" contract): bonding-curve / pool
+/// snapshot with the sidecar's own receive clock.
+fn daemon_account_line(slot: u64, pubkey: &[u8], owner: &[u8], data: &[u8]) -> String {
+    serde_json::json!({
+        "lane": "laserstream",
+        "kind": "account",
+        "slot": slot,
+        "recv_unix_ms": encoding::now_unix_ms(),
+        "pubkey_b58": encoding::b58_encode(pubkey),
+        "owner_b58": encoding::b58_encode(owner),
+        "data_b64": encoding::b64_encode(data),
+    })
+    .to_string()
+}
 
 /// One daemon-facing transaction line. Carries what the engine's decoders need and the old emitter
 /// dropped: INNER (CPI) instructions (PumpSwap swap events live there), loaded ALT addresses (so
@@ -314,5 +361,20 @@ mod emitted_line_acceptance {
             }
             assert!(got["recv_unix_ms"].as_u64().unwrap() > 1_700_000_000_000, "the emitter stamps its own receive clock");
         }
+    }
+}
+
+#[cfg(test)]
+mod account_line_tests {
+    #[test]
+    fn account_line_matches_the_daemon_contract_fields() {
+        let l = super::daemon_account_line(7, &[1u8; 32], &[2u8; 32], &[9, 8, 7]);
+        let v: serde_json::Value = serde_json::from_str(&l).unwrap();
+        assert_eq!(v["kind"], "account");
+        assert_eq!(v["slot"], 7);
+        for k in ["lane", "recv_unix_ms", "pubkey_b58", "owner_b58", "data_b64"] {
+            assert!(v.get(k).is_some(), "{k}");
+        }
+        assert_eq!(v["data_b64"], "CQgH");
     }
 }

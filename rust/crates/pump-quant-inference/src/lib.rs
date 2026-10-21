@@ -156,7 +156,14 @@ pub struct InferenceClient {
     /// byte-for-byte (the server's default model). Required for a runtime-LoRA server, where the
     /// id selects the adapter (entry vs management) — without it the base model answers.
     model: Option<String>,
+    /// `max_tokens` for every request. Historical default 512 (unaddressed lane). The identified
+    /// runtime-LoRA paper lane sets 128 = the qualified engine's frozen cap. A `finish_reason="length"`
+    /// is reported as truncated and REFUSED by the authority; there is no retry at a larger cap.
+    max_tokens: u32,
 }
+
+/// Historical request cap.
+pub const DEFAULT_MAX_TOKENS: u32 = 512;
 
 /// What `/v1/models` reported, recorded so a paper session can prove WHICH served identity it
 /// talked to (model/adapter id, root checkpoint, parent) instead of assuming it.
@@ -212,13 +219,19 @@ pub fn request_body(system: &str, user: &str) -> serde_json::Value {
 /// max_tokens, template kwargs).
 #[must_use]
 pub fn request_body_for(model: Option<&str>, system: &str, user: &str) -> serde_json::Value {
+    request_body_with(model, DEFAULT_MAX_TOKENS, system, user)
+}
+
+/// [`request_body_for`] with an explicit `max_tokens`.
+#[must_use]
+pub fn request_body_with(model: Option<&str>, max_tokens: u32, system: &str, user: &str) -> serde_json::Value {
     let mut body = serde_json::json!({
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ],
         "temperature": 0.0,
-        "max_tokens": 512,
+        "max_tokens": max_tokens,
         "stream": false,
         // Served-prompt parity (§9/P1): without this the model is handed an unclosed
         // think block it never saw in SFT.
@@ -272,7 +285,20 @@ impl InferenceClient {
             timeout,
             agent: builder.build(),
             model: None,
+            max_tokens: DEFAULT_MAX_TOKENS,
         }
+    }
+
+    /// Set the request cap (the identified paper lane uses the engine's frozen 128).
+    #[must_use]
+    pub fn with_max_tokens(mut self, max_tokens: u32) -> Self {
+        self.max_tokens = max_tokens;
+        self
+    }
+
+    /// The request cap this client sends.
+    pub fn max_tokens(&self) -> u32 {
+        self.max_tokens
     }
 
     /// Address every request to the served model/adapter `id` (`"model"` field).
@@ -351,7 +377,7 @@ impl InferenceClient {
         system: &str,
         user: &str,
     ) -> Result<Completion, InferenceError> {
-        let body = request_body_for(self.model.as_deref(), system, user);
+        let body = request_body_with(self.model.as_deref(), self.max_tokens, system, user);
 
         let resp = self
             .agent
@@ -455,7 +481,7 @@ impl InferenceClient {
         system: &str,
         user: &str,
     ) -> Result<StreamedDecision, InferenceError> {
-        let mut body = request_body_for(self.model.as_deref(), system, user);
+        let mut body = request_body_with(self.model.as_deref(), self.max_tokens, system, user);
         body["stream"] = serde_json::json!(true);
         let resp = self
             .agent
@@ -1136,5 +1162,23 @@ mod served_identity_tests {
             other => panic!("expected Missing, got {other:?}"),
         }
         server.join().unwrap();
+    }
+}
+
+#[cfg(test)]
+mod max_tokens_tests {
+    use super::*;
+    #[test]
+    fn default_cap_is_historical_512_and_lane_cap_is_explicit() {
+        let c = InferenceClient::new("http://127.0.0.1:1", Duration::from_millis(50));
+        assert_eq!(c.max_tokens(), 512);
+        assert_eq!(request_body("s", "u")["max_tokens"], 512);
+        let c = c.with_max_tokens(128).with_model("probe-mg3-base");
+        assert_eq!(c.max_tokens(), 128);
+        let b = request_body_with(c.model(), c.max_tokens(), "s", "u");
+        assert_eq!(b["max_tokens"], 128);
+        assert_eq!(b["model"], "probe-mg3-base");
+        assert_eq!(b["temperature"], 0.0);
+        assert_eq!(b["chat_template_kwargs"]["enable_thinking"], false);
     }
 }

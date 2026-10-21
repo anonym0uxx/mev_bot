@@ -46,6 +46,9 @@ pub fn arm_paper_model(engine: &mut Engine, endpoint: &str, safety_path: &Path) 
     arm_with_client(engine, client, safety_path)
 }
 
+/// The qualified runtime-LoRA engine's frozen generation cap, used by the identified paper lane.
+pub const PAPER_LANE_MAX_TOKENS: u32 = 128;
+
 /// Arm against a server whose served identity is VERIFIED first: `GET /v1/models` must list every id in
 /// `expected_ids` (fail-closed on transport), and every request is addressed to `model_id`
 /// (`"model"` field — on a runtime-LoRA server this selects the adapter; without it the base answers).
@@ -57,7 +60,8 @@ pub fn arm_paper_model_identified(
     model_id: &str,
     expected_ids: &[&str],
 ) -> Result<(Armed, Vec<pump_quant_inference::ServedModel>), pump_quant_inference::IdentityRefusal> {
-    let client = InferenceClient::new(endpoint, CLIENT_TIMEOUT).with_model(model_id);
+    // Frozen engine contract for the identified lane: 128-token cap (no 512 retry, no truncation repair).
+    let client = InferenceClient::new(endpoint, CLIENT_TIMEOUT).with_model(model_id).with_max_tokens(PAPER_LANE_MAX_TOKENS);
     let mut expected: Vec<&str> = expected_ids.to_vec();
     if !expected.contains(&model_id) {
         expected.push(model_id);

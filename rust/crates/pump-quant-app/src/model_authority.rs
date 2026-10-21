@@ -166,6 +166,10 @@ pub enum NoTradeReason {
     /// ([`crate::freshness::StalenessVeto`]). A refusal, not a repair: the safe direction on the
     /// entry path is no trade, so nothing is silently re-aged or applied anyway.
     StaleDecision(StalenessVeto),
+    /// The server cut the completion at `max_tokens` (`finish_reason="length"`). An incomplete
+    /// answer is never executed (operator directive 2026-10-21: no retry at a larger cap, no
+    /// truncation repair, no execution from a partial answer). Still counted on the drift ledger.
+    IncompleteAnswer,
 }
 
 /// The price the prompt SUPPLIED, for the F5c grounding check.
@@ -221,6 +225,8 @@ pub fn resolve_entry(
     // Recorded on the drift ledger; the decision below is still parsed and still acts.
     if completion.truncated() {
         ledger.record_truncated();
+        // Revised F5b (2026-10-21): recorded AND refused — a partial answer is never executed.
+        return EntryAuthority::NoTrade(NoTradeReason::IncompleteAnswer);
     }
 
     // Freshness BEFORE the contract and before any capital question: a verdict that arrived too
@@ -508,7 +514,7 @@ mod tests {
     /// converse — a completed stop echoing the supplied price moves neither counter — so the
     /// check cannot pass by always firing.
     #[test]
-    fn truncation_and_an_ungrounded_price_are_recorded_and_never_block_the_trade() {
+    fn truncation_is_recorded_and_refused_ungrounded_price_is_recorded_and_never_blocks() {
         const PROMPT: &str = "DECISION CLOCK — assess this opportunity.\n\
 t_dec_ms=1700000000000  age_s=12.0  last_trade_age_s=1.0\n\
 venue=pumpfun  curve_present=True  evidence_status=complete\n\
@@ -528,15 +534,11 @@ price_lamports_per_raw_token=0.02445740498411998  ret_5s_bp=120  ret_30s_bp=0  v
             &mut l,
         );
         assert!(
-            matches!(a, EntryAuthority::Buy { .. }),
-            "a cut completion is telemetry, not a refusal"
+            matches!(a, EntryAuthority::NoTrade(NoTradeReason::IncompleteAnswer)),
+            "a cut completion is recorded AND refused (revised F5b): never execute a partial answer"
         );
         assert_eq!(l.truncated(), 1, "the max_tokens cut must be visible");
-        assert_eq!(
-            l.ungrounded_price(),
-            1,
-            "0.02 is not the price the prompt supplied"
-        );
+        assert_eq!(l.ungrounded_price(), 0, "the refused partial answer is not parsed downstream");
 
         // (2) A completed stop, echoing the supplied price digit for digit.
         let mut l2 = DriftLedger::new();
@@ -862,6 +864,9 @@ pub enum ManagementNoAction {
     /// ([`crate::freshness::StalenessVeto`]). The caller HOLDS — the same fail-safe direction as a
     /// parse failure, because cutting on a late message would be Rust inventing a decision.
     StaleDecision(StalenessVeto),
+    /// Completion cut at `max_tokens`: recorded on the drift ledger and HOLD — a partial management
+    /// answer is never executed (operator directive 2026-10-21).
+    IncompleteAnswer,
 }
 
 /// Ask the model what to do with a position we already hold.
@@ -905,6 +910,8 @@ pub fn resolve_management(
     };
     if completion.truncated() {
         ledger.record_truncated();
+        // Revised F5b (2026-10-21): a partial management answer is recorded and HELD, never executed.
+        return ManagementAuthority::NoAction(ManagementNoAction::IncompleteAnswer);
     }
 
     // The same freshness law as the entry path, and it matters more here: a late EXIT holds

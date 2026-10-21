@@ -808,6 +808,7 @@ impl Engine {
                     NoTradeReason::Portfolio(_) => "portfolio".to_string(),
                     NoTradeReason::OwnImpact(_) => "own_impact".to_string(),
                     NoTradeReason::StaleDecision(_) => "stale_decision".to_string(),
+                    NoTradeReason::IncompleteAnswer => "incomplete_answer".to_string(),
                 };
                 self.mrep(format!("notrade:{k}"));
             }

@@ -842,6 +842,26 @@ pub struct PendingTx {
     pub price_fp: u64,
 }
 
+/// Management policy for positions opened by the paper-model lane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManagementPolicy {
+    /// Ask the served management policy (HOLD/REDUCE/EXIT; ADD per the lane's contract).
+    Model,
+    /// v16 PROD_HOLD label continuation, artifact-bound (v16_build_b.py: "production model-mode
+    /// protection on venue events (rug precursor + hard stop, trail stood down), no discretionary
+    /// action (= HOLD at every request), remainder sold at the ORIGINAL fill+1800 s barrier").
+    /// No model management request is sent. Not a trained management policy.
+    ProdHoldControl {
+        /// Barrier after the ORIGINAL fill, in ms (v16: 1_800_000).
+        barrier_ms: i64,
+    },
+}
+
+impl ManagementPolicy {
+    /// The v16 PROD_HOLD control with its pinned 1,800 s barrier.
+    pub const PROD_HOLD_V16: ManagementPolicy = ManagementPolicy::ProdHoldControl { barrier_ms: 1_800_000 };
+}
+
 /// The running engine.
 pub struct Engine {
     cfg: Config,
@@ -851,6 +871,12 @@ pub struct Engine {
     /// source is installed. Never a fallback order: OFF means legacy, ON-without-source means
     /// fail closed.
     paper_model_mode: bool,
+    /// How held model-lane positions are managed. `Model` asks the served management policy.
+    /// `ProdHoldControl` is the artifact-bound v16 PROD_HOLD continuation (ENTRY-BASELINE cohort):
+    /// no management question is ever sent, protection (rug precursor + hard stop) keeps running in
+    /// the position store, and the remainder is sold through the ordinary EXIT order/fill path at
+    /// fill + `barrier_ms`.
+    management_policy: ManagementPolicy,
     /// The model lane's decision-time cache (see `decision_join`). Fed only when armed.
     model_cache: crate::decision_join::DecisionCache,
     /// Model-lane request discipline, worker pool, per-request bindings, pending paper orders and
@@ -1370,6 +1396,16 @@ impl Engine {
         self.model_source = Some(src);
     }
 
+    /// Select the management policy for model-lane positions (see [`ManagementPolicy`]).
+    pub fn set_management_policy(&mut self, p: ManagementPolicy) {
+        self.management_policy = p;
+    }
+
+    /// The management policy in force.
+    pub fn management_policy(&self) -> ManagementPolicy {
+        self.management_policy
+    }
+
     /// Whether the paper-model lane is armed.
     pub fn paper_model_enabled(&self) -> bool {
         self.paper_model_mode
@@ -1488,6 +1524,7 @@ impl Engine {
             cfg,
             mode,
             paper_model_mode: false,
+            management_policy: ManagementPolicy::Model,
             model_cache: crate::decision_join::DecisionCache::new(),
             model_table: crate::model_lane::RequestTable::default(),
             model_pool: None,

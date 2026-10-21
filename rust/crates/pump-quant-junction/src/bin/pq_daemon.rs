@@ -1821,6 +1821,19 @@ fn main() -> ExitCode {
                         ) {
                             Ok((armed, served)) => {
                                 model_armed = true;
+                                // Management policy for the lane (explicit; absent = served model management).
+                                // prod_hold_v16 = ENTRY-BASELINE cohort: artifact-bound v16 PROD_HOLD control.
+                                match std::env::var("PQ_MANAGEMENT_POLICY").ok().as_deref() {
+                                    Some("prod_hold_v16") => {
+                                        engine.set_management_policy(pump_quant_app::engine::ManagementPolicy::PROD_HOLD_V16);
+                                        eprintln!("[pq-daemon] management policy = PROD_HOLD_V16 control (no model management; barrier 1800 s; protection in position store)");
+                                    }
+                                    Some("model") | None => eprintln!("[pq-daemon] management policy = served model"),
+                                    Some(other) => {
+                                        eprintln!("[pq-daemon] unknown PQ_MANAGEMENT_POLICY={other}: refusing to arm");
+                                        return ExitCode::from(2);
+                                    }
+                                }
                                 let ledger = std::env::var("PQ_MODEL_IDENTITY_FILE")
                                     .unwrap_or_else(|_| format!("{safety}.served_identity.json"));
                                 let rec = serde_json::json!({"endpoint": endpoint, "model": name, "expected": expected, "served": served, "at_unix": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)});
@@ -2542,6 +2555,22 @@ fn main() -> ExitCode {
             match st.write_to_path(status_path) {
                 Ok(()) => {}
                 Err(e) => eprintln!("[pq-daemon] heartbeat live_status write failed: {e}"),
+            }
+            // Model-lane accounting (paper cohort evidence): every counter the lane keeps (asked,
+            // dispatched, refusals by name, late, invalid, orders, fills) plus decision-cache ingest
+            // coverage. Written alongside live_status so eligibility/acceptance/rejection are
+            // observable, not inferred.
+            if model_armed {
+                let ic = engine.model_ingest_counters();
+                let rec = serde_json::json!({
+                    "at_unix_ms": SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0),
+                    "report": engine.model_lane_report(),
+                    "ingest": {"accepted": ic.accepted, "no_clock": ic.no_clock, "no_price": ic.no_price, "out_of_order": ic.out_of_order, "duplicate": ic.duplicate},
+                    "management_policy": format!("{:?}", engine.management_policy()),
+                });
+                if let Err(e) = std::fs::write("data/model_lane_report.json", serde_json::to_vec_pretty(&rec).unwrap_or_default()) {
+                    eprintln!("[pq-daemon] model_lane_report write failed: {e}");
+                }
             }
             // Best-effort open-positions telemetry dump.
             {
