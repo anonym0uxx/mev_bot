@@ -1805,16 +1805,51 @@ fn main() -> ExitCode {
             if !endpoint.is_empty() {
                 let safety = std::env::var("PQ_MODEL_SAFETY_FILE")
                     .unwrap_or_else(|_| pump_quant_junction::model_lifecycle::DEFAULT_SAFETY_FILE.to_string());
-                let armed = pump_quant_junction::model_lifecycle::arm_paper_model(
-                    &mut engine,
-                    &endpoint,
-                    std::path::Path::new(&safety),
-                );
-                model_armed = true;
-                eprintln!(
-                    "[pq-daemon] paper model lane ARMED endpoint={endpoint} safety_file={safety} load={:?} blocked_at_start={}",
-                    armed.load, armed.blocked_at_start
-                );
+                // PQ_MODEL_NAME (served model/adapter id) + optional PQ_MODEL_EXPECTED_IDS (comma list) turn on
+                // served-identity verification; absent, the historical unaddressed path is unchanged.
+                let model_name = std::env::var("PQ_MODEL_NAME").ok().filter(|s| !s.is_empty());
+                match model_name {
+                    Some(name) => {
+                        let expected_raw = std::env::var("PQ_MODEL_EXPECTED_IDS").unwrap_or_default();
+                        let expected: Vec<&str> = expected_raw.split(',').map(str::trim).filter(|s| !s.is_empty()).collect();
+                        match pump_quant_junction::model_lifecycle::arm_paper_model_identified(
+                            &mut engine,
+                            &endpoint,
+                            std::path::Path::new(&safety),
+                            &name,
+                            &expected,
+                        ) {
+                            Ok((armed, served)) => {
+                                model_armed = true;
+                                let ledger = std::env::var("PQ_MODEL_IDENTITY_FILE")
+                                    .unwrap_or_else(|_| format!("{safety}.served_identity.json"));
+                                let rec = serde_json::json!({"endpoint": endpoint, "model": name, "expected": expected, "served": served, "at_unix": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)});
+                                if let Err(e) = std::fs::write(&ledger, serde_json::to_vec_pretty(&rec).unwrap_or_default()) {
+                                    eprintln!("[pq-daemon] served-identity ledger write failed ({ledger}): {e}");
+                                }
+                                eprintln!(
+                                    "[pq-daemon] paper model lane ARMED (identity verified) endpoint={endpoint} model={name} served={} safety_file={safety} load={:?} blocked_at_start={} ledger={ledger}",
+                                    served.len(), armed.load, armed.blocked_at_start
+                                );
+                            }
+                            Err(refusal) => {
+                                eprintln!("[pq-daemon] paper model lane NOT ARMED: served identity refused: {refusal:?} (endpoint={endpoint} model={name}). Nothing was substituted.");
+                            }
+                        }
+                    }
+                    None => {
+                        let armed = pump_quant_junction::model_lifecycle::arm_paper_model(
+                            &mut engine,
+                            &endpoint,
+                            std::path::Path::new(&safety),
+                        );
+                        model_armed = true;
+                        eprintln!(
+                            "[pq-daemon] paper model lane ARMED endpoint={endpoint} safety_file={safety} load={:?} blocked_at_start={}",
+                            armed.load, armed.blocked_at_start
+                        );
+                    }
+                }
             }
         }
     }

@@ -43,6 +43,30 @@ pub struct Armed {
 /// re-arms.
 pub fn arm_paper_model(engine: &mut Engine, endpoint: &str, safety_path: &Path) -> Armed {
     let client = InferenceClient::new(endpoint, CLIENT_TIMEOUT);
+    arm_with_client(engine, client, safety_path)
+}
+
+/// Arm against a server whose served identity is VERIFIED first: `GET /v1/models` must list every id in
+/// `expected_ids` (fail-closed on transport), and every request is addressed to `model_id`
+/// (`"model"` field — on a runtime-LoRA server this selects the adapter; without it the base answers).
+/// Returns the served list for the session ledger. A refusal arms nothing.
+pub fn arm_paper_model_identified(
+    engine: &mut Engine,
+    endpoint: &str,
+    safety_path: &Path,
+    model_id: &str,
+    expected_ids: &[&str],
+) -> Result<(Armed, Vec<pump_quant_inference::ServedModel>), pump_quant_inference::IdentityRefusal> {
+    let client = InferenceClient::new(endpoint, CLIENT_TIMEOUT).with_model(model_id);
+    let mut expected: Vec<&str> = expected_ids.to_vec();
+    if !expected.contains(&model_id) {
+        expected.push(model_id);
+    }
+    let served = client.verify_served_models(&expected)?;
+    Ok((arm_with_client(engine, client, safety_path), served))
+}
+
+fn arm_with_client(engine: &mut Engine, client: InferenceClient, safety_path: &Path) -> Armed {
     engine.enable_paper_model(client);
     let load = engine.model_safety_attach(safety_path);
     Armed {

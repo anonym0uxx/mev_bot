@@ -17,7 +17,7 @@ use pump_quant_app::engine::{Engine, RunMode};
 use pump_quant_app::event::{AppEvent, TradeVenue};
 use pump_quant_domain::ids::Mint as DomainMint;
 use pump_quant_junction::model_lifecycle::{
-    arm_paper_model, handle_stop_request, StaleCallout, restore_held_state, validate_ack, AckRejection, StartupRestore,
+    arm_paper_model, arm_paper_model_identified, handle_stop_request, StaleCallout, restore_held_state, validate_ack, AckRejection, StartupRestore,
     StopGate, StopSession,
 };
 
@@ -771,4 +771,29 @@ fn the_stale_callout_is_edge_triggered_names_the_loss_of_protection_and_recovers
     let rec = c.evaluate(&r.e, r.clock, 60_000);
     assert!(rec.iter().any(|l| !l.alert && l.text.starts_with("RECOVERED")), "{rec:?} {:?}", r.e.model_held_degraded());
     assert_eq!(c.degraded_count(), 0);
+}
+
+#[test]
+fn identified_arm_refuses_when_expected_adapter_not_served() {
+    // A server listing only the base must NOT arm a lane addressed to an adapter it does not serve.
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let body = r#"{"object":"list","data":[{"id":"probe_step78","object":"model"}]}"#;
+    let server = std::thread::spawn(move || {
+        let (mut s, _) = listener.accept().unwrap();
+        let mut buf = [0u8; 2048];
+        let _ = s.read(&mut buf);
+        let resp = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body);
+        s.write_all(resp.as_bytes()).unwrap();
+    });
+    let dir = std::env::temp_dir().join(format!("pq-ident-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut e = Engine::new(cfg(), RunMode::Paper);
+    let r = arm_paper_model_identified(&mut e, &format!("http://{addr}"), &dir.join("safety.json"), "probe-mg3-mgmt", &[]);
+    match r {
+        Err(pump_quant_inference::IdentityRefusal::Missing { missing, .. }) => assert_eq!(missing, vec!["probe-mg3-mgmt".to_string()]),
+        other => panic!("expected Missing refusal, got {:?}", other.map(|(a, s)| (a.blocked_at_start, s))),
+    }
+    server.join().unwrap();
 }

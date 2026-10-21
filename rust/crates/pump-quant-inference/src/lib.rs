@@ -152,6 +152,36 @@ pub struct InferenceClient {
     endpoint: String,
     timeout: Duration,
     agent: ureq::Agent,
+    /// Served model id to put in every request (`"model"`). `None` keeps the historical body
+    /// byte-for-byte (the server's default model). Required for a runtime-LoRA server, where the
+    /// id selects the adapter (entry vs management) — without it the base model answers.
+    model: Option<String>,
+}
+
+/// What `/v1/models` reported, recorded so a paper session can prove WHICH served identity it
+/// talked to (model/adapter id, root checkpoint, parent) instead of assuming it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ServedModel {
+    /// Served id (what goes in `"model"`).
+    pub id: String,
+    /// Root checkpoint path reported by the server, if any.
+    pub root: Option<String>,
+    /// Parent model for adapters, if reported.
+    pub parent: Option<String>,
+}
+
+/// Why served-identity verification refused.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IdentityRefusal {
+    /// `/v1/models` unreachable / non-200 / unparseable.
+    Transport(String),
+    /// An expected id is not served.
+    Missing {
+        /// Expected ids the server does not serve.
+        missing: Vec<String>,
+        /// Ids the server does serve.
+        served: Vec<String>,
+    },
 }
 
 /// The pinned SFT chat-template kwargs, mirrored from the training renderer.
@@ -174,7 +204,15 @@ pub const CHAT_TEMPLATE_KWARGS: &str = "{\"enable_thinking\": false}";
 /// property of every request rather than a literal buried in the send path.
 #[must_use]
 pub fn request_body(system: &str, user: &str) -> serde_json::Value {
-    serde_json::json!({
+    request_body_for(None, system, user)
+}
+
+/// [`request_body`] with an explicit served model id. `None` is byte-identical to the historical
+/// body; `Some(id)` adds `"model": id` and changes nothing else (same messages, temperature,
+/// max_tokens, template kwargs).
+#[must_use]
+pub fn request_body_for(model: Option<&str>, system: &str, user: &str) -> serde_json::Value {
+    let mut body = serde_json::json!({
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
@@ -185,7 +223,11 @@ pub fn request_body(system: &str, user: &str) -> serde_json::Value {
         // Served-prompt parity (§9/P1): without this the model is handed an unclosed
         // think block it never saw in SFT.
         "chat_template_kwargs": {"enable_thinking": false},
-    })
+    });
+    if let Some(m) = model {
+        body["model"] = serde_json::json!(m);
+    }
+    body
 }
 
 /// The streaming twin of [`request_body`]: byte-identical except `"stream": true`, so the
@@ -229,6 +271,60 @@ impl InferenceClient {
             endpoint: endpoint.into().trim_end_matches('/').to_string(),
             timeout,
             agent: builder.build(),
+            model: None,
+        }
+    }
+
+    /// Address every request to the served model/adapter `id` (`"model"` field).
+    #[must_use]
+    pub fn with_model(mut self, id: impl Into<String>) -> Self {
+        self.model = Some(id.into());
+        self
+    }
+
+    /// The served model id this client addresses, if any.
+    pub fn model(&self) -> Option<&str> {
+        self.model.as_deref()
+    }
+
+    /// Ask the server (`GET /v1/models`) what it serves and refuse unless every `expected` id is
+    /// present. Returns the full served list for the session ledger. Fail-closed: transport
+    /// problems refuse too; nothing is assumed from configuration.
+    pub fn verify_served_models(&self, expected: &[&str]) -> Result<Vec<ServedModel>, IdentityRefusal> {
+        let resp = self
+            .agent
+            .get(&format!("{}/v1/models", self.endpoint))
+            .call()
+            .map_err(|e| IdentityRefusal::Transport(e.to_string()))?;
+        if resp.status() != 200 {
+            return Err(IdentityRefusal::Transport(format!("status {}", resp.status())));
+        }
+        let v: serde_json::Value = resp
+            .into_json()
+            .map_err(|e| IdentityRefusal::Transport(format!("bad json: {e}")))?;
+        let served: Vec<ServedModel> = v["data"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|m| {
+                        Some(ServedModel {
+                            id: m["id"].as_str()?.to_string(),
+                            root: m["root"].as_str().map(str::to_string),
+                            parent: m["parent"].as_str().map(str::to_string),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let missing: Vec<String> = expected
+            .iter()
+            .filter(|e| !served.iter().any(|s| s.id == **e))
+            .map(|e| e.to_string())
+            .collect();
+        if missing.is_empty() {
+            Ok(served)
+        } else {
+            Err(IdentityRefusal::Missing { missing, served: served.into_iter().map(|s| s.id).collect() })
         }
     }
 
@@ -255,7 +351,7 @@ impl InferenceClient {
         system: &str,
         user: &str,
     ) -> Result<Completion, InferenceError> {
-        let body = request_body(system, user);
+        let body = request_body_for(self.model.as_deref(), system, user);
 
         let resp = self
             .agent
@@ -359,7 +455,8 @@ impl InferenceClient {
         system: &str,
         user: &str,
     ) -> Result<StreamedDecision, InferenceError> {
-        let body = streaming_request_body(system, user);
+        let mut body = request_body_for(self.model.as_deref(), system, user);
+        body["stream"] = serde_json::json!(true);
         let resp = self
             .agent
             .post(&format!("{}/v1/chat/completions", self.endpoint))
@@ -971,5 +1068,73 @@ mod f5b_tests {
             finish_reason: None
         }
         .truncated());
+    }
+}
+
+#[cfg(test)]
+mod served_identity_tests {
+    use super::*;
+
+    #[test]
+    fn request_body_without_model_is_byte_identical_to_historical() {
+        let a = request_body("s", "u");
+        let b = request_body_for(None, "s", "u");
+        assert_eq!(a, b);
+        assert!(a.get("model").is_none());
+    }
+
+    #[test]
+    fn request_body_with_model_adds_only_the_model_field() {
+        let a = request_body("s", "u");
+        let mut b = request_body_for(Some("probe-mgmt"), "s", "u");
+        assert_eq!(b["model"], "probe-mgmt");
+        b.as_object_mut().unwrap().remove("model");
+        assert_eq!(a, b, "nothing but the model field may change (served-prompt parity)");
+    }
+
+    #[test]
+    fn client_model_round_trips() {
+        let c = InferenceClient::new("http://127.0.0.1:1", Duration::from_millis(50));
+        assert_eq!(c.model(), None);
+        let c = c.with_model("entry-a");
+        assert_eq!(c.model(), Some("entry-a"));
+    }
+
+    #[test]
+    fn verify_served_models_refuses_on_transport() {
+        let c = InferenceClient::new("http://127.0.0.1:9", Duration::from_millis(200));
+        match c.verify_served_models(&["x"]) {
+            Err(IdentityRefusal::Transport(_)) => {}
+            other => panic!("expected transport refusal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn verify_served_models_checks_every_expected_id() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let body = r#"{"object":"list","data":[{"id":"probe_step78","object":"model","root":"/ckpt/probe_step78_hf","parent":null},{"id":"probe-mg3-mgmt","object":"model","root":"/adapters/mgmt","parent":"probe_step78"}]}"#;
+        let server = std::thread::spawn(move || {
+            for _ in 0..2 {
+                let (mut s, _) = listener.accept().unwrap();
+                let mut buf = [0u8; 2048];
+                let _ = s.read(&mut buf);
+                let resp = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body);
+                s.write_all(resp.as_bytes()).unwrap();
+            }
+        });
+        let c = InferenceClient::new(format!("http://{addr}"), Duration::from_secs(2));
+        let served = c.verify_served_models(&["probe_step78", "probe-mg3-mgmt"]).expect("both served");
+        assert_eq!(served.len(), 2);
+        assert_eq!(served[1].parent.as_deref(), Some("probe_step78"));
+        match c.verify_served_models(&["probe-mg3-mgmt", "probe-mg3-entry"]) {
+            Err(IdentityRefusal::Missing { missing, served }) => {
+                assert_eq!(missing, vec!["probe-mg3-entry".to_string()]);
+                assert_eq!(served.len(), 2);
+            }
+            other => panic!("expected Missing, got {other:?}"),
+        }
+        server.join().unwrap();
     }
 }
