@@ -1869,6 +1869,10 @@ fn main() -> ExitCode {
                                             eprintln!("[pq-daemon] probe_sl_v1 system prompt digest mismatch ({got} != {want}): refusing to arm");
                                             return ExitCode::from(2);
                                         }
+                                        if let Some(lag) = std::env::var("PQ_CANCEL_LAG_MS").ok().and_then(|v| v.parse::<u64>().ok()) {
+                                            engine.set_model_cancel_lag_ms(Some(lag));
+                                            eprintln!("[pq-daemon] request-lifecycle v2: transport budget = 3000 ms + {lag} ms cancellation lag");
+                                        }
                                         engine.set_entry_contract(pump_quant_app::engine::EntryContract::ProbeSlV1);
                                         let root = served.iter().find(|s| s.id == name).and_then(|s| s.root.clone());
                                         let binding = pump_quant_inference::probe_sl::PolicyContractBinding::probe_sl_v1(&name, root.as_deref());

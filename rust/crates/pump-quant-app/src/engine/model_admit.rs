@@ -605,6 +605,12 @@ impl Engine {
             mint,
             system: snap.system_prompt.clone(),
             user: snap.user_prompt.clone(),
+            dispatched_at: std::time::Instant::now(),
+            // request-lifecycle v2 (opt-in): authority deadline + bounded cancellation lag; the
+            // 3,000 ms authority clock itself is unchanged.
+            transport_budget: self
+                .model_cancel_lag_ms
+                .map(|lag| std::time::Duration::from_millis((MODEL_DEADLINE_MS as u64).saturating_add(lag))),
         };
         let dispatched = self
             .model_pool
@@ -761,12 +767,17 @@ impl Engine {
 
     fn model_accept(&mut self, v: crate::model_worker::Verdict, clock: i64) {
         let meta = self.model_meta.remove(&v.id);
+        let timed_out = matches!(&v.result, Err(e) if e.is_timeout());
         let accepted = self.model_table.accept(v.id, &v.mint, clock);
         let entry = match accepted {
             Ok(e) => e,
             Err(e) => {
                 let why = match e {
                     AcceptRefusal::Unknown => "discard:unknown_or_duplicate",
+                    // request-lifecycle v2: the transport budget expired (socket closed → server
+                    // cancellation) — the request lost authority at the deadline AND its server
+                    // work was released; no answer was ever observed.
+                    AcceptRefusal::DeadlineExceeded { .. } | AcceptRefusal::Abandoned if timed_out => "discard:cancelled_at_deadline",
                     AcceptRefusal::DeadlineExceeded { .. } => "discard:late",
                     AcceptRefusal::Abandoned => "discard:abandoned",
                     AcceptRefusal::EntriesBlocked => "discard:entries_blocked",

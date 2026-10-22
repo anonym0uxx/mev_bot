@@ -60,6 +60,17 @@ pub trait ModelSource {
             completion_tokens: None,
         })
     }
+
+    /// [`complete_meta`](Self::complete_meta) bounded by a per-request transport budget
+    /// (request-lifecycle v2). Default: the budget is ignored (stubs answer immediately).
+    fn complete_meta_within(
+        &self,
+        system: &str,
+        user: &str,
+        _budget: std::time::Duration,
+    ) -> Result<Completion, InferenceError> {
+        self.complete_meta(system, user)
+    }
 }
 
 impl ModelSource for InferenceClient {
@@ -70,6 +81,15 @@ impl ModelSource for InferenceClient {
     /// The live client KNOWS the server's stop reason; it must never be dropped (F5b).
     fn complete_meta(&self, system: &str, user: &str) -> Result<Completion, InferenceError> {
         InferenceClient::complete_with_meta(self, system, user)
+    }
+
+    fn complete_meta_within(
+        &self,
+        system: &str,
+        user: &str,
+        budget: std::time::Duration,
+    ) -> Result<Completion, InferenceError> {
+        InferenceClient::complete_with_meta_timeout(self, system, user, budget)
     }
 }
 

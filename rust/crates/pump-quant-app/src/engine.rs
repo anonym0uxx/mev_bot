@@ -906,6 +906,9 @@ pub struct Engine {
     model_io_sink: Option<Box<dyn FnMut(&str) + Send>>,
     /// Process generation id (wall ms at engine creation): makes request ids unique across restarts.
     model_proc_gen: u64,
+    /// Request-lifecycle v2 (paper, opt-in): bounded cancellation lag added to the 3,000 ms
+    /// authority deadline as the per-request transport budget; `None` = legacy fixed timeout.
+    pub(crate) model_cancel_lag_ms: Option<u64>,
     model_orders: BTreeMap<[u8; 32], model_admit::ModelOrder>,
     /// Model-managed position lane (HOLD/REDUCE/EXIT). Inert unless the paper-model lane is armed.
     model_mgmt: model_manage::MgmtLane,
@@ -1419,6 +1422,12 @@ impl Engine {
     }
 
     /// Install the model I/O trace sink (see `model_io_sink`).
+    /// Request-lifecycle v2: cancel the transport (and thereby the server request) `lag_ms` after
+    /// the authority deadline. Does not change the deadline.
+    pub fn set_model_cancel_lag_ms(&mut self, lag_ms: Option<u64>) {
+        self.model_cancel_lag_ms = lag_ms;
+    }
+
     pub fn set_model_io_sink(&mut self, sink: Box<dyn FnMut(&str) + Send>) {
         self.model_io_sink = Some(sink);
     }
@@ -1570,6 +1579,7 @@ impl Engine {
             model_dispatch_clock: BTreeMap::new(),
             model_io_sink: None,
             model_proc_gen: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0),
+            model_cancel_lag_ms: None,
             model_orders: BTreeMap::new(),
             model_mgmt: model_manage::MgmtLane::new(),
             model_safety: crate::safety_off::SafetyOff::default(),

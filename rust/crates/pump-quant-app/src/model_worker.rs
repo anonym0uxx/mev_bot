@@ -41,6 +41,11 @@ pub struct Job {
     pub system: String,
     /// User prompt (byte-parity renderer output).
     pub user: String,
+    /// Wall instant the engine dispatched this job (request-lifecycle v2).
+    pub dispatched_at: std::time::Instant,
+    /// Transport budget from dispatch: authority deadline + bounded cancellation lag. `None` =
+    /// legacy behaviour (the source's own fixed timeout; no cancellation at the deadline).
+    pub transport_budget: Option<std::time::Duration>,
 }
 
 /// A worker's answer. Raw: nothing here has been parsed or vetted.
@@ -101,7 +106,16 @@ impl InferencePool {
                         Err(_) => return,
                     };
                     let Ok(job) = job else { return };
-                    let result = source.complete_meta(&job.system, &job.user);
+                    let result = match job.transport_budget {
+                        Some(b) => {
+                            // remaining = budget − time already spent queued behind other jobs; a
+                            // non-positive remainder still sends with a 1 ms timeout so the request is
+                            // recorded as cancelled rather than silently skipped.
+                            let rem = b.saturating_sub(job.dispatched_at.elapsed());
+                            source.complete_meta_within(&job.system, &job.user, rem.max(std::time::Duration::from_millis(1)))
+                        }
+                        None => source.complete_meta(&job.system, &job.user),
+                    };
                     if verdict_tx
                         .send(Verdict {
                             id: job.id,
@@ -198,6 +212,8 @@ mod tests {
 
     fn job(id: u64, mint: [u8; 32]) -> Job {
         Job {
+            dispatched_at: std::time::Instant::now(),
+            transport_budget: None,
             id: RequestId(id),
             mint,
             system: "S".into(),

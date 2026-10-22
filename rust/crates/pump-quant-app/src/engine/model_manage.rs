@@ -316,6 +316,8 @@ impl Engine {
                 mint,
                 system: snap.system_prompt.clone(),
                 user: snap.user_prompt.clone(),
+                dispatched_at: std::time::Instant::now(),
+                transport_budget: None, // management asks keep the legacy transport behaviour
             };
             let dispatched = self
                 .model_pool

@@ -104,6 +104,21 @@ pub enum InferenceError {
 }
 
 impl InferenceError {
+    /// A transport timeout (socket closed by the client's deadline) — the request-lifecycle v2
+    /// cancellation signal, distinct from a server error or an unreadable body.
+    #[must_use]
+    pub fn is_timeout(&self) -> bool {
+        match self {
+            InferenceError::Transport(m) => {
+                let l = m.to_lowercase();
+                l.contains("timed out") || l.contains("timeout")
+            }
+            _ => false,
+        }
+    }
+}
+
+impl InferenceError {
     /// Whether this failure is transient and worth retrying. A [`Transport`] error —
     /// unreachable server, timeout, dropped connection, non-200 — may be transient;
     /// an [`Unparseable`] one is a contract failure the server has already answered,
@@ -380,12 +395,30 @@ impl InferenceClient {
         system: &str,
         user: &str,
     ) -> Result<Completion, InferenceError> {
+        self.complete_with_meta_timeout(system, user, self.timeout)
+    }
+
+    /// [`complete_with_meta`](Self::complete_with_meta) with a PER-REQUEST transport timeout.
+    ///
+    /// Request-lifecycle v2: the caller passes the request's remaining authority budget plus a
+    /// bounded cancellation lag. On expiry `ureq` closes the socket; the pinned vLLM server runs
+    /// non-streaming chat completions under `with_cancellation`, which cancels the handler task on
+    /// the HTTP disconnect and aborts the engine request — so request-owned server work is released
+    /// instead of generating an answer nobody may act on. The error is `Transport("timeout …")`;
+    /// callers classify it by [`InferenceError::is_timeout`].
+    pub fn complete_with_meta_timeout(
+        &self,
+        system: &str,
+        user: &str,
+        timeout: Duration,
+    ) -> Result<Completion, InferenceError> {
         let body = request_body_with(self.model.as_deref(), self.max_tokens, system, user);
 
         let resp = self
             .agent
             .post(&format!("{}/v1/chat/completions", self.endpoint))
             .set("Content-Type", "application/json")
+            .timeout(timeout)
             .send_json(body)
             .map_err(|e| InferenceError::Transport(e.to_string()))?;
 
