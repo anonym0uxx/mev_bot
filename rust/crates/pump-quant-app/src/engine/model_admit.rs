@@ -635,12 +635,18 @@ impl Engine {
         // decision-input provenance so "stale" can be read correctly later:
         //   queue_age_ms      — opportunity WAITING: dirty-since → this admission (scheduling delay; the
         //                       prompt is re-rendered now, so this is NOT the age of the prompt);
-        //   source_age_ms     — SOURCE AGE: dispatch clock − newest observation inside the sent state;
+        //   newest_obs_age_ms — age of the NEWEST observation inside the sent state (dispatch clock −
+        //                       snapshot marker last_recv_ms). This bounds staleness from below only: a
+        //                       prompt whose newest print is 200 ms old can still carry window features
+        //                       (flow/holder/curve windows) whose last contributing observation is older.
+        //                       The snapshot marker (last_recv_ms, n_accepted) is the only per-state
+        //                       feature provenance the renderer exposes today; per-feature source times
+        //                       are not recorded, so no per-feature freshness claim is made here.
         //   state_last_recv_ms, state_trades_n — the snapshot's provenance marker;
         //   deadline_ms       — the authority deadline (dispatch-based, unchanged).
         let prov = serde_json::json!({
             "queue_age_ms": queue_age_ms,
-            "source_age_ms": (clock - sent_last_recv_ms).max(0),
+            "newest_obs_age_ms": (clock - sent_last_recv_ms).max(0),
             "state_last_recv_ms": sent_last_recv_ms,
             "state_trades_n": snap.marker.n_accepted,
             "deadline_ms": clock + MODEL_DEADLINE_MS,
