@@ -199,9 +199,12 @@ impl TradeJoin {
         self.prune();
         let key = (*mint, slot);
         if !self.pending.contains_key(&key) && self.pending.len() >= self.capacity {
-            // Drop the oldest key: its reserve print either never came or is about to arrive
-            // without an identity, which the ledger reports rather than guesses.
-            if let Some((&oldest, _)) = self.pending.iter().next() {
+            // Drop the OLDEST key (smallest slot): its reserve print either never came or is about
+            // to arrive without an identity, which the ledger reports rather than guesses. The map
+            // is keyed (mint, slot), so `iter().next()` would be the smallest MINT, not the oldest —
+            // the same key-order eviction class that broke the signature index (sustained-load test
+            // pins oldest-first). Only reached under cap pressure, so the O(n) scan is acceptable.
+            if let Some(&oldest) = self.pending.keys().min_by_key(|(_, slot)| *slot) {
                 self.pending.remove(&oldest);
                 self.dropped += 1;
             }
@@ -331,6 +334,16 @@ impl TradeJoin {
     #[must_use]
     pub fn pending_keys(&self) -> usize {
         self.pending.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn newest_slot_for_test(&self) -> u64 {
+        self.newest_slot
+    }
+
+    #[cfg(test)]
+    pub(crate) fn by_signature_len_for_test(&self) -> usize {
+        self.by_signature.len()
     }
 
     fn prune(&mut self) {
@@ -560,5 +573,89 @@ mod tests {
         assert_eq!(join.take_identity(&MINT, 60, true), JoinOutcome::Ambiguous);
         assert_eq!(join.take_identity(&MINT, 61, true), JoinOutcome::Unknown);
         // Neither outcome exposes a fee/CU: there is no field to read one from.
+    }
+}
+
+#[cfg(test)]
+mod sustained_load {
+    use super::*;
+
+    fn sig(i: u64, leg: u8) -> [u8; 64] {
+        let mut s = [0u8; 64];
+        s[..8].copy_from_slice(&i.to_le_bytes());
+        s[8] = leg;
+        s
+    }
+    fn mint(i: u64) -> [u8; 32] {
+        let mut m = [0u8; 32];
+        m[..8].copy_from_slice(&(i % 1_500).to_le_bytes());
+        m[31] = 1;
+        m
+    }
+
+    /// Sustained load well beyond the old failure point (len ≥ capacity·8, where the key-order
+    /// eviction used to start): 300k signed instructions over 3,000 slots with out-of-order
+    /// arrival (±3 slots), 10 % re-delivered duplicates and 20 % two-leg (two signatures on one
+    /// mint-slot). Every signature claimed WITHIN the horizon must still join; nothing may be
+    /// silently lost; and the cost per note must stay bounded (the horizon prune is O(n) over the
+    /// index — this test pins that it stays within budget at the daemon's own capacity).
+    #[test]
+    fn signature_joins_survive_sustained_out_of_order_duplicate_multileg_load() {
+        // Capacity deliberately BELOW the in-flight key count (daemon: cap 4,096 / horizon 8 slots;
+        // here cap 512 / horizon 8 at ~130 keys per slot) so cap-pressure eviction is exercised.
+        let cap = 512;
+        let horizon = 8;
+        let mut join = TradeJoin::new(cap, horizon);
+        let mut rng = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = move || {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            rng
+        };
+        let mut noted: Vec<([u8; 64], [u8; 32], u64)> = Vec::new();
+        let t0 = std::time::Instant::now();
+        let mut ops = 0u64;
+        for i in 0..300_000u64 {
+            let base_slot = 1_000 + i / 100;
+            let slot = base_slot + (next() % 7) - 3; // out of order ±3
+            let m = mint(i);
+            let legs = if next() % 5 == 0 { 2 } else { 1 };
+            for leg in 0..legs {
+                let s = sig(i, leg);
+                join.note_instruction_signed(&m, slot, 1 + i * 2 + u64::from(leg), [7u8; 32], true, Some(slot as i64), Some(5_000), Some(100), Some(s));
+                ops += 1;
+                if next() % 10 == 0 {
+                    // re-delivery of the same instruction
+                    join.note_instruction_signed(&m, slot, 1 + i * 2 + u64::from(leg), [7u8; 32], true, Some(slot as i64), Some(5_000), Some(100), Some(s));
+                    ops += 1;
+                }
+                noted.push((s, m, slot));
+            }
+            // Claim a random RECENT signature (newest ~2 slots ≈ 260 keys < cap) — the
+            // account-update side. These must always join: oldest-first eviction never reaches them.
+            if i > 2_000 && next() % 2 == 0 {
+                let k = noted.len() - 1 - (next() % 200) as usize;
+                let (s, m, slot) = noted[k];
+                if slot != 0 && join.newest_slot_for_test().saturating_sub(slot) <= 2 {
+                    let got = join.take_identity_by_signature(&s, &m);
+                    ops += 1;
+                    if !matches!(got, JoinOutcome::Unknown) {
+                        // consumed; mark so we don't re-claim
+                        noted[k].2 = 0;
+                    } else if noted[k].2 != 0 {
+                        panic!("signature noted at slot {slot} within horizon (newest {}) was Unknown at claim #{i}: dropped={}", join.newest_slot_for_test(), join.dropped());
+                    }
+                }
+            }
+        }
+        let el = t0.elapsed();
+        let per_op_us = el.as_secs_f64() * 1e6 / ops as f64;
+        assert!(join.by_signature_len_for_test() <= cap * 64);
+        // Budget: the daemon sees low thousands of instructions per second at peak; 50 µs/op leaves
+        // >10x headroom. If the O(n) prune ever makes this fail, the fix is incremental pruning —
+        // not a looser assert.
+        assert!(per_op_us < 50.0, "{per_op_us:.1} µs per op over {ops} ops ({el:?}) — join cost not bounded");
+        eprintln!("sustained load: {ops} ops in {el:?} = {per_op_us:.2} µs/op; dropped={} joined={} index={}", join.dropped(), join.joined(), join.by_signature_len_for_test());
     }
 }
