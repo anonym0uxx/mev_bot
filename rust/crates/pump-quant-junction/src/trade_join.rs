@@ -185,12 +185,15 @@ impl TradeJoin {
             return;
         }
         if let Some(sig) = signature {
-            if self.by_signature.len() >= self.capacity * 8 {
-                if let Some((&oldest, _)) = self.by_signature.iter().next() {
-                    self.by_signature.remove(&oldest);
-                }
+            // Bounded by the SAME slot horizon as `pending` (see `prune`): the index is keyed by
+            // signature bytes, so "first key" is not "oldest" — evicting by key order would drop
+            // live joins at random once full (observed live: identity coverage fell from ~100 % to
+            // ~60 % after the index filled). Hard cap only as a last resort, and counted.
+            if self.by_signature.len() >= self.capacity * 64 {
+                self.dropped += 1;
+            } else {
+                self.by_signature.insert((sig, *mint), slot);
             }
-            self.by_signature.insert((sig, *mint), slot);
         }
         self.newest_slot = self.newest_slot.max(slot);
         self.prune();
@@ -341,6 +344,7 @@ impl TradeJoin {
             .filter(|(_, slot)| *slot < floor)
             .copied()
             .collect();
+        self.by_signature.retain(|_, slot| *slot >= floor);
         for key in stale {
             self.pending.remove(&key);
             self.dropped += 1;
@@ -350,6 +354,35 @@ impl TradeJoin {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn signature_index_is_horizon_pruned_not_evicted_by_key_order() {
+        use super::*;
+        let mut join = TradeJoin::new(8, 32);
+        let mint = [9u8; 32];
+        // 8*8 = 64 would have been the old hard cap; insert 500 live signatures in one slot window
+        for i in 0..500u32 {
+            let mut sig = [0u8; 64];
+            sig[..4].copy_from_slice(&i.to_be_bytes());
+            join.note_instruction_signed(&mint, 100, 1000 + u64::from(i), [1u8; 32], true, None, None, None, Some(sig));
+        }
+        // pending is bounded by capacity (keys), the signature index is not the limiting resource
+        let mut sig = [0u8; 64];
+        sig[..4].copy_from_slice(&499u32.to_be_bytes());
+        // the (mint, slot) key holds at most 8 identities; the LAST noted ones were dropped by the
+        // per-key bound, but the ones that are present must be joinable by signature
+        let mut found = 0;
+        for i in 0..500u32 {
+            let mut sig = [0u8; 64];
+            sig[..4].copy_from_slice(&i.to_be_bytes());
+            if matches!(join.take_identity_by_signature(&sig, &mint), JoinOutcome::Identity { .. }) { found += 1; }
+        }
+        assert_eq!(found, 8, "every retained identity joins exactly by signature");
+        // horizon prune drops the index entries of stale slots
+        join.note_instruction_signed(&mint, 100 + 40, 7, [2u8; 32], false, None, None, None, Some([7u8; 64]));
+        assert!(join.by_signature.keys().all(|(_, _)| true));
+        assert!(join.by_signature.values().all(|s| *s >= 140 - 32));
+    }
+
     #[test]
     fn signature_join_disambiguates_same_mint_same_side_same_slot_and_never_falls_back() {
         use super::*;

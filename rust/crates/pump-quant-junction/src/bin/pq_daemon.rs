@@ -2393,6 +2393,43 @@ fn main() -> ExitCode {
     let mut next_tick = Instant::now() + tick_period;
     let status_path = std::path::Path::new(STATUS_PATH);
     let mut tick_counter: u64 = 0;
+    // ── Paper-cohort lifecycle (COLLECTING → DRAINING → CLOSED), durable and monotonic ──
+    // Enabled by PQ_COHORT_LIFECYCLE=<file>; rule from PQ_COHORT_DISPATCH_CAP (unique dispatches,
+    // conservative: prior known + own + bounded uncertainty), PQ_COHORT_DEADLINE_MS (unix ms),
+    // PQ_COHORT_PRIOR_DISPATCH, PQ_COHORT_DISPATCH_UNCERTAINTY. A persisted DRAINING is restored and
+    // the entry block re-asserted every tick; CLOSED (flat, no pending orders) exits the process.
+    let mut cohort_lc: Option<pump_quant_junction::cohort_lifecycle::CohortLifecycle> =
+        match std::env::var("PQ_COHORT_LIFECYCLE") {
+            Ok(path) => {
+                let env_u = |k: &str, d: u64| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
+                let env_i = |k: &str, d: i64| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or(0);
+                match pump_quant_junction::cohort_lifecycle::CohortLifecycle::load_or_init(
+                    std::path::Path::new(&path),
+                    env_u("PQ_COHORT_DISPATCH_CAP", 3_000),
+                    env_i("PQ_COHORT_DEADLINE_MS", i64::MAX),
+                    env_u("PQ_COHORT_PRIOR_DISPATCH", 0),
+                    env_u("PQ_COHORT_DISPATCH_UNCERTAINTY", 0),
+                    now,
+                ) {
+                    Ok(lc) => {
+                        eprintln!(
+                            "[pq-daemon] cohort lifecycle {:?} (cap {}, prior {}, uncertainty {}) from {path}",
+                            lc.state, lc.dispatch_cap, lc.prior_dispatch_known, lc.dispatch_uncertainty
+                        );
+                        Some(lc)
+                    }
+                    Err(e) => {
+                        eprintln!("[pq-daemon] cohort lifecycle unreadable: {e}; refusing to run");
+                        std::process::exit(2);
+                    }
+                }
+            }
+            Err(_) => None,
+        };
     let mut last_status_write_tick: u64 = 0;
     let mut last_status_write_wallclock: Instant = Instant::now();
     // Counter for periodic session_history.jsonl writes (crash resilience).
@@ -4195,6 +4232,42 @@ fn main() -> ExitCode {
             }
             next_tick = Instant::now() + tick_period;
             tick_counter += 1;
+
+            if let Some(lc) = cohort_lc.as_mut() {
+                use pump_quant_junction::cohort_lifecycle::State as LcState;
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or(0);
+                let own = engine.model_lane_report().get("dispatched").copied().unwrap_or(0);
+                let open = engine.open_positions_snapshot().len();
+                let pending = engine.model_pending_orders();
+                if let Some(reason) = lc.cutoff_reason(own, now) {
+                    // Atomic with respect to the engine: the block is set in the same tick before
+                    // any further admission/acceptance can run.
+                    engine.set_model_entries_blocked(true);
+                    if let Err(e) = lc.transition(LcState::Draining, reason, now, own, open, pending) {
+                        eprintln!("[pq-daemon] lifecycle DRAINING persist failed: {e}");
+                    }
+                    eprintln!(
+                        "[pq-daemon] COHORT DRAINING ({reason}): own dispatched {own}, conservative total {}, open {open}, pending {pending}",
+                        lc.conservative_total(own)
+                    );
+                }
+                if lc.state == LcState::Draining {
+                    engine.set_model_entries_blocked(true); // re-asserted: a SAFETY re-arm releases it
+                    if open == 0 && pending == 0 {
+                        match lc.transition(LcState::Closed, "flat_no_pending", now, own, open, pending) {
+                            Ok(()) => {
+                                eprintln!("[pq-daemon] COHORT CLOSED: flat, no pending orders; exiting");
+                                let _ = engine.model_held_persist_now();
+                                std::process::exit(0);
+                            }
+                            Err(e) => eprintln!("[pq-daemon] lifecycle CLOSED refused: {e}"),
+                        }
+                    }
+                }
+            }
 
             // ── E3: drain finished async submissions ────────────────────
             // The decision thread handed these off without waiting. Reporting the

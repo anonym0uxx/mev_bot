@@ -110,6 +110,7 @@ pub struct OverflowStats {
 // ─── Translation ──────────────────────────────────────────────────────────
 
 pub mod async_sink;
+pub mod cohort_lifecycle;
 pub mod autonomous_bridge;
 #[cfg(test)]
 mod chaos_tests;

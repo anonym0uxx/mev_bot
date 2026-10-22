@@ -1270,3 +1270,64 @@ fn model_mode_hard_stop_is_35_percent_below_entry_not_any_dip() {
     dip(&mut r, 0.649);
     assert!(!r.e.model_position_open(&MINT), "hard stop at entry·0.65");
 }
+
+/// Cohort cutoff racing a BUY answer: the request was dispatched BEFORE the cutoff, its BUY answer
+/// arrives AFTER the entry block is set → refused by name (EntriesBlocked), no order, no position,
+/// and the lane keeps ticking (no SAFETY trip).
+#[test]
+fn cutoff_blocks_a_buy_answer_to_a_request_dispatched_before_the_cutoff() {
+    let prompts = Arc::new(Mutex::new(Vec::new()));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut e = Engine::new(cfg(), RunMode::Paper);
+    e.enable_paper_model(Script { prompts: Arc::clone(&prompts), calls: Arc::clone(&calls), answer: |_| REDUCE });
+    for ev in &events(40) {
+        e.tick(ev.clone());
+    }
+    // the ask has been dispatched (worker has it); the cutoff lands now
+    e.set_model_entries_blocked(true);
+    ticks(&mut e, 8);
+    let t_last = T0 + 1_000 + 40 * 2_000;
+    curve(&mut e, t_last + 1_500, 2_100, 200_000_000);
+    let rep = e.model_lane_report().clone();
+    assert!(!e.model_position_open(&MINT), "no position may open after the cutoff: {rep:?}");
+    assert_eq!(e.model_pending_orders(), 0);
+    assert!(rep.get("discard:entries_blocked").copied().unwrap_or(0) >= 1 || rep.get("refuse:entries_blocked").copied().unwrap_or(0) >= 1, "{rep:?}");
+    // further candidate ticks never dispatch while blocked
+    let before = calls.load(Ordering::SeqCst);
+    for i in 41..60 {
+        print(&mut e, i, t_last + 1_500 + i64::from(i) * 2_000, 2_100 + u64::from(i));
+        ticks(&mut e, 1);
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), before, "no new dispatch while draining");
+}
+
+/// Cutoff with a pending fill and then an open position: the accepted BUY's fill still lands
+/// (pending-fill reconciliation continues), the position is supervised under PROD_HOLD and exits at
+/// the barrier while entries stay blocked; no new ask is ever dispatched.
+#[test]
+fn cutoff_lets_a_pending_fill_land_and_supervises_the_position_to_its_barrier_exit() {
+    use pump_quant_app::engine::ManagementPolicy;
+    let prompts = Arc::new(Mutex::new(Vec::new()));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut e = Engine::new(cfg(), RunMode::Paper);
+    e.set_management_policy(ManagementPolicy::ProdHoldControl { barrier_ms: 300_000 });
+    e.enable_paper_model(Script { prompts: Arc::clone(&prompts), calls: Arc::clone(&calls), answer: |_| REDUCE });
+    for ev in &events(40) {
+        e.tick(ev.clone());
+    }
+    ticks(&mut e, 8); // BUY accepted → pending order awaiting its landing state
+    assert_eq!(e.model_pending_orders(), 1, "{:?}", e.model_lane_report());
+    e.set_model_entries_blocked(true); // cutoff lands with the fill pending
+    let t_last = T0 + 1_000 + 40 * 2_000;
+    curve(&mut e, t_last + 1_500, 2_100, 200_000_000);
+    assert!(e.model_position_open(&MINT), "the already-accepted fill lands: {:?}", e.model_lane_report());
+    assert_eq!(e.model_pending_orders(), 0);
+    let asks_at_cutoff = calls.load(Ordering::SeqCst);
+    let mut r = Rig { e, prompts, calls, clock: t_last + 1_500, slot: 2_100, n: 41 };
+    r.advance_to_order(400_000);
+    assert!(r.e.model_mgmt_pending(&MINT).is_some(), "barrier EXIT submitted while draining");
+    r.landing(0);
+    assert!(!r.e.model_position_open(&MINT), "flat after the barrier exit");
+    assert_eq!(r.e.model_pending_orders(), 0);
+    assert_eq!(r.calls.load(Ordering::SeqCst), asks_at_cutoff, "no entry ask while draining (the PROD_HOLD control asks no model)");
+}
