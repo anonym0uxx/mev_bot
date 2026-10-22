@@ -2339,7 +2339,27 @@ impl Engine {
                     // Rev-31: In live mode, skip exits for unconfirmed positions.
                     let skip_exit = self.mode == RunMode::Live
                         && !self.positions.is_onchain_confirmed(mint.as_bytes());
-                    if !skip_exit {
+                    // Historical recovery vs timely delivery: a print whose wire time precedes a
+                    // model-lane position's FILL happened before we held it (history replayed after
+                    // a restart). It cannot be post-entry collapse evidence and must not advance
+                    // peak/trough or fire protection; counted, never acted on.
+                    let pre_fill_print = self
+                        .model_mgmt
+                        .pos
+                        .get(mint.as_bytes())
+                        .is_some_and(|mp| recv_unix_ms.is_some_and(|t| t < mp.fill_ms));
+                    if pre_fill_print {
+                        self.mrep("protection:skip_pre_fill_print");
+                    }
+                    // Missing-data contract: an instruction/identity print carries NO price
+                    // (`price_fp == 0` = unknown, not zero). It cannot advance peak/trough or fire
+                    // the rug precursor / hard stop — treating it as a 100 % drop fabricates an
+                    // exit. Counted by name, never acted on.
+                    let no_price_print = price_fp <= 0;
+                    if no_price_print && !self.positions.is_empty() && self.positions.has(mint.as_bytes()) {
+                        self.mrep("protection:skip_no_price_print");
+                    }
+                    if !skip_exit && !pre_fill_print && !no_price_print {
                         if let Some(exit) = self.positions.on_trade(
                             mint.as_bytes(),
                             price_u,

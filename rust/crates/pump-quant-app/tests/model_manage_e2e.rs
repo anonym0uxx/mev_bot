@@ -940,3 +940,239 @@ fn prod_hold_control_never_asks_the_model_and_exits_all_inventory_at_the_barrier
     assert_eq!(r.rep("mgmt:dispatched"), 0, "the model was never asked for management");
     assert_eq!(r.rep("mgmt:order:exit"), 1);
 }
+
+/// A canonical PumpSwap print on the held mint after graduation (reserves ≈ the curve's terminal
+/// state so the price is continuous), stamping the engine's swap context for the same tick.
+fn amm_print(e: &mut Engine, ts: i64, slot: u64, i: u32) {
+    e.tick(AppEvent::AmmSwap {
+        mint: mint(),
+        pool: [0x50; 32],
+        pool_is_canonical: true,
+        quote_is_wsol: true,
+        token_reserve_pre: 206_900_000_000_000 - u64::from(i) * 1_000_000_000,
+        quote_reserve_pre: 85_000_000_000 + u64::from(i) * 500_000,
+        fee_bps: Some(30),
+        fee_parts: Some((20, 5, 5)),
+        virtual_quote: Some(0),
+        is_buy: i % 2 == 0,
+        token_amount: 1_000_000_000,
+        quote_lamports: 410_000,
+        trader: wallet(900 + i),
+        fee_lamports: Some(5_000),
+        cu_consumed: Some(60_000),
+        recv_unix_ms: Some(ts),
+        slot,
+    });
+}
+
+/// Position-lifecycle coverage for a CURVE-entered position that graduates mid-hold under the
+/// PROD_HOLD control: the barrier EXIT is routed to the pool (AMM pricing through the real quote
+/// path, fee labelled unverified), inventory goes to zero exactly once, cost basis / fill clock are
+/// the original ones, and the model is never asked. Synthetic events: execution integration only.
+#[test]
+fn curve_position_that_migrates_mid_hold_exits_through_the_pool_at_the_barrier() {
+    use pump_quant_app::engine::ManagementPolicy;
+    let mut r = rig(|_| REDUCE);
+    r.e.set_management_policy(ManagementPolicy::ProdHoldControl { barrier_ms: 300_000 });
+    let inv0 = r.e.model_inventory_tokens(&MINT).expect("fill established inventory");
+    let fills_before = r.e.model_all_fills().len();
+    r.advance(100_000);
+    // Graduation: curve complete, then pool prints only.
+    r.clock += 1_000;
+    r.slot += 1;
+    r.e.tick(AppEvent::Migration { mint: mint(), slot: r.slot });
+    for i in 0..40u32 {
+        r.clock += 5_000;
+        r.slot += 1;
+        amm_print(&mut r.e, r.clock, r.slot, i);
+        ticks(&mut r.e, 2);
+    }
+    assert!(r.e.model_position_open(&MINT), "migration must not vanish the position");
+    assert_eq!(r.e.model_inventory_tokens(&MINT), Some(inv0), "quantity preserved across migration");
+    assert_eq!(r.rep("mgmt:dispatched"), 0, "PROD_HOLD never asks the model: {:?}", r.e.model_lane_report());
+    // Barrier: EXIT ALL intent, now an AMM order.
+    let end = r.clock + 300_000;
+    while r.clock < end && r.e.model_mgmt_pending(&MINT).is_none() {
+        r.clock += 1_000;
+        r.slot += 1;
+        amm_print(&mut r.e, r.clock, r.slot, 100 + (r.slot % 7) as u32);
+        ticks(&mut r.e, 2);
+    }
+    let (_, _, intended, filled) = r.e.model_mgmt_pending(&MINT).expect("barrier EXIT placed after migration");
+    assert_eq!((intended, filled), (inv0, 0));
+    assert_eq!(r.rep("mgmt:prod_hold:barrier_exit"), 1);
+    // Landing state from the pool (≥ 400 ms after the order, later slot) prices the exit.
+    r.clock += 1_000;
+    r.slot += 5;
+    amm_print(&mut r.e, r.clock, r.slot, 7);
+    ticks(&mut r.e, 2);
+    let rep = r.e.model_lane_report();
+    assert_eq!(r.rep("mgmt:fill_amm_sell_fee_unverified"), 1, "exit priced via the pool quote path: {rep:?}");
+    assert_eq!(r.rep("mgmt:fill_curve"), 0, "a completed curve is never used to price the exit: {rep:?}");
+    assert_eq!(r.rep("mgmt:fill:closed"), 1, "{rep:?}");
+    assert!(!r.e.model_position_open(&MINT), "closed exactly once");
+    let fills = r.e.model_mgmt_fills();
+    assert_eq!(fills.len(), 1);
+    assert!(fills[0].closed && fills[0].tokens == inv0);
+    assert_eq!(r.e.model_all_fills().len(), fills_before, "no duplicate entry fill");
+}
+
+/// Same lifecycle, but the pool feed is STALE at the barrier (no landing-state print): the EXIT
+/// intent expires unfilled and the position remains open as explicit exposure — never valued from
+/// the completed curve, never closed at a last price, never dropped.
+#[test]
+fn migrated_position_without_fresh_pool_state_stays_explicit_exposure() {
+    use pump_quant_app::engine::ManagementPolicy;
+    let mut r = rig(|_| REDUCE);
+    r.e.set_management_policy(ManagementPolicy::ProdHoldControl { barrier_ms: 300_000 });
+    let inv0 = r.e.model_inventory_tokens(&MINT).unwrap();
+    r.advance(100_000);
+    r.clock += 1_000;
+    r.slot += 1;
+    r.e.tick(AppEvent::Migration { mint: mint(), slot: r.slot });
+    for i in 0..3u32 {
+        r.clock += 5_000;
+        r.slot += 1;
+        amm_print(&mut r.e, r.clock, r.slot, i);
+        ticks(&mut r.e, 2);
+    }
+    // Pool goes quiet; only the clock advances (time signals, stale curve prints are NOT usable).
+    let end = r.clock + 320_000;
+    while r.clock < end && r.e.model_mgmt_pending(&MINT).is_none() {
+        r.clock += 1_000;
+        r.slot += 1;
+        curve_quiet(&mut r.e, r.clock, r.slot);
+        ticks(&mut r.e, 2);
+    }
+    assert!(r.e.model_mgmt_pending(&MINT).is_some(), "barrier EXIT intent placed: {:?}", r.e.model_lane_report());
+    for _ in 0..8 {
+        r.clock += 1_000;
+        r.slot += 1;
+        curve_quiet(&mut r.e, r.clock, r.slot);
+        ticks(&mut r.e, 2);
+    }
+    let rep = r.e.model_lane_report();
+    assert_eq!(r.rep("mgmt:fill_curve"), 0, "completed curve never prices the exit: {rep:?}");
+    assert_eq!(r.rep("mgmt:fill_amm_sell_fee_unverified"), 0, "{rep:?}");
+    assert!(r.rep("mgmt:order_expired_unfilled") >= 1, "{rep:?}");
+    assert!(r.e.model_position_open(&MINT), "exposure stays explicit");
+    assert_eq!(r.e.model_inventory_tokens(&MINT), Some(inv0));
+    assert!(r.e.model_mgmt_fills().is_empty(), "no fabricated close");
+}
+
+/// Populated-state recovery under the PROD_HOLD control: a filled, 100 s-old position is persisted,
+/// a brand-new engine restores it from the file alone, and the barrier fires at the ORIGINAL
+/// fill + barrier (not restart + barrier), with exactly one EXIT and no duplicate entry fill. The
+/// persisted protection trail (peak/trough), inventory and cost basis come back exactly.
+#[test]
+fn prod_hold_restart_keeps_the_original_fill_clock_and_exits_exactly_once() {
+    use pump_quant_app::engine::ManagementPolicy;
+    let hp = held_path("prod_hold_restart");
+    let mut r = rig(|_| REDUCE);
+    r.e.set_management_policy(ManagementPolicy::ProdHoldControl { barrier_ms: 300_000 });
+    r.e.model_held_attach(&hp);
+    r.advance(100_000);
+    assert!(r.e.model_held_persist_now());
+    let led = r.e.model_held_ledger().clone();
+    let h = &led.held[0];
+    let (fill_ms, clock, inv0) = (h.fill_ms, r.clock, h.inventory_tokens.expect("inventory known"));
+    let (peak, trough, cost) = (h.peak_fp, h.trough_fp, h.cost_lamports);
+    assert!(fill_ms > 0 && clock - fill_ms >= 100_000);
+    drop(r);
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut c = cfg();
+    c.floor_fraction_bps = 2_500;
+    let mut e2 = Engine::new(c, RunMode::Paper);
+    e2.enable_paper_model(Script { prompts: Arc::new(Mutex::new(Vec::new())), calls: Arc::clone(&calls), answer: |_| EXIT });
+    e2.set_management_policy(ManagementPolicy::ProdHoldControl { barrier_ms: 300_000 });
+    e2.model_held_attach(&hp);
+    e2.model_held_restore().unwrap().unwrap();
+    let l2 = e2.model_held_ledger();
+    assert_eq!((l2.held[0].fill_ms, l2.held[0].peak_fp, l2.held[0].trough_fp, l2.held[0].cost_lamports), (fill_ms, peak, trough, cost));
+    assert_eq!(e2.model_inventory_tokens(&MINT), Some(inv0));
+    assert!(e2.model_all_fills().is_empty(), "restore rebuilds books, it does not replay the entry fill");
+    // History recovery replays prints from BEFORE our fill: they must not fire protection or
+    // close the restored position (the defect this test was written against).
+    for ev in &events(40) {
+        e2.tick(ev.clone());
+    }
+    for _ in 0..8 {
+        e2.tick(AppEvent::Tick);
+    }
+    assert!(e2.model_position_open(&MINT), "replayed pre-fill history must not close the position: {:?}", e2.model_lane_report());
+    assert_eq!(e2.model_inventory_tokens(&MINT), Some(inv0));
+    assert!(e2.model_lane_report().get("protection:skip_pre_fill_print").copied().unwrap_or(0) >= 1);
+    assert_eq!(e2.model_lane_report().get("dispatched").copied().unwrap_or(0), 0, "no duplicate entry on the held mint");
+    let mut rr = Rig { e: e2, prompts: Arc::new(Mutex::new(Vec::new())), calls, clock, slot: 2_600, n: 500 };
+    curve(&mut rr.e, rr.clock + 1_000, 2_600, 200_000_000);
+    rr.clock += 1_000;
+    rr.advance_to_order(400_000);
+    let (id, kind, intended, _) = rr.e.model_mgmt_pending(&MINT).unwrap_or_else(|| panic!("{:?}", rr.e.model_lane_report()));
+    assert_eq!(format!("{kind:?}"), "Exit");
+    assert_eq!(intended, inv0, "inventory now {:?}; report {:?}", rr.e.model_inventory_tokens(&MINT), rr.e.model_lane_report());
+    let age_at_barrier = rr.clock - fill_ms;
+    assert!((300_000..=312_000).contains(&age_at_barrier), "barrier at ORIGINAL fill+300 s (age {age_at_barrier} ms), not restart+300 s");
+    assert_eq!(rr.rep("mgmt:dispatched"), 0, "the model was never asked: {:?}", rr.e.model_lane_report());
+    rr.landing(250_000_000);
+    assert!(!rr.e.model_position_open(&MINT), "{:?}", rr.e.model_lane_report());
+    let closes: Vec<_> = rr.e.model_mgmt_fills().iter().filter(|f| f.closed).collect();
+    assert_eq!(closes.len(), 1);
+    assert_eq!(closes[0].order_id, id);
+    assert_eq!(rr.rep("mgmt:order:exit"), 1);
+    assert!(rr.e.model_all_fills().is_empty(), "no entry fill was re-booked across the restart");
+}
+
+/// Missing-data contract on the protection path: a price-less print (instruction/identity print,
+/// `price_fp == 0` = unknown) must not fire the rug precursor or hard stop, must not move
+/// peak/trough, and must leave the position open with its inventory. (Live defect: cohort-001
+/// segment A booked a −0.50 SOL "exit" from such a print 0.8 s after the fill.)
+#[test]
+fn a_priceless_print_never_fires_protection() {
+    use pump_quant_app::engine::ManagementPolicy;
+    let mut r = rig(|_| REDUCE);
+    r.e.set_management_policy(ManagementPolicy::ProdHoldControl { barrier_ms: 300_000 });
+    let inv0 = r.e.model_inventory_tokens(&MINT).unwrap();
+    r.advance(10_000);
+    r.clock += 1_000;
+    r.slot += 1;
+    r.e.tick(AppEvent::MarketTrade {
+        mint: mint(),
+        price_fp: 0,
+        quote_lamports: 0,
+        liquidity_lamports: 0,
+        signed_base: -90_000_000_000,
+        buyer_entity: 777,
+        age_slots: 30,
+        recv_unix_ms: Some(r.clock),
+        trader_pubkey: Some(wallet(999)),
+        slot: Some(r.slot),
+        fee_lamports: Some(70_000),
+        cu_consumed: Some(95_000),
+        venue: Some(TradeVenue::PumpFun),
+    });
+    ticks(&mut r.e, 2);
+    assert!(r.e.model_position_open(&MINT), "a price-less print is unknown, not a crash: {:?}", r.e.model_lane_report());
+    assert_eq!(r.e.model_inventory_tokens(&MINT), Some(inv0));
+    assert!(r.rep("protection:skip_no_price_print") >= 1, "{:?}", r.e.model_lane_report());
+    assert!(r.e.model_mgmt_fills().is_empty());
+    // A REAL single-print collapse still protects.
+    r.clock += 1_000;
+    r.slot += 1;
+    r.e.tick(AppEvent::MarketTrade {
+        mint: mint(),
+        price_fp: 20_000,
+        quote_lamports: 900_000_000,
+        liquidity_lamports: VSOL,
+        signed_base: -90_000_000_000,
+        buyer_entity: 778,
+        age_slots: 30,
+        recv_unix_ms: Some(r.clock),
+        trader_pubkey: Some(wallet(998)),
+        slot: Some(r.slot),
+        fee_lamports: Some(70_000),
+        cu_consumed: Some(95_000),
+        venue: Some(TradeVenue::PumpFun),
+    });
+    assert!(!r.e.model_position_open(&MINT), "the rug precursor still protects on a priced collapse");
+}
