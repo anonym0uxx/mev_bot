@@ -1204,8 +1204,13 @@ impl ScalpLifecycle {
         if pos.model_managed {
             // MODEL MODE: the hard stop is a safeguard the model cannot be asked to keep; the
             // trailing stop and every other discretionary trigger below stand down.
+            // Hard-stop level ONLY: `protection_level_fp` is max(trail level, stop level), so a
+            // trail width of 0 would make the "hard level" equal the entry price and close the
+            // position on ANY tick below entry (defect found by the cohort-001 segment-A tape
+            // replay). A trail width of 10_000 bp zeroes the trail term and leaves entry·(1−hard_sl).
             let hard_level =
-                protection_level_fp(pos.entry_price_fp, pos.entry_price_fp, 0, hard_sl);
+                protection_level_fp(pos.entry_price_fp, pos.entry_price_fp, 10_000, hard_sl);
+            let _ = trail;
             if price_fp <= hard_level {
                 return Some(self.close(mint, mult, ExitReason::HardStop));
             }
@@ -1213,9 +1218,9 @@ impl ScalpLifecycle {
         }
         let protect = protection_level_fp(pos.peak_price_fp, pos.entry_price_fp, trail, hard_sl);
         if price_fp <= protect {
-            // Distinguish the hard stop (at/below entry−hard_sl) from the trail.
+            // Distinguish the hard stop (at/below entry−hard_sl) from the trail (stop level only).
             let hard_level =
-                protection_level_fp(pos.entry_price_fp, pos.entry_price_fp, 0, hard_sl);
+                protection_level_fp(pos.entry_price_fp, pos.entry_price_fp, 10_000, hard_sl);
             let reason = if price_fp <= hard_level {
                 ExitReason::HardStop
             } else {

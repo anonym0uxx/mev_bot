@@ -904,6 +904,8 @@ pub struct Engine {
     /// completion, finish reason, dispatch/completion clocks). Installed by the daemon; `None`
     /// records nothing. Late answers are traced too (diagnostic evidence, never acted on).
     model_io_sink: Option<Box<dyn FnMut(&str) + Send>>,
+    /// Process generation id (wall ms at engine creation): makes request ids unique across restarts.
+    model_proc_gen: u64,
     model_orders: BTreeMap<[u8; 32], model_admit::ModelOrder>,
     /// Model-managed position lane (HOLD/REDUCE/EXIT). Inert unless the paper-model lane is armed.
     model_mgmt: model_manage::MgmtLane,
@@ -1567,6 +1569,7 @@ impl Engine {
             model_meta: BTreeMap::new(),
             model_dispatch_clock: BTreeMap::new(),
             model_io_sink: None,
+            model_proc_gen: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0),
             model_orders: BTreeMap::new(),
             model_mgmt: model_manage::MgmtLane::new(),
             model_safety: crate::safety_off::SafetyOff::default(),

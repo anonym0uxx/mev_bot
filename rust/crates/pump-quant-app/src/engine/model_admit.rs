@@ -621,6 +621,8 @@ impl Engine {
         }
         self.model_last_ask.insert(mint, clock);
         self.model_dispatch_clock.insert(id, clock);
+        // Durable dispatch record BEFORE transport (the denominator of all-dispatch usability).
+        self.model_io_event("entry", id.0, &mint, "dispatch", "dispatched", clock);
         self.model_meta.insert(
             id,
             ModelReqMeta {
@@ -718,6 +720,8 @@ impl Engine {
         };
         let dispatched = self.model_dispatch_clock.remove(&v.id);
         let rec = serde_json::json!({
+            "ev": "return",
+            "gen": self.model_proc_gen,
             "kind": if is_mgmt { "mgmt" } else { "entry" },
             "id": v.id.0,
             "mint_hex": v.mint.iter().map(|b| format!("{b:02x}")).collect::<String>(),
@@ -739,21 +743,40 @@ impl Engine {
         }
     }
 
+    /// One lifecycle line for request `id` (`ev` = dispatch | status), keyed by (gen, kind, id) so a
+    /// late return updates the same request and never reads as a second dispatch.
+    pub(super) fn model_io_event(&mut self, kind: &str, id: u64, mint: &[u8; 32], ev: &str, status: &str, clock: i64) {
+        if self.model_io_sink.is_none() {
+            return;
+        }
+        let rec = serde_json::json!({
+            "ev": ev, "gen": self.model_proc_gen, "kind": kind, "id": id,
+            "mint_hex": mint.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+            "status": status, "clock_ms": clock,
+        });
+        if let Some(sink) = self.model_io_sink.as_mut() {
+            sink(&rec.to_string());
+        }
+    }
+
     fn model_accept(&mut self, v: crate::model_worker::Verdict, clock: i64) {
         let meta = self.model_meta.remove(&v.id);
         let accepted = self.model_table.accept(v.id, &v.mint, clock);
         let entry = match accepted {
             Ok(e) => e,
             Err(e) => {
-                self.mrep(match e {
+                let why = match e {
                     AcceptRefusal::Unknown => "discard:unknown_or_duplicate",
                     AcceptRefusal::DeadlineExceeded { .. } => "discard:late",
                     AcceptRefusal::Abandoned => "discard:abandoned",
                     AcceptRefusal::EntriesBlocked => "discard:entries_blocked",
-                });
+                };
+                self.mrep(why);
+                self.model_io_event("entry", v.id.0, &v.mint, "status", why, clock);
                 return;
             }
         };
+        self.model_io_event("entry", v.id.0, &v.mint, "status", "accepted_for_authority", clock);
         let Some(meta) = meta else {
             self.mrep("discard:no_binding");
             return;

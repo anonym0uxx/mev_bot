@@ -1176,3 +1176,97 @@ fn a_priceless_print_never_fires_protection() {
     });
     assert!(!r.e.model_position_open(&MINT), "the rug precursor still protects on a priced collapse");
 }
+
+/// The exact failing tape of cohort-001 segment A (request 507), in authenticated order: after the fill
+/// each real trade arrived as TWO representations — an instruction/identity print with `price_fp = 0`
+/// and the priced reserve print — at +142, +147 and +471/472 ms. Price ratios are the recorded ones
+/// (0.99931, 0.99860, 0.99225 of the accept price). Under the corrected contract: no exit, peak/trough
+/// move only on priced prints, the position and inventory survive, and the two representations of one
+/// trade do not read as a drop. (Live journal booked −0.5015 SOL from the +472 ms zero print.)
+#[test]
+fn segment_a_failing_tape_replayed_does_not_fire_protection() {
+    use pump_quant_app::engine::ManagementPolicy;
+    let mut r = rig(|_| REDUCE);
+    r.e.set_management_policy(ManagementPolicy::ProdHoldControl { barrier_ms: 1_800_000 });
+    let inv0 = r.e.model_inventory_tokens(&MINT).unwrap();
+    let hp = held_path("seg_a_tape");
+    r.e.model_held_attach(&hp);
+    assert!(r.e.model_held_persist_now());
+    let entry = r.e.model_held_ledger().held[0].entry_price_fp;
+    let peak0 = r.e.model_held_ledger().held[0].peak_fp;
+    let ratios = [(142i64, 0.99931f64), (147, 0.99860), (471, 0.99225)];
+    for (dt, ratio) in ratios {
+        let px = (entry as f64 * ratio) as u64;
+        let ts = r.clock + dt;
+        r.slot += 1;
+        // identity print (no price), then the priced reserve print of the SAME trade
+        for price_fp in [0u64, px] {
+            r.e.tick(AppEvent::MarketTrade {
+                mint: mint(),
+                price_fp: price_fp as i128,
+                quote_lamports: if price_fp == 0 { 0 } else { 6_000_000_000 },
+                liquidity_lamports: if price_fp == 0 { 0 } else { VSOL },
+                signed_base: -125_093_404_721,
+                buyer_entity: 4242,
+                age_slots: 30,
+                recv_unix_ms: Some(ts),
+                trader_pubkey: Some(wallet(4242)),
+                slot: Some(r.slot),
+                fee_lamports: Some(5_000),
+                cu_consumed: Some(60_000),
+                venue: Some(TradeVenue::PumpFun),
+            });
+        }
+        ticks(&mut r.e, 1);
+    }
+    let rep = r.e.model_lane_report();
+    assert!(r.e.model_position_open(&MINT), "no exit on the failing tape: {rep:?}");
+    assert_eq!(r.e.model_inventory_tokens(&MINT), Some(inv0));
+    assert_eq!(r.rep("protection:skip_no_price_print"), 3, "{rep:?}");
+    assert!(r.e.model_mgmt_fills().is_empty());
+    assert!(r.e.model_held_persist_now());
+    let h = &r.e.model_held_ledger().held[0];
+    assert_eq!(h.peak_fp, peak0, "a zero print never becomes a peak/trough; small priced dips do not raise the peak");
+    assert!(h.trough_fp >= (entry as f64 * 0.992) as u64, "trough from PRICED prints only: {}", h.trough_fp);
+    assert_eq!(h.inventory_tokens, Some(inv0));
+}
+
+/// Model-mode hard stop fires at entry·(1−35 %) and NOT on an ordinary dip below entry (the
+/// level was computed as max(trail@0, stop) == entry: any tick below entry closed the position).
+#[test]
+fn model_mode_hard_stop_is_35_percent_below_entry_not_any_dip() {
+    use pump_quant_app::engine::ManagementPolicy;
+    let mut r = rig(|_| REDUCE);
+    r.e.set_management_policy(ManagementPolicy::ProdHoldControl { barrier_ms: 1_800_000 });
+    let hp = held_path("hard_stop_level");
+    r.e.model_held_attach(&hp);
+    assert!(r.e.model_held_persist_now());
+    let entry = r.e.model_held_ledger().held[0].entry_price_fp;
+    let mut dip = |r: &mut Rig, ratio: f64| {
+        r.clock += 1_000;
+        r.slot += 1;
+        r.e.tick(AppEvent::MarketTrade {
+            mint: mint(),
+            price_fp: ((entry as f64 * ratio) as u64) as i128,
+            quote_lamports: 300_000_000,
+            liquidity_lamports: VSOL,
+            signed_base: -20_000_000_000,
+            buyer_entity: 5151,
+            age_slots: 30,
+            recv_unix_ms: Some(r.clock),
+            trader_pubkey: Some(wallet(5151)),
+            slot: Some(r.slot),
+            fee_lamports: Some(5_000),
+            cu_consumed: Some(60_000),
+            venue: Some(TradeVenue::PumpFun),
+        });
+        ticks(&mut r.e, 1);
+    };
+    // gradual decline, no single step ≥ 30 %: −1 %, −10 %, −20 %, −30 %, −34 % → still held
+    for ratio in [0.99, 0.90, 0.80, 0.70, 0.66] {
+        dip(&mut r, ratio);
+        assert!(r.e.model_position_open(&MINT), "held at {ratio}: {:?}", r.e.model_lane_report());
+    }
+    dip(&mut r, 0.649);
+    assert!(!r.e.model_position_open(&MINT), "hard stop at entry·0.65");
+}
