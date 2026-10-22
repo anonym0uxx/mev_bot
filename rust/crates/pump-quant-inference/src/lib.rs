@@ -412,13 +412,33 @@ impl InferenceClient {
         user: &str,
         timeout: Duration,
     ) -> Result<Completion, InferenceError> {
+        self.complete_with_meta_timeout_id(system, user, timeout, None)
+    }
+
+    /// As [`complete_with_meta_timeout`](Self::complete_with_meta_timeout), optionally tagging the
+    /// HTTP request with `X-Request-Id` (vLLM adopts it as the engine request id), so a server-side
+    /// abort can be matched to THIS engine request rather than inferred from a closed socket.
+    ///
+    /// `ureq` 2.12 `Request::timeout` is an ABSOLUTE deadline (`DeadlineStream`): it bounds the whole
+    /// operation — connect, send, headers and body — and does not restart per read.
+    pub fn complete_with_meta_timeout_id(
+        &self,
+        system: &str,
+        user: &str,
+        timeout: Duration,
+        request_id: Option<&str>,
+    ) -> Result<Completion, InferenceError> {
         let body = request_body_with(self.model.as_deref(), self.max_tokens, system, user);
 
-        let resp = self
+        let mut req = self
             .agent
             .post(&format!("{}/v1/chat/completions", self.endpoint))
             .set("Content-Type", "application/json")
-            .timeout(timeout)
+            .timeout(timeout);
+        if let Some(rid) = request_id {
+            req = req.set("X-Request-Id", rid);
+        }
+        let resp = req
             .send_json(body)
             .map_err(|e| InferenceError::Transport(e.to_string()))?;
 

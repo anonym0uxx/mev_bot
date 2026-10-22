@@ -43,6 +43,8 @@ pub struct Job {
     pub user: String,
     /// Wall instant the engine dispatched this job (request-lifecycle v2).
     pub dispatched_at: std::time::Instant,
+    /// Engine process generation (durable identity = (gen, kind, id)); part of the X-Request-Id.
+    pub proc_gen: u64,
     /// Transport budget from dispatch: authority deadline + bounded cancellation lag. `None` =
     /// legacy behaviour (the source's own fixed timeout; no cancellation at the deadline).
     pub transport_budget: Option<std::time::Duration>,
@@ -112,7 +114,8 @@ impl InferencePool {
                             // non-positive remainder still sends with a 1 ms timeout so the request is
                             // recorded as cancelled rather than silently skipped.
                             let rem = b.saturating_sub(job.dispatched_at.elapsed());
-                            source.complete_meta_within(&job.system, &job.user, rem.max(std::time::Duration::from_millis(1)))
+                            let rid = format!("pq-{}-{}", job.proc_gen, job.id.0);
+                            source.complete_meta_within(&job.system, &job.user, rem.max(std::time::Duration::from_millis(1)), &rid)
                         }
                         None => source.complete_meta(&job.system, &job.user),
                     };
@@ -198,6 +201,50 @@ mod tests {
     }
 
     /// Blocks until released — a model that hangs.
+    /// Records the transport budget it was handed (request-lifecycle v2) and answers after it.
+    struct BudgetProbe(std::sync::Mutex<Vec<(std::time::Duration, String)>>);
+    impl ModelSource for BudgetProbe {
+        fn complete(&self, _s: &str, _u: &str) -> Result<String, InferenceError> {
+            Ok("DECISION: SKIP".into())
+        }
+        fn complete_meta_within(
+            &self,
+            _s: &str,
+            _u: &str,
+            budget: std::time::Duration,
+            rid: &str,
+        ) -> Result<pump_quant_inference::Completion, InferenceError> {
+            self.0.lock().unwrap().push((budget, rid.to_string()));
+            std::thread::sleep(budget);
+            Err(InferenceError::Transport(format!("timeout after {budget:?}")))
+        }
+    }
+
+    #[test]
+    fn transport_budget_is_absolute_from_dispatch_and_not_reset_by_queue_wait() {
+        // Dispatched 2.9 s "ago" with a 3.5 s budget (3,000 ms deadline + 500 ms lag): the worker must
+        // hand the source only the remaining ~0.6 s, however long the job sat in the channel.
+        let probe = Arc::new(BudgetProbe(std::sync::Mutex::new(Vec::new())));
+        let pool = InferencePool::new(probe.clone(), 1, 4);
+        let mut j = job(7, A);
+        j.proc_gen = 42;
+        j.dispatched_at = Instant::now() - Duration::from_millis(2900);
+        j.transport_budget = Some(Duration::from_millis(3500));
+        std::thread::sleep(Duration::from_millis(200)); // extra pre-dispatch wait must count too
+        pool.try_dispatch(j).unwrap();
+        let v = wait_for(&pool, 1);
+        assert_eq!(v.len(), 1);
+        let seen = probe.0.lock().unwrap().clone();
+        assert_eq!(seen.len(), 1);
+        let (budget, rid) = &seen[0];
+        assert!(*budget <= Duration::from_millis(450), "budget handed to transport = {budget:?}; must be remaining-from-dispatch, not the full 3.5 s");
+        assert!(*budget >= Duration::from_millis(1));
+        assert_eq!(rid, "pq-42-7");
+        assert!(matches!(&v[0].result, Err(e) if e.is_timeout()), "timeout must surface as a transport timeout, not a silent skip");
+        assert_eq!(v[0].id, RequestId(7));
+        pool.shutdown();
+    }
+
     struct Gate {
         release: Mutex<Receiver<()>>,
         entered: AtomicUsize,
@@ -212,7 +259,8 @@ mod tests {
 
     fn job(id: u64, mint: [u8; 32]) -> Job {
         Job {
-            dispatched_at: std::time::Instant::now(),
+            dispatched_at: Instant::now(),
+            proc_gen: 0,
             transport_budget: None,
             id: RequestId(id),
             mint,

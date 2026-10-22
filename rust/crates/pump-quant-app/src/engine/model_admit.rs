@@ -388,6 +388,7 @@ impl Engine {
             if let Some(since) = self.model_dirty_since.remove(&mint) {
                 // Queue age at dispatch (ms), bucketed, split by venue so starvation is visible.
                 let age = (clock - since).max(0);
+                self.model_pending_queue_age_ms = Some(age);
                 let (v, _, _) = self.model_cache.describe(&mint, clock);
                 let b = match age {
                     0..=999 => "lt1s",
@@ -586,6 +587,8 @@ impl Engine {
             self.model_uniq("ready", &mint, venue);
         }
         let sent_last_recv_ms = snap.marker.last_recv_ms;
+        let queue_age_ms = self.model_pending_queue_age_ms.take();
+        let render_started = std::time::Instant::now();
         let id = match self
             .model_table
             .submit(mint, clock, clock + MODEL_DEADLINE_MS)
@@ -606,6 +609,7 @@ impl Engine {
             system: snap.system_prompt.clone(),
             user: snap.user_prompt.clone(),
             dispatched_at: std::time::Instant::now(),
+            proc_gen: self.model_proc_gen,
             // request-lifecycle v2 (opt-in): authority deadline + bounded cancellation lag; the
             // 3,000 ms authority clock itself is unchanged.
             transport_budget: self
@@ -627,8 +631,23 @@ impl Engine {
         }
         self.model_last_ask.insert(mint, clock);
         self.model_dispatch_clock.insert(id, clock);
-        // Durable dispatch record BEFORE transport (the denominator of all-dispatch usability).
-        self.model_io_event("entry", id.0, &mint, "dispatch", "dispatched", clock);
+        // Durable dispatch record BEFORE transport (the denominator of all-dispatch usability), with
+        // decision-input provenance so "stale" can be read correctly later:
+        //   queue_age_ms      — opportunity WAITING: dirty-since → this admission (scheduling delay; the
+        //                       prompt is re-rendered now, so this is NOT the age of the prompt);
+        //   source_age_ms     — SOURCE AGE: dispatch clock − newest observation inside the sent state;
+        //   state_last_recv_ms, state_trades_n — the snapshot's provenance marker;
+        //   deadline_ms       — the authority deadline (dispatch-based, unchanged).
+        let prov = serde_json::json!({
+            "queue_age_ms": queue_age_ms,
+            "source_age_ms": (clock - sent_last_recv_ms).max(0),
+            "state_last_recv_ms": sent_last_recv_ms,
+            "state_trades_n": snap.marker.n_accepted,
+            "deadline_ms": clock + MODEL_DEADLINE_MS,
+            "transport_budget_ms": self.model_cancel_lag_ms.map(|l| MODEL_DEADLINE_MS as u64 + l),
+            "admit_us": render_started.elapsed().as_micros() as u64,
+        });
+        self.model_io_event_with("entry", id.0, &mint, "dispatch", "dispatched", clock, prov);
         self.model_meta.insert(
             id,
             ModelReqMeta {
@@ -752,14 +771,24 @@ impl Engine {
     /// One lifecycle line for request `id` (`ev` = dispatch | status), keyed by (gen, kind, id) so a
     /// late return updates the same request and never reads as a second dispatch.
     pub(super) fn model_io_event(&mut self, kind: &str, id: u64, mint: &[u8; 32], ev: &str, status: &str, clock: i64) {
+        self.model_io_event_with(kind, id, mint, ev, status, clock, serde_json::Value::Null);
+    }
+
+    /// Lifecycle line with extra fields merged in (provenance on dispatch; elapsed/why on status).
+    pub(super) fn model_io_event_with(&mut self, kind: &str, id: u64, mint: &[u8; 32], ev: &str, status: &str, clock: i64, extra: serde_json::Value) {
         if self.model_io_sink.is_none() {
             return;
         }
-        let rec = serde_json::json!({
+        let mut rec = serde_json::json!({
             "ev": ev, "gen": self.model_proc_gen, "kind": kind, "id": id,
             "mint_hex": mint.iter().map(|b| format!("{b:02x}")).collect::<String>(),
             "status": status, "clock_ms": clock,
         });
+        if let (Some(dst), Some(src)) = (rec.as_object_mut(), extra.as_object()) {
+            for (k, v) in src {
+                dst.insert(k.clone(), v.clone());
+            }
+        }
         if let Some(sink) = self.model_io_sink.as_mut() {
             sink(&rec.to_string());
         }

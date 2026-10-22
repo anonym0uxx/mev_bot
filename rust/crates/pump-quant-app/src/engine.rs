@@ -909,6 +909,9 @@ pub struct Engine {
     /// Request-lifecycle v2 (paper, opt-in): bounded cancellation lag added to the 3,000 ms
     /// authority deadline as the per-request transport budget; `None` = legacy fixed timeout.
     pub(crate) model_cancel_lag_ms: Option<u64>,
+    /// Queue age of the mint being admitted right now (set by the dirty-queue loop, consumed by the
+    /// dispatch provenance line). None when admission did not come through the dirty queue.
+    pub(crate) model_pending_queue_age_ms: Option<i64>,
     model_orders: BTreeMap<[u8; 32], model_admit::ModelOrder>,
     /// Model-managed position lane (HOLD/REDUCE/EXIT). Inert unless the paper-model lane is armed.
     model_mgmt: model_manage::MgmtLane,
@@ -1580,6 +1583,7 @@ impl Engine {
             model_io_sink: None,
             model_proc_gen: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0),
             model_cancel_lag_ms: None,
+            model_pending_queue_age_ms: None,
             model_orders: BTreeMap::new(),
             model_mgmt: model_manage::MgmtLane::new(),
             model_safety: crate::safety_off::SafetyOff::default(),

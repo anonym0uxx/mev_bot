@@ -514,3 +514,117 @@ fn blocking_entries_stops_new_asks_but_the_engine_keeps_ticking() {
     );
     assert!(!e.model_position_open(&MINT));
 }
+
+/// Request-lifecycle v2 transport: honours the budget it is handed (sleeps it out, then reports a
+/// transport timeout) — the client-side shape of "socket closed at the transport deadline".
+struct BudgetBound {
+    calls: Arc<AtomicUsize>,
+    budgets: Arc<std::sync::Mutex<Vec<Duration>>>,
+}
+
+impl ModelSource for BudgetBound {
+    fn complete(&self, _s: &str, _u: &str) -> Result<String, InferenceError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        std::thread::sleep(Duration::from_millis(8_000));
+        Ok(BUY.to_string())
+    }
+    fn complete_meta_within(
+        &self,
+        _s: &str,
+        _u: &str,
+        budget: Duration,
+        _rid: &str,
+    ) -> Result<pump_quant_inference::Completion, InferenceError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.budgets.lock().unwrap().push(budget);
+        std::thread::sleep(budget);
+        Err(InferenceError::Transport(format!("timeout after {budget:?}")))
+    }
+}
+
+/// Request-lifecycle v2: authority expiry (the feed-clock 3,000 ms deadline) and transport cleanup
+/// are separate facts. With PQ_CANCEL_LAG_MS set, the transport is handed the deadline-plus-lag budget,
+/// the timeout surfaces as a distinct `discard:cancelled_at_deadline` (never `late`/`abandoned`, never
+/// an order), and the lag cannot authorise an answer.
+#[test]
+fn transport_timeout_after_the_deadline_is_recorded_as_cancelled_not_late_and_creates_no_order() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let budgets = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut e = Engine::new(cfg(), RunMode::Paper);
+    e.set_model_cancel_lag_ms(Some(300));
+    e.enable_paper_model(BudgetBound {
+        calls: Arc::clone(&calls),
+        budgets: Arc::clone(&budgets),
+    });
+    let f = Feed {
+        n: 40,
+        with_launch: true,
+        with_meta: true,
+        with_curve: true,
+    };
+    for ev in events(f) {
+        e.tick(ev);
+    }
+    for _ in 0..4 {
+        e.tick(AppEvent::Tick);
+    }
+    // Feed clock passes the authority deadline while the transport is still inside its budget.
+    e.tick(AppEvent::CurveObserved {
+        mint: mint(),
+        v_sol_lamports: VSOL,
+        v_tokens: VTOK,
+        real_sol_lamports: 7_900_000_000,
+        real_tokens: 569_000_000_000_000,
+        recv_unix_ms: Some(t_last(40) + 20_000),
+        slot: 2_050,
+    });
+    // Wall time: wait out the 3,000 + 300 ms budget, then let the verdict be collected.
+    std::thread::sleep(Duration::from_millis(3_600));
+    for _ in 0..6 {
+        e.tick(AppEvent::Tick);
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // The later curve event legitimately re-asks the mint once its first request is gone
+    // ("a normal request after cancellation"), so calls may be 2.
+    assert!(calls.load(Ordering::SeqCst) >= 1, "{:?}", e.model_lane_report());
+    let b = budgets.lock().unwrap().clone();
+    assert!(!b.is_empty());
+    assert!(
+        b[0] <= Duration::from_millis(3_300) && b[0] >= Duration::from_millis(3_000),
+        "transport budget must be deadline + lag measured from dispatch, got {:?}",
+        b[0]
+    );
+    assert_eq!(e.model_pending_orders(), 0, "{:?}", e.model_lane_report());
+    assert!(!e.model_position_open(&MINT));
+    assert!(rep(&e, "discard:cancelled_at_deadline") >= 1, "{:?}", e.model_lane_report());
+    assert_eq!(rep(&e, "discard:late"), 0, "{:?}", e.model_lane_report());
+    assert_eq!(rep(&e, "discard:abandoned"), 0, "{:?}", e.model_lane_report());
+}
+
+/// Without the opt-in the legacy behaviour is untouched: the source gets no budget and a late answer
+/// is still classified `late`/`abandoned`.
+#[test]
+fn without_cancel_lag_the_transport_is_not_handed_a_budget() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let budgets = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut e = Engine::new(cfg(), RunMode::Paper);
+    e.enable_paper_model(BudgetBound {
+        calls: Arc::clone(&calls),
+        budgets: Arc::clone(&budgets),
+    });
+    let f = Feed {
+        n: 40,
+        with_launch: true,
+        with_meta: true,
+        with_curve: true,
+    };
+    for ev in events(f) {
+        e.tick(ev);
+    }
+    for _ in 0..4 {
+        e.tick(AppEvent::Tick);
+    }
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert!(budgets.lock().unwrap().is_empty(), "legacy path must use complete_meta, not the budgeted variant");
+}

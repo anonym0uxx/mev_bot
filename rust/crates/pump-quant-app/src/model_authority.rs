@@ -68,6 +68,7 @@ pub trait ModelSource {
         system: &str,
         user: &str,
         _budget: std::time::Duration,
+        _request_id: &str,
     ) -> Result<Completion, InferenceError> {
         self.complete_meta(system, user)
     }
@@ -88,8 +89,9 @@ impl ModelSource for InferenceClient {
         system: &str,
         user: &str,
         budget: std::time::Duration,
+        request_id: &str,
     ) -> Result<Completion, InferenceError> {
-        InferenceClient::complete_with_meta_timeout(self, system, user, budget)
+        InferenceClient::complete_with_meta_timeout_id(self, system, user, budget, Some(request_id))
     }
 }
 
