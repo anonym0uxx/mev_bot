@@ -785,6 +785,10 @@ struct SessionStats {
     join_unknown: u64,
     join_ambiguous: u64,
     join_parked: u64,
+    join_keyed_by_signature: u64,
+    join_unknown_buy: u64,
+    join_unknown_sell: u64,
+    join_keyed_by_slot_side: u64,
     join_identity_late: u64,
     delta_trades_derived_total: u64,
     delta_no_trade_total: u64,
@@ -839,6 +843,10 @@ impl SessionStats {
             join_unknown: 0,
             join_ambiguous: 0,
             join_parked: 0,
+            join_keyed_by_signature: 0,
+            join_unknown_buy: 0,
+            join_unknown_sell: 0,
+            join_keyed_by_slot_side: 0,
             join_identity_late: 0,
             delta_trades_derived_total: 0,
             delta_no_trade_total: 0,
@@ -1852,6 +1860,30 @@ fn main() -> ExitCode {
                                         Err(e) => eprintln!("[pq-daemon] model I/O trace unavailable ({path}): {e}"),
                                     }
                                 }
+                                // Entry contract (explicit). probe_sl_v1 = the dense probe_step78 policy's own contract.
+                                match std::env::var("PQ_ENTRY_CONTRACT").ok().as_deref() {
+                                    Some("probe_sl_v1") => {
+                                        let want = pump_quant_inference::probe_sl::PROBE_SL_V1_SYSTEM_PROMPT_SHA256;
+                                        let got = pump_quant_inference::probe_sl::system_prompt_sha256();
+                                        if got != want {
+                                            eprintln!("[pq-daemon] probe_sl_v1 system prompt digest mismatch ({got} != {want}): refusing to arm");
+                                            return ExitCode::from(2);
+                                        }
+                                        engine.set_entry_contract(pump_quant_app::engine::EntryContract::ProbeSlV1);
+                                        let root = served.iter().find(|s| s.id == name).and_then(|s| s.root.clone());
+                                        let binding = pump_quant_inference::probe_sl::PolicyContractBinding::probe_sl_v1(&name, root.as_deref());
+                                        let bpath = std::env::var("PQ_POLICY_BINDING_FILE").unwrap_or_else(|_| "data/policy_contract_binding.json".to_string());
+                                        if let Err(e) = std::fs::write(&bpath, serde_json::to_vec_pretty(&binding).unwrap_or_default()) {
+                                            eprintln!("[pq-daemon] policy binding write failed ({bpath}): {e}");
+                                        }
+                                        eprintln!("[pq-daemon] entry contract = probe_sl_v1 (system sha256 {want}; max_tokens {}; binding -> {bpath})", pump_quant_inference::probe_sl::PROBE_SL_V1_MAX_TOKENS);
+                                    }
+                                    Some("v16_lora") | None => eprintln!("[pq-daemon] entry contract = v16_lora (renderer default)"),
+                                    Some(other) => {
+                                        eprintln!("[pq-daemon] unknown PQ_ENTRY_CONTRACT={other}: refusing to arm");
+                                        return ExitCode::from(2);
+                                    }
+                                }
                                 match std::env::var("PQ_MANAGEMENT_POLICY").ok().as_deref() {
                                     Some("prod_hold_v16") => {
                                         engine.set_management_policy(pump_quant_app::engine::ManagementPolicy::PROD_HOLD_V16);
@@ -2062,8 +2094,18 @@ fn main() -> ExitCode {
         mint: [u8; 32],
         side_is_buy: bool,
         parked_at: Instant,
+        /// Exact join key when the account update carried its writing transaction's signature.
+        signature: Option<[u8; 64]>,
     }
     let mut pending_joins: VecDeque<PendingJoin> = VecDeque::new();
+    /// Exact-first join: by signature when present (never falls back on its own — a signed print
+    /// whose instruction is not noted stays Unknown and parks), else by (mint, slot, side).
+    fn join_lookup(tj: &mut TradeJoin, sig: Option<&[u8; 64]>, mint: &[u8; 32], slot: u64, is_buy: bool) -> JoinOutcome {
+        match sig {
+            Some(s) => tj.take_identity_by_signature(s, mint),
+            None => tj.take_identity(mint, slot, is_buy),
+        }
+    }
     fn apply_join(trade_pe: &mut ProvenancedEvent, entity: u64, pubkey: [u8; 32], j_fee: Option<u64>, j_cu: Option<u64>) {
         if let AppEvent::MarketTrade { buyer_entity, trader_pubkey, fee_lamports, cu_consumed, .. } = &mut trade_pe.event {
             *fee_lamports = j_fee;
@@ -2607,7 +2649,7 @@ fn main() -> ExitCode {
         // after JOIN_HOLD_MS unchanged (trader unknown), preserving per-mint arrival order.
         while let Some(front) = pending_joins.front() {
             let expired = front.parked_at.elapsed() >= Duration::from_millis(JOIN_HOLD_MS);
-            let joined = trade_join.take_identity(&front.mint, front.slot, front.side_is_buy);
+            let joined = join_lookup(&mut trade_join, front.signature.as_ref(), &front.mint, front.slot, front.side_is_buy);
             let is_identity = matches!(joined, JoinOutcome::Identity { .. });
             if !expired && !is_identity {
                 break;
@@ -2618,7 +2660,10 @@ fn main() -> ExitCode {
                     apply_join(&mut pj.trade_pe, entity, pubkey, f, c);
                     stats.join_identity_late += 1;
                 }
-                _ => stats.join_unknown += 1,
+                _ => {
+                    stats.join_unknown += 1;
+                    if pj.side_is_buy { stats.join_unknown_buy += 1 } else { stats.join_unknown_sell += 1 }
+                }
             }
             queue.push(pj.trade_pe, pj.slot);
             stats.delta_trades_derived_total += 1;
@@ -2719,7 +2764,7 @@ fn main() -> ExitCode {
                     "\"join_identity\":{},",
                     "\"join_unknown\":{},",
                     "\"join_ambiguous\":{},",
-                    "\"join_parked\":{},",
+                    "\"join_parked\":{},\"join_keyed_by_signature\":{},\"join_keyed_by_slot_side\":{},\"join_unknown_buy\":{},\"join_unknown_sell\":{},",
                     "\"join_identity_late\":{},",
                     "\"delta_trades_derived\":{},",
                     "\"delta_no_trade\":{},",
@@ -2744,6 +2789,10 @@ fn main() -> ExitCode {
                 stats.join_unknown,
                 stats.join_ambiguous,
                 stats.join_parked,
+                stats.join_keyed_by_signature,
+                stats.join_keyed_by_slot_side,
+                stats.join_unknown_buy,
+                stats.join_unknown_sell,
                 stats.join_identity_late,
                 stats.delta_trades_derived_total,
                 stats.delta_no_trade_total,
@@ -2792,7 +2841,7 @@ fn main() -> ExitCode {
                             // Only a known address is worth noting: the join exists to supply
                             // the address, so a hash-only print has nothing to contribute.
                             if let Some(pk) = trader_pubkey {
-                                trade_join.note_instruction_with_meta(
+                                trade_join.note_instruction_signed(
                                     mint.as_bytes(),
                                     ev.slot,
                                     *buyer_entity,
@@ -2801,6 +2850,7 @@ fn main() -> ExitCode {
                                     *recv_unix_ms,
                                     tx.fee_lamports,
                                     tx.cu_consumed,
+                                    Some(tx.signature),
                                 );
                             }
                         }
@@ -2824,6 +2874,8 @@ fn main() -> ExitCode {
                     data,
                     slot,
                     recv_unix_ms,
+                    txn_signature,
+                    write_version: _,
                 }) => {
                     did_work = true;
                     stats.ls_account_received += 1;
@@ -2916,19 +2968,23 @@ fn main() -> ExitCode {
                                     }
                                     pending_joins = rest;
                                     for mut pj in older {
-                                        match trade_join.take_identity(&pj.mint, pj.slot, pj.side_is_buy) {
+                                        match join_lookup(&mut trade_join, pj.signature.as_ref(), &pj.mint, pj.slot, pj.side_is_buy) {
                                             JoinOutcome::Identity { entity, pubkey, fee_lamports: f, cu_consumed: c } => {
                                                 apply_join(&mut pj.trade_pe, entity, pubkey, f, c);
                                                 stats.join_identity_late += 1;
                                             }
-                                            _ => stats.join_unknown += 1,
+                                            _ => {
+                                                stats.join_unknown += 1;
+                                                if pj.side_is_buy { stats.join_unknown_buy += 1 } else { stats.join_unknown_sell += 1 }
+                                            }
                                         }
                                         queue.push(pj.trade_pe, pj.slot);
                                         stats.delta_trades_derived_total += 1;
                                     }
                                 }
                                 let mut tp: Option<ProvenancedEvent> = Some(trade_pe);
-                                match trade_join.take_identity(&mb, slot, side_is_buy) {
+                                if txn_signature.is_some() { stats.join_keyed_by_signature += 1; } else { stats.join_keyed_by_slot_side += 1; }
+                                match join_lookup(&mut trade_join, txn_signature.as_ref(), &mb, slot, side_is_buy) {
                                     JoinOutcome::Identity {
                                         entity,
                                         pubkey,
@@ -2962,7 +3018,7 @@ fn main() -> ExitCode {
                                         stats.join_parked += 1;
                                         stats.delta_trades_derived += 1;
                                         if let Some(t) = tp.take() {
-                                            pending_joins.push_back(PendingJoin { trade_pe: t, slot, mint: mb, side_is_buy, parked_at: Instant::now() });
+                                            pending_joins.push_back(PendingJoin { trade_pe: t, slot, mint: mb, side_is_buy, parked_at: Instant::now(), signature: txn_signature });
                                         }
                                     }
                                     JoinOutcome::Ambiguous => stats.join_ambiguous += 1,

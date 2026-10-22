@@ -857,6 +857,18 @@ pub enum ManagementPolicy {
     },
 }
 
+/// Prompt/response contract of the entry lane. Each served policy carries its own; nothing is
+/// shared by accident.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EntryContract {
+    /// The v16/LoRA corpus contract rendered by the decision cache (DECISION, SIZE/PRICE LIMIT,
+    /// INVALIDATION, EVIDENCE, COUNTEREVIDENCE, EVIDENCE_STATUS).
+    V16Lora,
+    /// `probe_sl_v1`: the dense `probe_step78` policy's own contract — verbatim system instruction,
+    /// strict DECISION[/SIZE]/REASON/RISK validator, no price limit. ENTRY-BASELINE cohort.
+    ProbeSlV1,
+}
+
 impl ManagementPolicy {
     /// The v16 PROD_HOLD control with its pinned 1,800 s barrier.
     pub const PROD_HOLD_V16: ManagementPolicy = ManagementPolicy::ProdHoldControl { barrier_ms: 1_800_000 };
@@ -877,6 +889,8 @@ pub struct Engine {
     /// the position store, and the remainder is sold through the ordinary EXIT order/fill path at
     /// fill + `barrier_ms`.
     management_policy: ManagementPolicy,
+    /// Which prompt/response contract the ENTRY lane speaks (see [`EntryContract`]).
+    entry_contract: EntryContract,
     /// The model lane's decision-time cache (see `decision_join`). Fed only when armed.
     model_cache: crate::decision_join::DecisionCache,
     /// Model-lane request discipline, worker pool, per-request bindings, pending paper orders and
@@ -1407,6 +1421,16 @@ impl Engine {
         self.model_io_sink = Some(sink);
     }
 
+    /// Select the entry lane's prompt/response contract.
+    pub fn set_entry_contract(&mut self, c: EntryContract) {
+        self.entry_contract = c;
+    }
+
+    /// The entry contract in force.
+    pub fn entry_contract(&self) -> EntryContract {
+        self.entry_contract
+    }
+
     /// Select the management policy for model-lane positions (see [`ManagementPolicy`]).
     pub fn set_management_policy(&mut self, p: ManagementPolicy) {
         self.management_policy = p;
@@ -1536,6 +1560,7 @@ impl Engine {
             mode,
             paper_model_mode: false,
             management_policy: ManagementPolicy::Model,
+            entry_contract: EntryContract::V16Lora,
             model_cache: crate::decision_join::DecisionCache::new(),
             model_table: crate::model_lane::RequestTable::default(),
             model_pool: None,

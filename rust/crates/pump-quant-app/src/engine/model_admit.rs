@@ -553,7 +553,14 @@ impl Engine {
             warm_bucket(n)
         );
         let snap = match self.model_cache.snapshot(&mint, clock) {
-            Ok(s) => s,
+            Ok(mut s) => {
+                if self.entry_contract == super::EntryContract::ProbeSlV1 {
+                    // probe_sl_v1: the policy's own system instruction, verbatim. The user prompt
+                    // is the renderer's (byte-parity with the contract's training inputs).
+                    s.system_prompt = pump_quant_inference::probe_sl::PROBE_SL_V1_SYSTEM_PROMPT.to_string();
+                }
+                s
+            }
             Err(r) => {
                 if self.model_last_refusal.len() < REGISTRY_CAP {
                     self.model_last_refusal.insert(mint, r.as_str().to_string());
@@ -704,18 +711,20 @@ impl Engine {
             return;
         }
         let is_mgmt = v.id.0 >= super::model_manage::MGMT_ID_BASE;
-        let (system, user) = if is_mgmt {
-            self.model_mgmt.meta.get(&v.id).map(|m| (m.snap.system_prompt.clone(), m.snap.user_prompt.clone())).unwrap_or_default()
+        let (system, user, t_dec_ms) = if is_mgmt {
+            self.model_mgmt.meta.get(&v.id).map(|m| (m.snap.system_prompt.clone(), m.snap.user_prompt.clone(), Some(m.snap.t_dec_ms))).unwrap_or_default()
         } else {
-            self.model_meta.get(&v.id).map(|m| (m.snap.system_prompt.clone(), m.snap.user_prompt.clone())).unwrap_or_default()
+            self.model_meta.get(&v.id).map(|m| (m.snap.system_prompt.clone(), m.snap.user_prompt.clone(), Some(m.snap.t_dec_ms))).unwrap_or_default()
         };
         let dispatched = self.model_dispatch_clock.remove(&v.id);
         let rec = serde_json::json!({
             "kind": if is_mgmt { "mgmt" } else { "entry" },
             "id": v.id.0,
             "mint_hex": v.mint.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+            "t_dec_ms": t_dec_ms,
             "dispatched_clock_ms": dispatched,
             "completed_clock_ms": clock,
+            "signal_age_ms": t_dec_ms.map(|t| clock - t),
             "elapsed_ms": dispatched.map(|d| clock - d),
             "deadline_ms": crate::freshness::CHAMPION_MAX_DECISION_AGE_MS,
             "result": match &v.result {
@@ -787,8 +796,34 @@ impl Engine {
             },
             max_decision_age_ms: CHAMPION_MAX_DECISION_AGE_MS,
         };
+        // probe_sl_v1: the strict scorer validator decides validity BEFORE the authority. An
+        // off-contract answer (incl. the v16 answer shape, truncation, WATCH/SKIP with SIZE) is a
+        // named no-trade; a valid BUY/WATCH/SKIP then flows through the unchanged authority
+        // (sizing, affordability, impact, freshness) — the lenient parser accepts the subset.
+        let result = if self.entry_contract == super::EntryContract::ProbeSlV1 {
+            match &v.result {
+                Ok(c) => match pump_quant_inference::probe_sl::validate_probe_sl_entry(
+                    c.finish_reason.as_deref(),
+                    &c.text,
+                    c.completion_tokens,
+                ) {
+                    Ok(d) => {
+                        self.mrep(format!("probe_sl:valid:{}", d.action.as_str()));
+                        v.result
+                    }
+                    Err(reason) => {
+                        self.mrep(format!("probe_sl:invalid:{reason}"));
+                        self.mrep(format!("notrade:probe_sl_off_contract|{}", meta.dims));
+                        return;
+                    }
+                },
+                Err(_) => v.result,
+            }
+        } else {
+            v.result
+        };
         let mut ledger: DriftLedger = std::mem::take(&mut self.model_drift);
-        let verdict = resolve_entry(v.result, &req, &mut ledger);
+        let verdict = resolve_entry(result, &req, &mut ledger);
         self.model_drift = ledger;
         match verdict {
             EntryAuthority::Buy {

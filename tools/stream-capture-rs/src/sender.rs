@@ -250,7 +250,11 @@ fn validate_id(id: &str) -> Result<(), SenderError> {
 ///
 /// `maxRetries: 0` because Sender owns retry across its own routing pathways —
 /// client-side retry would submit a second transaction competing with the first.
-pub fn build_send_body(id: &str, tx_base64: &str, skip_preflight: bool) -> Result<String, SenderError> {
+pub fn build_send_body(
+    id: &str,
+    tx_base64: &str,
+    skip_preflight: bool,
+) -> Result<String, SenderError> {
     validate_id(id)?;
     validate_base64_tx(tx_base64)?;
     Ok(format!(
@@ -361,10 +365,18 @@ impl<'a> SenderClient<'a> {
     /// compute-unit-price instruction. This module cannot verify either without
     /// decoding the transaction, and a check that only *sometimes* runs is worse
     /// than an explicit contract.
-    pub fn send_transaction(&self, id: &str, tx_base64: &str, skip_preflight: bool) -> Result<Accepted, SenderError> {
+    pub fn send_transaction(
+        &self,
+        id: &str,
+        tx_base64: &str,
+        skip_preflight: bool,
+    ) -> Result<Accepted, SenderError> {
         let body = build_send_body(id, tx_base64, skip_preflight)?;
         // Diagnostic: log the tx payload size being submitted.
-        eprintln!("[sender] send_transaction: id={id}, tx_b64_len={}, skip_preflight={skip_preflight}", tx_base64.len());
+        eprintln!(
+            "[sender] send_transaction: id={id}, tx_b64_len={}, skip_preflight={skip_preflight}",
+            tx_base64.len()
+        );
         self.post(&body)
     }
 

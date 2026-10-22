@@ -14,6 +14,7 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+pub mod probe_sl;
 pub mod seam;
 
 pub use seam::{
@@ -264,6 +265,8 @@ pub struct Completion {
     pub text: String,
     /// `choices[0].finish_reason`, when the server sent one.
     pub finish_reason: Option<String>,
+    /// `usage.completion_tokens`, when the server reported it (probe_sl contract: cap check).
+    pub completion_tokens: Option<u32>,
 }
 
 impl Completion {
@@ -410,6 +413,7 @@ impl InferenceClient {
             finish_reason: v["choices"][0]["finish_reason"]
                 .as_str()
                 .map(str::to_string),
+            completion_tokens: v["usage"]["completion_tokens"].as_u64().and_then(|n| u32::try_from(n).ok()),
         })
     }
 
@@ -1082,15 +1086,18 @@ mod f5b_tests {
         let cut = Completion {
             text: "DECISION: BUY".into(),
             finish_reason: Some("length".into()),
+            completion_tokens: None,
         };
         assert!(cut.truncated());
         assert!(!Completion {
             text: "x".into(),
-            finish_reason: Some("stop".into())
+            finish_reason: Some("stop".into()),
+            completion_tokens: None,
         }
         .truncated());
         assert!(!Completion {
             text: "x".into(),
+            completion_tokens: None,
             finish_reason: None
         }
         .truncated());

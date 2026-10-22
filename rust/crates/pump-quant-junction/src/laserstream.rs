@@ -809,6 +809,11 @@ pub enum LaserStreamUpdate {
         /// produces the reserve-delta print — the only producer with a real `price_fp` — so
         /// its receive time is what the live state ledger's windows need.
         recv_unix_ms: Option<i64>,
+        /// Signature of the transaction that wrote this state (Yellowstone `txn_signature`), when
+        /// the sidecar carries it: the exact join key to the instruction print.
+        txn_signature: Option<[u8; 64]>,
+        /// Yellowstone `write_version` (ordering within a slot), when carried.
+        write_version: Option<u64>,
     },
     /// A slot notification — heartbeat for staleness detection.
     Slot { slot: u64 },
@@ -944,12 +949,19 @@ pub fn parse_ndjson_line(line: &str) -> Option<LaserStreamUpdate> {
             let owner = Pubkey::from_str(owner_str).ok()?.to_bytes();
             let data = B64.decode(data_b64).ok()?;
 
+            let txn_signature = v
+                .get("txn_signature_b58")
+                .and_then(|s| s.as_str())
+                .and_then(b58_decode)
+                .and_then(|b| <[u8; 64]>::try_from(b.as_slice()).ok());
             Some(LaserStreamUpdate::Account {
                 pubkey,
                 owner,
                 data,
                 slot,
                 recv_unix_ms: v.get("recv_unix_ms").and_then(|n| n.as_i64()),
+                txn_signature,
+                write_version: v.get("write_version").and_then(|n| n.as_u64()),
             })
         }
         "slot" => {

@@ -57,6 +57,7 @@ pub trait ModelSource {
         self.complete(system, user).map(|text| Completion {
             text,
             finish_reason: None,
+            completion_tokens: None,
         })
     }
 }
@@ -504,6 +505,7 @@ mod tests {
             Ok(Completion {
                 text: self.text.to_string(),
                 finish_reason: self.reason.map(str::to_string),
+                completion_tokens: None,
             })
         }
     }
@@ -892,6 +894,7 @@ pub fn decide_management<S: ModelSource + ?Sized>(
         .map(|text| Completion {
             text,
             finish_reason: None,
+            completion_tokens: None,
         });
     resolve_management(completion, req, ledger)
 }

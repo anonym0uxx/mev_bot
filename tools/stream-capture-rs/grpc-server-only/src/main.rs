@@ -94,7 +94,7 @@ async fn run_production(config: LaserstreamConfig) -> Result<(), Box<dyn std::er
                     }
                     Some(UpdateOneof::Account(acct)) => {
                         if let Some(a) = acct.account.as_ref() {
-                            println!("{}", daemon_account_line(acct.slot, &a.pubkey, &a.owner, &a.data));
+                            println!("{}", daemon_account_line(acct.slot, &a.pubkey, &a.owner, &a.data, a.txn_signature.as_deref(), a.write_version));
                         }
                     }
                     Some(UpdateOneof::Slot(s)) => {
@@ -114,8 +114,15 @@ async fn run_production(config: LaserstreamConfig) -> Result<(), Box<dyn std::er
 
 /// One daemon-facing account line (`parse_ndjson_line` "account" contract): bonding-curve / pool
 /// snapshot with the sidecar's own receive clock.
-fn daemon_account_line(slot: u64, pubkey: &[u8], owner: &[u8], data: &[u8]) -> String {
-    serde_json::json!({
+fn daemon_account_line(
+    slot: u64,
+    pubkey: &[u8],
+    owner: &[u8],
+    data: &[u8],
+    txn_signature: Option<&[u8]>,
+    write_version: u64,
+) -> String {
+    let mut v = serde_json::json!({
         "lane": "laserstream",
         "kind": "account",
         "slot": slot,
@@ -123,8 +130,14 @@ fn daemon_account_line(slot: u64, pubkey: &[u8], owner: &[u8], data: &[u8]) -> S
         "pubkey_b58": encoding::b58_encode(pubkey),
         "owner_b58": encoding::b58_encode(owner),
         "data_b64": encoding::b64_encode(data),
-    })
-    .to_string()
+        "write_version": write_version,
+    });
+    // The transaction that wrote this account state (Yellowstone `txn_signature`): lets the daemon
+    // join a reserve print to its instruction EXACTLY instead of by (mint, slot, side).
+    if let Some(sig) = txn_signature {
+        v["txn_signature_b58"] = serde_json::Value::String(encoding::b58_encode(sig));
+    }
+    v.to_string()
 }
 
 /// One daemon-facing transaction line. Carries what the engine's decoders need and the old emitter
@@ -368,7 +381,7 @@ mod emitted_line_acceptance {
 mod account_line_tests {
     #[test]
     fn account_line_matches_the_daemon_contract_fields() {
-        let l = super::daemon_account_line(7, &[1u8; 32], &[2u8; 32], &[9, 8, 7]);
+        let l = super::daemon_account_line(7, &[1u8; 32], &[2u8; 32], &[9, 8, 7], Some(&[5u8; 64]), 42);
         let v: serde_json::Value = serde_json::from_str(&l).unwrap();
         assert_eq!(v["kind"], "account");
         assert_eq!(v["slot"], 7);

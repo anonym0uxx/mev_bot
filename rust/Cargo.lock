@@ -1008,6 +1008,7 @@ version = "0.1.0"
 name = "pump-quant-inference"
 version = "0.1.0"
 dependencies = [
+ "pump-quant-protocol",
  "serde",
  "serde_json",
  "ureq",

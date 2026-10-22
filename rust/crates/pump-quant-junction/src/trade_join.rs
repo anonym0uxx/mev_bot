@@ -40,6 +40,8 @@ pub struct PendingIdentity {
     pub pubkey: [u8; 32],
     /// Which side the instruction was.
     pub is_buy: bool,
+    /// Transaction signature of the instruction, when known (exact join key).
+    pub signature: Option<[u8; 64]>,
     /// When the instruction was observed, for diagnostics.
     pub recv_unix_ms: Option<i64>,
     /// The transaction's TOTAL fee (lamports) as the instruction path read it from `meta.fee`.
@@ -94,6 +96,9 @@ impl JoinOutcome {
 #[derive(Debug)]
 pub struct TradeJoin {
     pending: BTreeMap<([u8; 32], u64), Vec<PendingIdentity>>,
+    /// Exact index: (transaction signature, mint) → slot of the noted instruction. Keyed with the
+    /// mint because one transaction may trade several mints (bundles), one print each.
+    by_signature: BTreeMap<([u8; 64], [u8; 32]), u64>,
     capacity: usize,
     /// Slot horizon: keys older than `newest_slot - horizon` are pruned on insert.
     horizon_slots: u64,
@@ -110,6 +115,7 @@ impl TradeJoin {
     pub fn new(capacity: usize, horizon_slots: u64) -> Self {
         Self {
             pending: BTreeMap::new(),
+            by_signature: BTreeMap::new(),
             capacity: capacity.max(1),
             horizon_slots: horizon_slots.max(1),
             newest_slot: 0,
@@ -157,8 +163,34 @@ impl TradeJoin {
         fee_lamports: Option<u64>,
         cu_consumed: Option<u64>,
     ) {
+        self.note_instruction_signed(mint, slot, buyer_entity, pubkey, is_buy, recv_unix_ms, fee_lamports, cu_consumed, None);
+    }
+
+    /// [`note_instruction_with_meta`](Self::note_instruction_with_meta) plus the transaction
+    /// signature, enabling the exact join ([`take_identity_by_signature`](Self::take_identity_by_signature)).
+    #[allow(clippy::too_many_arguments)]
+    pub fn note_instruction_signed(
+        &mut self,
+        mint: &[u8; 32],
+        slot: u64,
+        buyer_entity: u64,
+        pubkey: [u8; 32],
+        is_buy: bool,
+        recv_unix_ms: Option<i64>,
+        fee_lamports: Option<u64>,
+        cu_consumed: Option<u64>,
+        signature: Option<[u8; 64]>,
+    ) {
         if buyer_entity == 0 || pubkey == [0u8; 32] {
             return;
+        }
+        if let Some(sig) = signature {
+            if self.by_signature.len() >= self.capacity * 8 {
+                if let Some((&oldest, _)) = self.by_signature.iter().next() {
+                    self.by_signature.remove(&oldest);
+                }
+            }
+            self.by_signature.insert((sig, *mint), slot);
         }
         self.newest_slot = self.newest_slot.max(slot);
         self.prune();
@@ -185,12 +217,44 @@ impl TradeJoin {
                 buyer_entity,
                 pubkey,
                 is_buy,
+                signature,
                 recv_unix_ms,
                 fee_lamports,
                 cu_consumed,
             });
         } else {
             self.dropped += 1;
+        }
+    }
+
+    /// Exact claim by the transaction signature the account update carries. `Unknown` when no
+    /// instruction with that signature was noted (yet) — the caller may park and retry within its
+    /// bounded hold. Never falls back to a looser key on its own.
+    pub fn take_identity_by_signature(&mut self, signature: &[u8; 64], mint: &[u8; 32]) -> JoinOutcome {
+        let idx = (*signature, *mint);
+        let Some(&slot) = self.by_signature.get(&idx) else {
+            return JoinOutcome::Unknown;
+        };
+        let key = (*mint, slot);
+        let Some(entry) = self.pending.get_mut(&key) else {
+            self.by_signature.remove(&idx);
+            return JoinOutcome::Unknown;
+        };
+        let Some(i) = entry.iter().position(|p| p.signature.as_ref() == Some(signature)) else {
+            self.by_signature.remove(&idx);
+            return JoinOutcome::Unknown;
+        };
+        let p = entry.remove(i);
+        if entry.is_empty() {
+            self.pending.remove(&key);
+        }
+        self.by_signature.remove(&idx);
+        self.joined += 1;
+        JoinOutcome::Identity {
+            entity: p.buyer_entity,
+            pubkey: p.pubkey,
+            fee_lamports: p.fee_lamports,
+            cu_consumed: p.cu_consumed,
         }
     }
 
@@ -286,6 +350,43 @@ impl TradeJoin {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn signature_join_disambiguates_same_mint_same_side_same_slot_and_never_falls_back() {
+        use super::*;
+        let mut join = TradeJoin::new(64, 32);
+        let mint = [7u8; 32];
+        let (sig_a, sig_b, sig_c) = ([1u8; 64], [2u8; 64], [3u8; 64]);
+        join.note_instruction_signed(&mint, 10, 11, [0xA; 32], true, None, Some(5), None, Some(sig_a));
+        join.note_instruction_signed(&mint, 10, 22, [0xB; 32], true, None, Some(6), None, Some(sig_b));
+        // (mint, slot, side) alone is ambiguous: two buys in one slot.
+        assert!(matches!(join.take_identity(&mint, 10, true), JoinOutcome::Ambiguous));
+        // The signature resolves each exactly, in any order.
+        match join.take_identity_by_signature(&sig_b, &mint) {
+            JoinOutcome::Identity { entity, pubkey, fee_lamports, .. } => {
+                assert_eq!((entity, pubkey, fee_lamports), (22, [0xB; 32], Some(6)));
+            }
+            o => panic!("{o:?}"),
+        }
+        match join.take_identity_by_signature(&sig_a, &mint) {
+            JoinOutcome::Identity { entity, .. } => assert_eq!(entity, 11),
+            o => panic!("{o:?}"),
+        }
+        // Consumed: a duplicate representation of the same write cannot reuse it.
+        assert!(matches!(join.take_identity_by_signature(&sig_a, &mint), JoinOutcome::Unknown));
+        // A signed print whose instruction was never noted stays Unknown — no loosening to
+        // (mint, slot, side) even when such a candidate exists.
+        join.note_instruction_signed(&mint, 11, 33, [0xC; 32], false, None, None, None, Some(sig_c));
+        assert!(matches!(join.take_identity_by_signature(&[9u8; 64], &mint), JoinOutcome::Unknown));
+        assert!(matches!(join.take_identity(&mint, 11, false), JoinOutcome::Identity { entity: 33, .. }));
+        // One transaction trading two mints (bundle): one exact print each.
+        let (m1, m2, sig_d) = ([1u8; 32], [2u8; 32], [4u8; 64]);
+        join.note_instruction_signed(&m1, 12, 44, [0xD; 32], true, None, None, None, Some(sig_d));
+        join.note_instruction_signed(&m2, 12, 44, [0xD; 32], true, None, None, None, Some(sig_d));
+        assert!(matches!(join.take_identity_by_signature(&sig_d, &m2), JoinOutcome::Identity { entity: 44, .. }));
+        assert!(matches!(join.take_identity_by_signature(&sig_d, &m1), JoinOutcome::Identity { entity: 44, .. }));
+        assert!(matches!(join.take_identity_by_signature(&sig_d, &m1), JoinOutcome::Unknown));
+    }
+
     use super::*;
 
     const MINT: [u8; 32] = [5u8; 32];
