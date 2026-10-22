@@ -780,6 +780,14 @@ struct SessionStats {
     ls_onchain_confirms_decoded: u64,
     /// Rev-30: LS account updates where PDA couldn't be resolved to a mint.
     ls_account_unresolved: u64,
+    /// Reserve-delta prints whose trader identity was / was not joined to an instruction print.
+    join_identity: u64,
+    join_unknown: u64,
+    join_ambiguous: u64,
+    join_parked: u64,
+    join_identity_late: u64,
+    delta_trades_derived_total: u64,
+    delta_no_trade_total: u64,
     fc_spawned: bool,
     fc_triggers_emitted: u64,
     fc_events_ingested: u64,
@@ -827,6 +835,13 @@ impl SessionStats {
             ls_account_received: 0,
             ls_onchain_confirms_decoded: 0,
             ls_account_unresolved: 0,
+            join_identity: 0,
+            join_unknown: 0,
+            join_ambiguous: 0,
+            join_parked: 0,
+            join_identity_late: 0,
+            delta_trades_derived_total: 0,
+            delta_no_trade_total: 0,
             fc_spawned: false,
             fc_triggers_emitted: 0,
             fc_events_ingested: 0,
@@ -1823,6 +1838,20 @@ fn main() -> ExitCode {
                                 model_armed = true;
                                 // Management policy for the lane (explicit; absent = served model management).
                                 // prod_hold_v16 = ENTRY-BASELINE cohort: artifact-bound v16 PROD_HOLD control.
+                                // Durable model I/O trace (prompts, completions, clocks; late answers kept as evidence).
+                                {
+                                    let path = std::env::var("PQ_MODEL_IO_FILE").unwrap_or_else(|_| "data/model_io.jsonl".to_string());
+                                    match std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+                                        Ok(mut f) => {
+                                            use std::io::Write;
+                                            engine.set_model_io_sink(Box::new(move |line: &str| {
+                                                let _ = writeln!(f, "{line}");
+                                            }));
+                                            eprintln!("[pq-daemon] model I/O trace -> {path}");
+                                        }
+                                        Err(e) => eprintln!("[pq-daemon] model I/O trace unavailable ({path}): {e}"),
+                                    }
+                                }
                                 match std::env::var("PQ_MANAGEMENT_POLICY").ok().as_deref() {
                                     Some("prod_hold_v16") => {
                                         engine.set_management_policy(pump_quant_app::engine::ManagementPolicy::PROD_HOLD_V16);
@@ -2019,6 +2048,30 @@ fn main() -> ExitCode {
     let mut reserve_tracker: HashMap<[u8; 32], ReserveSnapshot> = HashMap::new();
     // The instruction prints' wallets, waiting for their reserve prints (see `trade_join`).
     let mut trade_join = TradeJoin::new(TRADE_JOIN_CAP, TRADE_JOIN_HORIZON_SLOTS);
+    // Identity join hold (measured 2026-10-21 on the LaserStream tape: account updates for a slot arrive
+    // 0-240 ms BEFORE the slot's transactions, so at reserve-print time the instruction print that
+    // knows the trader has usually not been seen: 7 % joins). A reserve-delta print whose identity is
+    // Unknown is parked for at most JOIN_HOLD_MS and re-joined when its instruction print lands;
+    // on expiry (or when a newer print for the same mint arrives) it is pushed unchanged, trader
+    // unknown, exactly as before. The hold delays only those prints, by ≤ JOIN_HOLD_MS, and is
+    // recorded in the cohort manifest as part of the feed path.
+    const JOIN_HOLD_MS: u64 = 300;
+    struct PendingJoin {
+        trade_pe: ProvenancedEvent,
+        slot: u64,
+        mint: [u8; 32],
+        side_is_buy: bool,
+        parked_at: Instant,
+    }
+    let mut pending_joins: VecDeque<PendingJoin> = VecDeque::new();
+    fn apply_join(trade_pe: &mut ProvenancedEvent, entity: u64, pubkey: [u8; 32], j_fee: Option<u64>, j_cu: Option<u64>) {
+        if let AppEvent::MarketTrade { buyer_entity, trader_pubkey, fee_lamports, cu_consumed, .. } = &mut trade_pe.event {
+            *fee_lamports = j_fee;
+            *cu_consumed = j_cu;
+            *buyer_entity = entity;
+            *trader_pubkey = Some(pubkey);
+        }
+    }
     // Wangr Rev-14: tracks which mints we've already emitted MarketAuxiliary
     // for (prevents duplicate aux events on re-subscribe/reconnect).
     // Note: creator_launches is tracked internally by the engine via its own
@@ -2550,6 +2603,26 @@ fn main() -> ExitCode {
         // STATUS_HEARTBEAT_SECS of the last write. This is the critical
         // defense against watchdog health-check kills when the daemon is
         // healthy but event-starved (all WS lanes degraded).
+        // Release parked reserve prints: joined late if their instruction print has landed, else
+        // after JOIN_HOLD_MS unchanged (trader unknown), preserving per-mint arrival order.
+        while let Some(front) = pending_joins.front() {
+            let expired = front.parked_at.elapsed() >= Duration::from_millis(JOIN_HOLD_MS);
+            let joined = trade_join.take_identity(&front.mint, front.slot, front.side_is_buy);
+            let is_identity = matches!(joined, JoinOutcome::Identity { .. });
+            if !expired && !is_identity {
+                break;
+            }
+            let mut pj = pending_joins.pop_front().expect("front exists");
+            match joined {
+                JoinOutcome::Identity { entity, pubkey, fee_lamports: f, cu_consumed: c } => {
+                    apply_join(&mut pj.trade_pe, entity, pubkey, f, c);
+                    stats.join_identity_late += 1;
+                }
+                _ => stats.join_unknown += 1,
+            }
+            queue.push(pj.trade_pe, pj.slot);
+            stats.delta_trades_derived_total += 1;
+        }
         if last_status_write_wallclock.elapsed() >= Duration::from_secs(STATUS_HEARTBEAT_SECS) {
             let st = engine.live_status();
             match st.write_to_path(status_path) {
@@ -2643,6 +2716,13 @@ fn main() -> ExitCode {
                     "\"ls_account_received\":{},",
                     "\"ls_onchain_confirms_decoded\":{},",
                     "\"ls_account_unresolved\":{},",
+                    "\"join_identity\":{},",
+                    "\"join_unknown\":{},",
+                    "\"join_ambiguous\":{},",
+                    "\"join_parked\":{},",
+                    "\"join_identity_late\":{},",
+                    "\"delta_trades_derived\":{},",
+                    "\"delta_no_trade\":{},",
                     "\"uptime_secs\":{},",
                     "\"tick\":{},",
                     "\"account_subs_active\":{},",
@@ -2660,6 +2740,13 @@ fn main() -> ExitCode {
                 stats.ls_account_received,
                 stats.ls_onchain_confirms_decoded,
                 stats.ls_account_unresolved,
+                stats.join_identity,
+                stats.join_unknown,
+                stats.join_ambiguous,
+                stats.join_parked,
+                stats.join_identity_late,
+                stats.delta_trades_derived_total,
+                stats.delta_no_trade_total,
                 uptime_secs,
                 tick_counter,
                 sub_tracker.len(),
@@ -2819,6 +2906,28 @@ fn main() -> ExitCode {
                                     AppEvent::MarketTrade { signed_base, .. } => *signed_base > 0,
                                     _ => false,
                                 };
+                                // Per-mint order: release any older parked print of this mint before
+                                // this newer one can be pushed (joined late if its instruction landed).
+                                {
+                                    let mut older: Vec<PendingJoin> = Vec::new();
+                                    let mut rest: VecDeque<PendingJoin> = VecDeque::new();
+                                    while let Some(pj) = pending_joins.pop_front() {
+                                        if pj.mint == mb { older.push(pj) } else { rest.push_back(pj) }
+                                    }
+                                    pending_joins = rest;
+                                    for mut pj in older {
+                                        match trade_join.take_identity(&pj.mint, pj.slot, pj.side_is_buy) {
+                                            JoinOutcome::Identity { entity, pubkey, fee_lamports: f, cu_consumed: c } => {
+                                                apply_join(&mut pj.trade_pe, entity, pubkey, f, c);
+                                                stats.join_identity_late += 1;
+                                            }
+                                            _ => stats.join_unknown += 1,
+                                        }
+                                        queue.push(pj.trade_pe, pj.slot);
+                                        stats.delta_trades_derived_total += 1;
+                                    }
+                                }
+                                let mut tp: Option<ProvenancedEvent> = Some(trade_pe);
                                 match trade_join.take_identity(&mb, slot, side_is_buy) {
                                     JoinOutcome::Identity {
                                         entity,
@@ -2826,13 +2935,14 @@ fn main() -> ExitCode {
                                         fee_lamports: j_fee,
                                         cu_consumed: j_cu,
                                     } => {
-                                        if let AppEvent::MarketTrade {
+                                        stats.join_identity += 1;
+                                        if let Some(AppEvent::MarketTrade {
                                             buyer_entity,
                                             trader_pubkey,
                                             fee_lamports,
                                             cu_consumed,
                                             ..
-                                        } = &mut trade_pe.event
+                                        }) = tp.as_mut().map(|t| &mut t.event)
                                         {
                                             // The reserve print has the price but not the
                                             // transaction; the matched instruction print does.
@@ -2847,12 +2957,24 @@ fn main() -> ExitCode {
                                             *trader_pubkey = Some(pubkey);
                                         }
                                     }
-                                    JoinOutcome::Unknown | JoinOutcome::Ambiguous => {}
+                                    JoinOutcome::Unknown => {
+                                        // Park (see JOIN_HOLD_MS); older prints of this mint were flushed above.
+                                        stats.join_parked += 1;
+                                        stats.delta_trades_derived += 1;
+                                        if let Some(t) = tp.take() {
+                                            pending_joins.push_back(PendingJoin { trade_pe: t, slot, mint: mb, side_is_buy, parked_at: Instant::now() });
+                                        }
+                                    }
+                                    JoinOutcome::Ambiguous => stats.join_ambiguous += 1,
                                 }
-                                queue.push(trade_pe, slot);
-                                stats.delta_trades_derived += 1;
+                                if let Some(t) = tp {
+                                    queue.push(t, slot);
+                                    stats.delta_trades_derived += 1;
+                                    stats.delta_trades_derived_total += 1;
+                                }
                             } else {
                                 stats.delta_no_trade += 1;
+                                stats.delta_no_trade_total += 1;
                             }
                             reserve_tracker.insert(
                                 mb,

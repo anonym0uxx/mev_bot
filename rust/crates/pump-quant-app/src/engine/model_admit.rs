@@ -613,6 +613,7 @@ impl Engine {
             return;
         }
         self.model_last_ask.insert(mint, clock);
+        self.model_dispatch_clock.insert(id, clock);
         self.model_meta.insert(
             id,
             ModelReqMeta {
@@ -675,6 +676,7 @@ impl Engine {
             }
         }
         for v in done {
+            self.model_io_trace(&v, clock);
             if v.id.0 >= super::model_manage::MGMT_ID_BASE {
                 self.model_mgmt_accept(v, clock);
             } else {
@@ -692,6 +694,40 @@ impl Engine {
         self.model_safety_note_endpoint(ok_n, bad_n);
         self.model_try_fills(clock);
         self.model_mgmt_try_fills(clock);
+    }
+
+    /// One JSON line per returned verdict (before acceptance, so late/discarded answers are kept as
+    /// diagnostic evidence): kind, id, mint, dispatch/completion clocks, prompts, completion text,
+    /// finish reason or transport error. Nothing here influences the decision.
+    fn model_io_trace(&mut self, v: &crate::model_worker::Verdict, clock: i64) {
+        if self.model_io_sink.is_none() {
+            return;
+        }
+        let is_mgmt = v.id.0 >= super::model_manage::MGMT_ID_BASE;
+        let (system, user) = if is_mgmt {
+            self.model_mgmt.meta.get(&v.id).map(|m| (m.snap.system_prompt.clone(), m.snap.user_prompt.clone())).unwrap_or_default()
+        } else {
+            self.model_meta.get(&v.id).map(|m| (m.snap.system_prompt.clone(), m.snap.user_prompt.clone())).unwrap_or_default()
+        };
+        let dispatched = self.model_dispatch_clock.remove(&v.id);
+        let rec = serde_json::json!({
+            "kind": if is_mgmt { "mgmt" } else { "entry" },
+            "id": v.id.0,
+            "mint_hex": v.mint.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+            "dispatched_clock_ms": dispatched,
+            "completed_clock_ms": clock,
+            "elapsed_ms": dispatched.map(|d| clock - d),
+            "deadline_ms": crate::freshness::CHAMPION_MAX_DECISION_AGE_MS,
+            "result": match &v.result {
+                Ok(c) => serde_json::json!({"text": c.text, "finish_reason": c.finish_reason, "truncated": c.truncated()}),
+                Err(e) => serde_json::json!({"error": format!("{e:?}")}),
+            },
+            "system_prompt": system,
+            "user_prompt": user,
+        });
+        if let Some(sink) = self.model_io_sink.as_mut() {
+            sink(&rec.to_string());
+        }
     }
 
     fn model_accept(&mut self, v: crate::model_worker::Verdict, clock: i64) {

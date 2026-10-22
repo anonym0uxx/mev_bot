@@ -336,13 +336,67 @@ pub enum PumpInstruction {
 /// Returns an empty vec when the transaction has no pump.fun instructions
 /// (most transactions on Solana are not pump.fun — this is the common case
 /// and should be fast).
+/// Anchor self-CPI event wrapper discriminator (`emit_cpi!`): the pump.fun program calls itself
+/// with `[ANCHOR_EVENT_CPI][event discriminator][borsh event]`.
+pub const ANCHOR_EVENT_CPI_DISCRIMINATOR: [u8; 8] = [0xe4, 0x45, 0xa5, 0x2e, 0x51, 0xcb, 0x9a, 0x1d];
+/// pump.fun `TradeEvent` discriminator (sha256("event:TradeEvent")[..8]).
+pub const PUMP_TRADE_EVENT_DISCRIMINATOR: [u8; 8] = [0xbd, 0xdb, 0x7f, 0xd3, 0x4e, 0xe6, 0x61, 0xee];
+
+/// Decode a pump.fun `TradeEvent` carried in an anchor event-CPI instruction: `mint`,
+/// `sol_amount`, `token_amount`, `is_buy`, `user` (layout verified on the live tape 2026-10-21:
+/// 3,441/3,441 events had both `mint` and `user` among the transaction's account keys). The
+/// program emits one per trade for EVERY buy/sell variant, so it is the identity source that
+/// does not depend on knowing each instruction discriminator (the classic `buy`/`sell` decoders
+/// below saw ~1/3 of trades on that tape).
+pub fn decode_pump_trade_event(data: &[u8]) -> Option<(bool, [u8; 32], u64, u64, [u8; 32])> {
+    if data.len() < 16 + 32 + 8 + 8 + 1 + 32 {
+        return None;
+    }
+    if data[..8] != ANCHOR_EVENT_CPI_DISCRIMINATOR || data[8..16] != PUMP_TRADE_EVENT_DISCRIMINATOR {
+        return None;
+    }
+    let mint: [u8; 32] = data[16..48].try_into().ok()?;
+    let sol_amount = u64::from_le_bytes(data[48..56].try_into().ok()?);
+    let token_amount = u64::from_le_bytes(data[56..64].try_into().ok()?);
+    let is_buy = match data[64] {
+        0 => false,
+        1 => true,
+        _ => return None,
+    };
+    let user: [u8; 32] = data[65..97].try_into().ok()?;
+    Some((is_buy, mint, sol_amount, token_amount, user))
+}
+
 pub fn classify_pump_instructions(tx: &LaserStreamTx) -> Vec<PumpInstruction> {
     let mut out = Vec::with_capacity(1); // Most txs have ≤1 pump instruction
+
+    // Pass 1: TradeEvents (authoritative: actual amounts, every instruction variant). A mint
+    // with a TradeEvent in this tx is NOT re-emitted from its classic buy/sell instruction.
+    let mut event_mints: Vec<[u8; 32]> = Vec::new();
+    for ix in &tx.instructions {
+        if ix.program_id != PUMP_FUN_PROGRAM {
+            continue;
+        }
+        if let Some((is_buy, mint, sol_amount, token_amount, user)) = decode_pump_trade_event(&ix.data) {
+            event_mints.push(mint);
+            out.push(if is_buy {
+                PumpInstruction::Buy { mint, amount_lamports: sol_amount, min_tokens: token_amount, buyer: user }
+            } else {
+                PumpInstruction::Sell { mint, amount_tokens: token_amount, min_lamports: sol_amount, seller: user }
+            });
+        }
+    }
 
     for ix in &tx.instructions {
         if ix.program_id == PUMP_FUN_PROGRAM {
             if ix.data.len() >= 8 {
                 let disc = &ix.data[..8];
+                let classic_mint = account_key_at(ix, tx, 2);
+                if (disc == BUY_DISCRIMINATOR || disc == SELL_DISCRIMINATOR)
+                    && classic_mint.is_some_and(|m| event_mints.contains(&m))
+                {
+                    continue; // already represented by its TradeEvent
+                }
                 if disc == BUY_DISCRIMINATOR && ix.data.len() >= 8 + 8 + 8 {
                     // Account [2] = mint (per `venue_accounts::pump_buy_accounts`)
                     // Account [6] = user (signer — the buyer's wallet pubkey)
@@ -1012,6 +1066,37 @@ mod tests {
             fee_lamports: None,
             cu_consumed: None,
         }
+    }
+
+    #[test]
+    fn trade_event_cpi_is_classified_and_suppresses_the_classic_duplicate() {
+        let mint = [0xAA; 32];
+        let user = [0x42; 32];
+        let mut data = Vec::new();
+        data.extend_from_slice(&ANCHOR_EVENT_CPI_DISCRIMINATOR);
+        data.extend_from_slice(&PUMP_TRADE_EVENT_DISCRIMINATOR);
+        data.extend_from_slice(&mint);
+        data.extend_from_slice(&5_000_000u64.to_le_bytes());
+        data.extend_from_slice(&123_456u64.to_le_bytes());
+        data.push(1);
+        data.extend_from_slice(&user);
+        data.extend_from_slice(&[0u8; 64]); // timestamp + reserves tail (ignored)
+        assert_eq!(decode_pump_trade_event(&data), Some((true, mint, 5_000_000, 123_456, user)));
+        let mut tx = make_tx(9, true);
+        tx.account_keys = vec![[1; 32], [2; 32], mint, [3; 32], [4; 32], [5; 32], user];
+        let mut classic = vec![0u8; 24];
+        classic[..8].copy_from_slice(&BUY_DISCRIMINATOR);
+        tx.instructions = vec![
+            LaserStreamInstruction { program_id: PUMP_FUN_PROGRAM, data: classic, accounts: vec![0, 1, 2, 3, 4, 5, 6] },
+            LaserStreamInstruction { program_id: PUMP_FUN_PROGRAM, data, accounts: vec![] },
+        ];
+        let out = classify_pump_instructions(&tx);
+        assert_eq!(out.len(), 1, "one trade, not two: {out:?}");
+        assert!(matches!(out[0], PumpInstruction::Buy { mint: m, buyer: b, amount_lamports: 5_000_000, .. } if m == mint && b == user));
+        // a non-trade event is ignored
+        let mut other = vec![0u8; 120];
+        other[..8].copy_from_slice(&ANCHOR_EVENT_CPI_DISCRIMINATOR);
+        assert_eq!(decode_pump_trade_event(&other), None);
     }
 
     #[test]

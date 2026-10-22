@@ -884,6 +884,12 @@ pub struct Engine {
     model_table: crate::model_lane::RequestTable,
     model_pool: Option<crate::model_worker::InferencePool>,
     model_meta: BTreeMap<crate::model_lane::RequestId, model_admit::ModelReqMeta>,
+    /// Dispatch clock (engine ms) per in-flight model request, for the I/O trace.
+    model_dispatch_clock: BTreeMap<crate::model_lane::RequestId, i64>,
+    /// Durable model I/O trace sink (one JSON line per completed/failed request: prompts,
+    /// completion, finish reason, dispatch/completion clocks). Installed by the daemon; `None`
+    /// records nothing. Late answers are traced too (diagnostic evidence, never acted on).
+    model_io_sink: Option<Box<dyn FnMut(&str) + Send>>,
     model_orders: BTreeMap<[u8; 32], model_admit::ModelOrder>,
     /// Model-managed position lane (HOLD/REDUCE/EXIT). Inert unless the paper-model lane is armed.
     model_mgmt: model_manage::MgmtLane,
@@ -1396,6 +1402,11 @@ impl Engine {
         self.model_source = Some(src);
     }
 
+    /// Install the model I/O trace sink (see `model_io_sink`).
+    pub fn set_model_io_sink(&mut self, sink: Box<dyn FnMut(&str) + Send>) {
+        self.model_io_sink = Some(sink);
+    }
+
     /// Select the management policy for model-lane positions (see [`ManagementPolicy`]).
     pub fn set_management_policy(&mut self, p: ManagementPolicy) {
         self.management_policy = p;
@@ -1529,6 +1540,8 @@ impl Engine {
             model_table: crate::model_lane::RequestTable::default(),
             model_pool: None,
             model_meta: BTreeMap::new(),
+            model_dispatch_clock: BTreeMap::new(),
+            model_io_sink: None,
             model_orders: BTreeMap::new(),
             model_mgmt: model_manage::MgmtLane::new(),
             model_safety: crate::safety_off::SafetyOff::default(),
