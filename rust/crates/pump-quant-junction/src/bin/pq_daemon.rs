@@ -408,6 +408,18 @@ fn emergency_stop_requested() -> bool {
     std::path::Path::new(EMERGENCY_STOP_FILE).exists()
 }
 
+/// 64-hex-char -> [u8; 32]; None on any malformation.
+fn hex32_from(h: &str) -> Option<[u8; 32]> {
+    if h.len() != 64 {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    for i in 0..32 {
+        out[i] = u8::from_str_radix(&h[2 * i..2 * i + 2], 16).ok()?;
+    }
+    Some(out)
+}
+
 /// Returns true if the graceful-shutdown sentinel exists.
 fn daemon_stop_requested() -> bool {
     std::path::Path::new(DAEMON_STOP_FILE).exists()
@@ -2805,6 +2817,37 @@ fn main() -> ExitCode {
             if want != engine.entry_paused() {
                 engine.set_entry_paused(want);
                 eprintln!("[pq-daemon] ENTRY PAUSE {} (operator control)", if want { "ON" } else { "OFF" });
+            }
+        }
+        // ── Operator reconciliation evidence for UNCERTAIN orders (documented control) ──
+        // data/RECONCILE_NOT_EXECUTED.json = [{"mint_hex", "order_id", "evidence"}]. Each entry is
+        // applied once through the engine's own evidence API (nothing is booked; the order is removed)
+        // and journaled to model_io as `ev: reconcile`. The file is renamed to *.applied afterwards.
+        if model_armed && tick_counter % 50 == 7 {
+            let path = std::path::Path::new("data/RECONCILE_NOT_EXECUTED.json");
+            if path.exists() {
+                let applied: Vec<serde_json::Value> = std::fs::read_to_string(path)
+                    .ok()
+                    .and_then(|t| serde_json::from_str::<Vec<serde_json::Value>>(&t).ok())
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|e| {
+                        let mint = e["mint_hex"].as_str().and_then(|h| hex32_from(h));
+                        let oid = e["order_id"].as_u64();
+                        let ok = match (mint, oid) {
+                            (Some(m), Some(id)) => engine.model_mgmt_resolve_uncertain_not_executed(&m, id),
+                            _ => false,
+                        };
+                        eprintln!("[pq-daemon] RECONCILE not-executed order_id={:?} mint={} -> {}", oid, e["mint_hex"].as_str().unwrap_or("?"), if ok { "RESOLVED (removed, nothing booked)" } else { "REJECTED (no matching uncertain order)" });
+                        serde_json::json!({"entry": e, "applied": ok})
+                    })
+                    .collect();
+                let rec = serde_json::json!({"ev": "reconcile", "kind": "operator_not_executed", "unix_ms": SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0), "results": applied});
+                if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("data/model_io.jsonl") {
+                    use std::io::Write;
+                    let _ = writeln!(f, "{rec}");
+                }
+                let _ = std::fs::rename(path, "data/RECONCILE_NOT_EXECUTED.json.applied");
             }
         }
         // ── Selective pool lane: open feeds for launch-observed graduations, expire old ones ──
