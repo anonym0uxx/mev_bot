@@ -29,6 +29,11 @@ use std::collections::BTreeMap;
 
 
 use super::model_admit::{MODEL_FILL_LANDING_MS, MODEL_ORDER_TTL_MS};
+
+/// Lifetime of an AMM EXIT intent waiting for a landing-capable swap observation (see
+/// `model_mgmt_try_fills`). Entries and curve orders use `MODEL_ORDER_TTL_MS`.
+pub(crate) const MODEL_AMM_EXIT_TTL_MS: i64 = 60_000;
+
 use super::*;
 use crate::decision_join::MgmtPositionInputs;
 use crate::freshness::{DecisionClock, CHAMPION_MAX_DECISION_AGE_MS};
@@ -556,25 +561,44 @@ impl Engine {
             let landing = order.created_ms + MODEL_FILL_LANDING_MS;
             let tokens = order.intended - order.filled;
             let priced: Option<(u64, &'static str)> = if order.amm {
+                // Why an AMM exit does NOT price on this tick is counted by name (never silent):
+                // the exit waits for a landing-capable swap observation on the held pool.
+                let in_swap_tick = self.model_swap_ctx.is_some_and(|(t, s)| {
+                    self.model_cache.amm_obs(&mint).is_some_and(|o| o.ts_ms == t && o.slot == s)
+                });
                 let obs = self.model_cache.amm_obs(&mint).filter(|o| {
                     o.ts_ms >= landing
                         && o.ts_ms <= clock
                         && o.slot > order.created_slot
                         && self.model_swap_ctx == Some((o.ts_ms, o.slot))
                 });
+                if in_swap_tick && obs.is_none() {
+                    self.mrep("mgmt:amm_exit_wait|obs_before_landing");
+                }
                 obs.and_then(|o| {
                     // The sell-side FEE rounding is not program-verified (protocol::pumpswap_event):
                     // priced at the GROSS quote; the store applies the configured venue fee. Labelled.
-                    let (_, vq, t) = self.model_amm_econ.get(&mint).copied()?;
+                    let Some((_, vq, t)) = self.model_amm_econ.get(&mint).copied() else {
+                        self.mrep("mgmt:amm_exit_wait|econ_absent");
+                        return None;
+                    };
                     if t != o.ts_ms {
+                        self.mrep("mgmt:amm_exit_wait|econ_ts_mismatch");
                         return None;
                     }
-                    let gross = pump_quant_protocol::pumpswap_event::sell_gross_quote_out(
+                    let Some(vq) = vq else {
+                        self.mrep("mgmt:amm_exit_wait|virtual_quote_unsupported_layout");
+                        return None;
+                    };
+                    let Some(gross) = pump_quant_protocol::pumpswap_event::sell_gross_quote_out(
                         u128::from(o.base_reserves_raw),
                         u128::from(o.quote_reserves_lamports),
-                        vq?,
+                        vq,
                         u128::from(tokens),
-                    )?;
+                    ) else {
+                        self.mrep("mgmt:amm_exit_wait|effective_quote_invalid");
+                        return None;
+                    };
                     let px = gross.checked_mul(1_000_000_000)?.checked_div(u128::from(tokens))?;
                     Some((u64::try_from(px).ok()?, "mgmt:fill_amm_sell_fee_unverified"))
                 })
@@ -596,10 +620,21 @@ impl Engine {
             match priced {
                 Some((px, label)) => {
                     self.mrep(label);
+                    if order.amm {
+                        let delay = clock - order.created_ms;
+                        let b = match delay { ..=1_000 => "le1s", 1_001..=5_000 => "1to5s", 5_001..=20_000 => "5to20s", _ => "gt20s" };
+                        self.mrep(format!("mgmt:amm_landing_delay|{b}"));
+                    }
                     self.model_mgmt_book(mint, order, tokens, px);
                 }
                 None => {
-                    if clock - order.created_ms > MODEL_ORDER_TTL_MS {
+                    // An AMM EXIT lands against the pool state observed at the NEXT swap (pre-trade
+                    // reserves): with sparse swaps a 5 s window misses every landing (cohort-003:
+                    // 10 expired exits on a pool trading every ~20 s). The exit intent therefore
+                    // stays live up to MODEL_AMM_EXIT_TTL_MS; the landing delay is bucketed on fill.
+                    // Entry orders keep the short TTL: an entry must not benefit from waiting.
+                    let ttl = if order.amm && order.kind == MgmtKind::Exit { MODEL_AMM_EXIT_TTL_MS } else { MODEL_ORDER_TTL_MS };
+                    if clock - order.created_ms > ttl {
                         self.model_mgmt.orders.remove(&mint);
                         self.mrep("mgmt:order_expired_unfilled");
                     }

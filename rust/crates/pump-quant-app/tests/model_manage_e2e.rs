@@ -1049,7 +1049,9 @@ fn migrated_position_without_fresh_pool_state_stays_explicit_exposure() {
         ticks(&mut r.e, 2);
     }
     assert!(r.e.model_mgmt_pending(&MINT).is_some(), "barrier EXIT intent placed: {:?}", r.e.model_lane_report());
-    for _ in 0..8 {
+    // An AMM exit intent waits up to MODEL_AMM_EXIT_TTL_MS (60 s) for a landing-capable swap; with
+    // none it expires and the standing intent retries on the declared schedule.
+    for _ in 0..70 {
         r.clock += 1_000;
         r.slot += 1;
         curve_quiet(&mut r.e, r.clock, r.slot);
