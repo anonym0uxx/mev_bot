@@ -249,8 +249,33 @@ pub struct AnnotationState {
     attribution: HashMap<[u8; 32], AmmAttribution>,
     applied_curve: u64,
     dropped_curve: u64,
+    /// Zeroed (post-withdraw) curve snapshots that did not displace a positive observation.
+    pub dropped_curve_zeroed: u64,
     applied_amm: u64,
     dropped_amm: u64,
+}
+
+/// Base58 (Bitcoin alphabet) of a 32-byte key — the corpus's pool/mint identifier format.
+#[must_use]
+pub fn b58_encode(bytes: &[u8]) -> String {
+    const A: &[u8] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+    let mut digits: Vec<u8> = Vec::new();
+    for &b in bytes {
+        let mut carry = u32::from(b);
+        for d in digits.iter_mut() {
+            carry += u32::from(*d) << 8;
+            *d = (carry % 58) as u8;
+            carry /= 58;
+        }
+        while carry > 0 {
+            digits.push((carry % 58) as u8);
+            carry /= 58;
+        }
+    }
+    let zeros = bytes.iter().take_while(|&&b| b == 0).count();
+    let mut out: Vec<u8> = std::iter::repeat(A[0]).take(zeros).collect();
+    out.extend(digits.iter().rev().map(|&d| A[d as usize]));
+    String::from_utf8(out).unwrap_or_default()
 }
 
 impl AnnotationState {
@@ -267,6 +292,22 @@ impl AnnotationState {
                 if obs.ts_ms < prev.ts_ms || (obs.ts_ms == prev.ts_ms && obs.slot < prev.slot) =>
             {
                 self.dropped_curve += 1;
+                false
+            }
+            // Corpus semantics (`laserstream_pumpfun_tradeevent_v1`): curve reserves are the
+            // post-trade virtual reserves of the LAST TRADE EVENT, which are always positive. The
+            // live account lane additionally sees the post-migration withdraw, which zeroes the
+            // curve's virtual reserves; that state has no trade-event counterpart and would turn
+            // every graduated mint's CURVE STATE into `nonpositive_reserve` (and its mcap into
+            // `absent`), unlike every AMM row the model was trained on. A zeroed snapshot therefore
+            // never displaces a prior positive observation. A mint whose first observation is
+            // already zeroed is stored as-is and renders `nonpositive_reserve` truthfully.
+            Some(prev)
+                if (obs.v_sol_lamports == 0 || obs.v_tokens == 0)
+                    && prev.v_sol_lamports > 0
+                    && prev.v_tokens > 0 =>
+            {
+                self.dropped_curve_zeroed += 1;
                 false
             }
             _ => {
@@ -800,5 +841,49 @@ mod tests {
             AmmState::Absent { reason } => assert_eq!(reason, "nonpositive_reserve"),
             other => panic!("expected absent, got {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod amm_regime_input_parity_tests {
+    use super::*;
+
+    fn obs(ts: i64, slot: u64, v_sol: u64, v_tok: u64, r_sol: u64) -> CurveObservation {
+        CurveObservation { ts_ms: ts, slot, v_sol_lamports: v_sol, v_tokens: v_tok, real_sol_lamports: r_sol, real_tokens: 0 }
+    }
+
+    #[test]
+    fn zeroed_withdraw_snapshot_does_not_displace_graduated_curve() {
+        let mut st = AnnotationState::new();
+        let m = [7u8; 32];
+        assert!(st.observe_curve(m, obs(1_000, 10, 115_005_359_057, 279_900_000_000_000, 85_005_359_057)));
+        // post-migration withdraw: account shows zero virtual reserves
+        assert!(!st.observe_curve(m, obs(2_000, 11, 0, 0, 0)));
+        assert_eq!(st.dropped_curve_zeroed, 1);
+        match st.curve_state(&m, 3_600_000) {
+            CurveState::Present { curve_regime, curve_progress, .. } => {
+                assert_eq!(curve_regime, "graduated");
+                assert!((curve_progress - 1.0).abs() < 1e-9);
+            }
+            other => panic!("expected graduated curve, got {other:?}"),
+        }
+        // a later POSITIVE observation still applies normally
+        assert!(st.observe_curve(m, obs(2_500, 12, 115_005_359_057, 279_900_000_000_000, 85_005_359_057)));
+    }
+
+    #[test]
+    fn first_observation_zeroed_renders_nonpositive_truthfully() {
+        let mut st = AnnotationState::new();
+        let m = [8u8; 32];
+        assert!(st.observe_curve(m, obs(1_000, 10, 0, 0, 0)));
+        assert!(matches!(st.curve_state(&m, 2_000), CurveState::Absent { reason } if reason == "nonpositive_reserve"));
+    }
+
+    #[test]
+    fn b58_matches_known_keys() {
+        assert_eq!(b58_encode(&[0u8; 32]), "11111111111111111111111111111111");
+        // WSOL mint So11111111111111111111111111111111111111112
+        let wsol: [u8; 32] = [6, 155, 136, 87, 254, 171, 129, 132, 251, 104, 127, 99, 70, 24, 192, 53, 218, 196, 57, 220, 26, 235, 59, 85, 152, 160, 240, 0, 0, 0, 0, 1];
+        assert_eq!(b58_encode(&wsol), "So11111111111111111111111111111111111111112");
     }
 }

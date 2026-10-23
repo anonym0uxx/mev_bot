@@ -428,11 +428,9 @@ impl Engine {
             return;
         }
         let mint = *a.mint.as_bytes();
-        let pool_s = a
-            .pool
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect::<String>();
+        // Corpus renders `pool=` as the base58 pubkey (168/168 dev AMM prompts); the hex form
+        // never appeared in training.
+        let pool_s = crate::curve_annotation::b58_encode(&a.pool);
         self.model_cache.bind_pool(mint, &pool_s);
         let others = self.model_other_pools.get(&mint).map_or(0, |s| s.len());
         let applied = self.model_cache.observe_amm(

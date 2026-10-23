@@ -2350,7 +2350,12 @@ fn main() -> ExitCode {
         requested_unix_ms: i64,
     }
     let pool_lane_enabled = std::env::var("PQ_LS_POOL_LANE").map(|v| v == "1").unwrap_or(false);
-    let pool_ttl_s: i64 = std::env::var("PQ_LS_POOL_TTL_S").ok().and_then(|v| v.parse().ok()).unwrap_or(3600);
+    let pool_ttl_s: i64 = std::env::var("PQ_LS_POOL_TTL_S").ok().and_then(|v| v.parse().ok()).unwrap_or(7200);
+    // Idle expiry: the engine's liveness horizon is MAX_IDLE_MS = 60 s without a trade; a pool feed
+    // is kept 10x that (default 600 s) after its last observed swap so a revived pool is not lost
+    // to a brief lull, then released. Both bounds are env-declared and journaled per expiry.
+    let pool_idle_s: i64 = std::env::var("PQ_LS_POOL_IDLE_S").ok().and_then(|v| v.parse().ok()).unwrap_or(600);
+    let mut pool_last_swap_ms: std::collections::BTreeMap<[u8; 32], i64> = std::collections::BTreeMap::new();
     let pool_cap: usize = std::env::var("PQ_LS_POOL_CAP").ok().and_then(|v| v.parse().ok()).unwrap_or(256);
     let mut pool_subs: std::collections::BTreeMap<[u8; 32], PoolSub> = std::collections::BTreeMap::new();
     let mut pool_lane_dropped_cap: u64 = 0;
@@ -2361,7 +2366,7 @@ fn main() -> ExitCode {
         }
     };
     if pool_lane_enabled {
-        eprintln!("[pq-daemon] selective PumpSwap pool lane ENABLED (ttl={pool_ttl_s}s cap={pool_cap})");
+        eprintln!("[pq-daemon] selective PumpSwap pool lane ENABLED (ttl={pool_ttl_s}s idle={pool_idle_s}s cap={pool_cap})");
     }
 
     // ─── Firecrawl web-intelligence sidecar ─────────────────────────────────
@@ -2777,14 +2782,26 @@ fn main() -> ExitCode {
                 pool_subs.insert(em.mint, PoolSub { pool_b58, migration_slot: em.migration_slot, launch_unix_ms: em.launch_unix_ms, requested_unix_ms: now_ms });
                 changed = true;
             }
-            let expired: Vec<[u8; 32]> = pool_subs
+            let expired: Vec<([u8; 32], &'static str)> = pool_subs
                 .iter()
-                .filter(|(m, ps)| now_ms - ps.requested_unix_ms > pool_ttl_s * 1000 && !engine.mint_has_exposure(m))
-                .map(|(m, _)| *m)
+                .filter_map(|(m, ps)| {
+                    if engine.mint_has_exposure(m) {
+                        return None;
+                    }
+                    if now_ms - ps.requested_unix_ms > pool_ttl_s * 1000 {
+                        return Some((*m, "ttl"));
+                    }
+                    let last = pool_last_swap_ms.get(m).copied().unwrap_or(ps.requested_unix_ms).max(ps.requested_unix_ms);
+                    if now_ms - last > pool_idle_s * 1000 {
+                        return Some((*m, "idle"));
+                    }
+                    None
+                })
                 .collect();
-            for m in expired {
+            for (m, why) in expired {
                 if let Some(ps) = pool_subs.remove(&m) {
-                    pool_lane_journal(serde_json::json!({"ev": "expire", "unix_ms": now_ms, "mint_b58": b58_encode(&m), "pool_b58": ps.pool_b58, "migration_slot": ps.migration_slot, "launch_unix_ms": ps.launch_unix_ms, "active_s": (now_ms - ps.requested_unix_ms) / 1000}));
+                    pool_lane_journal(serde_json::json!({"ev": "expire", "why": why, "unix_ms": now_ms, "mint_b58": b58_encode(&m), "pool_b58": ps.pool_b58, "migration_slot": ps.migration_slot, "launch_unix_ms": ps.launch_unix_ms, "active_s": (now_ms - ps.requested_unix_ms) / 1000, "last_swap_unix_ms": pool_last_swap_ms.get(&m)}));
+                    pool_last_swap_ms.remove(&m);
                     changed = true;
                 }
             }
@@ -2985,6 +3002,28 @@ fn main() -> ExitCode {
                                     tx.cu_consumed,
                                     Some(tx.signature),
                                 );
+                            }
+                        }
+                    }
+                    if pool_lane_enabled {
+                        // Signature-level swap journal (reconciliation against authoritative RPC
+                        // records: duplicates vs distinct legs vs gaps). Journal only — never read
+                        // by the trading path.
+                        let mut legs: std::collections::BTreeMap<[u8; 32], u32> = std::collections::BTreeMap::new();
+                        for ev in &events {
+                            if let AppEvent::AmmSwap { mint, .. } = &ev.event {
+                                *legs.entry(*mint.as_bytes()).or_default() += 1;
+                                if let Some(t) = tx.recv_unix_ms {
+                                    pool_last_swap_ms.insert(*mint.as_bytes(), t);
+                                }
+                            }
+                        }
+                        if !legs.is_empty() {
+                            use std::io::Write;
+                            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("data/amm_swap_sigs.jsonl") {
+                                for (m, n) in legs {
+                                    let _ = writeln!(f, "{}", serde_json::json!({"sig": b58_encode(&tx.signature), "slot": tx.slot, "recv_unix_ms": tx.recv_unix_ms, "mint_b58": b58_encode(&m), "legs": n, "is_live": tx.is_live}));
+                                }
                             }
                         }
                     }
@@ -5247,7 +5286,7 @@ mod held_feed_tests {
 /// Base58 (Bitcoin alphabet) encoding for 32-byte keys — pool/mint identifiers in the feed journal.
 fn b58_encode(bytes: &[u8]) -> String {
     const A: &[u8] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
-    let mut digits: Vec<u8> = vec![0];
+    let mut digits: Vec<u8> = Vec::new();
     for &b in bytes {
         let mut carry = b as u32;
         for d in digits.iter_mut() {
