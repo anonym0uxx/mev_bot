@@ -478,7 +478,7 @@ impl Engine {
         }
     }
 
-    fn model_mgmt_place(&mut self, mint: [u8; 32], kind: MgmtKind, bps: u32, clock: i64) {
+    pub(super) fn model_mgmt_place(&mut self, mint: [u8; 32], kind: MgmtKind, bps: u32, clock: i64) {
         if kind == MgmtKind::Add && self.model_safety_blocked() {
             // Risk-increasing: never while SAFETY_OFF holds. REDUCE/EXIT stay permitted.
             self.mrep("mgmt:refuse:add_blocked_safety_off");
@@ -1273,6 +1273,12 @@ impl Engine {
             }
             _ => false,
         }
+    }
+
+    /// Exit attempts made for the standing EXIT intent on `mint` (0 = no intent yet).
+    #[must_use]
+    pub fn model_mgmt_exit_attempts(&self, mint: &[u8; 32]) -> u32 {
+        self.model_mgmt.pos.get(mint).map_or(0, |p| p.exit_attempts)
     }
 
     /// Age (ms, model clock) of the newest AMM observation on `mint`; `None` when none.

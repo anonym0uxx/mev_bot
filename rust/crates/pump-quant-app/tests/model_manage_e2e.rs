@@ -1502,6 +1502,15 @@ fn a_pending_exit_on_a_quiet_pool_lands_on_the_rpc_pool_state_snapshot_exactly_o
         ticks(&mut r.e, 2);
     }
     assert!(r.e.model_mgmt_pending(&MINT).is_some());
+    // Let the first attempt expire (60 s AMM exit TTL) so the standing intent has NO pending order:
+    // the snapshot must re-place the intent itself and land on the snapshot state.
+    for _ in 0..70 {
+        r.clock += 1_000;
+        r.slot += 1;
+        curve_quiet(&mut r.e, r.clock, r.slot);
+        ticks(&mut r.e, 2);
+    }
+    assert!(r.rep("mgmt:order_expired_unfilled") >= 1);
     let fills_before = r.e.model_all_fills().len();
     // A snapshot for a mint that is not held does nothing.
     assert!(!r.e.model_on_amm_state_snapshot([0x99; 32], [0x50; 32], 1, 1, 0, r.slot + 5, r.clock + 1_000));
@@ -1514,6 +1523,7 @@ fn a_pending_exit_on_a_quiet_pool_lands_on_the_rpc_pool_state_snapshot_exactly_o
     assert!(!r.e.model_position_open(&MINT), "closed exactly once");
     assert_eq!(r.rep("mgmt:fill_source|rpc_state_snapshot"), 1);
     assert_eq!(r.rep("mgmt:fill_amm_sell_fee_unverified"), 1);
+    assert!(r.rep("mgmt:exit_attempt|rpc_snapshot") <= 1, "{:?}", r.e.model_lane_report());
     let f = r.e.model_mgmt_fills().last().unwrap().clone();
     assert!(f.closed && f.tokens == inv0);
     assert_eq!(r.e.model_all_fills().len(), fills_before, "no entry fill was created by a snapshot");

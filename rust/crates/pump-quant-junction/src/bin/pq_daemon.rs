@@ -2965,7 +2965,7 @@ fn main() -> ExitCode {
             let stuck: Vec<[u8; 32]> = engine
                 .exposure_mints()
                 .into_iter()
-                .filter(|m| matches!(engine.model_mgmt_pending(m), Some((_, k, _, _)) if k == pump_quant_app::engine::model_manage::MgmtKind::Exit))
+                .filter(|m| matches!(engine.model_mgmt_pending(m), Some((_, k, _, _)) if k == pump_quant_app::engine::model_manage::MgmtKind::Exit) || engine.model_mgmt_exit_attempts(m) > 0)
                 .filter(|m| engine.model_amm_obs_age_ms(m).is_none_or(|age| age > 30_000))
                 .collect();
             for m in stuck {
