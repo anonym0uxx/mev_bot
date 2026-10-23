@@ -176,6 +176,8 @@ pub struct InferenceClient {
     /// runtime-LoRA paper lane sets 128 = the qualified engine's frozen cap. A `finish_reason="length"`
     /// is reported as truncated and REFUSED by the authority; there is no retry at a larger cap.
     max_tokens: u32,
+    /// Optional server-side stop sequences (compact-record contracts).
+    stop: Option<Vec<String>>,
 }
 
 /// Historical request cap.
@@ -282,6 +284,10 @@ pub struct Completion {
     pub finish_reason: Option<String>,
     /// `usage.completion_tokens`, when the server reported it (probe_sl contract: cap check).
     pub completion_tokens: Option<u32>,
+    /// `choices[0].stop_reason` (vLLM extension): the matched stop STRING when generation ended on a
+    /// client-supplied `stop` sequence, `None` on EOS / when the server does not report it. Compact
+    /// contracts require it to prove the server reached the record boundary (not EOS, not the cap).
+    pub stop_reason: Option<String>,
 }
 
 impl Completion {
@@ -304,7 +310,23 @@ impl InferenceClient {
             agent: builder.build(),
             model: None,
             max_tokens: DEFAULT_MAX_TOKENS,
+            stop: None,
         }
+    }
+
+    /// Compact-record contracts: server-side stop sequences appended to the request body. The
+    /// server ends generation at the first match and reports it in `choices[0].stop_reason`; the
+    /// GPU does not keep producing the explanation (verified by server token accounting on the
+    /// paper engine: generation_tokens delta == client completion_tokens sum, 4,000/4,000).
+    #[must_use]
+    pub fn with_stop(mut self, stop: Vec<String>) -> Self {
+        self.stop = if stop.is_empty() { None } else { Some(stop) };
+        self
+    }
+
+    /// The stop sequences this client sends, if any.
+    pub fn stop(&self) -> Option<&[String]> {
+        self.stop.as_deref()
     }
 
     /// Set the request cap (the identified paper lane uses the engine's frozen 128).
@@ -428,7 +450,10 @@ impl InferenceClient {
         timeout: Duration,
         request_id: Option<&str>,
     ) -> Result<Completion, InferenceError> {
-        let body = request_body_with(self.model.as_deref(), self.max_tokens, system, user);
+        let mut body = request_body_with(self.model.as_deref(), self.max_tokens, system, user);
+        if let Some(stop) = &self.stop {
+            body["stop"] = serde_json::json!(stop);
+        }
 
         let mut req = self
             .agent
@@ -467,6 +492,7 @@ impl InferenceClient {
                 .as_str()
                 .map(str::to_string),
             completion_tokens: v["usage"]["completion_tokens"].as_u64().and_then(|n| u32::try_from(n).ok()),
+            stop_reason: v["choices"][0]["stop_reason"].as_str().map(str::to_string),
         })
     }
 
@@ -1137,6 +1163,7 @@ mod f5b_tests {
     #[test]
     fn a_completion_knows_whether_it_was_cut_at_the_token_budget() {
         let cut = Completion {
+            stop_reason: None,
             text: "DECISION: BUY".into(),
             finish_reason: Some("length".into()),
             completion_tokens: None,
@@ -1146,12 +1173,14 @@ mod f5b_tests {
             text: "x".into(),
             finish_reason: Some("stop".into()),
             completion_tokens: None,
+            stop_reason: None,
         }
         .truncated());
         assert!(!Completion {
             text: "x".into(),
             completion_tokens: None,
-            finish_reason: None
+            finish_reason: None,
+            stop_reason: None,
         }
         .truncated());
     }
@@ -1240,5 +1269,30 @@ mod max_tokens_tests {
         assert_eq!(b["model"], "probe-mg3-base");
         assert_eq!(b["temperature"], 0.0);
         assert_eq!(b["chat_template_kwargs"]["enable_thinking"], false);
+    }
+}
+
+#[cfg(test)]
+mod compact_stop_body_tests {
+    use super::*;
+
+    #[test]
+    fn stop_sequences_are_sent_only_when_configured_and_stop_reason_is_parsed() {
+        let c = InferenceClient::new("http://127.0.0.1:1", Duration::from_secs(1)).with_model("m").with_max_tokens(128);
+        assert!(c.stop().is_none());
+        let c2 = c.with_stop(vec!["\nREASON".to_string()]);
+        assert_eq!(c2.stop(), Some(&["\nREASON".to_string()][..]));
+        // body parity: everything except the stop list is byte-identical to the long-record body
+        let mut body = request_body_with(Some("m"), 128, "s", "u");
+        let long = body.clone();
+        body["stop"] = serde_json::json!(c2.stop().unwrap());
+        let mut without = body.clone();
+        without.as_object_mut().unwrap().remove("stop");
+        assert_eq!(without, long);
+        // server response parsing carries stop_reason (vLLM) and None when absent
+        let v: serde_json::Value = serde_json::from_str(r#"{"choices":[{"message":{"content":"DECISION: SKIP"},"finish_reason":"stop","stop_reason":"\nREASON"}],"usage":{"completion_tokens":7}}"#).unwrap();
+        assert_eq!(v["choices"][0]["stop_reason"].as_str(), Some("\nREASON"));
+        let v2: serde_json::Value = serde_json::from_str(r#"{"choices":[{"message":{"content":"x"},"finish_reason":"stop"}],"usage":{"completion_tokens":7}}"#).unwrap();
+        assert!(v2["choices"][0]["stop_reason"].as_str().is_none());
     }
 }

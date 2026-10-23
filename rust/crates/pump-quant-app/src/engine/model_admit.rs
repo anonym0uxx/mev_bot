@@ -555,8 +555,8 @@ impl Engine {
         );
         let snap = match self.model_cache.snapshot(&mint, clock) {
             Ok(mut s) => {
-                if self.entry_contract == super::EntryContract::ProbeSlV1 {
-                    // probe_sl_v1: the policy's own system instruction, verbatim. The user prompt
+                if self.entry_contract.is_probe_sl() {
+                    // probe_sl_v1(/compact): the policy's own system instruction, verbatim. The user prompt
                     // is the renderer's (byte-parity with the contract's training inputs).
                     s.system_prompt = pump_quant_inference::probe_sl::PROBE_SL_V1_SYSTEM_PROMPT.to_string();
                 }
@@ -869,13 +869,22 @@ impl Engine {
         // off-contract answer (incl. the v16 answer shape, truncation, WATCH/SKIP with SIZE) is a
         // named no-trade; a valid BUY/WATCH/SKIP then flows through the unchanged authority
         // (sizing, affordability, impact, freshness) — the lenient parser accepts the subset.
-        let result = if self.entry_contract == super::EntryContract::ProbeSlV1 {
+        let result = if self.entry_contract.is_probe_sl() {
             match &v.result {
-                Ok(c) => match pump_quant_inference::probe_sl::validate_probe_sl_entry(
-                    c.finish_reason.as_deref(),
-                    &c.text,
-                    c.completion_tokens,
-                ) {
+                Ok(c) => match if self.entry_contract == super::EntryContract::ProbeSlV1Compact {
+                    pump_quant_inference::probe_sl::validate_probe_sl_entry_compact(
+                        c.finish_reason.as_deref(),
+                        c.stop_reason.as_deref(),
+                        &c.text,
+                        c.completion_tokens,
+                    )
+                } else {
+                    pump_quant_inference::probe_sl::validate_probe_sl_entry(
+                        c.finish_reason.as_deref(),
+                        &c.text,
+                        c.completion_tokens,
+                    )
+                } {
                     Ok(d) => {
                         self.mrep(format!("probe_sl:valid:{}", d.action.as_str()));
                         v.result

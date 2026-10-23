@@ -867,6 +867,18 @@ pub enum EntryContract {
     /// `probe_sl_v1`: the dense `probe_step78` policy's own contract — verbatim system instruction,
     /// strict DECISION[/SIZE]/REASON/RISK validator, no price limit. ENTRY-BASELINE cohort.
     ProbeSlV1,
+    /// `probe_sl_v1_compact`: same policy, prompt bytes and cap; the client sends
+    /// `stop=["\nREASON"]` so the server ends generation at the decision-complete record, and the
+    /// compact validator requires the server-reported boundary. Versioned separately because the
+    /// executed action set differs where the long record would have truncated at the cap.
+    ProbeSlV1Compact,
+}
+
+impl EntryContract {
+    /// Either probe_sl_v1 variant (same system instruction, same policy).
+    pub fn is_probe_sl(self) -> bool {
+        matches!(self, EntryContract::ProbeSlV1 | EntryContract::ProbeSlV1Compact)
+    }
 }
 
 impl ManagementPolicy {

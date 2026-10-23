@@ -790,7 +790,7 @@ fn identified_arm_refuses_when_expected_adapter_not_served() {
     let dir = std::env::temp_dir().join(format!("pq-ident-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let mut e = Engine::new(cfg(), RunMode::Paper);
-    let r = arm_paper_model_identified(&mut e, &format!("http://{addr}"), &dir.join("safety.json"), "probe-mg3-mgmt", &[]);
+    let r = arm_paper_model_identified(&mut e, &format!("http://{addr}"), &dir.join("safety.json"), "probe-mg3-mgmt", &[], None);
     match r {
         Err(pump_quant_inference::IdentityRefusal::Missing { missing, .. }) => assert_eq!(missing, vec!["probe-mg3-mgmt".to_string()]),
         other => panic!("expected Missing refusal, got {:?}", other.map(|(a, s)| (a.blocked_at_start, s))),

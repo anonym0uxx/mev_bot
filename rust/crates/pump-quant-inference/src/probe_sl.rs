@@ -17,6 +17,13 @@ pub const PROBE_SL_V1_SYSTEM_PROMPT_SHA256: &str =
     "ab4c70d2f7f9e6b1dfa5c14b381c2b88c844e680f82ef58623ec48232bf0a1aa";
 /// Generation cap of the contract (scorer `MAX_TOKENS`).
 pub const PROBE_SL_V1_MAX_TOKENS: u32 = 128;
+/// `probe_sl_v1_compact`: the server-side stop sequence that ends generation at the complete
+/// executable record. The probe_sl_v1 answer is `DECISION[\nSIZE]\nREASON…\nRISK…`; the route reads
+/// DECISION and SIZE only (REASON/RISK are journal text), so stopping at `\nREASON` yields the
+/// decision-complete record with the same greedy prefix (dev506: 482/482 DECISION+SIZE agreement
+/// with the long record; 24 long-record truncations become complete records). Same model, same
+/// prompt bytes, same cap; only the response boundary and the validator differ.
+pub const PROBE_SL_V1_COMPACT_STOP: &str = "\nREASON";
 const MARKERS: [&str; 4] = ["<|im_start|>", "<|im_end|>", "<think>", "</think>"];
 
 /// A valid probe_sl entry answer.
@@ -183,6 +190,76 @@ impl PolicyContractBinding {
             enable_thinking: false,
         }
     }
+
+    /// The probe_sl_v1_compact binding: identical model/prompt/cap/decoding; response boundary
+    /// `stop=["\nREASON"]` and the compact validator.
+    pub fn probe_sl_v1_compact(model_id: &str, model_root: Option<&str>) -> Self {
+        let mut b = Self::probe_sl_v1(model_id, model_root);
+        b.contract_id = "probe_sl_v1_compact".into();
+        b.response_parser = format!(
+            "validate_probe_sl_entry_compact (server stop {:?}; finish=stop AND stop_reason==stop; exact DECISION[/SIZE] record)",
+            PROBE_SL_V1_COMPACT_STOP
+        );
+        b
+    }
+}
+
+/// `probe_sl_v1_compact` validator. VALID iff the server reports `finish_reason="stop"` AND
+/// `stop_reason == PROBE_SL_V1_COMPACT_STOP` (the record boundary was reached by the server — not
+/// EOS, not the token cap) AND the text is exactly `DECISION: <BUY|WATCH|SKIP>` optionally followed
+/// by `\nSIZE: <SMALL|FULL>`, with SIZE present iff BUY. No trailing newline, no blank line, no other
+/// field: a prefix the client happened to read, a length-cap cut, or an EOS-ended short answer is
+/// NOT a valid compact record. Returns the same decision type as the long validator.
+pub fn validate_probe_sl_entry_compact(
+    finish_reason: Option<&str>,
+    stop_reason: Option<&str>,
+    text: &str,
+    n_generated_tokens: Option<u32>,
+) -> Result<ProbeSlDecision, &'static str> {
+    match finish_reason {
+        Some("stop") => {}
+        Some(_) => return Err("not_natural_stop"),
+        None => return Err("no_finish_reason"),
+    }
+    if stop_reason != Some(PROBE_SL_V1_COMPACT_STOP) {
+        return Err("not_at_record_boundary");
+    }
+    if n_generated_tokens.is_some_and(|n| n > PROBE_SL_V1_MAX_TOKENS) {
+        return Err("over_token_limit");
+    }
+    if MARKERS.iter().any(|m| text.contains(m)) {
+        return Err("template_marker_in_content");
+    }
+    let lines: Vec<&str> = text.split('\n').collect();
+    if lines.is_empty() || lines.iter().any(|l| l.trim().is_empty()) {
+        return Err("empty_line");
+    }
+    let Some(d) = lines[0].strip_prefix("DECISION: ") else {
+        return Err("first_line_not_decision");
+    };
+    let action = match d {
+        "BUY" => ProbeSlAction::Buy,
+        "WATCH" => ProbeSlAction::Watch,
+        "SKIP" => ProbeSlAction::Skip,
+        _ => return Err("untrained_action"),
+    };
+    match (action, lines.len()) {
+        (ProbeSlAction::Buy, 2) => {
+            let Some(sz) = lines[1].strip_prefix("SIZE: ") else {
+                return Err("buy_without_size");
+            };
+            let size = match sz {
+                "SMALL" => ProbeSlSize::Small,
+                "FULL" => ProbeSlSize::Full,
+                _ => return Err("buy_with_untrained_size"),
+            };
+            Ok(ProbeSlDecision { action, size: Some(size) })
+        }
+        (ProbeSlAction::Buy, 1) => Err("buy_without_size"),
+        (_, 1) => Ok(ProbeSlDecision { action, size: None }),
+        (_, 2) if lines[1].starts_with("SIZE: ") => Err("size_on_non_buy"),
+        _ => Err("field_order_or_missing"),
+    }
 }
 
 /// Recompute the system prompt digest (startup self-check against the recorded constant).
@@ -193,6 +270,42 @@ pub fn system_prompt_sha256() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compact_validator_accepts_only_server_terminated_exact_records() {
+        let stop = Some(PROBE_SL_V1_COMPACT_STOP);
+        let ok = |t: &str| validate_probe_sl_entry_compact(Some("stop"), stop, t, Some(7));
+        assert_eq!(ok("DECISION: SKIP").unwrap(), ProbeSlDecision { action: ProbeSlAction::Skip, size: None });
+        assert_eq!(ok("DECISION: BUY\nSIZE: FULL").unwrap(), ProbeSlDecision { action: ProbeSlAction::Buy, size: Some(ProbeSlSize::Full) });
+        assert_eq!(ok("DECISION: BUY\nSIZE: SMALL").unwrap().size, Some(ProbeSlSize::Small));
+        // boundary not reached by the server: EOS-ended short answer, length cap, missing finish
+        assert_eq!(validate_probe_sl_entry_compact(Some("stop"), None, "DECISION: SKIP", Some(7)), Err("not_at_record_boundary"));
+        assert_eq!(validate_probe_sl_entry_compact(Some("length"), stop, "DECISION: SKIP", Some(128)), Err("not_natural_stop"));
+        assert_eq!(validate_probe_sl_entry_compact(None, stop, "DECISION: SKIP", None), Err("no_finish_reason"));
+        assert_eq!(validate_probe_sl_entry_compact(Some("stop"), Some("\nRISK"), "DECISION: SKIP", None), Err("not_at_record_boundary"));
+        // malformed records
+        assert_eq!(ok(""), Err("empty_line"));
+        assert_eq!(ok("\nDECISION: SKIP"), Err("empty_line"));
+        assert_eq!(ok("DECISION: SKIP\n"), Err("empty_line"));
+        assert_eq!(ok(" DECISION: SKIP"), Err("first_line_not_decision"));
+        assert_eq!(ok("DECISION: HOLD"), Err("untrained_action"));
+        assert_eq!(ok("DECISION: BUY"), Err("buy_without_size"));
+        assert_eq!(ok("DECISION: BUY\nSIZE: MID"), Err("buy_with_untrained_size"));
+        assert_eq!(ok("DECISION: SKIP\nSIZE: FULL"), Err("size_on_non_buy"));
+        assert_eq!(ok("DECISION: SKIP\nRISK: x"), Err("field_order_or_missing"));
+        assert_eq!(ok("DECISION: BUY\nSIZE: FULL\nREASON: x"), Err("field_order_or_missing"));
+        assert_eq!(ok("DECISION: BUY<|im_end|>\nSIZE: FULL"), Err("template_marker_in_content"));
+        assert_eq!(validate_probe_sl_entry_compact(Some("stop"), stop, "DECISION: SKIP", Some(129)), Err("over_token_limit"));
+    }
+
+    #[test]
+    fn compact_binding_shares_identity_and_differs_only_in_parser_and_id() {
+        let a = PolicyContractBinding::probe_sl_v1("m", None);
+        let b = PolicyContractBinding::probe_sl_v1_compact("m", None);
+        assert_eq!(b.contract_id, "probe_sl_v1_compact");
+        assert_eq!((a.system_prompt_sha256, a.max_tokens, a.temperature, a.enable_thinking), (b.system_prompt_sha256.clone(), b.max_tokens, b.temperature, b.enable_thinking));
+        assert!(b.response_parser.contains("\\nREASON"));
+    }
 
     #[test]
     fn system_prompt_is_the_artifact_byte_for_byte() {

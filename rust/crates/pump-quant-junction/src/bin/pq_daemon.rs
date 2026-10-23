@@ -1835,12 +1835,17 @@ fn main() -> ExitCode {
                     Some(name) => {
                         let expected_raw = std::env::var("PQ_MODEL_EXPECTED_IDS").unwrap_or_default();
                         let expected: Vec<&str> = expected_raw.split(',').map(str::trim).filter(|s| !s.is_empty()).collect();
+                        // Entry contract is read BEFORE arming because the compact variant changes the request body (stop sequence).
+                        let entry_contract_env = std::env::var("PQ_ENTRY_CONTRACT").ok();
+                        let compact_entry = entry_contract_env.as_deref() == Some("probe_sl_v1_compact");
+                        let stop_seqs: [&str; 1] = [pump_quant_inference::probe_sl::PROBE_SL_V1_COMPACT_STOP];
                         match pump_quant_junction::model_lifecycle::arm_paper_model_identified(
                             &mut engine,
                             &endpoint,
                             std::path::Path::new(&safety),
                             &name,
                             &expected,
+                            if compact_entry { Some(&stop_seqs[..]) } else { None },
                         ) {
                             Ok((armed, served)) => {
                                 model_armed = true;
@@ -1861,8 +1866,8 @@ fn main() -> ExitCode {
                                     }
                                 }
                                 // Entry contract (explicit). probe_sl_v1 = the dense probe_step78 policy's own contract.
-                                match std::env::var("PQ_ENTRY_CONTRACT").ok().as_deref() {
-                                    Some("probe_sl_v1") => {
+                                match entry_contract_env.as_deref() {
+                                    Some("probe_sl_v1") | Some("probe_sl_v1_compact") => {
                                         let want = pump_quant_inference::probe_sl::PROBE_SL_V1_SYSTEM_PROMPT_SHA256;
                                         let got = pump_quant_inference::probe_sl::system_prompt_sha256();
                                         if got != want {
@@ -1873,14 +1878,22 @@ fn main() -> ExitCode {
                                             engine.set_model_cancel_lag_ms(Some(lag));
                                             eprintln!("[pq-daemon] request-lifecycle v2: transport budget = 3000 ms + {lag} ms cancellation lag");
                                         }
-                                        engine.set_entry_contract(pump_quant_app::engine::EntryContract::ProbeSlV1);
+                                        engine.set_entry_contract(if compact_entry {
+                                            pump_quant_app::engine::EntryContract::ProbeSlV1Compact
+                                        } else {
+                                            pump_quant_app::engine::EntryContract::ProbeSlV1
+                                        });
                                         let root = served.iter().find(|s| s.id == name).and_then(|s| s.root.clone());
-                                        let binding = pump_quant_inference::probe_sl::PolicyContractBinding::probe_sl_v1(&name, root.as_deref());
+                                        let binding = if compact_entry {
+                                            pump_quant_inference::probe_sl::PolicyContractBinding::probe_sl_v1_compact(&name, root.as_deref())
+                                        } else {
+                                            pump_quant_inference::probe_sl::PolicyContractBinding::probe_sl_v1(&name, root.as_deref())
+                                        };
                                         let bpath = std::env::var("PQ_POLICY_BINDING_FILE").unwrap_or_else(|_| "data/policy_contract_binding.json".to_string());
                                         if let Err(e) = std::fs::write(&bpath, serde_json::to_vec_pretty(&binding).unwrap_or_default()) {
                                             eprintln!("[pq-daemon] policy binding write failed ({bpath}): {e}");
                                         }
-                                        eprintln!("[pq-daemon] entry contract = probe_sl_v1 (system sha256 {want}; max_tokens {}; binding -> {bpath})", pump_quant_inference::probe_sl::PROBE_SL_V1_MAX_TOKENS);
+                                        eprintln!("[pq-daemon] entry contract = {} (system sha256 {want}; max_tokens {}; binding -> {bpath})", binding.contract_id, pump_quant_inference::probe_sl::PROBE_SL_V1_MAX_TOKENS);
                                     }
                                     Some("v16_lora") | None => eprintln!("[pq-daemon] entry contract = v16_lora (renderer default)"),
                                     Some(other) => {

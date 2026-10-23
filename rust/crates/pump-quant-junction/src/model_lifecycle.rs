@@ -59,9 +59,14 @@ pub fn arm_paper_model_identified(
     safety_path: &Path,
     model_id: &str,
     expected_ids: &[&str],
+    stop: Option<&[&str]>,
 ) -> Result<(Armed, Vec<pump_quant_inference::ServedModel>), pump_quant_inference::IdentityRefusal> {
     // Frozen engine contract for the identified lane: 128-token cap (no 512 retry, no truncation repair).
-    let client = InferenceClient::new(endpoint, CLIENT_TIMEOUT).with_model(model_id).with_max_tokens(PAPER_LANE_MAX_TOKENS);
+    // `stop`: compact-record contracts only (probe_sl_v1_compact sends ["\nREASON"]); None = long record.
+    let mut client = InferenceClient::new(endpoint, CLIENT_TIMEOUT).with_model(model_id).with_max_tokens(PAPER_LANE_MAX_TOKENS);
+    if let Some(st) = stop {
+        client = client.with_stop(st.iter().map(|s| s.to_string()).collect());
+    }
     let mut expected: Vec<&str> = expected_ids.to_vec();
     if !expected.contains(&model_id) {
         expected.push(model_id);

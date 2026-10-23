@@ -58,6 +58,7 @@ pub trait ModelSource {
             text,
             finish_reason: None,
             completion_tokens: None,
+            stop_reason: None,
         })
     }
 
@@ -528,6 +529,7 @@ mod tests {
                 text: self.text.to_string(),
                 finish_reason: self.reason.map(str::to_string),
                 completion_tokens: None,
+            stop_reason: None,
             })
         }
     }
@@ -917,6 +919,7 @@ pub fn decide_management<S: ModelSource + ?Sized>(
             text,
             finish_reason: None,
             completion_tokens: None,
+            stop_reason: None,
         });
     resolve_management(completion, req, ledger)
 }

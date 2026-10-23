@@ -44,6 +44,7 @@ struct Fixed {
     text: &'static str,
     finish: Option<&'static str>,
     tokens: Option<u32>,
+    stop_reason: Option<&'static str>,
     systems: Arc<Mutex<Vec<String>>>,
     calls: Arc<AtomicUsize>,
 }
@@ -54,7 +55,7 @@ impl ModelSource for Fixed {
     fn complete_meta(&self, s: &str, _u: &str) -> Result<Completion, InferenceError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         self.systems.lock().unwrap().push(s.to_string());
-        Ok(Completion { text: self.text.to_string(), finish_reason: self.finish.map(str::to_string), completion_tokens: self.tokens })
+        Ok(Completion { text: self.text.to_string(), finish_reason: self.finish.map(str::to_string), completion_tokens: self.tokens, stop_reason: self.stop_reason.map(str::to_string) })
     }
 }
 
@@ -166,11 +167,15 @@ struct Rig {
 }
 
 fn run(text: &'static str, finish: Option<&'static str>, tokens: Option<u32>) -> (Engine, Arc<Mutex<Vec<String>>>, Arc<AtomicUsize>) {
+    run_with(EntryContract::ProbeSlV1, text, finish, None, tokens)
+}
+
+fn run_with(contract: EntryContract, text: &'static str, finish: Option<&'static str>, stop_reason: Option<&'static str>, tokens: Option<u32>) -> (Engine, Arc<Mutex<Vec<String>>>, Arc<AtomicUsize>) {
     let systems = Arc::new(Mutex::new(Vec::new()));
     let calls = Arc::new(AtomicUsize::new(0));
     let mut e = Engine::new(cfg(), RunMode::Paper);
-    e.enable_paper_model(Fixed { text, finish, tokens, systems: Arc::clone(&systems), calls: Arc::clone(&calls) });
-    e.set_entry_contract(EntryContract::ProbeSlV1);
+    e.enable_paper_model(Fixed { text, finish, tokens, stop_reason, systems: Arc::clone(&systems), calls: Arc::clone(&calls) });
+    e.set_entry_contract(contract);
     let evs = events(40);
     for ev in &evs {
         e.tick(ev.clone());
@@ -218,5 +223,41 @@ fn v16_shaped_truncated_and_sizeless_answers_are_named_no_trades() {
 fn a_valid_skip_is_a_skip() {
     let (e, _, _) = run("DECISION: SKIP\nREASON: sells dominate\nRISK: none material", Some("stop"), Some(20));
     assert!(rep(&e, "probe_sl:valid:SKIP") >= 1, "{:?}", e.model_lane_report());
+    assert_eq!(rep(&e, "verdict:buy"), 0);
+}
+
+/// probe_sl_v1_compact: the same verbatim system instruction; a server-terminated compact BUY record
+/// reaches the authority and becomes an order intent; the identical text WITHOUT the server-reported
+/// boundary (EOS / no stop_reason) or cut at the cap is a named no-trade; a SKIP record is a skip.
+#[test]
+fn compact_record_executes_only_when_the_server_reports_the_boundary() {
+    let (e, systems, calls) = run_with(EntryContract::ProbeSlV1Compact, "DECISION: BUY\nSIZE: SMALL", Some("stop"), Some("\nREASON"), Some(7));
+    assert!(calls.load(Ordering::SeqCst) >= 1, "{:?}", e.model_lane_report());
+    for s in systems.lock().unwrap().iter() {
+        assert_eq!(s, PROBE_SL_V1_SYSTEM_PROMPT);
+    }
+    assert!(rep(&e, "probe_sl:valid:BUY") >= 1, "{:?}", e.model_lane_report());
+    assert!(rep(&e, "verdict:buy") >= 1, "{:?}", e.model_lane_report());
+    assert_eq!(rep(&e, "probe_sl:invalid"), 0);
+
+    let cases: [(&'static str, Option<&'static str>, Option<&'static str>, &str); 4] = [
+        ("DECISION: BUY\nSIZE: SMALL", Some("stop"), None, "probe_sl:invalid:not_at_record_boundary"),
+        ("DECISION: BUY\nSIZE: SMALL", Some("length"), None, "probe_sl:invalid:not_natural_stop"),
+        ("DECISION: BUY\nSIZE: SMALL\nREASON: r\nRISK: k", Some("stop"), None, "probe_sl:invalid:not_at_record_boundary"),
+        ("DECISION: BUY", Some("stop"), Some("\nREASON"), "probe_sl:invalid:buy_without_size"),
+    ];
+    for (text, finish, sr, key) in cases {
+        let (e, _, calls) = run_with(EntryContract::ProbeSlV1Compact, text, finish, sr, Some(7));
+        assert!(calls.load(Ordering::SeqCst) >= 1);
+        assert!(rep(&e, key) >= 1, "{key}: {:?}", e.model_lane_report());
+        assert_eq!(rep(&e, "verdict:buy"), 0, "never executed: {:?}", e.model_lane_report());
+        assert!(rep(&e, "notrade:probe_sl_off_contract") >= 1);
+    }
+    let (e, _, _) = run_with(EntryContract::ProbeSlV1Compact, "DECISION: SKIP", Some("stop"), Some("\nREASON"), Some(5));
+    assert!(rep(&e, "probe_sl:valid:SKIP") >= 1, "{:?}", e.model_lane_report());
+    assert_eq!(rep(&e, "verdict:buy"), 0);
+    // the long contract must NOT accept a compact record (boundary semantics are per contract)
+    let (e, _, _) = run_with(EntryContract::ProbeSlV1, "DECISION: BUY\nSIZE: SMALL", Some("stop"), Some("\nREASON"), Some(7));
+    assert!(rep(&e, "probe_sl:invalid:field_order_or_missing") >= 1, "{:?}", e.model_lane_report());
     assert_eq!(rep(&e, "verdict:buy"), 0);
 }
