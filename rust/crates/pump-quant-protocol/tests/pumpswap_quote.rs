@@ -21,7 +21,7 @@ fn u(v: &Value, k: &str) -> u128 {
 fn sells_are_exact_on_every_real_sell_with_the_effective_quote_reserve() {
     let mut n = 0;
     for v in vectors().iter().filter(|v| v["kind"] == "sell") {
-        let q = sell_gross_quote_out(u(v, "pb"), u(v, "pq"), u(v, "V"), u(v, "bin")).unwrap();
+        let q = sell_gross_quote_out(u(v, "pb"), u(v, "pq"), u(v, "V") as i128, u(v, "bin")).unwrap();
         assert_eq!(q, u(v, "qout"), "sell {}", v["sig"]);
         n += 1;
     }
@@ -43,7 +43,7 @@ fn buy_exact_quote_in_is_exact_on_untouched_transactions_and_names_the_exception
             refused.push(v["sig"].as_str().unwrap().to_string());
             continue;
         }
-        let f = buy_exact_quote_in(u(v, "pb"), u(v, "pq"), u(v, "V"), x, lp, pr, cr).unwrap();
+        let f = buy_exact_quote_in(u(v, "pb"), u(v, "pq"), u(v, "V") as i128, x, lp, pr, cr).unwrap();
         assert_eq!(f.base_out, u(v, "out"), "{} ({})", v["sig"], v["group"]);
         ok += 1;
     }
@@ -122,7 +122,7 @@ mod boundaries {
     }
     const BASE: u128 = 3_000_000_000_000;
     const VAULT: u128 = 40_000_000_000;
-    const VQ: u128 = 17_584_505_288;
+    const VQ: i128 = 17_584_505_288;
 
     #[test]
     fn agrees_with_the_independent_reference_on_small_and_boundary_inputs() {
@@ -132,7 +132,7 @@ mod boundaries {
                     .map(|f| (f.net_quote_in, f.base_out));
                 assert_eq!(
                     got,
-                    ref_quote(BASE, VAULT, VQ, gross, l, p, c),
+                    ref_quote(BASE, VAULT, VQ as u128, gross, l, p, c),
                     "gross={gross} fees=({l},{p},{c})"
                 );
             }

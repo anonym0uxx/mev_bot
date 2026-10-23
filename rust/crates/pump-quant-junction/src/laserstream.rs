@@ -111,7 +111,7 @@ pub struct AmmSwapFacts {
     /// (lp, protocol, creator) bps separately.
     pub fee_parts: Option<(u32, u32, u32)>,
     /// `Pool::virtual_quote_reserves` from the event; `None` when the layout is unverified.
-    pub virtual_quote: Option<u64>,
+    pub virtual_quote: Option<i128>,
     /// The trader bought the token.
     pub is_buy: bool,
     /// Tokens received (buy) / given (sell).

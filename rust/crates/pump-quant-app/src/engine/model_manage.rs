@@ -572,7 +572,7 @@ impl Engine {
                     let gross = pump_quant_protocol::pumpswap_event::sell_gross_quote_out(
                         u128::from(o.base_reserves_raw),
                         u128::from(o.quote_reserves_lamports),
-                        u128::from(vq?),
+                        vq?,
                         u128::from(tokens),
                     )?;
                     let px = gross.checked_mul(1_000_000_000)?.checked_div(u128::from(tokens))?;
@@ -878,7 +878,7 @@ pub struct ModelAccountingView {
 #[derive(Debug, Clone, Copy)]
 enum AddState {
     Curve { vsol: u64, vtok: u64 },
-    Amm { base: u64, quote: u64, vq: u64, lp: u32, pr: u32, cr: u32 },
+    Amm { base: u64, quote: u64, vq: i128, lp: u32, pr: u32, cr: u32 },
 }
 
 /// A feasible ADD: the minimal notional that delivers the target, and the spend ceiling.
@@ -911,7 +911,7 @@ impl AddState {
                 let f = pump_quant_protocol::pumpswap_event::buy_exact_quote_in(
                     u128::from(base),
                     u128::from(quote),
-                    u128::from(vq),
+                    vq,
                     u128::from(n),
                     u128::from(lp),
                     u128::from(pr),

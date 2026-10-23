@@ -152,7 +152,7 @@ pub struct BuyEvent {
     /// `effective_quote_reserves = quote_vault + virtual_quote_reserves`, so a quote computed from
     /// the vault balance alone is wrong. `None` when the event's layout is not one of the verified
     /// ones (`virtual_quote_offset`): never defaulted to 0.
-    pub virtual_quote_reserves: Option<u64>,
+    pub virtual_quote_reserves: Option<i128>,
 }
 
 /// Payload offset of `virtual_quote_reserves`, keyed by (event kind, payload length). The kind is the
@@ -183,15 +183,68 @@ pub const fn virtual_quote_offset(is_buy: bool, payload_len: usize) -> Option<us
     }
 }
 
-/// `Pool::virtual_quote_reserves` is an **i128** on chain (Pump docs: "an additional (appended)
-/// quote-reserve amount"; effective quote = vault + virtual). Read all 16 bytes signed. A negative
-/// or > u64::MAX value is NOT silently cast: it yields `None` (quote unsupported, refused by name)
-/// because the fill arithmetic below is only verified for non-negative additions.
+/// `Pool::virtual_quote_reserves` is a **signed i128** on chain. Pump docs
+/// (VIRTUAL_QUOTE_RESERVES_FEE_ADJUSTMENT.md): v2 trades keep protocol + creator fees INSIDE the
+/// quote vault and subtract them from `virtual_quote_reserves`, so the field is routinely NEGATIVE
+/// on plain pools; `effective_quote = vault + virtual_quote_reserves` is the real liquidity and is
+/// guaranteed non-negative by the program. Read all 16 bytes signed; the sign is carried, never
+/// rejected here — only an invalid EFFECTIVE result (<= 0) is refused, in the fill arithmetic.
 #[must_use]
-pub fn read_virtual_quote_i128(p: &[u8], offset: usize) -> Option<u64> {
+pub fn read_virtual_quote_i128(p: &[u8], offset: usize) -> Option<i128> {
     let bytes: [u8; 16] = p.get(offset..offset + 16)?.try_into().ok()?;
-    let v = i128::from_le_bytes(bytes);
-    u64::try_from(v).ok()
+    Some(i128::from_le_bytes(bytes))
+}
+
+/// Structural (IDL-pinned) locator for `virtual_quote_reserves` in the 2026-10 PumpSwap
+/// `BuyEvent`/`SellEvent` (pump-public-docs `idl/pump_amm.json`, fetched 2026-10-23):
+///
+/// ```text
+/// BuyEvent : ... 385 min_base_amount_out u64 | 393 ix_name string (u32 len + bytes) |
+///            cashback_fee_bps u64, cashback u64, buyback_fee_bps u64, buyback_fee u64 |
+///            virtual_quote_reserves i128 | can_boost bool | base_supply u64 |
+///            holder_rewards_bps u64 | holder_rewards u64 | creator_fee_unclaimed u64 | <u64 trailing, observed 0>
+/// SellEvent: ... 352 cashback_fee_bps u64 ... (same tail, no min/ix_name)
+/// ```
+/// The deployed program appends ONE more u64 beyond the published IDL (observed `0` on every
+/// captured event; unnamed here). The total length must match EXACTLY (IDL, or IDL + 8); any other
+/// shape is unsupported (`None`), never guessed. `ix_name` is variable (`buy` 3, `buy_exact_quote_in`
+/// 18, `buy_exact_quote_in_v2` 21 ...), which is why the fixed-offset table could not cover 507.
+#[must_use]
+pub fn virtual_quote_offset_idl_2026_10(is_buy: bool, p: &[u8]) -> Option<usize> {
+    const TAIL_AFTER_VQ: usize = 16 + 1 + 8 + 8 + 8 + 8; // vq, can_boost, base_supply, holder bps, holder rewards, creator_fee_unclaimed
+    let o = if is_buy {
+        let n = u32::from_le_bytes(p.get(393..397)?.try_into().ok()?) as usize;
+        if n == 0 || n > 64 {
+            return None;
+        }
+        let name = p.get(397..397 + n)?;
+        if !name.iter().all(|b| b.is_ascii_lowercase() || *b == b'_' || b.is_ascii_digit()) {
+            return None;
+        }
+        397 + n
+    } else {
+        352
+    };
+    let vq = o + 32;
+    let idl_len = vq + TAIL_AFTER_VQ;
+    if p.len() == idl_len || p.len() == idl_len + 8 {
+        Some(vq)
+    } else {
+        None
+    }
+}
+
+/// `effective_quote = quote_vault + virtual_quote_reserves` as a SIGNED addition (Pump docs). The
+/// raw vault balance is NOT liquidity (it includes fees waiting to be swept); a non-positive
+/// effective result is invalid => `None`.
+#[must_use]
+pub fn effective_quote(quote_vault: u128, virtual_quote: i128) -> Option<u128> {
+    let v = i128::try_from(quote_vault).ok()?;
+    let eff = v.checked_add(virtual_quote)?;
+    if eff <= 0 {
+        return None;
+    }
+    u128::try_from(eff).ok()
 }
 
 /// The result of [`buy_exact_quote_in`].
@@ -221,7 +274,7 @@ pub struct ExactQuoteInFill {
 pub fn buy_exact_quote_in(
     base_reserve: u128,
     quote_vault: u128,
-    virtual_quote: u128,
+    virtual_quote: i128,
     gross_in: u128,
     lp_bps: u128,
     protocol_bps: u128,
@@ -250,7 +303,7 @@ pub fn buy_exact_quote_in(
     if net < 2 {
         return None;
     }
-    let eff = quote_vault.checked_add(virtual_quote)?;
+    let eff = effective_quote(quote_vault, virtual_quote)?;
     let n1 = net - 1;
     let denom = eff.checked_add(n1)?;
     let out = base_reserve.checked_mul(n1)?.checked_div(denom)?;
@@ -269,10 +322,10 @@ pub fn buy_exact_quote_in(
 pub fn sell_gross_quote_out(
     base_reserve: u128,
     quote_vault: u128,
-    virtual_quote: u128,
+    virtual_quote: i128,
     base_in: u128,
 ) -> Option<u128> {
-    let eff = quote_vault.checked_add(virtual_quote)?;
+    let eff = effective_quote(quote_vault, virtual_quote)?;
     eff.checked_mul(base_in)?
         .checked_div(base_reserve.checked_add(base_in)?)
 }
@@ -326,7 +379,9 @@ pub fn decode_buy_event(data: &[u8]) -> Option<BuyEvent> {
         coin_creator_fee_basis_points,
         coin_creator_fee,
         track_volume,
-        virtual_quote_reserves: virtual_quote_offset(true, p.len()).and_then(|o| read_virtual_quote_i128(p, o)),
+        virtual_quote_reserves: virtual_quote_offset(true, p.len())
+            .or_else(|| virtual_quote_offset_idl_2026_10(true, p))
+            .and_then(|o| read_virtual_quote_i128(p, o)),
     })
 }
 
@@ -395,7 +450,7 @@ pub struct SellEvent {
     /// Creator fee deducted, quote units (appended tail).
     pub coin_creator_fee: Option<u64>,
     /// See [`BuyEvent::virtual_quote_reserves`].
-    pub virtual_quote_reserves: Option<u64>,
+    pub virtual_quote_reserves: Option<i128>,
 }
 
 /// Decode a `SellEvent` inner-instruction (`data` = tag ++ discriminator ++
@@ -437,6 +492,7 @@ pub fn decode_sell_event(data: &[u8]) -> Option<SellEvent> {
         coin_creator_fee_basis_points,
         coin_creator_fee,
         virtual_quote_reserves: virtual_quote_offset(false, p.len())
+            .or_else(|| virtual_quote_offset_idl_2026_10(false, p))
             .and_then(|o| read_virtual_quote_i128(p, o)),
     })
 }

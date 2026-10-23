@@ -136,7 +136,7 @@ fn feed_line(e: &mut Engine, v: &serde_json::Value, m: DomainMint, t: i64) {
                     v["pr"].as_u64().unwrap() as u32,
                     v["cr"].as_u64().unwrap() as u32,
                 )),
-                virtual_quote: v["vq"].as_u64(),
+                virtual_quote: v["vq"].as_i64().map(i128::from),
                 is_buy: v["buy"].as_bool().unwrap(),
                 token_amount: v["tok"].as_u64().unwrap(),
                 quote_lamports: v["sol"].as_u64().unwrap(),

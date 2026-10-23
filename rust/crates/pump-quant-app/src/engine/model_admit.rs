@@ -68,7 +68,7 @@ pub struct AmmSwapIn {
     pub quote_reserve_pre: u64,
     pub fee_bps: Option<u32>,
     pub fee_parts: Option<(u32, u32, u32)>,
-    pub virtual_quote: Option<u64>,
+    pub virtual_quote: Option<i128>,
     pub is_buy: bool,
     pub token_amount: u64,
     pub quote_lamports: u64,
@@ -1053,7 +1053,7 @@ impl Engine {
                 let Some(fill) = pump_quant_protocol::pumpswap_event::buy_exact_quote_in(
                     u128::from(obs.base_reserves_raw),
                     u128::from(obs.quote_reserves_lamports),
-                    u128::from(vq),
+                    vq,
                     u128::from(size),
                     u128::from(lp),
                     u128::from(pr),

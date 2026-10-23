@@ -264,7 +264,7 @@ pub enum AppEvent {
         fee_parts: Option<(u32, u32, u32)>,
         /// `Pool::virtual_quote_reserves` from the event (verified layouts only); `None` => the
         /// executable quote is unsupported. Never defaulted to 0.
-        virtual_quote: Option<u64>,
+        virtual_quote: Option<i128>,
         /// `true` when the trader BOUGHT the token.
         is_buy: bool,
         /// Token amount the trader received (buy) or gave (sell), raw units.
