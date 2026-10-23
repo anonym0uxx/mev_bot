@@ -183,6 +183,17 @@ pub const fn virtual_quote_offset(is_buy: bool, payload_len: usize) -> Option<us
     }
 }
 
+/// `Pool::virtual_quote_reserves` is an **i128** on chain (Pump docs: "an additional (appended)
+/// quote-reserve amount"; effective quote = vault + virtual). Read all 16 bytes signed. A negative
+/// or > u64::MAX value is NOT silently cast: it yields `None` (quote unsupported, refused by name)
+/// because the fill arithmetic below is only verified for non-negative additions.
+#[must_use]
+pub fn read_virtual_quote_i128(p: &[u8], offset: usize) -> Option<u64> {
+    let bytes: [u8; 16] = p.get(offset..offset + 16)?.try_into().ok()?;
+    let v = i128::from_le_bytes(bytes);
+    u64::try_from(v).ok()
+}
+
 /// The result of [`buy_exact_quote_in`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ExactQuoteInFill {
@@ -315,7 +326,7 @@ pub fn decode_buy_event(data: &[u8]) -> Option<BuyEvent> {
         coin_creator_fee_basis_points,
         coin_creator_fee,
         track_volume,
-        virtual_quote_reserves: virtual_quote_offset(true, p.len()).and_then(|o| read_u64_le(p, o)),
+        virtual_quote_reserves: virtual_quote_offset(true, p.len()).and_then(|o| read_virtual_quote_i128(p, o)),
     })
 }
 
@@ -426,7 +437,7 @@ pub fn decode_sell_event(data: &[u8]) -> Option<SellEvent> {
         coin_creator_fee_basis_points,
         coin_creator_fee,
         virtual_quote_reserves: virtual_quote_offset(false, p.len())
-            .and_then(|o| read_u64_le(p, o)),
+            .and_then(|o| read_virtual_quote_i128(p, o)),
     })
 }
 

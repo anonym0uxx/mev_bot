@@ -19,16 +19,25 @@ fn new_layouts_decode_with_virtual_quote() {
         let payload_len = data.len() - 16;
         let is_buy = name.starts_with("buy");
         assert!(virtual_quote_offset(is_buy, payload_len).is_some(), "{name}: len {payload_len} unsupported");
+        // Balance-change verification (jsonParsed meta of the same transaction, recorded in the
+        // fixture): the LP fee is RETAINED IN THE POOL VAULT; protocol + creator fees leave it.
+        let pool_delta = fx["balance_deltas"]["pool_quote_vault"].as_i64().unwrap();
+        let user_delta = fx["balance_deltas"]["user_quote"].as_i64();
         match decode_pumpswap_event(&data).unwrap_or_else(|| panic!("{name}: no decode")) {
             PumpSwapEvent::Buy(b) => {
                 assert!(is_buy, "{name}");
                 assert_eq!(b.pool_quote_token_reserves, want_quote, "{name}");
                 assert_eq!(b.virtual_quote_reserves, Some(want_vq), "{name}");
+                assert_eq!(pool_delta, (b.quote_amount_in + b.lp_fee) as i64, "{name}: vault gains quote_in + lp fee");
+                assert_eq!(b.user_quote_amount_in, b.quote_amount_in + b.lp_fee + b.protocol_fee + b.coin_creator_fee.unwrap_or(0), "{name}: gross = net + all fees");
+                assert_eq!(user_delta, Some(-(b.user_quote_amount_in as i64)), "{name}: user pays gross");
             }
             PumpSwapEvent::Sell(s) => {
                 assert!(!is_buy, "{name}");
                 assert_eq!(s.pool_quote_token_reserves, want_quote, "{name}");
                 assert_eq!(s.virtual_quote_reserves, Some(want_vq), "{name}");
+                assert_eq!(pool_delta, -((s.quote_amount_out - s.lp_fee) as i64), "{name}: vault loses quote_out minus the retained lp fee");
+                assert_eq!(s.user_quote_amount_out, s.quote_amount_out - s.lp_fee - s.protocol_fee - s.coin_creator_fee.unwrap_or(0), "{name}: user receives net of all fees");
             }
             PumpSwapEvent::CreatePool(_) => panic!("{name}: create"),
         }
@@ -37,4 +46,17 @@ fn new_layouts_decode_with_virtual_quote() {
     assert_eq!(seen, 3);
     // Unverified length stays unsupported (never guessed).
     assert!(virtual_quote_offset(true, 507).is_none());
+}
+
+#[test]
+fn virtual_quote_is_read_as_signed_i128_and_negative_is_unsupported_not_cast() {
+    use pump_quant_protocol::pumpswap_event::read_virtual_quote_i128;
+    let mut p = vec![0u8; 32];
+    p[..16].copy_from_slice(&(17_223_035_079i128).to_le_bytes());
+    assert_eq!(read_virtual_quote_i128(&p, 0), Some(17_223_035_079));
+    p[..16].copy_from_slice(&(-1i128).to_le_bytes());
+    assert_eq!(read_virtual_quote_i128(&p, 0), None, "negative must not become u64::MAX");
+    p[..16].copy_from_slice(&((u64::MAX as i128) + 1).to_le_bytes());
+    assert_eq!(read_virtual_quote_i128(&p, 0), None);
+    assert_eq!(read_virtual_quote_i128(&p[..10], 0), None, "short payload");
 }
