@@ -3004,7 +3004,7 @@ fn main() -> ExitCode {
                     continue;
                 };
                 let now_ms = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0);
-                let filled = engine.model_on_amm_state_snapshot(m, pool, base_raw, quote_lamports, vq, slot, now_ms);
+                let filled = engine.model_on_amm_state_snapshot(m, pool, pool_acc.quote_mint, base_raw, quote_lamports, vq, slot, now_ms);
                 let rec = serde_json::json!({"ev": "exit_snapshot", "unix_ms": now_ms, "mint_b58": b58_encode(&m), "pool_b58": pool_b58, "slot": slot, "base_vault_raw": base_raw, "quote_vault_lamports": quote_lamports, "virtual_quote_reserves": vq.to_string(), "filled": filled});
                 eprintln!("[pq-daemon] EXIT SNAPSHOT {rec}");
                 if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("data/model_io.jsonl") {

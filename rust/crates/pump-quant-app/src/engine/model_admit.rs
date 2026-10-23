@@ -416,6 +416,7 @@ impl Engine {
         &mut self,
         mint: [u8; 32],
         pool: [u8; 32],
+        pool_quote_mint: [u8; 32],
         base_reserves_raw: u64,
         quote_reserves_lamports: u64,
         virtual_quote: i128,
@@ -426,6 +427,9 @@ impl Engine {
             self.mrep("mgmt:amm_state_snapshot|not_held");
             return false;
         }
+        // The Pool account's own `quote_mint` is the positive statement of the quote asset for the
+        // AMM leg (a restarted process has no curve-account quote for a migrated mint).
+        self.model_cache.observe_quote_mint(mint, pool_quote_mint);
         if self.model_cache.quote_not_sol(&mint) || !self.model_cache.quote_sol_verified(&mint) {
             self.mrep("mgmt:amm_state_snapshot|quote_not_verified_sol");
             return false;

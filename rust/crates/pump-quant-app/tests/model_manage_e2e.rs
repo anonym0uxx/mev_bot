@@ -1513,12 +1513,12 @@ fn a_pending_exit_on_a_quiet_pool_lands_on_the_rpc_pool_state_snapshot_exactly_o
     assert!(r.rep("mgmt:order_expired_unfilled") >= 1);
     let fills_before = r.e.model_all_fills().len();
     // A snapshot for a mint that is not held does nothing.
-    assert!(!r.e.model_on_amm_state_snapshot([0x99; 32], [0x50; 32], 1, 1, 0, r.slot + 5, r.clock + 1_000));
+    assert!(!r.e.model_on_amm_state_snapshot([0x99; 32], [0x50; 32], [0u8; 32], 1, 1, 0, r.slot + 5, r.clock + 1_000));
     assert!(r.e.model_position_open(&MINT));
     // The real pool state (drained pool: 1.05 SOL vault, 969.5M tokens, vq +17.58 SOL) prices the exit.
     r.clock += 1_000;
     r.slot += 5;
-    let filled = r.e.model_on_amm_state_snapshot(MINT, [0x50; 32], 969_511_247_820_886, 1_055_445_943, 17_584_504_840, r.slot, r.clock);
+    let filled = r.e.model_on_amm_state_snapshot(MINT, [0x50; 32], [0u8; 32], 969_511_247_820_886, 1_055_445_943, 17_584_504_840, r.slot, r.clock);
     assert!(filled, "{:?}", r.e.model_lane_report());
     assert!(!r.e.model_position_open(&MINT), "closed exactly once");
     assert_eq!(r.rep("mgmt:fill_source|rpc_state_snapshot"), 1);
@@ -1533,5 +1533,5 @@ fn a_pending_exit_on_a_quiet_pool_lands_on_the_rpc_pool_state_snapshot_exactly_o
     let expect_px = gross * 1_000_000_000 / u128::from(inv0);
     assert_eq!(px, expect_px, "priced at the effective-quote sell arithmetic");
     // A second snapshot after the close books nothing.
-    assert!(!r.e.model_on_amm_state_snapshot(MINT, [0x50; 32], 969_511_247_820_886, 1_055_445_943, 17_584_504_840, r.slot + 1, r.clock + 1_000));
+    assert!(!r.e.model_on_amm_state_snapshot(MINT, [0x50; 32], [0u8; 32], 969_511_247_820_886, 1_055_445_943, 17_584_504_840, r.slot + 1, r.clock + 1_000));
 }
