@@ -104,6 +104,9 @@ pub enum JoinRefusal {
     /// The reducer served aggregates with no fee-p90 or CU-p50 (never rendered `none` in training).
     FlowAggregatesIncomplete,
     CurveAbsent(String),
+    /// A PumpSwap market whose curve never reached the corpus graduation threshold (85 SOL real
+    /// reserves): low-k / non-standard launches. Every corpus AMM row is `curve_regime=graduated`.
+    CurveNotGraduated { real_sol_lamports: i64 },
     AmmAbsent(String),
     /// More than one pool was bound to the mint and the observation's pool is not the bound one.
     AmmPoolAmbiguous,
@@ -134,6 +137,7 @@ impl JoinRefusal {
             JoinRefusal::FlowMetaMissing { .. } => "join_flow_meta_missing",
             JoinRefusal::FlowAggregatesIncomplete => "join_flow_aggregates_incomplete",
             JoinRefusal::CurveAbsent(_) => "join_curve_absent",
+            JoinRefusal::CurveNotGraduated { .. } => "join_curve_not_graduated",
             JoinRefusal::AmmAbsent(_) => "join_amm_absent",
             JoinRefusal::AmmPoolAmbiguous => "join_amm_pool_ambiguous",
             JoinRefusal::Assembly(a) => a.as_str(),
@@ -560,6 +564,11 @@ impl DecisionCache {
             }
         }
         if needs_amm {
+            if let CurveState::Present { curve_regime, real_sol_reserves_lamports, .. } = &view.curve {
+                if curve_regime != "graduated" {
+                    return Err(JoinRefusal::CurveNotGraduated { real_sol_lamports: *real_sol_reserves_lamports });
+                }
+            }
             if self.pools.get(mint).is_some_and(|b| b.conflicting) {
                 return Err(JoinRefusal::AmmPoolAmbiguous);
             }
@@ -995,6 +1004,8 @@ mod tests {
         let mut cv = curve();
         cv.ts_ms = t_dec(40) - 5_000;
         cv.slot = 2_000;
+        cv.real_sol_lamports = 85_005_359_057;
+        cv.real_tokens = 0;
         c.observe_curve(MINT, cv);
         c.bind_pool(MINT, "PoolAAAA");
         c.bind_pool(MINT, "PoolBBBB");
@@ -1002,6 +1013,46 @@ mod tests {
             c.snapshot(&MINT, t_dec(40)).unwrap_err(),
             JoinRefusal::AmmPoolAmbiguous
         );
+    }
+
+    #[test]
+    fn a_pumpswap_market_whose_curve_never_graduated_is_refused_by_name() {
+        let mut c = DecisionCache::new();
+        c.observe_launch(MINT, CREATOR, T0);
+        for i in 0..40 {
+            let mut t = trade(i);
+            t.venue = VenueLabel::Pumpswap;
+            c.observe_trade(&t);
+        }
+        // low-k curve: sold out (real_tokens 0) at 0.25 SOL real reserves — out of corpus
+        let mut cv = curve();
+        cv.ts_ms = t_dec(40) - 5_000;
+        cv.slot = 2_000;
+        cv.real_sol_lamports = 248_000_000;
+        cv.real_tokens = 0;
+        c.observe_curve(MINT, cv);
+        assert!(matches!(
+            c.snapshot(&MINT, t_dec(40)).unwrap_err(),
+            JoinRefusal::CurveNotGraduated { real_sol_lamports: 248_000_000 }
+        ));
+        // CONTROL: the same market with a graduated curve is NOT refused for the curve.
+        let mut c2 = DecisionCache::new();
+        c2.observe_launch(MINT, CREATOR, T0);
+        for i in 0..40 {
+            let mut t = trade(i);
+            t.venue = VenueLabel::Pumpswap;
+            c2.observe_trade(&t);
+        }
+        let mut g = curve();
+        g.ts_ms = t_dec(40) - 5_000;
+        g.slot = 2_000;
+        g.real_sol_lamports = 85_005_359_057;
+        g.real_tokens = 0;
+        c2.observe_curve(MINT, g);
+        assert!(!matches!(
+            c2.snapshot(&MINT, t_dec(40)),
+            Err(JoinRefusal::CurveNotGraduated { .. }) | Err(JoinRefusal::CurveAbsent(_))
+        ));
     }
 
     #[test]
@@ -1033,6 +1084,7 @@ mod tests {
             JoinRefusal::FlowMetaMissing { prints: 1 },
             JoinRefusal::FlowAggregatesIncomplete,
             JoinRefusal::CurveAbsent(String::new()),
+            JoinRefusal::CurveNotGraduated { real_sol_lamports: 0 },
             JoinRefusal::AmmAbsent(String::new()),
             JoinRefusal::AmmPoolAmbiguous,
         ];

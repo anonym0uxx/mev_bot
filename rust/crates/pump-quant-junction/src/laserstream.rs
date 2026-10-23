@@ -1836,3 +1836,34 @@ mod tests {
         assert!(excluded >= 1, "the ambiguity is counted");
     }
 }
+
+#[cfg(test)]
+mod canonical_pool_tool {
+    /// Operator tool, not an assertion: `PQ_MINTS=a,b cargo test canonical_pool_print -- --nocapture`
+    /// prints `POOL <mint> <canonical pool> CURVE <bonding-curve pda>` for audits / shadow setup.
+    #[test]
+    fn canonical_pool_print() {
+        let Ok(list) = std::env::var("PQ_MINTS") else { return };
+        for m in list.split(',').filter(|s| !s.is_empty()) {
+            let Some(bytes) = super::b58_decode(m) else { continue };
+            let Ok(arr) = <[u8; 32]>::try_from(bytes.as_slice()) else { continue };
+            let pool = super::canonical_pool_for(&arr);
+            let pump = solana_program::pubkey::Pubkey::new_from_array(super::PUMP_FUN_PROGRAM);
+            let (curve, _) = solana_program::pubkey::Pubkey::find_program_address(&[b"bonding-curve", &arr], &pump);
+            println!("POOL {m} {} CURVE {}", bs58_enc(&pool), bs58_enc(curve.as_ref()));
+        }
+    }
+    fn bs58_enc(bytes: &[u8]) -> String {
+        const A: &[u8] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+        let mut digits: Vec<u8> = Vec::new();
+        for &b in bytes {
+            let mut carry = u32::from(b);
+            for d in digits.iter_mut() { carry += u32::from(*d) << 8; *d = (carry % 58) as u8; carry /= 58; }
+            while carry > 0 { digits.push((carry % 58) as u8); carry /= 58; }
+        }
+        let zeros = bytes.iter().take_while(|&&b| b == 0).count();
+        let mut out: Vec<u8> = std::iter::repeat(A[0]).take(zeros).collect();
+        out.extend(digits.iter().rev().map(|&d| A[d as usize]));
+        String::from_utf8(out).unwrap_or_default()
+    }
+}
