@@ -409,6 +409,34 @@ fn emergency_stop_requested() -> bool {
     std::path::Path::new(EMERGENCY_STOP_FILE).exists()
 }
 
+/// base58 -> [u8; 32]; None on any malformation.
+fn b58_decode32(s: &str) -> Option<[u8; 32]> {
+    const A: &[u8] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+    let mut n: Vec<u8> = vec![0]; // big-endian base-256 digits
+    for c in s.bytes() {
+        let v = A.iter().position(|&a| a == c)? as u32;
+        let mut carry = v;
+        for d in n.iter_mut().rev() {
+            let x = (*d as u32) * 58 + carry;
+            *d = (x & 0xff) as u8;
+            carry = x >> 8;
+        }
+        while carry > 0 {
+            n.insert(0, (carry & 0xff) as u8);
+            carry >>= 8;
+        }
+    }
+    let zeros = s.bytes().take_while(|&c| c == b'1').count();
+    let mut out: Vec<u8> = vec![0; zeros];
+    out.extend(n.iter().skip_while(|&&d| d == 0));
+    if out.len() != 32 {
+        return None;
+    }
+    let mut a = [0u8; 32];
+    a.copy_from_slice(&out);
+    Some(a)
+}
+
 /// 64-hex-char -> [u8; 32]; None on any malformation.
 fn hex32_from(h: &str) -> Option<[u8; 32]> {
     if h.len() != 64 {
@@ -2822,6 +2850,39 @@ fn main() -> ExitCode {
             if want != engine.entry_paused() {
                 engine.set_entry_paused(want);
                 eprintln!("[pq-daemon] ENTRY PAUSE {} (operator control)", if want { "ON" } else { "OFF" });
+            }
+        }
+        // ── Operator curve-quote evidence (documented control) ──
+        // data/CURVE_QUOTE_EVIDENCE.json = [{"mint_b58","quote_mint_b58","evidence"}]: the curve
+        // account's quote mint as read by the operator (RPC getAccountInfo, tail offset 83) for
+        // mints whose completed curve will never emit another account update (restored exposure).
+        // Applied once as a CurveQuote event (journaled in the event stream); file renamed *.applied.
+        if model_armed && tick_counter % 50 == 11 {
+            let path = std::path::Path::new("data/CURVE_QUOTE_EVIDENCE.json");
+            if path.exists() {
+                let entries: Vec<serde_json::Value> = std::fs::read_to_string(path)
+                    .ok()
+                    .and_then(|t| serde_json::from_str(&t).ok())
+                    .unwrap_or_default();
+                for e in entries {
+                    let m = e["mint_b58"].as_str().and_then(b58_decode32);
+                    let q = e["quote_mint_b58"].as_str().and_then(b58_decode32);
+                    if let (Some(m), Some(q)) = (m, q) {
+                        queue.push(
+                            ProvenancedEvent {
+                                event: AppEvent::CurveQuote { mint: Mint(m), quote_mint: q },
+                                source: ProvenanceSource::LaserStreamAccount,
+                                slot: 0,
+                                is_live: false,
+                            },
+                            0,
+                        );
+                        eprintln!("[pq-daemon] CURVE QUOTE EVIDENCE applied: mint {} quote {} ({})", b58_encode(&m), b58_encode(&q), e["evidence"].as_str().unwrap_or(""));
+                    } else {
+                        eprintln!("[pq-daemon] CURVE QUOTE EVIDENCE rejected (malformed entry): {e}");
+                    }
+                }
+                let _ = std::fs::rename(path, "data/CURVE_QUOTE_EVIDENCE.json.applied");
             }
         }
         // ── Operator reconciliation evidence for UNCERTAIN orders (documented control) ──
@@ -5469,4 +5530,17 @@ fn b58_encode(bytes: &[u8]) -> String {
     let mut out: Vec<u8> = std::iter::repeat(A[0]).take(zeros).collect();
     out.extend(digits.iter().rev().map(|&d| A[d as usize]));
     String::from_utf8(out).unwrap_or_default()
+}
+
+#[cfg(test)]
+mod operator_evidence_tests {
+    #[test]
+    fn b58_decode32_roundtrips_known_keys() {
+        let k = "WXMRyRZhsa19ety5erZhHg4N3xj3EVN92u94422teJp";
+        let b = super::b58_decode32(k).expect("decode");
+        assert_eq!(super::b58_encode(&b), k);
+        assert_eq!(super::b58_decode32("So11111111111111111111111111111111111111112").map(|b| b[0]), Some(0x06));
+        assert!(super::b58_decode32("tooshort").is_none());
+        assert!(super::b58_decode32("0OIl").is_none());
+    }
 }
