@@ -1826,6 +1826,36 @@ fn main() -> ExitCode {
     // InferenceClient; the durable SAFETY_OFF latch is restored from PQ_MODEL_SAFETY_FILE. Absent the
     // variable the legacy path is byte-for-byte unchanged. Never armed in --live.
     let mut model_armed = false;
+    // ── Exclusive account authority ───────────────────────────────────────
+    // PQ_ACCOUNT_LOCK=<path>: an advisory exclusive flock held for the process lifetime. A second
+    // process naming the same lock cannot arm the paper model lane (it exits before any entry,
+    // reservation or ledger mutation). Separate cohort directories are NOT exclusion; this is.
+    let _account_lock: Option<std::fs::File> = match std::env::var("PQ_ACCOUNT_LOCK") {
+        Ok(path) if !path.is_empty() => {
+            use std::io::Write;
+            use std::os::unix::io::AsRawFd;
+            let f = match std::fs::OpenOptions::new().create(true).read(true).write(true).open(&path) {
+                Ok(f) => f,
+                Err(e) => {
+                    eprintln!("[pq-daemon] FATAL: account lock {path} cannot be opened: {e}");
+                    return ExitCode::from(1);
+                }
+            };
+            // SAFETY: flock on a valid, owned descriptor; the File outlives the call.
+            let rc = unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+            if rc != 0 {
+                let holder = std::fs::read_to_string(&path).unwrap_or_default();
+                eprintln!("[pq-daemon] FATAL: account lock {path} is HELD by another process ({}) — refusing to arm a second account writer", holder.trim());
+                return ExitCode::from(1);
+            }
+            let mut f = f;
+            let _ = f.set_len(0);
+            let _ = writeln!(f, "pid={} cwd={} at_unix_ms={}", std::process::id(), std::env::current_dir().map(|p| p.display().to_string()).unwrap_or_default(), SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0));
+            eprintln!("[pq-daemon] account lock ACQUIRED: {path}");
+            Some(f)
+        }
+        _ => None,
+    };
     if !args.live_mode {
         if let Ok(endpoint) = std::env::var("PQ_MODEL_ENDPOINT") {
             if !endpoint.is_empty() {
@@ -2353,6 +2383,7 @@ fn main() -> ExitCode {
         requested_unix_ms: i64,
     }
     let pool_lane_enabled = std::env::var("PQ_LS_POOL_LANE").map(|v| v == "1").unwrap_or(false);
+    let entry_pause_env = std::env::var("PQ_ENTRY_PAUSE").map(|v| v == "1").unwrap_or(false);
     let pool_ttl_s: i64 = std::env::var("PQ_LS_POOL_TTL_S").ok().and_then(|v| v.parse().ok()).unwrap_or(7200);
     // Idle expiry: the engine's liveness horizon is MAX_IDLE_MS = 60 s without a trade; a pool feed
     // is kept 10x that (default 600 s) after its last observed swap so a revived pool is not lost
@@ -2766,10 +2797,48 @@ fn main() -> ExitCode {
             queue.push(pj.trade_pe, pj.slot);
             stats.delta_trades_derived_total += 1;
         }
+        // ── Operator entry pause (documented control): PQ_ENTRY_PAUSE=1 at start or the file
+        // data/ENTRY_PAUSE present at runtime. New entries are refused by name; management,
+        // protection, exits and reconciliation continue. Transitions are logged.
+        if model_armed && tick_counter % 50 == 0 {
+            let want = entry_pause_env || std::path::Path::new("data/ENTRY_PAUSE").exists();
+            if want != engine.entry_paused() {
+                engine.set_entry_paused(want);
+                eprintln!("[pq-daemon] ENTRY PAUSE {} (operator control)", if want { "ON" } else { "OFF" });
+            }
+        }
         // ── Selective pool lane: open feeds for launch-observed graduations, expire old ones ──
         if pool_lane_enabled {
             let now_ms = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0);
             let mut changed = false;
+            // EXPOSURE FIRST: every mint the account holds or is buying keeps (or gets) its pool
+            // feed, exempt from the cap — a held position whose market migrated must never lose
+            // its only price source (cohort-003 incident: `dropped_cap` on a held mint left a
+            // barrier exit expiring unfilled 1,401 times). If the cap is full, the oldest
+            // non-exposure feed is evicted to make room.
+            let exposure: Vec<[u8; 32]> = engine.exposure_mints();
+            for m in &exposure {
+                if pool_subs.contains_key(m) {
+                    continue;
+                }
+                if pool_subs.len() >= pool_cap {
+                    let victim = pool_subs
+                        .iter()
+                        .filter(|(k, _)| !exposure.contains(k))
+                        .min_by_key(|(_, ps)| ps.requested_unix_ms)
+                        .map(|(k, _)| *k);
+                    if let Some(v) = victim {
+                        if let Some(ps) = pool_subs.remove(&v) {
+                            pool_lane_journal(serde_json::json!({"ev": "expire", "why": "evicted_for_exposure", "unix_ms": now_ms, "mint_b58": b58_encode(&v), "pool_b58": ps.pool_b58, "active_s": (now_ms - ps.requested_unix_ms) / 1000}));
+                        }
+                    }
+                }
+                let pool = pump_quant_junction::laserstream::canonical_pool_for(m);
+                let pool_b58 = b58_encode(&pool);
+                pool_lane_journal(serde_json::json!({"ev": "request", "why": "exposure", "unix_ms": now_ms, "mint_b58": b58_encode(m), "pool_b58": pool_b58, "over_cap": pool_subs.len() >= pool_cap}));
+                pool_subs.insert(*m, PoolSub { pool_b58, migration_slot: 0, launch_unix_ms: 0, requested_unix_ms: now_ms });
+                changed = true;
+            }
             for em in engine.take_eligible_migrations() {
                 if pool_subs.contains_key(&em.mint) {
                     continue;
@@ -2781,7 +2850,7 @@ fn main() -> ExitCode {
                 }
                 let pool = pump_quant_junction::laserstream::canonical_pool_for(&em.mint);
                 let pool_b58 = b58_encode(&pool);
-                pool_lane_journal(serde_json::json!({"ev": "request", "unix_ms": now_ms, "mint_b58": b58_encode(&em.mint), "pool_b58": pool_b58, "migration_slot": em.migration_slot, "launch_unix_ms": em.launch_unix_ms, "migration_observed_unix_ms": em.observed_unix_ms}));
+                pool_lane_journal(serde_json::json!({"ev": "request", "why": "migration", "unix_ms": now_ms, "mint_b58": b58_encode(&em.mint), "pool_b58": pool_b58, "migration_slot": em.migration_slot, "launch_unix_ms": em.launch_unix_ms, "migration_observed_unix_ms": em.observed_unix_ms}));
                 pool_subs.insert(em.mint, PoolSub { pool_b58, migration_slot: em.migration_slot, launch_unix_ms: em.launch_unix_ms, requested_unix_ms: now_ms });
                 changed = true;
             }

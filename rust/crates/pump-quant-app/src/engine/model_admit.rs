@@ -527,6 +527,10 @@ impl Engine {
             self.mrep("refuse:recon_fault_blocks_exposure");
             return;
         }
+        if self.entry_paused {
+            self.mrep("refuse:operator_entry_pause");
+            return;
+        }
         if self.open_lane.contains_key(&mint)
             || self.model_orders.contains_key(&mint)
             || self.model_table.has_live_for(&mint)

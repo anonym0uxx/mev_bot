@@ -1201,6 +1201,9 @@ pub struct Engine {
     /// A migration with unknown launch is NOT queued: those mints can never become eligible
     /// AMM candidates (§6.4), so subscribing their pool would only spend feed credits.
     eligible_migrations: Vec<EligibleMigration>,
+    /// Operator entry pause: no NEW model entries are admitted (named refusal); management,
+    /// protection, exits and reconciliation of existing exposure continue unchanged.
+    entry_paused: bool,
     /// creator → (lifetime launches, window start tick, launches in window).
     creator_launches: BTreeMap<u64, (u32, u64, u32)>,
     /// §70.10 first-slot fee footprint per mint → (cumulative priority+tip
@@ -1425,6 +1428,28 @@ impl Engine {
     /// PumpSwap pool lane for them; the engine itself never subscribes anything).
     pub fn take_eligible_migrations(&mut self) -> Vec<EligibleMigration> {
         std::mem::take(&mut self.eligible_migrations)
+    }
+
+    /// Set/clear the operator entry pause (documented control `PQ_ENTRY_PAUSE=1` / `data/ENTRY_PAUSE`).
+    pub fn set_entry_paused(&mut self, paused: bool) {
+        self.entry_paused = paused;
+    }
+
+    #[must_use]
+    pub fn entry_paused(&self) -> bool {
+        self.entry_paused
+    }
+
+    /// Every mint the account is exposed to right now: open positions plus pending buys.
+    #[must_use]
+    pub fn exposure_mints(&self) -> Vec<[u8; 32]> {
+        let mut v: Vec<[u8; 32]> = self.positions.export_held().iter().map(|h| h.mint).collect();
+        for p in self.pending_buys.values() {
+            if !v.contains(&p.mint) {
+                v.push(p.mint);
+            }
+        }
+        v
     }
 
     /// True while the account has exposure on `mint`: an open position or a pending buy. Used to
@@ -1719,6 +1744,7 @@ impl Engine {
             ata_open: std::collections::BTreeSet::new(),
             mint_creator: BTreeMap::new(),
             eligible_migrations: Vec::new(),
+            entry_paused: false,
             creator_launches: BTreeMap::new(),
             first_slot_fees: BTreeMap::new(),
             // Rev-14 wangr intelligence: empty/sentinel until fed — no-op.
