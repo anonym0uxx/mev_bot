@@ -537,6 +537,12 @@ impl Engine {
             self.mrep("refuse:quote_not_sol");
             return;
         }
+        if !self.model_cache.quote_sol_verified(&mint) {
+            // Fail closed: SOL-ness must be established from the curve account's quote field
+            // (CurveQuote event); a field named "lamports" is not proof of SOL.
+            self.mrep("refuse:quote_unverified");
+            return;
+        }
         if self.open_lane.contains_key(&mint)
             || self.model_orders.contains_key(&mint)
             || self.model_table.has_live_for(&mint)
@@ -989,10 +995,11 @@ impl Engine {
                 self.mrep("pending_uncertain_held");
                 continue;
             }
-            if self.model_cache.quote_not_sol(&mint) {
+            if self.model_cache.quote_not_sol(&mint) || !self.model_cache.quote_sol_verified(&mint) {
                 self.model_retire_order(&mint);
-                self.mrep("fill_none:quote_not_sol");
-                self.model_io_event_with("order", order.id, &mint, "fill", "none:quote_not_sol", clock, serde_json::json!({"amm": order.amm}));
+                let why = if self.model_cache.quote_not_sol(&mint) { "quote_not_sol" } else { "quote_unverified" };
+                self.mrep(format!("fill_none:{why}"));
+                self.model_io_event_with("order", order.id, &mint, "fill", &format!("none:{why}"), clock, serde_json::json!({"amm": order.amm}));
                 continue;
             }
             if let Some(fr) = order.confirmed {

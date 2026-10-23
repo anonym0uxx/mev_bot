@@ -46,11 +46,15 @@ fn cfg() -> Config {
 }
 
 fn events(n: u32) -> Vec<AppEvent> {
-    let mut ev = vec![AppEvent::LaunchObserved {
-        mint: mint(),
-        creator: CREATOR,
-        launch_unix_ms: T0,
-    }];
+    let mut ev = vec![
+        AppEvent::LaunchObserved {
+            mint: mint(),
+            creator: CREATOR,
+            launch_unix_ms: T0,
+        },
+        // The fixture market is SOL-quoted; the lane requires the positive statement.
+        AppEvent::CurveQuote { mint: mint(), quote_mint: [0u8; 32] },
+    ];
     for i in 0..n {
         let buy = i % 3 != 0;
         ev.push(AppEvent::MarketTrade {

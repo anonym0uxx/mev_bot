@@ -80,6 +80,7 @@ fn captured_history_through_the_real_engine_reports_coverage() {
                     creator: hex32(v["c"].as_str().expect("c")),
                     launch_unix_ms: t,
                 });
+                e.tick(AppEvent::CurveQuote { mint, quote_mint: [0u8; 32] });
             }
             "T" => {
                 let w = hex32(v["w"].as_str().expect("w"));

@@ -69,15 +69,19 @@ fn production_request(pools: &std::collections::BTreeSet<String>) -> SubscribeRe
     // snapshots; when LS is active the daemon skips its WS accountSubscribe fallback, so without
     // this subscription every candidate is refused `no_price`/`join_no_mint`. Slots feed the
     // daemon's slot clock. (The training-capture rewrite had dropped both from production mode.)
+    // PQ_LS_ACCOUNT_POOLS=0 drops the program-wide PumpSwap POOL account owner from this filter.
+    // Dependency trace (2026-10-23): the daemon resolves account updates only through its
+    // bonding-curve PDA map; pool account updates were 89 % of `ls_account_received` and were
+    // never consumed (`ls_account_unresolved`). AMM reserves come from swap EVENTS on the
+    // selective `pq_pools` transaction lane. Default keeps the historical behaviour.
+    let include_pool_accounts = std::env::var("PQ_LS_ACCOUNT_POOLS").map(|v| v != "0").unwrap_or(true);
+    let mut owners = vec!["6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P".to_string()];
+    if include_pool_accounts {
+        owners.push("pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA".to_string());
+    }
     request.accounts = HashMap::from([(
         "pq_pools_and_curves".to_string(),
-        SubscribeRequestFilterAccounts {
-            owner: vec![
-                "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P".to_string(),
-                "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA".to_string(),
-            ],
-            ..Default::default()
-        },
+        SubscribeRequestFilterAccounts { owner: owners, ..Default::default() },
     )]);
     request.slots = HashMap::from([(
         "pq_slots".to_string(),

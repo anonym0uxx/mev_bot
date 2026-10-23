@@ -258,6 +258,9 @@ pub struct IngestCounters {
 pub struct DecisionCache {
     /// Markets whose bonding curve is quoted in a non-SOL asset: never admitted, never filled.
     quote_not_sol: BTreeSet<[u8; 32]>,
+    /// Markets whose curve quote was POSITIVELY verified as SOL (zero/WSOL quote field, or the
+    /// legacy SOL-only layout). Admission and fills require this; "lamports" alone proves nothing.
+    quote_sol_verified: BTreeSet<[u8; 32]>,
     ledger: StateLedger,
     flow: FlowReducer,
     annotation: AnnotationState,
@@ -289,6 +292,7 @@ impl DecisionCache {
     pub fn new() -> Self {
         Self {
             quote_not_sol: BTreeSet::new(),
+            quote_sol_verified: BTreeSet::new(),
             ledger: StateLedger::new(),
             flow: FlowReducer::new(),
             annotation: AnnotationState::new(),
@@ -341,7 +345,16 @@ impl DecisionCache {
         ];
         if quote_mint != [0u8; 32] && quote_mint != WSOL {
             self.quote_not_sol.insert(mint);
+            self.quote_sol_verified.remove(&mint);
+        } else {
+            self.quote_sol_verified.insert(mint);
         }
+    }
+
+    /// True only after the curve's quote was positively verified as SOL/WSOL.
+    #[must_use]
+    pub fn quote_sol_verified(&self, mint: &[u8; 32]) -> bool {
+        self.quote_sol_verified.contains(mint)
     }
 
     #[must_use]
@@ -1052,10 +1065,16 @@ mod tests {
             0x06, 0x9b, 0x88, 0x57, 0xfe, 0xab, 0x81, 0x84, 0xfb, 0x68, 0x7f, 0x63, 0x46, 0x18, 0xc0, 0x35,
             0xda, 0xc4, 0x39, 0xdc, 0x1a, 0xeb, 0x3b, 0x55, 0x98, 0xa0, 0xf0, 0x00, 0x00, 0x00, 0x00, 0x01,
         ];
+        assert!(!c.quote_sol_verified(&MINT), "fail closed: nothing is SOL until stated");
         c.observe_quote_mint(MINT, xmr);
         assert!(c.quote_not_sol(&MINT));
+        assert!(!c.quote_sol_verified(&MINT));
         let mut c2 = DecisionCache::new();
         c2.observe_quote_mint(MINT, wsol);
+        assert!(c2.quote_sol_verified(&MINT));
+        let mut c3 = DecisionCache::new();
+        c3.observe_quote_mint(MINT, [0u8; 32]);
+        assert!(c3.quote_sol_verified(&MINT) && !c3.quote_not_sol(&MINT));
         c2.observe_quote_mint([9u8; 32], [0u8; 32]);
         assert!(!c2.quote_not_sol(&MINT));
         assert!(!c2.quote_not_sol(&[9u8; 32]));

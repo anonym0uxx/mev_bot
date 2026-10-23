@@ -3393,7 +3393,14 @@ fn main() -> ExitCode {
                             // since 2026 (e.g. wXMR). Reported once per mint; the engine refuses
                             // such markets by name and never prices them as SOL.
                             if !quote_emitted.contains(&mb) {
-                                if let Some(q) = decode_pump_curve_tail(&data).and_then(|tl| tl.quote_mint) {
+                                // Tail present => its quote field; legacy SOL-only layout (no tail
+                                // quote field, account < 115 bytes) => SOL (zero). Either way the
+                                // engine gets a positive statement; absence is never assumed SOL.
+                                let q_opt = match decode_pump_curve_tail(&data) {
+                                    Some(tl) => tl.quote_mint.or(if data.len() < 115 { Some([0u8; 32]) } else { None }),
+                                    None => None,
+                                };
+                                if let Some(q) = q_opt {
                                     quote_emitted.insert(mb);
                                     if q != [0u8; 32] && q != WSOL_MINT_BYTES {
                                         quote_not_sol_seen += 1;

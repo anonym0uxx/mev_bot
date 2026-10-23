@@ -68,11 +68,15 @@ struct Run {
 /// Feed one fixture line into the engine exactly as the replay does (one feed path for every test).
 fn feed_line(e: &mut Engine, v: &serde_json::Value, m: DomainMint, t: i64) {
     match v["k"].as_str().unwrap() {
-        "L" => e.tick(AppEvent::LaunchObserved {
-            mint: m,
-            creator: hex32(v["c"].as_str().unwrap()),
-            launch_unix_ms: t,
-        }),
+        "L" => {
+            e.tick(AppEvent::LaunchObserved {
+                mint: m,
+                creator: hex32(v["c"].as_str().unwrap()),
+                launch_unix_ms: t,
+            });
+            // Captured fixture markets are SOL-quoted (verified: DEV506_QUOTE_PROVENANCE).
+            e.tick(AppEvent::CurveQuote { mint: m, quote_mint: [0u8; 32] });
+        }
         "T" => {
             let w = hex32(v["w"].as_str().unwrap());
             let r = v["rv"].as_array();

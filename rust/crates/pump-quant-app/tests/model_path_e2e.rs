@@ -90,6 +90,8 @@ fn events(f: Feed) -> Vec<AppEvent> {
             launch_unix_ms: T0,
         });
     }
+    // The fixture market is SOL-quoted; the lane requires the positive statement.
+    ev.push(AppEvent::CurveQuote { mint: mint(), quote_mint: [0u8; 32] });
     for i in 0..f.n {
         let buy = i % 3 != 0;
         ev.push(AppEvent::MarketTrade {
