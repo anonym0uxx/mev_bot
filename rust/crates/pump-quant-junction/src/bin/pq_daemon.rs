@@ -778,6 +778,8 @@ struct SessionStats {
     ls_account_received: u64,
     /// Rev-30: LS account notifications decoded into OnchainConfirm events.
     ls_onchain_confirms_decoded: u64,
+    /// Curve PDAs mapped from LaserStream LaunchObserved (not PumpPortal).
+    ls_pda_map_from_launch: u64,
     /// Rev-30: LS account updates where PDA couldn't be resolved to a mint.
     ls_account_unresolved: u64,
     /// Reserve-delta prints whose trader identity was / was not joined to an instruction print.
@@ -838,6 +840,7 @@ impl SessionStats {
             ls_reconnects: 0,
             ls_account_received: 0,
             ls_onchain_confirms_decoded: 0,
+            ls_pda_map_from_launch: 0,
             ls_account_unresolved: 0,
             join_identity: 0,
             join_unknown: 0,
@@ -2910,7 +2913,7 @@ fn main() -> ExitCode {
                     "\"ls_active\":{},",
                     "\"ls_account_received\":{},",
                     "\"ls_onchain_confirms_decoded\":{},",
-                    "\"ls_account_unresolved\":{},",
+                    "\"ls_account_unresolved\":{},\"ls_pda_map_from_launch\":{},",
                     "\"join_identity\":{},",
                     "\"join_unknown\":{},",
                     "\"join_ambiguous\":{},",
@@ -2935,6 +2938,7 @@ fn main() -> ExitCode {
                 stats.ls_account_received,
                 stats.ls_onchain_confirms_decoded,
                 stats.ls_account_unresolved,
+                stats.ls_pda_map_from_launch,
                 stats.join_identity,
                 stats.join_unknown,
                 stats.join_ambiguous,
@@ -3024,6 +3028,20 @@ fn main() -> ExitCode {
                                 for (m, n) in legs {
                                     let _ = writeln!(f, "{}", serde_json::json!({"sig": b58_encode(&tx.signature), "slot": tx.slot, "recv_unix_ms": tx.recv_unix_ms, "mint_b58": b58_encode(&m), "legs": n, "is_live": tx.is_live}));
                                 }
+                            }
+                        }
+                    }
+                    // The curve-PDA → mint map gates CurveObserved decoding of LS account updates.
+                    // It was fed only by PumpPortal `create` relays, so every launch PumpPortal missed
+                    // had NO curve observations (98% of LS account updates unresolved in shadow-003;
+                    // graduating mints rendered `nonpositive_reserve`/`mint_absent`). The authoritative
+                    // LaunchObserved from the LaserStream create instruction now populates it too.
+                    for ev in &events {
+                        if let AppEvent::LaunchObserved { mint, .. } = &ev.event {
+                            let mb = *mint.as_bytes();
+                            let pda = bonding_curve_pda(&mb);
+                            if pda_to_mint.insert(pda.to_bytes(), mb).is_none() {
+                                stats.ls_pda_map_from_launch += 1;
                             }
                         }
                     }
