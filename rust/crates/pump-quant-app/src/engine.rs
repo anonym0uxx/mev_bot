@@ -1201,6 +1201,8 @@ pub struct Engine {
     /// A migration with unknown launch is NOT queued: those mints can never become eligible
     /// AMM candidates (§6.4), so subscribing their pool would only spend feed credits.
     eligible_migrations: Vec<EligibleMigration>,
+    /// True only inside the end-of-run `finalize()` valuation (report-only force-closes).
+    finalizing_report: bool,
     /// Operator entry pause: no NEW model entries are admitted (named refusal); management,
     /// protection, exits and reconciliation of existing exposure continue unchanged.
     entry_paused: bool,
@@ -1744,6 +1746,7 @@ impl Engine {
             ata_open: std::collections::BTreeSet::new(),
             mint_creator: BTreeMap::new(),
             eligible_migrations: Vec::new(),
+            finalizing_report: false,
             entry_paused: false,
             creator_launches: BTreeMap::new(),
             first_slot_fees: BTreeMap::new(),
@@ -5799,10 +5802,14 @@ impl Engine {
         if self.paper_model_mode {
             let oid = self.model_position_order_id(&e.mint).unwrap_or(0);
             let clock_now = self.model_clock_ms;
-            let reason = format!("{:?}", e.reason);
+            let reason = if self.finalizing_report {
+                format!("{:?}|report_only_valuation_not_a_sale", e.reason)
+            } else {
+                format!("{:?}", e.reason)
+            };
             self.model_io_event_with(
                 "order", oid, &e.mint, "exit", &reason, clock_now,
-                serde_json::json!({"closed": e.closed, "reason_code": e.reason.code(), "net_lamports": e.net_lamports, "realized_after_lamports": self.bankroll_realized}),
+                serde_json::json!({"closed": e.closed, "reason_code": e.reason.code(), "net_lamports": e.net_lamports, "realized_after_lamports": self.bankroll_realized, "report_only_valuation": self.finalizing_report}),
             );
         }
         // §21.3: a rug-precursor exit is a market-wide collapse observation.
@@ -5993,6 +6000,9 @@ impl Engine {
         if self.positions.is_empty() {
             return;
         }
+        // Report-only valuation of whatever is still open: NOT a paper sale. The model lane's
+        // exit journal labels these lines so a tape ending never reads as a manufactured close.
+        self.finalizing_report = true;
         let numeric = &self.numeric;
         // Rev-31: In live mode, force-close only confirmed positions.
         let exits = if self.mode == RunMode::Live {
