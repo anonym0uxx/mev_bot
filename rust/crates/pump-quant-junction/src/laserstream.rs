@@ -817,6 +817,9 @@ pub enum LaserStreamUpdate {
     },
     /// A slot notification — heartbeat for staleness detection.
     Slot { slot: u64 },
+    /// Sidecar control/meter line (`pools_subscribed`, `ls_meter`): journaled verbatim by the
+    /// host for feed-cost and migration→subscription accounting. Never a market event.
+    Control { kind: String, line: String },
 }
 
 /// Parse one NDJSON line from the gRPC server's stdout into a `LaserStreamUpdate`.
@@ -964,6 +967,10 @@ pub fn parse_ndjson_line(line: &str) -> Option<LaserStreamUpdate> {
                 write_version: v.get("write_version").and_then(|n| n.as_u64()),
             })
         }
+        "pools_subscribed" | "ls_meter" => Some(LaserStreamUpdate::Control {
+            kind: kind.to_string(),
+            line: line.trim().to_string(),
+        }),
         "slot" => {
             let slot = v.get("slot")?.as_u64()?;
             Some(LaserStreamUpdate::Slot { slot })

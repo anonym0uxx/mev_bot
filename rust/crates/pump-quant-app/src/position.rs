@@ -719,6 +719,12 @@ impl ScalpLifecycle {
 
     /// Authoritative inventory, or `None` when it was never established by a fill (unknown is not zero).
     #[must_use]
+    /// True while a position record for `mint` is open (whether or not inventory is fill-confirmed).
+    #[must_use]
+    pub fn is_open(&self, mint: &[u8; 32]) -> bool {
+        self.open.contains_key(mint)
+    }
+
     pub fn inventory_tokens(&self, mint: &[u8; 32]) -> Option<u64> {
         self.open
             .get(mint)

@@ -2242,8 +2242,17 @@ fn main() -> ExitCode {
 
     let spawn_ls = |bin_path: &str| -> Option<std::process::Child> {
         let mut cmd = std::process::Command::new(bin_path);
-        cmd.stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
+        // stdin: selective pool-lane control channel (JSON lines). stderr: inherited — it used to be
+        // piped and never drained, so a chatty sidecar could block on a full pipe.
+        cmd.stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::inherit());
+        if let Ok(v) = std::env::var("PQ_LS_METER_FILE") {
+            cmd.env("PQ_LS_METER_FILE", v);
+        }
+        if let Ok(v) = std::env::var("PQ_LS_POOL_CAP") {
+            cmd.env("PQ_LS_POOL_CAP", v);
+        }
         // Pass through credential env vars to the subprocess.
         if let Ok(endpoint) = std::env::var("LASERSTREAM_ENDPOINT") {
             cmd.env("LASERSTREAM_ENDPOINT", endpoint);
@@ -2327,6 +2336,33 @@ fn main() -> ExitCode {
     let _ls_state = LaserStreamState::new(); // reserved for future per-slot accounting
     let mut ls_respawn_count: u32 = 0;
     let mut ls_last_respawn: Option<Instant> = None;
+    // ── Selective PumpSwap pool lane ──────────────────────────────────────────
+    // The engine queues migrations whose LAUNCH it observed; for each we subscribe the mint's
+    // canonical PumpSwap pool (transactions touching that pool only) through the sidecar's stdin
+    // control channel. Expiry = opportunity horizon from migration (PQ_LS_POOL_TTL_S, default
+    // 3600 s), retained while the account has exposure on the mint. Bounded by PQ_LS_POOL_CAP
+    // (default 256, enforced on both sides). Every request/activation/expiry is journaled to
+    // data/feed_pool_lane.jsonl; sidecar control/meter lines go verbatim to data/feed_control.jsonl.
+    struct PoolSub {
+        pool_b58: String,
+        migration_slot: u64,
+        launch_unix_ms: i64,
+        requested_unix_ms: i64,
+    }
+    let pool_lane_enabled = std::env::var("PQ_LS_POOL_LANE").map(|v| v == "1").unwrap_or(false);
+    let pool_ttl_s: i64 = std::env::var("PQ_LS_POOL_TTL_S").ok().and_then(|v| v.parse().ok()).unwrap_or(3600);
+    let pool_cap: usize = std::env::var("PQ_LS_POOL_CAP").ok().and_then(|v| v.parse().ok()).unwrap_or(256);
+    let mut pool_subs: std::collections::BTreeMap<[u8; 32], PoolSub> = std::collections::BTreeMap::new();
+    let mut pool_lane_dropped_cap: u64 = 0;
+    let pool_lane_journal = |rec: serde_json::Value| {
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("data/feed_pool_lane.jsonl") {
+            let _ = writeln!(f, "{rec}");
+        }
+    };
+    if pool_lane_enabled {
+        eprintln!("[pq-daemon] selective PumpSwap pool lane ENABLED (ttl={pool_ttl_s}s cap={pool_cap})");
+    }
 
     // ─── Firecrawl web-intelligence sidecar ─────────────────────────────────
     // Same sidecar pattern as LaserStream: spawn a child process, read its
@@ -2722,6 +2758,49 @@ fn main() -> ExitCode {
             queue.push(pj.trade_pe, pj.slot);
             stats.delta_trades_derived_total += 1;
         }
+        // ── Selective pool lane: open feeds for launch-observed graduations, expire old ones ──
+        if pool_lane_enabled {
+            let now_ms = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0);
+            let mut changed = false;
+            for em in engine.take_eligible_migrations() {
+                if pool_subs.contains_key(&em.mint) {
+                    continue;
+                }
+                if pool_subs.len() >= pool_cap {
+                    pool_lane_dropped_cap += 1;
+                    pool_lane_journal(serde_json::json!({"ev": "dropped_cap", "unix_ms": now_ms, "mint_b58": b58_encode(&em.mint), "migration_slot": em.migration_slot}));
+                    continue;
+                }
+                let pool = pump_quant_junction::laserstream::canonical_pool_for(&em.mint);
+                let pool_b58 = b58_encode(&pool);
+                pool_lane_journal(serde_json::json!({"ev": "request", "unix_ms": now_ms, "mint_b58": b58_encode(&em.mint), "pool_b58": pool_b58, "migration_slot": em.migration_slot, "launch_unix_ms": em.launch_unix_ms, "migration_observed_unix_ms": em.observed_unix_ms}));
+                pool_subs.insert(em.mint, PoolSub { pool_b58, migration_slot: em.migration_slot, launch_unix_ms: em.launch_unix_ms, requested_unix_ms: now_ms });
+                changed = true;
+            }
+            let expired: Vec<[u8; 32]> = pool_subs
+                .iter()
+                .filter(|(m, ps)| now_ms - ps.requested_unix_ms > pool_ttl_s * 1000 && !engine.mint_has_exposure(m))
+                .map(|(m, _)| *m)
+                .collect();
+            for m in expired {
+                if let Some(ps) = pool_subs.remove(&m) {
+                    pool_lane_journal(serde_json::json!({"ev": "expire", "unix_ms": now_ms, "mint_b58": b58_encode(&m), "pool_b58": ps.pool_b58, "migration_slot": ps.migration_slot, "launch_unix_ms": ps.launch_unix_ms, "active_s": (now_ms - ps.requested_unix_ms) / 1000}));
+                    changed = true;
+                }
+            }
+            if changed {
+                let set: Vec<&str> = pool_subs.values().map(|p| p.pool_b58.as_str()).collect();
+                let cmd = serde_json::json!({"cmd": "pools", "set": set}).to_string();
+                let ok = match ls_child.as_mut().and_then(|c| c.stdin.as_mut()) {
+                    Some(stdin) => {
+                        use std::io::Write;
+                        writeln!(stdin, "{cmd}").and_then(|_| stdin.flush()).is_ok()
+                    }
+                    None => false,
+                };
+                pool_lane_journal(serde_json::json!({"ev": "set_sent", "unix_ms": now_ms, "n": pool_subs.len(), "write_ok": ok, "dropped_cap_total": pool_lane_dropped_cap}));
+            }
+        }
         if last_status_write_wallclock.elapsed() >= Duration::from_secs(STATUS_HEARTBEAT_SECS) {
             let st = engine.live_status();
             match st.write_to_path(status_path) {
@@ -2921,6 +3000,12 @@ fn main() -> ExitCode {
                     stats.ls_slots_received += 1;
                     last_slot_seen = slot;
                     last_slot_time = Instant::now();
+                }
+                Ok(LaserStreamUpdate::Control { kind: _, line }) => {
+                    use std::io::Write;
+                    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("data/feed_control.jsonl") {
+                        let _ = writeln!(f, "{line}");
+                    }
                 }
                 Ok(LaserStreamUpdate::Account {
                     pubkey,
@@ -5156,4 +5241,27 @@ mod held_feed_tests {
         assert!(t.evict_oldest_protecting(&protected).is_none());
         assert_eq!(t.len(), 2);
     }
+}
+
+
+/// Base58 (Bitcoin alphabet) encoding for 32-byte keys — pool/mint identifiers in the feed journal.
+fn b58_encode(bytes: &[u8]) -> String {
+    const A: &[u8] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+    let mut digits: Vec<u8> = vec![0];
+    for &b in bytes {
+        let mut carry = b as u32;
+        for d in digits.iter_mut() {
+            carry += (*d as u32) << 8;
+            *d = (carry % 58) as u8;
+            carry /= 58;
+        }
+        while carry > 0 {
+            digits.push((carry % 58) as u8);
+            carry /= 58;
+        }
+    }
+    let zeros = bytes.iter().take_while(|&&b| b == 0).count();
+    let mut out: Vec<u8> = std::iter::repeat(A[0]).take(zeros).collect();
+    out.extend(digits.iter().rev().map(|&d| A[d as usize]));
+    String::from_utf8(out).unwrap_or_default()
 }

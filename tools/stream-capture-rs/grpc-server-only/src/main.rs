@@ -37,11 +37,12 @@ use helius_laserstream::grpc::{
 };
 use helius_laserstream::{subscribe, LaserstreamConfig};
 
-/// Run production mode — low-latency PROCESSED transaction subscribe.
-/// This is UNCHANGED from the original binary behavior.
-async fn run_production(config: LaserstreamConfig) -> Result<(), Box<dyn std::error::Error>> {
-    eprintln!("pq-laserstream-grpc: production mode (PROCESSED, low-latency)");
-
+/// Build the production subscribe request. `pools` = the SELECTIVE PumpSwap transaction lane: only
+/// transactions touching one of these pool accounts (Yellowstone `account_include` is OR over the
+/// listed accounts; separate filter-map entries are OR'd and tagged by name). The PumpSwap PROGRAM id
+/// is never placed in any `account_include`, so the AMM firehose cannot be selected by accident; the
+/// program-wide opt-in (`PQ_LS_INCLUDE_PUMPSWAP=1`) remains a separate, explicit switch.
+fn production_request(pools: &std::collections::BTreeSet<String>) -> SubscribeRequest {
     let mut request = SubscribeRequest::default();
     let mut filter = SubscribeRequestFilterTransactions::default();
     filter.vote = Some(false);
@@ -56,6 +57,13 @@ async fn run_production(config: LaserstreamConfig) -> Result<(), Box<dyn std::er
             .push("pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA".to_string());
     }
     request.transactions = HashMap::from([("pumpfun".to_string(), filter)]);
+    if !pools.is_empty() {
+        let mut pf = SubscribeRequestFilterTransactions::default();
+        pf.vote = Some(false);
+        pf.failed = Some(false);
+        pf.account_include = pools.iter().cloned().collect();
+        request.transactions.insert("pq_pools".to_string(), pf);
+    }
     // Rev-30 account lane (restored): bonding-curve PDAs (owner = pump.fun program) and PumpSwap
     // pools. The daemon's ONLY price producer is the reserve-delta print derived from these account
     // snapshots; when LS is active the daemon skips its WS accountSubscribe fallback, so without
@@ -76,14 +84,110 @@ async fn run_production(config: LaserstreamConfig) -> Result<(), Box<dyn std::er
         SubscribeRequestFilterSlots { filter_by_commitment: Some(true), ..Default::default() },
     )]);
     request.commitment = Some(CommitmentLevel::Processed as i32);
+    request
+}
 
-    let (stream, _handle) = subscribe(config, request);
+/// Per-filter meter: update counts and uncompressed protobuf bytes (`encoded_len` of the update),
+/// attributed to every filter tag the server reports for the update (an update matched by two
+/// filters is counted under both — the `shared` counter says how often that happened so credits
+/// are not double-booked). Written as one JSON line per interval to `PQ_LS_METER_FILE` (append) and
+/// echoed on stdout as kind `ls_meter` (the daemon ignores unknown kinds).
+#[derive(Default)]
+struct Meter {
+    counts: std::collections::BTreeMap<String, u64>,
+    bytes: std::collections::BTreeMap<String, u64>,
+    shared: u64,
+    total_updates: u64,
+    total_bytes: u64,
+    started_unix_ms: i64,
+}
+
+impl Meter {
+    fn record(&mut self, filters: &[String], len: usize) {
+        self.total_updates += 1;
+        self.total_bytes += len as u64;
+        if filters.len() > 1 {
+            self.shared += 1;
+        }
+        let tags: Vec<&str> = if filters.is_empty() { vec!["(untagged)"] } else { filters.iter().map(String::as_str).collect() };
+        for t in tags {
+            *self.counts.entry(t.to_string()).or_default() += 1;
+            *self.bytes.entry(t.to_string()).or_default() += len as u64;
+        }
+    }
+    fn line(&self, pools: usize, interval_s: u64) -> String {
+        serde_json::json!({
+            "lane": "laserstream", "kind": "ls_meter", "recv_unix_ms": encoding::now_unix_ms(),
+            "since_unix_ms": self.started_unix_ms, "interval_s": interval_s, "pools_subscribed": pools,
+            "updates": self.counts, "bytes_uncompressed": self.bytes, "shared_updates": self.shared,
+            "total_updates": self.total_updates, "total_bytes_uncompressed": self.total_bytes,
+        })
+        .to_string()
+    }
+}
+
+/// Run production mode — low-latency PROCESSED transaction subscribe, plus the selective PumpSwap
+/// pool lane controlled over STDIN: one JSON line per command,
+///   {"cmd":"pools","set":["<pool_b58>", ...]}      replace the active pool set (bounded by cap)
+///   {"cmd":"pools","add":[...],"remove":[...]}     incremental
+/// Each change re-sends the FULL request through the SDK handle (Yellowstone replaces all filters on
+/// every write, and the SDK persists the merged request across reconnects). Activation is reported
+/// on stdout as kind `pools_subscribed` with the sidecar clock so the daemon can measure
+/// migration → subscription gaps. Cap: PQ_LS_POOL_CAP (default 256).
+async fn run_production(config: LaserstreamConfig) -> Result<(), Box<dyn std::error::Error>> {
+    eprintln!("pq-laserstream-grpc: production mode (PROCESSED, low-latency; selective pool lane on stdin)");
+    let cap: usize = env::var("PQ_LS_POOL_CAP").ok().and_then(|v| v.parse().ok()).unwrap_or(256);
+    let meter_file = env::var("PQ_LS_METER_FILE").ok();
+    let meter_interval_s: u64 = env::var("PQ_LS_METER_INTERVAL_S").ok().and_then(|v| v.parse().ok()).unwrap_or(60);
+    let pools: std::sync::Arc<tokio::sync::Mutex<std::collections::BTreeSet<String>>> = Default::default();
+
+    let (stream, handle) = subscribe(config, production_request(&std::collections::BTreeSet::new()));
     tokio::pin!(stream);
 
+    // stdin control task
+    {
+        let pools = pools.clone();
+        let handle = handle.clone();
+        tokio::spawn(async move {
+            use tokio::io::AsyncBufReadExt;
+            let mut lines = tokio::io::BufReader::new(tokio::io::stdin()).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
+                if v.get("cmd").and_then(|c| c.as_str()) != Some("pools") {
+                    continue;
+                }
+                let mut set = pools.lock().await;
+                if let Some(arr) = v.get("set").and_then(|a| a.as_array()) {
+                    set.clear();
+                    for s in arr.iter().filter_map(|x| x.as_str()) {
+                        if set.len() < cap { set.insert(s.to_string()); }
+                    }
+                }
+                let mut rejected_cap = 0usize;
+                for s in v.get("add").and_then(|a| a.as_array()).map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>()).unwrap_or_default() {
+                    if set.len() < cap || set.contains(s) { set.insert(s.to_string()); } else { rejected_cap += 1; }
+                }
+                for s in v.get("remove").and_then(|a| a.as_array()).map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>()).unwrap_or_default() {
+                    set.remove(s);
+                }
+                let n = set.len();
+                let req = production_request(&set);
+                let snapshot: Vec<String> = set.iter().cloned().collect();
+                drop(set);
+                let ok = handle.write(req).await.is_ok();
+                println!("{}", serde_json::json!({"lane": "laserstream", "kind": "pools_subscribed", "recv_unix_ms": encoding::now_unix_ms(), "n": n, "write_ok": ok, "rejected_cap": rejected_cap, "pools_b58": snapshot}));
+            }
+        });
+    }
+
+    let mut meter = Meter { started_unix_ms: encoding::now_unix_ms() as i64, ..Default::default() };
+    let mut last_meter = std::time::Instant::now();
     while let Some(result) = stream.next().await {
         match result {
             Ok(update) => {
                 use helius_laserstream::grpc::subscribe_update::UpdateOneof;
+                use prost::Message;
+                meter.record(&update.filters, update.encoded_len());
                 match update.update_oneof {
                     Some(UpdateOneof::Transaction(tx_update)) => {
                         if let Some(tx_info) = tx_update.transaction {
@@ -101,6 +205,18 @@ async fn run_production(config: LaserstreamConfig) -> Result<(), Box<dyn std::er
                         println!("{}", serde_json::json!({"lane": "laserstream", "kind": "slot", "slot": s.slot}));
                     }
                     _ => {}
+                }
+                if last_meter.elapsed().as_secs() >= meter_interval_s {
+                    let n = pools.lock().await.len();
+                    let line = meter.line(n, meter_interval_s);
+                    println!("{line}");
+                    if let Some(f) = &meter_file {
+                        use std::io::Write;
+                        if let Ok(mut fh) = std::fs::OpenOptions::new().create(true).append(true).open(f) {
+                            let _ = writeln!(fh, "{line}");
+                        }
+                    }
+                    last_meter = std::time::Instant::now();
                 }
             }
             Err(e) => {
@@ -389,5 +505,52 @@ mod account_line_tests {
             assert!(v.get(k).is_some(), "{k}");
         }
         assert_eq!(v["data_b64"], "CQgH");
+    }
+}
+
+#[cfg(test)]
+mod pool_lane_tests {
+    use super::*;
+    const PUMPSWAP: &str = "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA";
+
+    #[test]
+    fn empty_pool_set_is_the_unchanged_production_request() {
+        std::env::remove_var("PQ_LS_INCLUDE_PUMPSWAP");
+        let r = production_request(&Default::default());
+        assert_eq!(r.transactions.len(), 1);
+        let f = &r.transactions["pumpfun"];
+        assert_eq!(f.account_include, vec!["6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P".to_string()]);
+        assert!(r.accounts.contains_key("pq_pools_and_curves") && r.slots.contains_key("pq_slots"));
+    }
+
+    #[test]
+    fn pools_become_a_separate_or_filter_without_the_program_id() {
+        std::env::remove_var("PQ_LS_INCLUDE_PUMPSWAP");
+        let pools: std::collections::BTreeSet<String> = ["PoolA111".to_string(), "PoolB222".to_string()].into_iter().collect();
+        let r = production_request(&pools);
+        assert_eq!(r.transactions.len(), 2);
+        let pf = &r.transactions["pq_pools"];
+        assert_eq!(pf.account_include, vec!["PoolA111".to_string(), "PoolB222".to_string()]);
+        assert!(pf.account_required.is_empty() && pf.account_exclude.is_empty());
+        // The PumpSwap PROGRAM never appears in any include list: the firehose cannot be selected by a pool set.
+        for f in r.transactions.values() {
+            assert!(!f.account_include.iter().any(|a| a == PUMPSWAP));
+        }
+        // pump.fun lane untouched
+        assert_eq!(r.transactions["pumpfun"].account_include.len(), 1);
+    }
+
+    #[test]
+    fn meter_attributes_to_every_filter_and_counts_shared() {
+        let mut m = Meter::default();
+        m.record(&["pumpfun".to_string()], 100);
+        m.record(&["pumpfun".to_string(), "pq_pools".to_string()], 50);
+        m.record(&[], 7);
+        assert_eq!(m.total_updates, 3);
+        assert_eq!(m.total_bytes, 157);
+        assert_eq!(m.shared, 1);
+        assert_eq!(m.bytes["pumpfun"], 150);
+        assert_eq!(m.bytes["pq_pools"], 50);
+        assert_eq!(m.counts["(untagged)"], 1);
     }
 }

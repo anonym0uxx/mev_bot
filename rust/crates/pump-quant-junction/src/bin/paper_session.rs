@@ -557,6 +557,7 @@ fn main() -> ExitCode {
                         }
                     }
                 }
+                Ok(LaserStreamUpdate::Control { .. }) => {}
                 Ok(LaserStreamUpdate::Slot { slot }) => {
                     did_work = true;
                     stats.ls_slots_received += 1;

@@ -315,6 +315,13 @@ impl DecisionCache {
         self.creators.observe(mint, creator_id, launch_unix_ms)
     }
 
+    /// Launch time recorded by `observe_launch` for this mint, if the launch itself was observed.
+    /// Provenance only: never derived from a first trade or a migration.
+    #[must_use]
+    pub fn launch_ms(&self, mint: &[u8; 32]) -> Option<i64> {
+        self.launch_ms.get(mint).copied()
+    }
+
     pub fn observe_curve(&mut self, mint: [u8; 32], obs: CurveObservation) -> bool {
         self.annotation.observe_curve(mint, obs)
     }

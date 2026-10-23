@@ -1196,6 +1196,11 @@ pub struct Engine {
     ata_open: std::collections::BTreeSet<[u8; 32]>,
     /// mint → creator entity (from TokenMetadata), for the credibility haircut.
     mint_creator: BTreeMap<[u8; 32], u64>,
+    /// Migrations of mints whose LAUNCH was observed by this process (corpus eligibility
+    /// provenance). Drained by the host, which opens the selective PumpSwap pool lane for them.
+    /// A migration with unknown launch is NOT queued: those mints can never become eligible
+    /// AMM candidates (§6.4), so subscribing their pool would only spend feed credits.
+    eligible_migrations: Vec<EligibleMigration>,
     /// creator → (lifetime launches, window start tick, launches in window).
     creator_launches: BTreeMap<u64, (u32, u64, u32)>,
     /// §70.10 first-slot fee footprint per mint → (cumulative priority+tip
@@ -1404,7 +1409,32 @@ pub enum ModelModeFault {
     MissingSource,
 }
 
+/// A graduation whose launch this process observed (see `Engine::eligible_migrations`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EligibleMigration {
+    pub mint: [u8; 32],
+    pub migration_slot: u64,
+    pub launch_unix_ms: i64,
+    /// Engine model clock (ms, receive-time based) when the migration was ingested; 0 if the
+    /// clock had not started.
+    pub observed_unix_ms: i64,
+}
+
 impl Engine {
+    /// Drain launch-observed migrations queued since the last call (host opens the selective
+    /// PumpSwap pool lane for them; the engine itself never subscribes anything).
+    pub fn take_eligible_migrations(&mut self) -> Vec<EligibleMigration> {
+        std::mem::take(&mut self.eligible_migrations)
+    }
+
+    /// True while the account has exposure on `mint`: an open position or a pending buy. Used to
+    /// RETAIN a pool feed past its opportunity horizon (never to admit a candidate).
+    #[must_use]
+    pub fn mint_has_exposure(&self, mint: &[u8; 32]) -> bool {
+        self.positions.is_open(mint)
+            || self.pending_buys.values().any(|p| &p.mint == mint)
+    }
+
     /// Construct an engine under a validated config and a run mode.
     ///
     /// Paper/Replay ONLY: the bankroll base is seeded from
@@ -1688,6 +1718,7 @@ impl Engine {
             thesis_adverse: BTreeMap::new(),
             ata_open: std::collections::BTreeSet::new(),
             mint_creator: BTreeMap::new(),
+            eligible_migrations: Vec::new(),
             creator_launches: BTreeMap::new(),
             first_slot_fees: BTreeMap::new(),
             // Rev-14 wangr intelligence: empty/sentinel until fed — no-op.
@@ -2499,6 +2530,16 @@ impl Engine {
                 self.measured.observe_slot(slot);
                 if let Some(&creator) = self.mint_creator.get(&m) {
                     let _ = self.measured.record_migration(creator, fnv1a_64(&m), slot);
+                }
+                if let Some(launch_unix_ms) = self.model_cache.launch_ms(&m) {
+                    if self.eligible_migrations.len() < 1024 {
+                        self.eligible_migrations.push(EligibleMigration {
+                            mint: m,
+                            migration_slot: slot,
+                            launch_unix_ms,
+                            observed_unix_ms: self.model_clock_ms,
+                        });
+                    }
                 }
             }
             AppEvent::NarrativeSample {
