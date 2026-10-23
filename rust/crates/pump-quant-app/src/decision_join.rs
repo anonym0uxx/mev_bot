@@ -548,7 +548,11 @@ impl DecisionCache {
 
         let view = self.annotation.reserve_view(mint, t_dec_ms);
         let venue = state.venue.clone();
-        let needs_curve = venue == "pumpfun" || venue == "mixed";
+        // Every corpus row — including all 160 dev AMM rows — carries a present CURVE STATE: the
+        // candidate universe was mints observed on the curve from launch. A PumpSwap market with no
+        // curve observation at all (direct-to-pool / instant-migration launches) is a population the
+        // model never saw; it is refused by name rather than rendered as an out-of-corpus prompt.
+        let needs_curve = venue == "pumpfun" || venue == "mixed" || venue == "pumpswap";
         let needs_amm = venue == "pumpswap" || venue == "mixed";
         if needs_curve {
             if let CurveState::Absent { reason } = &view.curve {
@@ -988,12 +992,33 @@ mod tests {
             t.venue = VenueLabel::Pumpswap;
             c.observe_trade(&t);
         }
+        let mut cv = curve();
+        cv.ts_ms = t_dec(40) - 5_000;
+        cv.slot = 2_000;
+        c.observe_curve(MINT, cv);
         c.bind_pool(MINT, "PoolAAAA");
         c.bind_pool(MINT, "PoolBBBB");
         assert_eq!(
             c.snapshot(&MINT, t_dec(40)).unwrap_err(),
             JoinRefusal::AmmPoolAmbiguous
         );
+    }
+
+    #[test]
+    fn a_pumpswap_market_with_no_curve_history_is_refused_by_name() {
+        // Corpus AMM rows (160/160 dev) all carry a present CURVE STATE; a direct-to-pool market
+        // the curve never saw is out of corpus and must not be rendered as a prompt.
+        let mut c = DecisionCache::new();
+        c.observe_launch(MINT, CREATOR, T0);
+        for i in 0..40 {
+            let mut t = trade(i);
+            t.venue = VenueLabel::Pumpswap;
+            c.observe_trade(&t);
+        }
+        match c.snapshot(&MINT, t_dec(40)).unwrap_err() {
+            JoinRefusal::CurveAbsent(r) => assert_eq!(r, "mint_absent"),
+            other => panic!("wrong refusal: {other:?}"),
+        }
     }
 
     #[test]

@@ -444,7 +444,7 @@ impl Engine {
                 slot: a.slot,
             },
             crate::curve_annotation::AmmAttribution {
-                wsol_pools: vec![a.pool.iter().map(|b| format!("{b:02x}")).collect()],
+                wsol_pools: vec![crate::curve_annotation::b58_encode(&a.pool)],
                 pools_total: 1 + others,
                 graduated: true,
             },
