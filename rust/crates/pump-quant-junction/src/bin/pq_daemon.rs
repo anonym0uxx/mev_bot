@@ -2429,6 +2429,15 @@ fn main() -> ExitCode {
     let pool_lane_enabled = std::env::var("PQ_LS_POOL_LANE").map(|v| v == "1").unwrap_or(false);
     let entry_pause_env = std::env::var("PQ_ENTRY_PAUSE").map(|v| v == "1").unwrap_or(false);
     let mut exposure_unpriceable_logged: std::collections::HashSet<[u8; 32]> = std::collections::HashSet::new();
+    // Feed budget (uncompressed bytes per UTC day, from the sidecar meter). When the pool-lane cap
+    // is hit, every non-exposure pool feed is dropped and no new migration feed opens until the
+    // next UTC day; exposure feeds are never dropped. PQ_LS_POOL_BYTES_CAP_GB_DAY (default 1.5).
+    let pool_bytes_cap_day: u64 = (std::env::var("PQ_LS_POOL_BYTES_CAP_GB_DAY").ok().and_then(|v| v.parse::<f64>().ok()).unwrap_or(1.5) * 1e9) as u64;
+    let mut feed_budget_day: i64 = 0;
+    let mut feed_bytes_today_total: u64 = 0;
+    let mut feed_bytes_today_pools: u64 = 0;
+    let mut feed_budget_tripped = false;
+    let mut feed_meter_last: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
     let pool_ttl_s: i64 = std::env::var("PQ_LS_POOL_TTL_S").ok().and_then(|v| v.parse().ok()).unwrap_or(7200);
     // Idle expiry: the engine's liveness horizon is MAX_IDLE_MS = 60 s without a trade; a pool feed
     // is kept 10x that (default 600 s) after its last observed swap so a revived pool is not lost
@@ -2964,6 +2973,23 @@ fn main() -> ExitCode {
                 pool_subs.insert(*m, PoolSub { pool_b58, migration_slot: 0, launch_unix_ms: 0, requested_unix_ms: now_ms });
                 changed = true;
             }
+            if feed_bytes_today_pools >= pool_bytes_cap_day {
+                if !feed_budget_tripped {
+                    feed_budget_tripped = true;
+                    let victims: Vec<[u8; 32]> = pool_subs.keys().filter(|k| !exposure.contains(k)).copied().collect();
+                    for v in victims {
+                        if let Some(ps) = pool_subs.remove(&v) {
+                            pool_lane_journal(serde_json::json!({"ev": "expire", "why": "budget_cap_day", "unix_ms": now_ms, "mint_b58": b58_encode(&v), "pool_b58": ps.pool_b58, "active_s": (now_ms - ps.requested_unix_ms) / 1000}));
+                            changed = true;
+                        }
+                    }
+                    pool_lane_journal(serde_json::json!({"ev": "budget_cap_hit", "unix_ms": now_ms, "pq_pools_bytes_today": feed_bytes_today_pools, "all_lanes_bytes_today": feed_bytes_today_total, "cap_bytes": pool_bytes_cap_day}));
+                    eprintln!("[pq-daemon] FEED BUDGET: pool-lane bytes today {} >= cap {} — non-exposure pool feeds dropped, no new migration feeds until next UTC day (all lanes today {})", feed_bytes_today_pools, pool_bytes_cap_day, feed_bytes_today_total);
+                }
+                for em in engine.take_eligible_migrations() {
+                    pool_lane_journal(serde_json::json!({"ev": "dropped_budget", "unix_ms": now_ms, "mint_b58": b58_encode(&em.mint), "migration_slot": em.migration_slot}));
+                }
+            }
             for em in engine.take_eligible_migrations() {
                 if pool_subs.contains_key(&em.mint) {
                     continue;
@@ -3252,10 +3278,37 @@ fn main() -> ExitCode {
                     last_slot_seen = slot;
                     last_slot_time = Instant::now();
                 }
-                Ok(LaserStreamUpdate::Control { kind: _, line }) => {
+                Ok(LaserStreamUpdate::Control { kind, line }) => {
                     use std::io::Write;
                     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("data/feed_control.jsonl") {
                         let _ = writeln!(f, "{line}");
+                    }
+                    // Enforceable feed budget: accumulate the sidecar's per-interval uncompressed
+                    // byte meter per UTC day (all lanes + the selective pool lane separately).
+                    if kind == "ls_meter" {
+                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
+                            let day = v["recv_unix_ms"].as_i64().unwrap_or(0) / 86_400_000;
+                            if day != feed_budget_day {
+                                feed_budget_day = day;
+                                feed_bytes_today_total = 0;
+                                feed_bytes_today_pools = 0;
+                                feed_budget_tripped = false;
+                            }
+                            // The sidecar meter is CUMULATIVE since its start (`since_unix_ms`);
+                            // accumulate deltas per lane, treating a decrease as a sidecar restart.
+                            if let Some(b) = v["bytes_uncompressed"].as_object() {
+                                for (k, n) in b {
+                                    let n = n.as_u64().unwrap_or(0);
+                                    let prev = feed_meter_last.get(k).copied().unwrap_or(0);
+                                    let delta = if n >= prev { n - prev } else { n };
+                                    feed_meter_last.insert(k.clone(), n);
+                                    feed_bytes_today_total += delta;
+                                    if k == "pq_pools" {
+                                        feed_bytes_today_pools += delta;
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
                 Ok(LaserStreamUpdate::Account {
