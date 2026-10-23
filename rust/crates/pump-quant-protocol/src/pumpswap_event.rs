@@ -168,6 +168,17 @@ pub const fn virtual_quote_offset(is_buy: bool, payload_len: usize) -> Option<us
         (true, 472) => Some(447),
         (true, 457) => Some(432),
         (false, 409) => Some(384),
+        // 2026-10 program revision: each layout grew by a 32-byte APPENDED tail (incentive /
+        // cashback fields); the `virtual_quote_reserves` offsets are unchanged. Verified on live
+        // mainnet events 2026-10-23 (fixtures in `tests/pumpswap_event_layouts_2026_10.json`):
+        // sell 441 @384 and buy 489 @432 reproduce the exact constant-product identity on 11/11
+        // and 6/6 events; buy 504 @447 reads ~15-17.6 SOL across pools (the post-migration
+        // virtual quote) and the standard fee identity is off by the incentive cashback, which the
+        // fill arithmetic does not model -- modelled cost is CONSERVATIVE on such events.
+        // Buy 507 (3 more bytes) remains unsupported until verified.
+        (true, 504) => Some(447),
+        (true, 489) => Some(432),
+        (false, 441) => Some(384),
         _ => None,
     }
 }
