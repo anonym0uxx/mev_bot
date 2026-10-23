@@ -2894,6 +2894,41 @@ fn main() -> ExitCode {
                 let _ = std::fs::rename(path, "data/CURVE_QUOTE_EVIDENCE.json.applied");
             }
         }
+        // ── Operator SYSTEM-ERROR REVERSAL evidence (documented control; paper only) ──
+        // data/SYSTEM_ERROR_REVERSAL.json = [{"mint_b58","reverse_realized_lamports","reason",
+        // "request_ids":[..],"evidence"}]. Applied once through the engine (void open position
+        // without a sale; reverse booked realized), journaled as ev:correction with the bridge.
+        if model_armed && tick_counter % 50 == 13 {
+            let path = std::path::Path::new("data/SYSTEM_ERROR_REVERSAL.json");
+            if path.exists() {
+                let entries: Vec<serde_json::Value> = std::fs::read_to_string(path)
+                    .ok()
+                    .and_then(|t| serde_json::from_str(&t).ok())
+                    .unwrap_or_default();
+                let mut results = Vec::new();
+                for e in entries {
+                    let m = e["mint_b58"].as_str().and_then(b58_decode32);
+                    let rev = e["reverse_realized_lamports"].as_i64().unwrap_or(0) as i128;
+                    let reason = e["reason"].as_str().unwrap_or("system_error_reversal");
+                    let r = match m {
+                        Some(m) => engine.model_system_error_reversal(&m, rev, reason),
+                        None => serde_json::json!({"applied": false, "why": "malformed_mint"}),
+                    };
+                    eprintln!("[pq-daemon] SYSTEM-ERROR REVERSAL mint={} reverse_realized={} -> {}", e["mint_b58"].as_str().unwrap_or("?"), rev, r);
+                    results.push(serde_json::json!({"entry": e, "result": r}));
+                }
+                let rec = serde_json::json!({"ev": "correction_batch", "kind": "operator_system_error_reversal", "unix_ms": SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0), "results": results});
+                if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("data/model_io.jsonl") {
+                    use std::io::Write;
+                    let _ = writeln!(f, "{rec}");
+                }
+                if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("data/corrections.jsonl") {
+                    use std::io::Write;
+                    let _ = writeln!(f, "{rec}");
+                }
+                let _ = std::fs::rename(path, "data/SYSTEM_ERROR_REVERSAL.json.applied");
+            }
+        }
         // ── Operator reconciliation evidence for UNCERTAIN orders (documented control) ──
         // data/RECONCILE_NOT_EXECUTED.json = [{"mint_hex", "order_id", "evidence"}]. Each entry is
         // applied once through the engine's own evidence API (nothing is booked; the order is removed)

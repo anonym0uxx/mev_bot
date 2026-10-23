@@ -1331,3 +1331,103 @@ fn cutoff_lets_a_pending_fill_land_and_supervises_the_position_to_its_barrier_ex
     assert_eq!(r.e.model_pending_orders(), 0);
     assert_eq!(r.calls.load(Ordering::SeqCst), asks_at_cutoff, "no entry ask while draining (the PROD_HOLD control asks no model)");
 }
+
+#[test]
+fn a_system_error_reversal_voids_the_position_without_a_sale_and_keeps_the_equity_identity() {
+    let hp = held_path("rev");
+    let mut r = rig(|_| HOLD);
+    r.e.model_held_attach(&hp);
+    r.advance(130_000);
+    let before = r.e.model_accounting_view(&MINT);
+    assert!(before.committed > 0, "a position is held");
+    let seed = before.seed as i128;
+    // Equity identity before: seed + realized == balance; committed is carried in positions.
+    let realized_before = before.realized;
+    // Reverse a (hypothetical) earlier booked loss of 0.157 SOL on this mint and void the open fill.
+    let rec = r.e.model_system_error_reversal(&MINT, 157_263_531, "quote_mismatch_test");
+    assert_eq!(rec["applied"], true);
+    assert_eq!(rec["voided_basis_lamports"].as_u64(), before.remaining_cost_basis);
+    assert!(!r.e.model_position_open(&MINT), "position voided");
+    let after = r.e.model_accounting_view(&MINT);
+    assert_eq!(after.realized, realized_before + 157_263_531, "realized reversed by exactly the evidenced amount");
+    assert_eq!(after.committed, 0, "no committed capital remains");
+    assert_eq!(after.balance as i128, seed + after.realized, "seed + realized == balance");
+    // No exit was booked: nothing in the fills/exits counters of the lane changed for a sale.
+    assert_eq!(r.rep("mgmt:exit_filled"), 0);
+    assert_eq!(r.rep("mgmt:cancelled_by_reversal") + r.rep("fill:"), r.rep("fill:"), "no sale counters moved");
+    // Idempotent on a flat mint: a second application voids nothing and reverses only what is asked.
+    let rec2 = r.e.model_system_error_reversal(&MINT, 0, "noop");
+    assert_eq!(rec2["voided_basis_lamports"], serde_json::Value::Null);
+    assert_eq!(r.e.model_accounting_view(&MINT).realized, after.realized);
+}
+
+/// A trade print on an UNRELATED mint: moves the feed clock without giving the held mint any
+/// landing-capable state (no curve observation, no print on it).
+fn clock_only(e: &mut Engine, ts: i64, slot: u64) {
+    e.tick(AppEvent::MarketTrade {
+        mint: DomainMint::from_bytes([0x77; 32]),
+        price_fp: 10_000,
+        quote_lamports: 1_000_000,
+        liquidity_lamports: VSOL,
+        signed_base: 1_000_000,
+        buyer_entity: 7,
+        age_slots: 30,
+        recv_unix_ms: Some(ts),
+        trader_pubkey: Some(wallet(7)),
+        slot: Some(slot),
+        fee_lamports: Some(5_000),
+        cu_consumed: Some(60_000),
+        venue: Some(TradeVenue::PumpFun),
+    });
+}
+
+/// The barrier EXIT is ONE standing intent: with no landing state the first order expires and is
+/// NOT re-placed every tick — only on the backoff schedule (30 s) or when new state arrives; the
+/// eventual fill closes the position exactly once. Attempts are counted and journaled.
+#[test]
+fn prod_hold_barrier_exit_is_an_idempotent_intent_with_backoff_not_a_fresh_order_per_tick() {
+    use pump_quant_app::engine::ManagementPolicy;
+    let mut r = rig(|_| REDUCE);
+    r.e.set_management_policy(ManagementPolicy::ProdHoldControl { barrier_ms: 300_000 });
+    r.advance(200_000);
+    assert!(r.e.model_mgmt_pending(&MINT).is_none());
+    // Reach the barrier with clock-only steps (no state on the held mint).
+    let mut guard = 0;
+    while r.e.model_mgmt_pending(&MINT).is_none() && guard < 400 {
+        r.clock += 1_000;
+        r.slot += 1;
+        clock_only(&mut r.e, r.clock, r.slot);
+        ticks(&mut r.e, 1);
+        guard += 1;
+    }
+    assert_eq!(r.rep("mgmt:order:exit"), 1, "first attempt placed at the barrier");
+    assert_eq!(r.rep("mgmt:exit_attempt|first"), 1);
+    let t_first = r.clock;
+    // 20 s of clock with no state: the order expires (TTL 5 s) and is NOT re-placed (backoff 30 s).
+    for _ in 0..20 {
+        r.clock += 1_000;
+        r.slot += 1;
+        clock_only(&mut r.e, r.clock, r.slot);
+        ticks(&mut r.e, 1);
+    }
+    assert_eq!(r.rep("mgmt:order_expired_unfilled"), 1);
+    assert_eq!(r.rep("mgmt:order:exit"), 1, "no fresh order per tick: {:?}", r.e.model_lane_report());
+    assert!(r.rep("mgmt:exit_waiting") >= 1);
+    // Past the 30 s schedule: exactly one more attempt.
+    while r.clock - t_first < 32_000 {
+        r.clock += 1_000;
+        r.slot += 1;
+        clock_only(&mut r.e, r.clock, r.slot);
+        ticks(&mut r.e, 1);
+    }
+    assert_eq!(r.rep("mgmt:order:exit"), 2, "{:?}", r.e.model_lane_report());
+    assert_eq!(r.rep("mgmt:exit_attempt|schedule"), 1);
+    // New landing-capable state arrives: the pending attempt fills; inventory closes exactly once.
+    r.clock += 1_000;
+    r.slot += 5;
+    curve_quiet(&mut r.e, r.clock, r.slot);
+    ticks(&mut r.e, 2);
+    assert!(!r.e.model_position_open(&MINT), "closed through a real landing fill");
+    assert_eq!(r.rep("mgmt:fill_curve"), 1);
+    assert!(r.rep("mgmt:order:exit") <= 3, "no order storm: {:?}", r.e.model_lane_report());
+}

@@ -1442,6 +1442,54 @@ impl Engine {
         self.entry_paused
     }
 
+    /// Reason-coded SYSTEM-ERROR REVERSAL (operator evidence, paper only). Voids any open
+    /// position on `mint` without a sale (cost basis released to cash) and reverses
+    /// `reverse_realized_lamports` of previously booked realized P&L on that mint. Never a
+    /// trade: nothing is sold, no price is used. Returns the cash/reservation/inventory bridge.
+    pub fn model_system_error_reversal(
+        &mut self,
+        mint: &[u8; 32],
+        reverse_realized_lamports: i128,
+        reason: &str,
+    ) -> serde_json::Value {
+        if !self.paper_model_mode || self.mode == RunMode::Live {
+            return serde_json::json!({"applied": false, "why": "paper_model_mode_only"});
+        }
+        let before = serde_json::json!({
+            "realized_lamports": self.bankroll_realized,
+            "balance_lamports": self.bankroll_balance(),
+            "committed_lamports": self.bankroll_committed as u64,
+            "entry_spend_lamports": self.open_lane.get(mint).map(|a| a.entry_spend),
+            "held_basis_lamports": self.positions.remaining_cost_basis(mint),
+            "pending_mgmt_order": self.model_mgmt_pending_order_id(mint),
+        });
+        let voided_basis = self.positions.void_without_sale(mint);
+        if voided_basis.is_some() {
+            // Release the committed entry spend exactly as an exit would (the attribution's
+            // `entry_spend` is the amount that was committed at fill).
+            if let Some(att) = self.open_lane.remove(mint) {
+                self.bankroll_committed = self.bankroll_committed.saturating_sub(u128::from(att.entry_spend));
+            }
+            self.model_mgmt_forget(mint);
+            self.model_on_position_closed(mint);
+        }
+        self.model_mgmt_cancel_all_for(mint);
+        self.bankroll_realized = self.bankroll_realized.saturating_add(reverse_realized_lamports);
+        let after = serde_json::json!({
+            "realized_lamports": self.bankroll_realized,
+            "balance_lamports": self.bankroll_balance(),
+            "committed_lamports": self.bankroll_committed as u64,
+            "held_basis_lamports": self.positions.remaining_cost_basis(mint),
+        });
+        let clock_now = self.model_clock_ms;
+        let rec = serde_json::json!({
+            "applied": true, "reason": reason, "voided_basis_lamports": voided_basis,
+            "reverse_realized_lamports": reverse_realized_lamports, "before": before, "after": after,
+        });
+        self.model_io_event_with("correction", 0, mint, "correction", "system_error_reversal", clock_now, rec.clone());
+        rec
+    }
+
     /// True when the market's curve is quoted in a non-SOL asset (unpriceable in SOL here).
     #[must_use]
     pub fn quote_not_sol(&self, mint: &[u8; 32]) -> bool {

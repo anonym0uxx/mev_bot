@@ -126,6 +126,11 @@ pub(super) struct MgmtPos {
     /// Bumped by every fill: a verdict bound to an older version is discarded.
     pub version: u64,
     pub position_order: u64,
+    /// Idempotent EXIT intent: how many exit orders have been placed for the standing intent and
+    /// when the last one was placed. A retry happens only on NEW landing-capable state or on the
+    /// declared backoff schedule — never one fresh order per tick.
+    pub exit_attempts: u32,
+    pub exit_last_attempt_ms: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -187,6 +192,8 @@ impl Engine {
                 last_try_ms: i64::MIN / 2,
                 version: 1,
                 position_order: order_id,
+                exit_attempts: 0,
+                exit_last_attempt_ms: 0,
             },
         );
     }
@@ -270,8 +277,46 @@ impl Engine {
                 // inventory through the ordinary order/fill path (landing state, fees, slippage,
                 // TTL failure rules). Protection already runs in the position store.
                 if clock - mp.fill_ms >= barrier_ms {
-                    self.mrep("mgmt:prod_hold:barrier_exit");
-                    self.model_mgmt_place(mint, MgmtKind::Exit, 10_000, clock);
+                    // ONE standing exit intent. The first attempt is immediate; after an expired
+                    // attempt, retry only when NEW landing-capable state has arrived since the last
+                    // attempt (a reserve observation on the position's plane) or when the backoff
+                    // schedule elapses: 30 s * 2^min(attempts-1, 5), capped at 15 min. Attempts and
+                    // reasons are counted; nothing is ever fabricated to clear the exposure.
+                    let (retry, why) = if mp.exit_attempts == 0 {
+                        (true, "first")
+                    } else {
+                        let amm = self.model_cache.snapshot_venue_is_amm(&mint);
+                        let newest_state_ms = if amm {
+                            self.model_cache.amm_obs(&mint).map(|o| o.ts_ms)
+                        } else {
+                            self.model_cache.curve_obs(&mint).map(|o| o.ts_ms)
+                        };
+                        let new_state = newest_state_ms.is_some_and(|t| t > mp.exit_last_attempt_ms);
+                        let backoff_ms = (30_000i64 << (mp.exit_attempts.saturating_sub(1)).min(5)).min(900_000);
+                        if new_state {
+                            (true, "new_state")
+                        } else if clock - mp.exit_last_attempt_ms >= backoff_ms {
+                            (true, "schedule")
+                        } else {
+                            (false, "waiting")
+                        }
+                    };
+                    if retry {
+                        self.mrep("mgmt:prod_hold:barrier_exit");
+                        self.mrep(format!("mgmt:exit_attempt|{why}"));
+                        if let Some(m) = self.model_mgmt.pos.get_mut(&mint) {
+                            m.exit_attempts = m.exit_attempts.saturating_add(1);
+                            m.exit_last_attempt_ms = clock;
+                        }
+                        let attempts = mp.exit_attempts + 1;
+                        self.model_mgmt_place(mint, MgmtKind::Exit, 10_000, clock);
+                        self.model_io_event_with("mgmt", mp.position_order, &mint, "exit_intent", why, clock, serde_json::json!({"attempt": attempts, "barrier_ms": barrier_ms, "held_ms": clock - mp.fill_ms}));
+                        if attempts == 10 || attempts == 100 || attempts % 1000 == 0 {
+                            self.mrep(format!("mgmt:exit_attempts_milestone|{attempts}"));
+                        }
+                    } else {
+                        self.mrep("mgmt:exit_waiting");
+                    }
                 } else {
                     self.mrep("mgmt:prod_hold:hold");
                 }
@@ -1192,6 +1237,19 @@ impl Engine {
                 true
             }
             _ => false,
+        }
+    }
+
+    /// Id of the pending management order on `mint`, if any.
+    #[must_use]
+    pub fn model_mgmt_pending_order_id(&self, mint: &[u8; 32]) -> Option<u64> {
+        self.model_mgmt.orders.get(mint).map(|o| o.id)
+    }
+
+    /// Drop every pending management order on `mint` (system-error reversal; nothing booked).
+    pub(crate) fn model_mgmt_cancel_all_for(&mut self, mint: &[u8; 32]) {
+        if self.model_mgmt.orders.remove(mint).is_some() {
+            self.mrep("mgmt:cancelled_by_reversal");
         }
     }
 

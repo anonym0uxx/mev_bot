@@ -732,6 +732,15 @@ impl ScalpLifecycle {
             .map(|p| p.inventory_tokens)
     }
 
+    /// SYSTEM-ERROR VOID: remove a held position WITHOUT booking an exit (no P&L, no sale). Used
+    /// only for reason-coded operator corrections of fills that could never have been
+    /// SOL-denominated. Returns the voided remaining cost basis (lamports) if the mint was held.
+    pub fn void_without_sale(&mut self, mint: &[u8; 32]) -> Option<u64> {
+        let basis = self.remaining_cost_basis(mint)?;
+        self.open.remove(mint);
+        Some(basis)
+    }
+
     /// Entry price and cost-basis lamports still attached to the remaining inventory.
     #[must_use]
     pub fn remaining_cost_basis(&self, mint: &[u8; 32]) -> Option<u64> {

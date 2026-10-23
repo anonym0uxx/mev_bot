@@ -364,6 +364,8 @@ impl Engine {
                     last_try_ms: i64::MIN / 2,
                     version: h.version,
                     position_order: h.position_order,
+                    exit_attempts: 0,
+                    exit_last_attempt_ms: 0,
                 },
             );
             rep.positions += 1;
