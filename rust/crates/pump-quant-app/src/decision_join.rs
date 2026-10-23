@@ -351,6 +351,18 @@ impl DecisionCache {
         }
     }
 
+    /// Label a mint's venue as PumpSwap from a durable fact (a restored AMM position, a verified
+    /// Pool account) so management routes its orders to the AMM plane before any swap arrives.
+    /// Venue label alone (no observation requirement): true once the mint was labelled PumpSwap.
+    #[must_use]
+    pub fn venue_is_pumpswap(&self, mint: &[u8; 32]) -> bool {
+        self.mints.get(mint).is_some_and(|m| matches!(m.venue, VenueLabel::Pumpswap))
+    }
+
+    pub fn mark_venue_pumpswap(&mut self, mint: [u8; 32]) {
+        self.mints.entry(mint).or_default().venue = VenueLabel::Pumpswap;
+    }
+
     /// True only after the curve's quote was positively verified as SOL/WSOL.
     #[must_use]
     pub fn quote_sol_verified(&self, mint: &[u8; 32]) -> bool {

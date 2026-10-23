@@ -513,7 +513,10 @@ impl Engine {
         }
         self.model_mgmt.seq += 1;
         let id = self.model_mgmt.seq;
-        let amm = self.model_cache.snapshot_venue_is_amm(&mint);
+        // AMM identity comes from the durable venue label (restored ledger / verified pool) as
+        // well as a live pool observation: an order on a restarted, quiet AMM position must still be
+        // an AMM order (a completed curve can never price it).
+        let amm = self.model_cache.snapshot_venue_is_amm(&mint) || self.model_cache.venue_is_pumpswap(&mint);
         self.model_mgmt.orders.insert(
             mint,
             MgmtOrder {

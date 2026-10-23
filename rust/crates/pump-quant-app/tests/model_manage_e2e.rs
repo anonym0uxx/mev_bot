@@ -1535,3 +1535,56 @@ fn a_pending_exit_on_a_quiet_pool_lands_on_the_rpc_pool_state_snapshot_exactly_o
     // A second snapshot after the close books nothing.
     assert!(!r.e.model_on_amm_state_snapshot(MINT, [0x50; 32], [0u8; 32], 969_511_247_820_886, 1_055_445_943, 17_584_504_840, r.slot + 1, r.clock + 1_000));
 }
+
+/// A restored AMM position keeps its AMM identity across restarts even when no pool observation
+/// has arrived yet: the barrier exit is routed to the AMM plane (not priced from a stale curve),
+/// and a second persist/restore cycle still says `amm`.
+#[test]
+fn a_restored_amm_position_keeps_its_amm_identity_without_a_fresh_pool_observation() {
+    use pump_quant_app::engine::ManagementPolicy;
+    let hp = held_path("amm_identity");
+    let mut r = rig(|_| HOLD);
+    r.e.set_management_policy(ManagementPolicy::ProdHoldControl { barrier_ms: 300_000 });
+    r.e.model_held_attach(&hp);
+    r.advance(60_000);
+    r.e.tick(AppEvent::Migration { mint: mint(), slot: r.slot });
+    for i in 0..3 {
+        r.clock += 1_000;
+        r.slot += 1;
+        amm_print(&mut r.e, r.clock, r.slot, i);
+        ticks(&mut r.e, 2);
+    }
+    assert!(r.e.model_held_persist_now());
+    let led = r.e.model_held_ledger();
+    assert!(led.held[0].amm, "persisted as AMM");
+    let (clock, slot) = (r.clock, r.slot);
+    drop(r);
+    // Restart with NO pool observation; persist again immediately.
+    let mut e2 = fresh_engine(2_000_000_000, &hp);
+    e2.set_management_policy(ManagementPolicy::ProdHoldControl { barrier_ms: 300_000 });
+    e2.model_held_attach(&hp);
+    e2.model_held_restore().expect("restore").expect("ledger");
+    assert!(e2.model_held_persist_now());
+    let led2 = e2.model_held_ledger();
+    assert!(led2.held[0].amm, "AMM identity survives a restart without a pool observation");
+    // The daemon replays the durable launch journal before the feed starts.
+    e2.tick(AppEvent::LaunchObserved { mint: mint(), creator: CREATOR, launch_unix_ms: T0 });
+    e2.tick(AppEvent::CurveQuote { mint: mint(), quote_mint: [0u8; 32] });
+    // Reach the barrier on clock-only steps: the exit intent must be an AMM order.
+    let mut c = clock;
+    let mut s = slot;
+    for _ in 0..400 {
+        if e2.model_mgmt_pending(&MINT).is_some() {
+            break;
+        }
+        c += 1_000;
+        s += 1;
+        clock_only(&mut e2, c, s);
+        ticks(&mut e2, 2);
+    }
+    assert!(e2.model_mgmt_pending(&MINT).is_some(), "{:?}", e2.model_lane_report());
+    // An RPC snapshot (AMM plane) lands it; a curve observation never could.
+    assert!(e2.model_on_amm_state_snapshot(MINT, [0x50; 32], [0u8; 32], 206_000_000_000_000, 85_000_000_000, 0, s + 5, c + 1_000));
+    assert!(!e2.model_position_open(&MINT));
+    assert_eq!(e2.model_lane_report().get("mgmt:fill_curve").copied().unwrap_or(0), 0);
+}

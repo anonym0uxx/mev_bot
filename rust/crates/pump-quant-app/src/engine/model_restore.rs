@@ -55,7 +55,9 @@ impl Engine {
         for x in self.positions.export_held() {
             let att = self.open_lane.get(&x.mint);
             let mp = self.model_mgmt.pos.get(&x.mint);
-            let amm = self.model_cache.snapshot_venue_is_amm(&x.mint);
+            // A held AMM position stays AMM in the durable ledger even before the restarted
+            // process has seen a pool observation (the label is restored from the ledger itself).
+            let amm = self.model_cache.snapshot_venue_is_amm(&x.mint) || self.model_cache.venue_is_pumpswap(&x.mint);
             held.push(HeldEntry {
                 mint: x.mint,
                 entry_price_fp: x.entry_price_fp,
@@ -360,6 +362,10 @@ impl Engine {
                 },
             );
             self.model_position_order.insert(h.mint, h.position_order);
+            if h.amm {
+                // Restored AMM position: route its management to the AMM plane from the start.
+                self.model_cache.mark_venue_pumpswap(h.mint);
+            }
             self.model_mgmt.pos.insert(
                 h.mint,
                 MgmtPos {

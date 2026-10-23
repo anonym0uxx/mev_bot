@@ -434,22 +434,9 @@ impl Engine {
             self.mrep("mgmt:amm_state_snapshot|quote_not_verified_sol");
             return false;
         }
-        // A standing EXIT intent (attempts > 0) whose last order expired is re-placed here as the
-        // intent's next attempt, dated just before the snapshot so the snapshot is its landing
-        // state (the intent itself pre-dates the snapshot by at least one backoff interval).
-        if self.model_mgmt_pending(&mint).is_none() && self.model_mgmt_exit_attempts(&mint) > 0 {
-            let pre_clock = ts_ms - super::model_admit::MODEL_FILL_LANDING_MS - 1;
-            self.model_note_clock(pre_clock);
-            self.model_note_slot(slot.saturating_sub(1));
-            self.model_mgmt_place(mint, super::model_manage::MgmtKind::Exit, 10_000, pre_clock);
-            if let Some(p) = self.model_mgmt.pos.get_mut(&mint) {
-                p.exit_attempts = p.exit_attempts.saturating_add(1);
-                p.exit_last_attempt_ms = pre_clock;
-            }
-            self.mrep("mgmt:exit_attempt|rpc_snapshot");
-        }
         self.model_note_clock(ts_ms);
         self.model_note_slot(slot);
+        self.model_cache.mark_venue_pumpswap(mint);
         let pool_s = crate::curve_annotation::b58_encode(&pool);
         self.model_cache.bind_pool(mint, &pool_s);
         let _ = self.model_cache.observe_amm(
@@ -464,6 +451,22 @@ impl Engine {
             },
             crate::curve_annotation::AmmAttribution { wsol_pools: vec![crate::curve_annotation::b58_encode(&pool)], pools_total: 1, graduated: true },
         );
+        // A standing EXIT intent (attempts > 0) whose last order expired is re-placed here as the
+        // intent's next attempt, dated just before the snapshot so the snapshot is its landing
+        // state (the intent itself pre-dates the snapshot by at least one backoff interval).
+        if self.model_mgmt_pending(&mint).is_none() && self.model_mgmt_exit_attempts(&mint) > 0 {
+            let pre_clock = ts_ms - super::model_admit::MODEL_FILL_LANDING_MS - 1;
+            self.model_note_clock(pre_clock);
+            self.model_note_slot(slot.saturating_sub(1));
+            self.model_mgmt_place(mint, super::model_manage::MgmtKind::Exit, 10_000, pre_clock);
+            if let Some(p) = self.model_mgmt.pos.get_mut(&mint) {
+                p.exit_attempts = p.exit_attempts.saturating_add(1);
+                p.exit_last_attempt_ms = pre_clock;
+            }
+            self.mrep("mgmt:exit_attempt|rpc_snapshot");
+            self.model_note_clock(ts_ms);
+            self.model_note_slot(slot);
+        }
         let fee_parts = self.model_amm_econ.get(&mint).and_then(|(f, _, _)| *f);
         self.model_amm_econ.insert(mint, (fee_parts, Some(virtual_quote), ts_ms));
         self.mrep("mgmt:amm_state_snapshot");
