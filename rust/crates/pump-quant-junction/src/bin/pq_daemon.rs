@@ -2920,6 +2920,26 @@ fn main() -> ExitCode {
                 let _ = std::fs::rename(path, "data/CURVE_QUOTE_EVIDENCE.json.applied");
             }
         }
+        // ── Operator SAFETY RE-ARM (documented control) ──
+        // data/SAFETY_REARM.json = {"operator": "...", "reason": "..."}. Applied once through the
+        // engine's own re-arm (refused while reconciliation faults or uncertain orders exist);
+        // result journaled; file renamed .applied. Entry pause (if set) still applies afterwards.
+        if model_armed && tick_counter % 50 == 11 {
+            let path = std::path::Path::new("data/SAFETY_REARM.json");
+            if path.exists() {
+                let v: serde_json::Value = std::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+                let operator = v["operator"].as_str().unwrap_or("").to_string();
+                let res = engine.model_safety_rearm(&operator);
+                let outcome = match &res { Ok(()) => "rearmed".to_string(), Err(e) => format!("refused:{e:?}") };
+                eprintln!("[pq-daemon] SAFETY RE-ARM by '{operator}' reason='{}' -> {outcome}", v["reason"].as_str().unwrap_or(""));
+                let rec = serde_json::json!({"ev": "safety_rearm", "operator": operator, "reason": v["reason"], "outcome": outcome, "unix_ms": SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)});
+                if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("data/model_io.jsonl") {
+                    use std::io::Write;
+                    let _ = writeln!(f, "{rec}");
+                }
+                let _ = std::fs::rename(path, "data/SAFETY_REARM.json.applied");
+            }
+        }
         // ── Operator SYSTEM-ERROR REVERSAL evidence (documented control; paper only) ──
         // data/SYSTEM_ERROR_REVERSAL.json = [{"mint_b58","reverse_realized_lamports","reason",
         // "request_ids":[..],"evidence"}]. Applied once through the engine (void open position
