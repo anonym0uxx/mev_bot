@@ -330,6 +330,12 @@ impl DecisionCache {
         self.annotation.observe_curve(mint, obs)
     }
 
+    /// See `AnnotationState::curve_graduated`.
+    #[must_use]
+    pub fn curve_graduated(&self, mint: &[u8; 32]) -> bool {
+        self.annotation.curve_graduated(mint)
+    }
+
     /// Bind the AMM pool a mint trades on. A second, different pool marks the binding
     /// conflicting: the plane then refuses by name instead of choosing one.
     pub fn bind_pool(&mut self, mint: [u8; 32], pool: &str) {

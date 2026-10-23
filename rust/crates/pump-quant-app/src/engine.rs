@@ -2531,8 +2531,11 @@ impl Engine {
                 if let Some(&creator) = self.mint_creator.get(&m) {
                     let _ = self.measured.record_migration(creator, fnv1a_64(&m), slot);
                 }
+                // Pool feeds are opened only for migrations that can become eligible AMM
+                // candidates: launch observed AND a curve that graduated at the corpus threshold
+                // (low-k launches are refused `join_curve_not_graduated` anyway).
                 if let Some(launch_unix_ms) = self.model_cache.launch_ms(&m) {
-                    if self.eligible_migrations.len() < 1024 {
+                    if self.model_cache.curve_graduated(&m) && self.eligible_migrations.len() < 1024 {
                         self.eligible_migrations.push(EligibleMigration {
                             mint: m,
                             migration_slot: slot,

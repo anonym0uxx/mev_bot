@@ -368,6 +368,13 @@ impl AnnotationState {
     }
 
     /// Build the `CurveState` for `t_dec_ms`.
+    /// True when the last retained curve observation reached the corpus graduation threshold
+    /// (real reserves >= 85 SOL). Used to decide whether a migration is worth a pool feed.
+    #[must_use]
+    pub fn curve_graduated(&self, mint: &[u8; 32]) -> bool {
+        self.curves.get(mint).is_some_and(|o| o.real_sol_lamports >= V_GRAD_LAMPORTS)
+    }
+
     #[must_use]
     pub fn curve_state(&self, mint: &[u8; 32], t_dec_ms: i64) -> CurveState {
         let Some(obs) = self.curves.get(mint) else {
