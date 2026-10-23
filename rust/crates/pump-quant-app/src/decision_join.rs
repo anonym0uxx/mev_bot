@@ -16,7 +16,7 @@
 //! The trained prompt contract is unchanged: required-field refusals are the existing
 //! `AssemblyRefusal`s, plus the corpus-eligibility gates in `StateLedger::eligibility`.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use pump_quant_market_state::flow_reducer::{FlowOutcome, FlowReducer};
 use pump_quant_proposal::bundle_gate::BundlePolicy;
@@ -256,6 +256,8 @@ pub struct IngestCounters {
 
 /// The decision-time cache. One owner (the engine); no interior mutability.
 pub struct DecisionCache {
+    /// Markets whose bonding curve is quoted in a non-SOL asset: never admitted, never filled.
+    quote_not_sol: BTreeSet<[u8; 32]>,
     ledger: StateLedger,
     flow: FlowReducer,
     annotation: AnnotationState,
@@ -286,6 +288,7 @@ impl DecisionCache {
     #[must_use]
     pub fn new() -> Self {
         Self {
+            quote_not_sol: BTreeSet::new(),
             ledger: StateLedger::new(),
             flow: FlowReducer::new(),
             annotation: AnnotationState::new(),
@@ -328,6 +331,22 @@ impl DecisionCache {
 
     pub fn observe_curve(&mut self, mint: [u8; 32], obs: CurveObservation) -> bool {
         self.annotation.observe_curve(mint, obs)
+    }
+
+    /// Record the curve's quote mint; non-SOL quotes mark the market unpriceable in SOL.
+    pub fn observe_quote_mint(&mut self, mint: [u8; 32], quote_mint: [u8; 32]) {
+        const WSOL: [u8; 32] = [
+            0x06, 0x9b, 0x88, 0x57, 0xfe, 0xab, 0x81, 0x84, 0xfb, 0x68, 0x7f, 0x63, 0x46, 0x18, 0xc0, 0x35,
+            0xda, 0xc4, 0x39, 0xdc, 0x1a, 0xeb, 0x3b, 0x55, 0x98, 0xa0, 0xf0, 0x00, 0x00, 0x00, 0x00, 0x01,
+        ];
+        if quote_mint != [0u8; 32] && quote_mint != WSOL {
+            self.quote_not_sol.insert(mint);
+        }
+    }
+
+    #[must_use]
+    pub fn quote_not_sol(&self, mint: &[u8; 32]) -> bool {
+        self.quote_not_sol.contains(mint)
     }
 
     /// See `AnnotationState::curve_graduated`.
@@ -1019,6 +1038,27 @@ mod tests {
             c.snapshot(&MINT, t_dec(40)).unwrap_err(),
             JoinRefusal::AmmPoolAmbiguous
         );
+    }
+
+    #[test]
+    fn non_sol_quote_curves_are_marked_unpriceable_and_sol_quotes_are_not() {
+        let mut c = DecisionCache::new();
+        // wXMR mint (WXMRyRZhsa19ety5erZhHg4N3xj3EVN92u94422teJp) as seen on the BONERO curve tail.
+        let xmr: [u8; 32] = [
+            0x07, 0x90, 0x29, 0xb1, 0x62, 0xd6, 0xd0, 0x26, 0x02, 0x8d, 0x36, 0xbd, 0xbd, 0x0a, 0x00, 0xce,
+            0x61, 0x5b, 0xa1, 0x9d, 0x2d, 0x49, 0x24, 0xd1, 0x4a, 0x93, 0x55, 0xc9, 0x09, 0x94, 0xd9, 0x25,
+        ];
+        let wsol: [u8; 32] = [
+            0x06, 0x9b, 0x88, 0x57, 0xfe, 0xab, 0x81, 0x84, 0xfb, 0x68, 0x7f, 0x63, 0x46, 0x18, 0xc0, 0x35,
+            0xda, 0xc4, 0x39, 0xdc, 0x1a, 0xeb, 0x3b, 0x55, 0x98, 0xa0, 0xf0, 0x00, 0x00, 0x00, 0x00, 0x01,
+        ];
+        c.observe_quote_mint(MINT, xmr);
+        assert!(c.quote_not_sol(&MINT));
+        let mut c2 = DecisionCache::new();
+        c2.observe_quote_mint(MINT, wsol);
+        c2.observe_quote_mint([9u8; 32], [0u8; 32]);
+        assert!(!c2.quote_not_sol(&MINT));
+        assert!(!c2.quote_not_sol(&[9u8; 32]));
     }
 
     #[test]

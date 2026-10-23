@@ -1442,6 +1442,12 @@ impl Engine {
         self.entry_paused
     }
 
+    /// True when the market's curve is quoted in a non-SOL asset (unpriceable in SOL here).
+    #[must_use]
+    pub fn quote_not_sol(&self, mint: &[u8; 32]) -> bool {
+        self.model_cache.quote_not_sol(mint)
+    }
+
     /// Every mint the account is exposed to right now: open positions plus pending buys.
     #[must_use]
     pub fn exposure_mints(&self) -> Vec<[u8; 32]> {
@@ -2564,7 +2570,10 @@ impl Engine {
                 // candidates: launch observed AND a curve that graduated at the corpus threshold
                 // (low-k launches are refused `join_curve_not_graduated` anyway).
                 if let Some(launch_unix_ms) = self.model_cache.launch_ms(&m) {
-                    if self.model_cache.curve_graduated(&m) && self.eligible_migrations.len() < 1024 {
+                    if self.model_cache.curve_graduated(&m)
+                        && !self.model_cache.quote_not_sol(&m)
+                        && self.eligible_migrations.len() < 1024
+                    {
                         self.eligible_migrations.push(EligibleMigration {
                             mint: m,
                             migration_slot: slot,
@@ -2785,6 +2794,11 @@ impl Engine {
                     self.model_cache
                         .observe_launch(*mint.as_bytes(), creator, launch_unix_ms);
                     self.model_register(*mint.as_bytes());
+                }
+            }
+            AppEvent::CurveQuote { mint, quote_mint } => {
+                if self.paper_model_mode {
+                    self.model_cache.observe_quote_mint(*mint.as_bytes(), quote_mint);
                 }
             }
             AppEvent::AmmSwap {

@@ -294,6 +294,16 @@ pub enum AppEvent {
         launch_unix_ms: i64,
     },
 
+    /// The bonding curve's QUOTE mint as decoded from the curve account tail (pump.fun supports
+    /// non-SOL quotes since 2026). `[0; 32]` or WSOL means SOL-quoted; anything else means every
+    /// "lamports" figure on this market is in another asset and the paper lane must refuse it.
+    CurveQuote {
+        /// The market's mint.
+        mint: Mint,
+        /// The quote mint from the curve account (offset 83).
+        quote_mint: [u8; 32],
+    },
+
     /// A deterministic, **on-chain-led** category assignment for a market. The
     /// category classifier ran UPSTREAM on the token's decoded name/symbol (an
     /// `[S]`-boundary concern in `token_ingest`); the engine sees only the resolved
@@ -478,6 +488,7 @@ impl AppEvent {
             | AppEvent::CurveObserved { mint, .. }
             | AppEvent::AmmSwap { mint, .. }
             | AppEvent::LaunchObserved { mint, .. }
+            | AppEvent::CurveQuote { mint, .. }
             | AppEvent::TokenMetadata { mint, .. }
             | AppEvent::CreatorAction { mint, .. }
             | AppEvent::Migration { mint, .. }

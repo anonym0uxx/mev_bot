@@ -531,6 +531,12 @@ impl Engine {
             self.mrep("refuse:operator_entry_pause");
             return;
         }
+        if self.model_cache.quote_not_sol(&mint) {
+            // Every "lamports" figure on this market is in another asset (e.g. wXMR-quoted
+            // curves, 2026): the corpus never saw such markets and the account cannot price them.
+            self.mrep("refuse:quote_not_sol");
+            return;
+        }
         if self.open_lane.contains_key(&mint)
             || self.model_orders.contains_key(&mint)
             || self.model_table.has_live_for(&mint)
@@ -981,6 +987,12 @@ impl Engine {
             if order.uncertain && order.confirmed.is_none() {
                 // Acknowledgement unknown: still pending intent. Neither expired nor filled here.
                 self.mrep("pending_uncertain_held");
+                continue;
+            }
+            if self.model_cache.quote_not_sol(&mint) {
+                self.model_retire_order(&mint);
+                self.mrep("fill_none:quote_not_sol");
+                self.model_io_event_with("order", order.id, &mint, "fill", "none:quote_not_sol", clock, serde_json::json!({"amm": order.amm}));
                 continue;
             }
             if let Some(fr) = order.confirmed {

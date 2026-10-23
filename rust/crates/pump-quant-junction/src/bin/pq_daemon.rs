@@ -47,6 +47,7 @@ use pump_quant_junction::autonomous_bridge::{
 };
 use pump_quant_junction::decode::decode_onchain_confirm_with_curve;
 use pump_quant_junction::event_stream::EventStreamWriter;
+use pump_quant_junction::laserstream::WSOL_MINT_BYTES;
 use pump_quant_junction::laserstream::{
     classify_pump_instructions, instructions_to_events, instructions_to_events_with_meta,
     parse_ndjson_line, LaserStreamState, LaserStreamUpdate,
@@ -2181,6 +2182,9 @@ fn main() -> ExitCode {
     // Note: creator_launches is tracked internally by the engine via its own
     // mint_creator/creator_launches maps — no daemon-side tracker needed.
     let mut aux_emitted: std::collections::HashSet<[u8; 32]> = std::collections::HashSet::new();
+    // Curve quote mints already reported to the engine (one CurveQuote per mint per process).
+    let mut quote_emitted: std::collections::HashSet<[u8; 32]> = std::collections::HashSet::new();
+    let mut quote_not_sol_seen: u64 = 0;
     // Narrative precondition (operator ruling 2026-09-26): the rotating lexicon.
     // Absent or malformed => `None`, and then NO narrative verdicts are emitted at
     // all. That is a COVERAGE GAP: the gate sees the zero sentinel and admits.
@@ -2396,6 +2400,7 @@ fn main() -> ExitCode {
     }
     let pool_lane_enabled = std::env::var("PQ_LS_POOL_LANE").map(|v| v == "1").unwrap_or(false);
     let entry_pause_env = std::env::var("PQ_ENTRY_PAUSE").map(|v| v == "1").unwrap_or(false);
+    let mut exposure_unpriceable_logged: std::collections::HashSet<[u8; 32]> = std::collections::HashSet::new();
     let pool_ttl_s: i64 = std::env::var("PQ_LS_POOL_TTL_S").ok().and_then(|v| v.parse().ok()).unwrap_or(7200);
     // Idle expiry: the engine's liveness horizon is MAX_IDLE_MS = 60 s without a trade; a pool feed
     // is kept 10x that (default 600 s) after its last observed swap so a revived pool is not lost
@@ -2864,6 +2869,16 @@ fn main() -> ExitCode {
                 if pool_subs.contains_key(m) {
                     continue;
                 }
+                if engine.quote_not_sol(m) {
+                    // No WSOL pool exists for this market; subscribing the WSOL PDA would feed
+                    // nothing. The exposure is UNRESOLVED-UNPRICEABLE and is reported, not priced.
+                    if !exposure_unpriceable_logged.contains(m) {
+                        exposure_unpriceable_logged.insert(*m);
+                        pool_lane_journal(serde_json::json!({"ev": "exposure_unpriceable_quote", "unix_ms": now_ms, "mint_b58": b58_encode(m)}));
+                        eprintln!("[pq-daemon] ALERT: held mint {} is quoted in a non-SOL asset: no SOL pool, no SOL price; exposure unresolved (operator disposition required)", b58_encode(m));
+                    }
+                    continue;
+                }
                 if pool_subs.len() >= pool_cap {
                     let victim = pool_subs
                         .iter()
@@ -3218,6 +3233,27 @@ fn main() -> ExitCode {
                             stats.ls_onchain_confirms_decoded += 1;
                             stats.last_confirm_tick = tick_counter;
                             stats.pda_venue_matches += 1;
+
+                            // Quote-mint identity (curve tail @83): non-SOL-quoted curves exist
+                            // since 2026 (e.g. wXMR). Reported once per mint; the engine refuses
+                            // such markets by name and never prices them as SOL.
+                            if !quote_emitted.contains(&mb) {
+                                if let Some(q) = decode_pump_curve_tail(&data).and_then(|tl| tl.quote_mint) {
+                                    quote_emitted.insert(mb);
+                                    if q != [0u8; 32] && q != WSOL_MINT_BYTES {
+                                        quote_not_sol_seen += 1;
+                                    }
+                                    queue.push(
+                                        ProvenancedEvent {
+                                            event: AppEvent::CurveQuote { mint: Mint(mb), quote_mint: q },
+                                            source: ProvenanceSource::LaserStreamAccount,
+                                            slot,
+                                            is_live: true,
+                                        },
+                                        slot,
+                                    );
+                                }
+                            }
 
                             // Wangr Rev-14: decode curve tail for token_standard
                             if aux_emitted.contains(&mb) {

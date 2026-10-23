@@ -128,7 +128,7 @@ pub struct AmmSwapFacts {
 }
 
 /// WSOL mint, raw bytes.
-const WSOL_MINT_BYTES: [u8; 32] = [
+pub const WSOL_MINT_BYTES: [u8; 32] = [
     6, 155, 136, 87, 254, 171, 129, 132, 251, 104, 127, 99, 70, 24, 192, 53, 218, 196, 57, 220, 26,
     235, 59, 85, 152, 160, 240, 0, 0, 0, 0, 1,
 ];

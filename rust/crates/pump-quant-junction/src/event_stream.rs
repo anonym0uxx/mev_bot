@@ -416,6 +416,7 @@ fn event_kind(event: &AppEvent) -> &'static str {
         AppEvent::CurveObserved { .. } => "CurveObserved",
         AppEvent::AmmSwap { .. } => "AmmSwap",
         AppEvent::LaunchObserved { .. } => "LaunchObserved",
+        AppEvent::CurveQuote { .. } => "CurveQuote",
         AppEvent::TokenMetadata { .. } => "TokenMetadata",
         AppEvent::CreatorAction { .. } => "CreatorAction",
         AppEvent::Migration { .. } => "Migration",
@@ -549,6 +550,9 @@ fn event_fields_json(event: &AppEvent) -> String {
         }
         AppEvent::LaunchObserved { launch_unix_ms, .. } => {
             parts.push(format!(r#""launch_unix_ms":{}"#, launch_unix_ms));
+        }
+        AppEvent::CurveQuote { quote_mint, .. } => {
+            parts.push(format!(r#""quote_mint_hex":"{}""#, quote_mint.iter().map(|b| format!("{b:02x}")).collect::<String>()));
         }
         AppEvent::TokenMetadata {
             category_id,
