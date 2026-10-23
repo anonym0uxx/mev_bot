@@ -2432,6 +2432,32 @@ fn main() -> ExitCode {
     // Feed budget (uncompressed bytes per UTC day, from the sidecar meter). When the pool-lane cap
     // is hit, every non-exposure pool feed is dropped and no new migration feed opens until the
     // next UTC day; exposure feeds are never dropped. PQ_LS_POOL_BYTES_CAP_GB_DAY (default 1.5).
+    // ── Durable launch observations (eligibility survives restart/handoff) ─────────────────
+    // Every LaserStream LaunchObserved is appended to data/launch_observed.jsonl at observation
+    // time. On startup, records younger than PQ_LAUNCH_REPLAY_H (default 24 h) are replayed into
+    // the engine as the SAME observation (mint, creator, launch time as recorded) so a restart
+    // does not erase genuine eligibility. Nothing older or unrecorded is admitted: unknown launch
+    // stays unknown. Replay happens BEFORE the feed starts, so no decision is retrospective.
+    let launch_journal_path = std::env::var("PQ_LAUNCH_OBSERVED_FILE").unwrap_or_else(|_| "data/launch_observed.jsonl".to_string());
+    let mut launch_journaled: std::collections::HashSet<[u8; 32]> = std::collections::HashSet::new();
+    if model_armed {
+        let replay_h: f64 = std::env::var("PQ_LAUNCH_REPLAY_H").ok().and_then(|v| v.parse().ok()).unwrap_or(24.0);
+        let now_ms = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0);
+        let cutoff = now_ms - (replay_h * 3_600_000.0) as i64;
+        let (mut replayed, mut skipped_old, mut malformed) = (0u64, 0u64, 0u64);
+        if let Ok(text) = std::fs::read_to_string(&launch_journal_path) {
+            for line in text.lines() {
+                let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { malformed += 1; continue };
+                let (Some(m), Some(c), Some(t)) = (v["mint_b58"].as_str().and_then(b58_decode32), v["creator_b58"].as_str().and_then(b58_decode32), v["launch_unix_ms"].as_i64()) else { malformed += 1; continue };
+                if t < cutoff { skipped_old += 1; continue; }
+                if !launch_journaled.insert(m) { continue; }
+                engine.tick(AppEvent::LaunchObserved { mint: Mint(m), creator: c, launch_unix_ms: t });
+                pda_to_mint.insert(bonding_curve_pda(&m).to_bytes(), m);
+                replayed += 1;
+            }
+        }
+        eprintln!("[pq-daemon] launch journal {launch_journal_path}: replayed={replayed} skipped_old={skipped_old} malformed={malformed} (horizon {replay_h} h)");
+    }
     let pool_bytes_cap_day: u64 = (std::env::var("PQ_LS_POOL_BYTES_CAP_GB_DAY").ok().and_then(|v| v.parse::<f64>().ok()).unwrap_or(1.5) * 1e9) as u64;
     let mut feed_budget_day: i64 = 0;
     let mut feed_bytes_today_total: u64 = 0;
@@ -3292,11 +3318,17 @@ fn main() -> ExitCode {
                     // graduating mints rendered `nonpositive_reserve`/`mint_absent`). The authoritative
                     // LaunchObserved from the LaserStream create instruction now populates it too.
                     for ev in &events {
-                        if let AppEvent::LaunchObserved { mint, .. } = &ev.event {
+                        if let AppEvent::LaunchObserved { mint, creator, launch_unix_ms } = &ev.event {
                             let mb = *mint.as_bytes();
                             let pda = bonding_curve_pda(&mb);
                             if pda_to_mint.insert(pda.to_bytes(), mb).is_none() {
                                 stats.ls_pda_map_from_launch += 1;
+                            }
+                            if model_armed && launch_journaled.insert(mb) {
+                                if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&launch_journal_path) {
+                                    use std::io::Write;
+                                    let _ = writeln!(f, "{}", serde_json::json!({"mint_b58": b58_encode(&mb), "creator_b58": b58_encode(creator), "launch_unix_ms": launch_unix_ms, "slot": tx.slot, "recorded_unix_ms": SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)}));
+                                }
                             }
                         }
                     }
