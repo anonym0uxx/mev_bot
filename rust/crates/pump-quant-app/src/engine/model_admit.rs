@@ -763,7 +763,7 @@ impl Engine {
             "elapsed_ms": dispatched.map(|d| clock - d),
             "deadline_ms": crate::freshness::CHAMPION_MAX_DECISION_AGE_MS,
             "result": match &v.result {
-                Ok(c) => serde_json::json!({"text": c.text, "finish_reason": c.finish_reason, "truncated": c.truncated()}),
+                Ok(c) => serde_json::json!({"text": c.text, "finish_reason": c.finish_reason, "truncated": c.truncated(), "stop_reason": c.stop_reason}),
                 Err(e) => serde_json::json!({"error": format!("{e:?}")}),
             },
             "system_prompt": system,
