@@ -2464,6 +2464,40 @@ fn main() -> ExitCode {
     let mut feed_bytes_today_pools: u64 = 0;
     let mut feed_budget_tripped = false;
     let mut feed_meter_last: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
+    // ── All-in feed allocation (user-confirmed balance; no replenishment assumed) ──────────
+    // Window accounting persists across restarts in data/feed_budget_state.json so a restart can
+    // never reset consumption. credits = uncompressed MB x PQ_FEED_CREDITS_PER_MB (upper bound) +
+    // PQ_FEED_RPC_ALLOWANCE_CREDITS (counted as spent up front). New ENTRIES are refused once
+    // window_credits + PQ_FEED_EXPOSURE_RESERVE_CREDITS >= PQ_FEED_WINDOW_ALLOC_CREDITS (one-way for
+    // the manifest; held/pending exposure keeps its feeds, management and protection). A total
+    // per-UTC-day ceiling PQ_FEED_TOTAL_CAP_GB_DAY contracts discovery (non-exposure pool feeds)
+    // and blocks new entries for the rest of that day; exposure feeds are never dropped.
+    let feed_credits_per_mb: f64 = std::env::var("PQ_FEED_CREDITS_PER_MB").ok().and_then(|v| v.parse().ok()).unwrap_or(20.0);
+    let feed_window_alloc: f64 = std::env::var("PQ_FEED_WINDOW_ALLOC_CREDITS").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0);
+    let feed_exposure_reserve: f64 = std::env::var("PQ_FEED_EXPOSURE_RESERVE_CREDITS").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0);
+    let feed_rpc_allowance: f64 = std::env::var("PQ_FEED_RPC_ALLOWANCE_CREDITS").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0);
+    let feed_total_cap_day: u64 = (std::env::var("PQ_FEED_TOTAL_CAP_GB_DAY").ok().and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0) * 1e9) as u64;
+    let mut feed_window_bytes_total: u64 = 0;
+    let mut feed_budget_entries_blocked: Option<String> = None;
+    let feed_state_path = "data/feed_budget_state.json";
+    if let Some(v) = std::fs::read_to_string(feed_state_path).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) {
+        feed_budget_day = v["day"].as_i64().unwrap_or(0);
+        feed_bytes_today_total = v["today_total_bytes"].as_u64().unwrap_or(0);
+        feed_bytes_today_pools = v["today_pools_bytes"].as_u64().unwrap_or(0);
+        feed_window_bytes_total = v["window_total_bytes"].as_u64().unwrap_or(0);
+        feed_budget_tripped = v["pool_cap_tripped"].as_bool().unwrap_or(false);
+        if let Some(r) = v["entries_blocked_reason"].as_str() {
+            feed_budget_entries_blocked = Some(r.to_string());
+        }
+        eprintln!("[pq-daemon] feed budget state restored: day={feed_budget_day} today_total={feed_bytes_today_total} today_pools={feed_bytes_today_pools} window_total={feed_window_bytes_total} blocked={feed_budget_entries_blocked:?}");
+    }
+    if feed_window_alloc > 0.0 {
+        eprintln!("[pq-daemon] feed allocation: window_alloc={feed_window_alloc:.0} credits, exposure_reserve={feed_exposure_reserve:.0}, rpc_allowance={feed_rpc_allowance:.0}, credits/MB={feed_credits_per_mb}, total_cap_day={} GB", feed_total_cap_day as f64 / 1e9);
+    }
+    if let Some(r) = &feed_budget_entries_blocked {
+        engine.set_model_entries_blocked(true);
+        eprintln!("[pq-daemon] FEED BUDGET: entries remain blocked from persisted state: {r}");
+    }
     let pool_ttl_s: i64 = std::env::var("PQ_LS_POOL_TTL_S").ok().and_then(|v| v.parse().ok()).unwrap_or(7200);
     // Idle expiry: the engine's liveness horizon is MAX_IDLE_MS = 60 s without a trade; a pool feed
     // is kept 10x that (default 600 s) after its last observed swap so a revived pool is not lost
@@ -3054,7 +3088,7 @@ fn main() -> ExitCode {
                 pool_subs.insert(*m, PoolSub { pool_b58, migration_slot: 0, launch_unix_ms: 0, requested_unix_ms: now_ms });
                 changed = true;
             }
-            if feed_bytes_today_pools >= pool_bytes_cap_day {
+            if feed_bytes_today_pools >= pool_bytes_cap_day || feed_budget_entries_blocked.is_some() {
                 if !feed_budget_tripped {
                     feed_budget_tripped = true;
                     let victims: Vec<[u8; 32]> = pool_subs.keys().filter(|k| !exposure.contains(k)).copied().collect();
@@ -3390,10 +3424,35 @@ fn main() -> ExitCode {
                                     let delta = if n >= prev { n - prev } else { n };
                                     feed_meter_last.insert(k.clone(), n);
                                     feed_bytes_today_total += delta;
+                                    feed_window_bytes_total += delta;
                                     if k == "pq_pools" {
                                         feed_bytes_today_pools += delta;
                                     }
                                 }
+                            }
+                            // Allocation gates (evaluated on every meter line, ~1/min).
+                            let window_credits = feed_window_bytes_total as f64 / 1e6 * feed_credits_per_mb + feed_rpc_allowance;
+                            if feed_budget_entries_blocked.is_none() {
+                                let mut why: Option<String> = None;
+                                if feed_window_alloc > 0.0 && window_credits + feed_exposure_reserve >= feed_window_alloc {
+                                    why = Some(format!("window_alloc_exhausted: used {window_credits:.0} + reserve {feed_exposure_reserve:.0} >= alloc {feed_window_alloc:.0} credits"));
+                                } else if feed_total_cap_day > 0 && feed_bytes_today_total >= feed_total_cap_day {
+                                    why = Some(format!("total_cap_day: {feed_bytes_today_total} bytes >= {feed_total_cap_day}"));
+                                }
+                                if let Some(w) = why {
+                                    engine.set_model_entries_blocked(true);
+                                    eprintln!("[pq-daemon] FEED BUDGET: NEW ENTRIES BLOCKED ({w}); exposure feeds/management/protection continue");
+                                    pool_lane_journal(serde_json::json!({"ev": "budget_entries_blocked", "unix_ms": v["recv_unix_ms"].as_i64().unwrap_or(0), "why": w, "window_credits": window_credits, "today_total_bytes": feed_bytes_today_total}));
+                                    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("data/ALERTS.jsonl") {
+                                        let _ = writeln!(f, "{}", serde_json::json!({"kind": "budget_entries_blocked", "unix_ms": v["recv_unix_ms"].as_i64().unwrap_or(0), "why": w, "exposure_mints": engine.exposure_mints().len(), "recovery": "new manifest with a new allocation; exposure keeps its feeds"}));
+                                    }
+                                    feed_budget_entries_blocked = Some(w);
+                                }
+                            }
+                            let st = serde_json::json!({"day": feed_budget_day, "today_total_bytes": feed_bytes_today_total, "today_pools_bytes": feed_bytes_today_pools, "window_total_bytes": feed_window_bytes_total, "window_credits_upper": window_credits, "pool_cap_tripped": feed_budget_tripped, "entries_blocked_reason": feed_budget_entries_blocked, "alloc": feed_window_alloc, "reserve": feed_exposure_reserve, "written_unix_ms": v["recv_unix_ms"].as_i64().unwrap_or(0)});
+                            let tmp = format!("{feed_state_path}.tmp");
+                            if std::fs::write(&tmp, st.to_string()).is_ok() {
+                                let _ = std::fs::rename(&tmp, feed_state_path);
                             }
                         }
                     }
