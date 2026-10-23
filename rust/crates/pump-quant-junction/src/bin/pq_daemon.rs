@@ -2927,10 +2927,13 @@ fn main() -> ExitCode {
             // non-exposure feed is evicted to make room.
             let exposure: Vec<[u8; 32]> = engine.exposure_mints();
             for m in &exposure {
-                if pool_subs.contains_key(m) {
-                    continue;
-                }
                 if engine.quote_not_sol(m) {
+                    // (checked BEFORE the already-subscribed test so a PDA subscribed earlier —
+                    // before the quote became known — still produces the alert, and is dropped.)
+                    if let Some(ps) = pool_subs.remove(m) {
+                        pool_lane_journal(serde_json::json!({"ev": "expire", "why": "quote_not_sol_no_wsol_pool", "unix_ms": now_ms, "mint_b58": b58_encode(m), "pool_b58": ps.pool_b58}));
+                        changed = true;
+                    }
                     // No WSOL pool exists for this market; subscribing the WSOL PDA would feed
                     // nothing. The exposure is UNRESOLVED-UNPRICEABLE and is reported, not priced.
                     if !exposure_unpriceable_logged.contains(m) {
@@ -2938,6 +2941,9 @@ fn main() -> ExitCode {
                         pool_lane_journal(serde_json::json!({"ev": "exposure_unpriceable_quote", "unix_ms": now_ms, "mint_b58": b58_encode(m)}));
                         eprintln!("[pq-daemon] ALERT: held mint {} is quoted in a non-SOL asset: no SOL pool, no SOL price; exposure unresolved (operator disposition required)", b58_encode(m));
                     }
+                    continue;
+                }
+                if pool_subs.contains_key(m) {
                     continue;
                 }
                 if pool_subs.len() >= pool_cap {
