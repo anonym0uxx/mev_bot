@@ -928,6 +928,10 @@ impl Engine {
                         },
                     );
                 }
+                self.model_io_event_with(
+                    "order", oid, &entry.mint, "order", "created", clock,
+                    serde_json::json!({"request_id": v.id.0, "clip_lamports": clip_lamports, "amm": meta.snap.size_amm, "created_slot": self.model_slot, "t_dec_ms": meta.snap.t_dec_ms, "snap_price_fp": meta.snap.price_lamports_per_raw_token}),
+                );
                 self.model_orders.insert(
                     entry.mint,
                     ModelOrder {
@@ -1003,6 +1007,7 @@ impl Engine {
                     if clock - order.created_ms > MODEL_ORDER_TTL_MS {
                         self.model_retire_order(&mint);
                         self.mrep("fill_none:no_landing_state");
+                        self.model_io_event_with("order", order.id, &mint, "fill", "none:no_landing_state", clock, serde_json::json!({"amm": true, "created_ms": order.created_ms}));
                     }
                     continue;
                 };
@@ -1021,6 +1026,7 @@ impl Engine {
                     .filter(|(_, _, t)| *t == obs.ts_ms)
                 else {
                     self.mrep("fill_none:amm_economics_not_on_landing_event");
+                    self.model_io_event_with("order", order.id, &mint, "fill", "none:amm_economics_not_on_landing_event", clock, serde_json::json!({"amm": true, "landing_obs_ms": obs.ts_ms, "landing_slot": obs.slot, "econ_present": self.model_amm_econ.get(&mint).map(|(f, vq, t)| serde_json::json!({"fee_parts": f.is_some(), "virtual_quote": vq.is_some(), "ts_ms": t}))}));
                     continue;
                 };
                 // Verified `buy_exact_quote_in` arithmetic (see protocol::pumpswap_event): effective
@@ -1057,6 +1063,7 @@ impl Engine {
                     if clock - order.created_ms > MODEL_ORDER_TTL_MS {
                         self.model_retire_order(&mint);
                         self.mrep("fill_none:no_landing_state");
+                        self.model_io_event_with("order", order.id, &mint, "fill", "none:no_landing_state", clock, serde_json::json!({"amm": false, "created_ms": order.created_ms}));
                     }
                     continue;
                 };
@@ -1191,6 +1198,11 @@ impl Engine {
             } else {
                 "fill:position_opened"
             });
+            let clock_now = self.model_clock_ms;
+            self.model_io_event_with(
+                "order", order.id, &mint, "fill", "position_opened", clock_now,
+                serde_json::json!({"amm": order.amm, "size_lamports": size, "entry_cost_lamports": entry_cost, "entry_price_fp": entry_price, "tokens": tokens, "reserve_sol_lamports": reserve_sol, "created_ms": order.created_ms, "t_dec_ms": order.snap_t_dec_ms, "cash_after_lamports": self.bankroll_balance(), "realized_lamports": self.bankroll_realized}),
+            );
             self.journal.record(Decision::Promoted {
                 mint,
                 lane: order.lane as u8,

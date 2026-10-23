@@ -5796,6 +5796,15 @@ impl Engine {
         if let Some(att) = self.open_lane.get_mut(&e.mint) {
             att.realized_acc = att.realized_acc.saturating_add(e.net_lamports);
         }
+        if self.paper_model_mode {
+            let oid = self.model_position_order_id(&e.mint).unwrap_or(0);
+            let clock_now = self.model_clock_ms;
+            let reason = format!("{:?}", e.reason);
+            self.model_io_event_with(
+                "order", oid, &e.mint, "exit", &reason, clock_now,
+                serde_json::json!({"closed": e.closed, "reason_code": e.reason.code(), "net_lamports": e.net_lamports, "realized_after_lamports": self.bankroll_realized}),
+            );
+        }
         // §21.3: a rug-precursor exit is a market-wide collapse observation.
         if e.reason == ExitReason::RugPrecursor {
             self.context.on_rug_precursor();
