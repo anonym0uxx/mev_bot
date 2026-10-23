@@ -1363,6 +1363,18 @@ fn a_system_error_reversal_voids_the_position_without_a_sale_and_keeps_the_equit
     let rec2 = r.e.model_system_error_reversal(&MINT, 0, "noop");
     assert_eq!(rec2["voided_basis_lamports"], serde_json::Value::Null);
     assert_eq!(r.e.model_accounting_view(&MINT).realized, after.realized);
+    // Crash/restart: the correction is durable and applied exactly once — the restored ledger has
+    // no position, the reversed realized figure and the same balance.
+    assert!(r.e.model_held_persist_now());
+    drop(r);
+    let mut e2 = fresh_engine(2_000_000_000, &hp);
+    let rep = e2.model_held_restore().expect("restore").expect("ledger");
+    assert_eq!(rep.positions, 0);
+    assert!(!e2.model_position_open(&MINT));
+    let restored = e2.model_accounting_view(&MINT);
+    assert_eq!(restored.realized, after.realized);
+    assert_eq!(restored.committed, 0);
+    assert_eq!(restored.balance, after.balance);
 }
 
 /// A trade print on an UNRELATED mint: moves the feed clock without giving the held mint any
@@ -1434,4 +1446,28 @@ fn prod_hold_barrier_exit_is_an_idempotent_intent_with_backoff_not_a_fresh_order
     assert!(!r.e.model_position_open(&MINT), "closed through a real landing fill");
     assert_eq!(r.rep("mgmt:fill_curve"), 1);
     assert!(r.rep("mgmt:order:exit") <= 3, "no order storm: {:?}", r.e.model_lane_report());
+}
+
+/// End-of-run `report()` values the open book (force-close at last mark) — in paper-model mode
+/// that valuation never moves the authoritative ledger and never overwrites the durable
+/// MODEL_HELD: a successor restores the position exactly as it was.
+#[test]
+fn a_report_only_valuation_does_not_touch_realized_or_the_durable_held_ledger() {
+    let hp = held_path("report_only");
+    let mut r = rig(|_| HOLD);
+    r.e.model_held_attach(&hp);
+    r.advance(130_000);
+    assert!(r.e.model_held_persist_now());
+    let before = r.e.model_accounting_view(&MINT);
+    let led_before = r.e.model_held_ledger();
+    assert_eq!(led_before.held.len(), 1);
+    let _ = r.e.report();
+    assert_eq!(r.e.model_accounting_view(&MINT).realized, before.realized, "valuation is not a sale");
+    assert!(!r.e.model_held_persist_now(), "no durable write after a report-only valuation");
+    drop(r);
+    let mut e2 = fresh_engine(2_000_000_000, &hp);
+    let rep = e2.model_held_restore().expect("restore").expect("ledger");
+    assert_eq!(rep.positions, 1, "the successor still owns the position");
+    assert!(e2.model_position_open(&MINT));
+    assert_eq!(e2.model_accounting_view(&MINT).realized, before.realized);
 }

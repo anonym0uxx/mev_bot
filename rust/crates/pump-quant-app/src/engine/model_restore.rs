@@ -151,6 +151,9 @@ impl Engine {
     /// model lane is armed; a no-op without an attached path. A FAILED write with exposure present trips
     /// SAFETY_OFF: state that cannot be recovered must not keep growing.
     pub(super) fn model_held_persist_if_changed(&mut self) {
+        if self.finalizing_report {
+            return;
+        }
         let Some(path) = self.model_held.path.clone() else {
             return;
         };
@@ -191,6 +194,11 @@ impl Engine {
 
     /// Force a write now (shutdown, tests). Returns whether it is durable.
     pub fn model_held_persist_now(&mut self) -> bool {
+        if self.finalizing_report {
+            // After a report-only valuation the in-memory book is a valuation artefact, not the
+            // ledger: never overwrite the durable MODEL_HELD with it.
+            return false;
+        }
         let Some(path) = self.model_held.path.clone() else {
             return false;
         };

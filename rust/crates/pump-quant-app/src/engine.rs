@@ -5857,7 +5857,11 @@ impl Engine {
         }
         // Realized-only bankroll accounting: every exit's net folds in immediately
         // (partial tranches included) — marks never do (§33).
-        self.bankroll_realized = self.bankroll_realized.saturating_add(e.net_lamports);
+        // A report-only end-of-run valuation is NOT a sale: in paper-model mode it must not move
+        // the authoritative ledger (bankroll_realized), only the report accumulators.
+        if !(self.finalizing_report && self.paper_model_mode) {
+            self.bankroll_realized = self.bankroll_realized.saturating_add(e.net_lamports);
+        }
         if let Some(att) = self.open_lane.get_mut(&e.mint) {
             att.realized_acc = att.realized_acc.saturating_add(e.net_lamports);
         }
