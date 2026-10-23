@@ -177,6 +177,16 @@ pub struct PoolAccount {
     pub is_cashback_coin: Option<bool>,
 }
 
+/// `Pool::virtual_quote_reserves` (signed i128, IDL offset 237 after the 8-byte discriminator;
+/// pump-public-docs idl/pump_amm.json 2026-10). `None` when the account predates the field.
+/// Pump docs: effective quote = vault + this signed adjustment; the raw vault is not liquidity.
+#[must_use]
+pub fn pool_virtual_quote_reserves(account: &[u8]) -> Option<i128> {
+    decode_pool_account(account)?;
+    let bytes: [u8; 16] = account.get(8 + 237..8 + 253)?.try_into().ok()?;
+    Some(i128::from_le_bytes(bytes))
+}
+
 /// Length of the pre-`coin_creator` historical `Pool` account: 8-byte
 /// discriminator + fixed fields through `lp_supply` (ends at byte 211).
 pub const POOL_FIXED_LEN: usize = 211;

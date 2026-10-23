@@ -406,6 +406,61 @@ impl Engine {
         }
     }
 
+    /// Current on-chain pool state fetched by RPC for a HELD market whose exit intent is waiting
+    /// (a quiet/dead pool emits no swaps, so no landing observation ever arrives). The pool's own
+    /// vault balances + signed `virtual_quote_reserves` are exactly the economics a sell submitted
+    /// now would execute against (Pump arithmetic; raw vault is not liquidity — `effective_quote`
+    /// applies the signed adjustment). EXIT-ONLY: entry orders never fill on an RPC snapshot, and a
+    /// mint without a held position is ignored. Returns whether a management fill was booked.
+    pub fn model_on_amm_state_snapshot(
+        &mut self,
+        mint: [u8; 32],
+        pool: [u8; 32],
+        base_reserves_raw: u64,
+        quote_reserves_lamports: u64,
+        virtual_quote: i128,
+        slot: u64,
+        ts_ms: i64,
+    ) -> bool {
+        if !self.positions.has(&mint) {
+            self.mrep("mgmt:amm_state_snapshot|not_held");
+            return false;
+        }
+        if self.model_cache.quote_not_sol(&mint) || !self.model_cache.quote_sol_verified(&mint) {
+            self.mrep("mgmt:amm_state_snapshot|quote_not_verified_sol");
+            return false;
+        }
+        self.model_note_clock(ts_ms);
+        self.model_note_slot(slot);
+        let pool_s = crate::curve_annotation::b58_encode(&pool);
+        self.model_cache.bind_pool(mint, &pool_s);
+        let _ = self.model_cache.observe_amm(
+            mint,
+            crate::curve_annotation::AmmObservation {
+                pool: pool_s,
+                base_reserves_raw,
+                quote_reserves_lamports,
+                quote_is_wsol: true,
+                ts_ms,
+                slot,
+            },
+            crate::curve_annotation::AmmAttribution { wsol_pools: vec![crate::curve_annotation::b58_encode(&pool)], pools_total: 1, graduated: true },
+        );
+        let fee_parts = self.model_amm_econ.get(&mint).and_then(|(f, _, _)| *f);
+        self.model_amm_econ.insert(mint, (fee_parts, Some(virtual_quote), ts_ms));
+        self.mrep("mgmt:amm_state_snapshot");
+        let fills_before = self.model_mgmt_fills().len();
+        let c = self.model_clock_ms;
+        self.model_swap_ctx = Some((ts_ms, slot));
+        self.model_mgmt_try_fills(c);
+        self.model_swap_ctx = None;
+        let filled = self.model_mgmt_fills().len() > fills_before;
+        if filled {
+            self.mrep("mgmt:fill_source|rpc_state_snapshot");
+        }
+        filled
+    }
+
     /// A canonical-pool PumpSwap swap, token-oriented and pool-bound by the decoder. Non-canonical
     /// and non-WSOL pools are counted by name and never priced from.
     pub(super) fn model_on_amm_swap(&mut self, a: AmmSwapIn) {

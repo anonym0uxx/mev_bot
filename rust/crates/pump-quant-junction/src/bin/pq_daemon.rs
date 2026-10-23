@@ -2954,6 +2954,65 @@ fn main() -> ExitCode {
                 let _ = std::fs::rename(path, "data/CURVE_QUOTE_EVIDENCE.json.applied");
             }
         }
+        // ── Exit liquidation source for quiet pools (exposure only) ─────────────────────
+        // A held AMM position whose EXIT intent is pending while its pool emits no swaps would
+        // otherwise wait forever (cohort-003: 3iASqU2F, pool dead after a -98% drain). Once a
+        // minute, fetch the pool account + both vaults by RPC and hand the engine the CURRENT
+        // on-chain state as a landing observation (exit-only; entries never fill on it). Bounded:
+        // 2 RPC calls per stuck exposure per minute; journaled per snapshot.
+        let paper_rpc_url = helius_url.replacen("wss://", "https://", 1);
+        if model_armed && tick_counter % 600 == 23 && paper_rpc_url.starts_with("https://") {
+            let stuck: Vec<[u8; 32]> = engine
+                .exposure_mints()
+                .into_iter()
+                .filter(|m| matches!(engine.model_mgmt_pending(m), Some((_, k, _, _)) if k == pump_quant_app::engine::model_manage::MgmtKind::Exit))
+                .filter(|m| engine.model_amm_obs_age_ms(m).is_none_or(|age| age > 30_000))
+                .collect();
+            for m in stuck {
+                let pool = pump_quant_junction::laserstream::canonical_pool_for(&m);
+                let transport = pq_stream_capture::rpc::UreqTransport::new();
+                let call = |body: String| -> Option<serde_json::Value> {
+                    use pq_stream_capture::rpc::Transport;
+                    let r = transport.post_json(&paper_rpc_url, &body).ok()?;
+                    serde_json::from_str(&r.body).ok()
+                };
+                let pool_b58 = b58_encode(&pool);
+                let v = call(format!(r#"{{"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":["{pool_b58}",{{"encoding":"base64"}}]}}"#));
+                let Some(pd) = v.as_ref().and_then(|v| v["result"]["value"]["data"][0].as_str()).and_then(|s| B64.decode(s).ok()) else {
+                    eprintln!("[pq-daemon] EXIT SNAPSHOT {}: pool account unavailable", &pool_b58[..8]);
+                    continue;
+                };
+                let Some(pool_acc) = pump_quant_protocol::pumpswap::decode_pool_account(&pd) else {
+                    eprintln!("[pq-daemon] EXIT SNAPSHOT {}: pool layout unsupported ({} bytes)", &pool_b58[..8], pd.len());
+                    continue;
+                };
+                if pool_acc.base_mint != m || pool_acc.quote_mint != pump_quant_junction::laserstream::WSOL_MINT_BYTES {
+                    eprintln!("[pq-daemon] EXIT SNAPSHOT {}: pool identity mismatch (base/quote)", &pool_b58[..8]);
+                    continue;
+                }
+                let vq = pump_quant_protocol::pumpswap::pool_virtual_quote_reserves(&pd).unwrap_or(0);
+                let bv = b58_encode(&pool_acc.pool_base_token_account);
+                let qv = b58_encode(&pool_acc.pool_quote_token_account);
+                let v2 = call(format!(r#"{{"jsonrpc":"2.0","id":2,"method":"getMultipleAccounts","params":[["{bv}","{qv}"],{{"encoding":"base64"}}]}}"#));
+                let slot = v2.as_ref().and_then(|v| v["result"]["context"]["slot"].as_u64()).unwrap_or(0);
+                let amount = |i: usize| -> Option<u64> {
+                    let d = v2.as_ref()?["result"]["value"][i]["data"][0].as_str().and_then(|s| B64.decode(s).ok())?;
+                    Some(u64::from_le_bytes(d.get(64..72)?.try_into().ok()?))
+                };
+                let (Some(base_raw), Some(quote_lamports)) = (amount(0), amount(1)) else {
+                    eprintln!("[pq-daemon] EXIT SNAPSHOT {}: vault balances unavailable", &pool_b58[..8]);
+                    continue;
+                };
+                let now_ms = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0);
+                let filled = engine.model_on_amm_state_snapshot(m, pool, base_raw, quote_lamports, vq, slot, now_ms);
+                let rec = serde_json::json!({"ev": "exit_snapshot", "unix_ms": now_ms, "mint_b58": b58_encode(&m), "pool_b58": pool_b58, "slot": slot, "base_vault_raw": base_raw, "quote_vault_lamports": quote_lamports, "virtual_quote_reserves": vq.to_string(), "filled": filled});
+                eprintln!("[pq-daemon] EXIT SNAPSHOT {rec}");
+                if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("data/model_io.jsonl") {
+                    use std::io::Write;
+                    let _ = writeln!(f, "{rec}");
+                }
+            }
+        }
         // ── Operator SAFETY RE-ARM (documented control) ──
         // data/SAFETY_REARM.json = {"operator": "...", "reason": "..."}. Applied once through the
         // engine's own re-arm (refused while reconciliation faults or uncertain orders exist);

@@ -1275,6 +1275,12 @@ impl Engine {
         }
     }
 
+    /// Age (ms, model clock) of the newest AMM observation on `mint`; `None` when none.
+    #[must_use]
+    pub fn model_amm_obs_age_ms(&self, mint: &[u8; 32]) -> Option<i64> {
+        self.model_cache.amm_obs(mint).map(|o| self.model_clock_ms - o.ts_ms)
+    }
+
     /// Id of the pending management order on `mint`, if any.
     #[must_use]
     pub fn model_mgmt_pending_order_id(&self, mint: &[u8; 32]) -> Option<u64> {

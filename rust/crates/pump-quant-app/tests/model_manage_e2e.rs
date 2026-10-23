@@ -1473,3 +1473,55 @@ fn a_report_only_valuation_does_not_touch_realized_or_the_durable_held_ledger() 
     assert!(e2.model_position_open(&MINT));
     assert_eq!(e2.model_accounting_view(&MINT).realized, before.realized);
 }
+
+/// A quiet pool never emits a landing swap, so the standing EXIT intent would wait forever. The
+/// daemon's RPC snapshot of the CURRENT pool state (vaults + signed virtual quote) is a valid,
+/// size-feasible liquidation source: the exit lands on it exactly once at the program's own
+/// arithmetic. Entries never fill on a snapshot; a non-held mint is ignored.
+#[test]
+fn a_pending_exit_on_a_quiet_pool_lands_on_the_rpc_pool_state_snapshot_exactly_once() {
+    use pump_quant_app::engine::ManagementPolicy;
+    let mut r = rig(|_| HOLD);
+    r.e.set_management_policy(ManagementPolicy::ProdHoldControl { barrier_ms: 300_000 });
+    r.advance(60_000);
+    let inv0 = r.e.model_inventory_tokens(&MINT).unwrap();
+    // Graduate and print from the pool so the market is AMM-regime.
+    r.e.tick(AppEvent::Migration { mint: mint(), slot: r.slot });
+    for i in 0..5 {
+        r.clock += 1_000;
+        r.slot += 1;
+        amm_print(&mut r.e, r.clock, r.slot, i);
+        ticks(&mut r.e, 2);
+    }
+    // Reach the barrier with a quiet pool.
+    let end = r.clock + 320_000;
+    while r.clock < end && r.e.model_mgmt_pending(&MINT).is_none() {
+        r.clock += 1_000;
+        r.slot += 1;
+        curve_quiet(&mut r.e, r.clock, r.slot);
+        ticks(&mut r.e, 2);
+    }
+    assert!(r.e.model_mgmt_pending(&MINT).is_some());
+    let fills_before = r.e.model_all_fills().len();
+    // A snapshot for a mint that is not held does nothing.
+    assert!(!r.e.model_on_amm_state_snapshot([0x99; 32], [0x50; 32], 1, 1, 0, r.slot + 5, r.clock + 1_000));
+    assert!(r.e.model_position_open(&MINT));
+    // The real pool state (drained pool: 1.05 SOL vault, 969.5M tokens, vq +17.58 SOL) prices the exit.
+    r.clock += 1_000;
+    r.slot += 5;
+    let filled = r.e.model_on_amm_state_snapshot(MINT, [0x50; 32], 969_511_247_820_886, 1_055_445_943, 17_584_504_840, r.slot, r.clock);
+    assert!(filled, "{:?}", r.e.model_lane_report());
+    assert!(!r.e.model_position_open(&MINT), "closed exactly once");
+    assert_eq!(r.rep("mgmt:fill_source|rpc_state_snapshot"), 1);
+    assert_eq!(r.rep("mgmt:fill_amm_sell_fee_unverified"), 1);
+    let f = r.e.model_mgmt_fills().last().unwrap().clone();
+    assert!(f.closed && f.tokens == inv0);
+    assert_eq!(r.e.model_all_fills().len(), fills_before, "no entry fill was created by a snapshot");
+    // Proceeds follow the program arithmetic on the EFFECTIVE quote (vault + vq), not the raw vault.
+    let gross = pump_quant_protocol::pumpswap_event::sell_gross_quote_out(969_511_247_820_886, 1_055_445_943, 17_584_504_840, u128::from(inv0)).unwrap();
+    let px = f.price_fp as u128;
+    let expect_px = gross * 1_000_000_000 / u128::from(inv0);
+    assert_eq!(px, expect_px, "priced at the effective-quote sell arithmetic");
+    // A second snapshot after the close books nothing.
+    assert!(!r.e.model_on_amm_state_snapshot(MINT, [0x50; 32], 969_511_247_820_886, 1_055_445_943, 17_584_504_840, r.slot + 1, r.clock + 1_000));
+}
