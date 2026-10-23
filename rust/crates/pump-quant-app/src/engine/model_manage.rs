@@ -755,6 +755,12 @@ impl Engine {
             .map(|o| (o.id, o.kind, o.intended, o.filled))
     }
 
+    /// `(created_ms, created_slot)` of the pending management order on `mint`.
+    #[must_use]
+    pub fn model_mgmt_pending_created(&self, mint: &[u8; 32]) -> Option<(i64, u64)> {
+        self.model_mgmt.orders.get(mint).map(|o| (o.created_ms, o.created_slot))
+    }
+
     /// Every reconciled management fill, in order.
     #[must_use]
     pub fn model_mgmt_fills(&self) -> &[MgmtFill] {

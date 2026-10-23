@@ -1570,9 +1570,11 @@ fn a_restored_amm_position_keeps_its_amm_identity_without_a_fresh_pool_observati
     // The daemon replays the durable launch journal before the feed starts.
     e2.tick(AppEvent::LaunchObserved { mint: mint(), creator: CREATOR, launch_unix_ms: T0 });
     e2.tick(AppEvent::CurveQuote { mint: mint(), quote_mint: [0u8; 32] });
-    // Reach the barrier on clock-only steps: the exit intent must be an AMM order.
+    // Reach the barrier on clock-only steps: the exit intent must be an AMM order. One unrelated
+    // curve observation moves the PROCESSED feed slot forward so the order carries a real slot stamp.
     let mut c = clock;
     let mut s = slot;
+    e2.tick(AppEvent::CurveObserved { mint: DomainMint::from_bytes([0x77; 32]), v_sol_lamports: VSOL, v_tokens: VTOK, real_sol_lamports: 1, real_tokens: 1, recv_unix_ms: Some(c), slot: s + 1_000 });
     for _ in 0..400 {
         if e2.model_mgmt_pending(&MINT).is_some() {
             break;
@@ -1583,8 +1585,12 @@ fn a_restored_amm_position_keeps_its_amm_identity_without_a_fresh_pool_observati
         ticks(&mut e2, 2);
     }
     assert!(e2.model_mgmt_pending(&MINT).is_some(), "{:?}", e2.model_lane_report());
-    // An RPC snapshot (AMM plane) lands it; a curve observation never could.
-    assert!(e2.model_on_amm_state_snapshot(MINT, [0x50; 32], [0u8; 32], 206_000_000_000_000, 85_000_000_000, 0, s + 5, c + 1_000));
+    let (cm, cs) = e2.model_mgmt_pending_created(&MINT).unwrap();
+    assert!(cs >= s && cm <= c, "order stamped with the processed slot: {cm} {cs} vs {c} {s}");
+    // An RPC snapshot (AMM plane) lands it; a curve observation never could. The feed slot `s`
+    // (processed) is AHEAD of the RPC confirmed slot (by 3 slots): the snapshot is judged by time.
+    assert!(e2.model_on_amm_state_snapshot(MINT, [0x50; 32], [0u8; 32], 206_000_000_000_000, 85_000_000_000, 0, cs - 3, c + 1_000));
+    assert_eq!(e2.model_lane_report().get("mgmt:amm_state_snapshot|slot_realigned").copied().unwrap_or(0), 1, "{:?}", e2.model_lane_report());
     assert!(!e2.model_position_open(&MINT));
     assert_eq!(e2.model_lane_report().get("mgmt:fill_curve").copied().unwrap_or(0), 0);
 }

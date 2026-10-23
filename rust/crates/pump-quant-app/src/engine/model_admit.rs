@@ -467,6 +467,17 @@ impl Engine {
             self.model_note_clock(ts_ms);
             self.model_note_slot(slot);
         }
+        // Slot domains differ: orders are stamped with the PROCESSED feed slot, the RPC snapshot
+        // carries a CONFIRMED slot that trails it by a few slots. For an order that is already
+        // older than the landing delay by TIME, align its slot stamp below the snapshot slot so
+        // the landing rule (`obs.slot > created_slot`) judges the snapshot by time, not by the
+        // feed's lead. Never applied to entry orders.
+        if let Some(o) = self.model_mgmt.orders.get_mut(&mint) {
+            if o.kind == super::model_manage::MgmtKind::Exit && ts_ms - o.created_ms >= super::model_admit::MODEL_FILL_LANDING_MS && o.created_slot >= slot {
+                o.created_slot = slot.saturating_sub(1);
+                self.mrep("mgmt:amm_state_snapshot|slot_realigned");
+            }
+        }
         let fee_parts = self.model_amm_econ.get(&mint).and_then(|(f, _, _)| *f);
         self.model_amm_econ.insert(mint, (fee_parts, Some(virtual_quote), ts_ms));
         self.mrep("mgmt:amm_state_snapshot");
