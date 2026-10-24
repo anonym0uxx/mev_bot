@@ -406,6 +406,47 @@ impl Engine {
         }
     }
 
+    /// Independent Rust protection on the AMM plane. The position store's hard stop / rug precursor
+    /// run on curve PRINTS only (`positions.on_trade`), so a held PumpSwap position had NO protection
+    /// before the policy barrier (cohort-003, 2026-10-23: every AMM loss ran to the 30-min barrier).
+    /// Same deployed widths (`lc_hard_sl_bps`, `lc_precursor_drop_bps`), same model-managed rule
+    /// (hard stop + precursor only; no trailing/discretionary trigger). Fires ONCE per position and
+    /// only opens a standing EXIT intent: the fill comes from the next landing-capable state through
+    /// the ordinary order path, so a gap below the stop is a real loss, never a fill at the stop.
+    fn model_amm_protection(&mut self, mint: [u8; 32], price_fp: i128, ts_ms: i64) {
+        if price_fp <= 0 || !self.positions.has(&mint) {
+            return;
+        }
+        let (hard_sl_bps, precursor_bps) = {
+            let p = self.positions.lifecycle_params();
+            (u128::from(p.hard_sl_bps), u128::from(p.precursor_drop_bps))
+        };
+        let Some(mp) = self.model_mgmt.pos.get_mut(&mint) else { return };
+        let px = u64::try_from(price_fp).unwrap_or(u64::MAX);
+        let prev = mp.last_px_fp;
+        mp.last_px_fp = px;
+        if mp.protect_exit.is_some() || ts_ms < mp.fill_ms {
+            return;
+        }
+        let hard_level = u128::from(mp.entry_px_fp) * (10_000 - hard_sl_bps) / 10_000;
+        let reason = if u128::from(px) <= hard_level {
+            Some("amm_hard_stop")
+        } else if prev > 0 && px < prev && u128::from(prev - px) * 10_000 / u128::from(prev) >= precursor_bps {
+            Some("amm_rug_precursor")
+        } else {
+            None
+        };
+        let Some(reason) = reason else { return };
+        mp.protect_exit = Some(reason);
+        let position_order = mp.position_order;
+        let entry = mp.entry_px_fp;
+        self.mrep(format!("protection:{reason}|intent"));
+        self.model_io_event_with(
+            "mgmt", position_order, &mint, "protection", reason, ts_ms,
+            serde_json::json!({"price_fp": px, "entry_price_fp": entry, "prev_price_fp": prev, "hard_sl_bps": hard_sl_bps, "precursor_drop_bps": precursor_bps, "action": "standing_exit_intent"}),
+        );
+    }
+
     /// Current on-chain pool state fetched by RPC for a HELD market whose exit intent is waiting
     /// (a quiet/dead pool emits no swaps, so no landing observation ever arrives). The pool's own
     /// vault balances + signed `virtual_quote_reserves` are exactly the economics a sell submitted
@@ -550,6 +591,7 @@ impl Engine {
             let price_fp =
                 (i128::from(a.quote_lamports) * 1_000_000_000) / i128::from(a.token_amount);
             self.model_mgmt_note_price(&mint, price_fp);
+            self.model_amm_protection(mint, price_fp, a.recv_unix_ms.unwrap_or(self.model_clock_ms));
             let signed = i64::try_from(a.token_amount).unwrap_or(i64::MAX);
             let entity =
                 pump_quant_wallet_graph::tracked_wallet_matcher::wallet_entity_id(&a.trader);
@@ -1299,15 +1341,19 @@ impl Engine {
                 landing_validated,
                 from_reconcile: order.confirmed.is_some(),
             });
+            // Label truth: an AMM fill reaches this point only after the fail-closed SOL-quote gate
+            // at admission AND in `model_try_fills` (`quote_sol_verified`, positively stated by a
+            // curve `CurveQuote` (zero/WSOL) or a verified Pool account). The old constant label
+            // "quote=unvalidated" described the pre-gate era, not the evidence.
             self.mrep(if order.amm {
-                "fill:position_opened_amm|quote=unvalidated"
+                "fill:position_opened_amm|quote=verified_sol"
             } else {
                 "fill:position_opened"
             });
             let clock_now = self.model_clock_ms;
             self.model_io_event_with(
                 "order", order.id, &mint, "fill", "position_opened", clock_now,
-                serde_json::json!({"amm": order.amm, "size_lamports": size, "entry_cost_lamports": entry_cost, "entry_price_fp": entry_price, "tokens": tokens, "reserve_sol_lamports": reserve_sol, "created_ms": order.created_ms, "t_dec_ms": order.snap_t_dec_ms, "cash_after_lamports": self.bankroll_balance(), "realized_lamports": self.bankroll_realized}),
+                serde_json::json!({"amm": order.amm, "quote_sol_verified": self.model_cache.quote_sol_verified(&mint), "size_lamports": size, "entry_cost_lamports": entry_cost, "entry_price_fp": entry_price, "tokens": tokens, "reserve_sol_lamports": reserve_sol, "created_ms": order.created_ms, "t_dec_ms": order.snap_t_dec_ms, "cash_after_lamports": self.bankroll_balance(), "realized_lamports": self.bankroll_realized}),
             );
             self.journal.record(Decision::Promoted {
                 mint,

@@ -1594,3 +1594,108 @@ fn a_restored_amm_position_keeps_its_amm_identity_without_a_fresh_pool_observati
     assert!(!e2.model_position_open(&MINT));
     assert_eq!(e2.model_lane_report().get("mgmt:fill_curve").copied().unwrap_or(0), 0);
 }
+
+/// AMM swap at `price` (lamports per 1e9 raw tokens) with reserves consistent with that price.
+fn amm_swap_at(e: &mut Engine, ts: i64, slot: u64, price_fp: u64, i: u32) {
+    let quote_reserve_pre: u64 = 85_000_000_000;
+    let token_reserve_pre = (u128::from(quote_reserve_pre) * 1_000_000_000 / u128::from(price_fp)) as u64;
+    e.tick(AppEvent::AmmSwap {
+        mint: mint(),
+        pool: [0x50; 32],
+        pool_is_canonical: true,
+        quote_is_wsol: true,
+        token_reserve_pre,
+        quote_reserve_pre,
+        fee_bps: Some(30),
+        fee_parts: Some((20, 5, 5)),
+        virtual_quote: Some(0),
+        is_buy: i % 2 == 0,
+        token_amount: 1_000_000_000,
+        quote_lamports: price_fp,
+        trader: wallet(900 + i),
+        fee_lamports: Some(5_000),
+        cu_consumed: Some(60_000),
+        recv_unix_ms: Some(ts),
+        slot,
+    });
+}
+
+/// The independent Rust protections (hard stop −35 %, rug precursor −30 % single print) were
+/// evaluated on curve PRINTS only; a held PumpSwap position ran unprotected to the policy barrier.
+/// Now a swap below the hard level opens ONE standing EXIT intent at once (long before the
+/// barrier); the fill comes from the NEXT landing-capable swap at ITS price (gap preserved, never
+/// the stop price); a −20 % dip opens nothing; nothing fires twice.
+#[test]
+fn amm_hard_stop_opens_a_standing_exit_intent_before_the_barrier_and_fills_at_the_next_landing_state() {
+    use pump_quant_app::engine::ManagementPolicy;
+    let mut r = rig(|_| HOLD);
+    r.e.set_management_policy(ManagementPolicy::ProdHoldControl { barrier_ms: 1_800_000 });
+    r.advance(60_000);
+    let inv0 = r.e.model_inventory_tokens(&MINT).unwrap();
+    let entry = r.e.model_held_ledger().held[0].entry_price_fp;
+    r.e.tick(AppEvent::Migration { mint: mint(), slot: r.slot });
+    // Pool trades near entry, then a −20 % dip: no protection, position stays.
+    for (i, f) in [100u64, 99, 101, 80, 82].iter().enumerate() {
+        r.clock += 1_000;
+        r.slot += 1;
+        amm_swap_at(&mut r.e, r.clock, r.slot, entry * f / 100, i as u32);
+        ticks(&mut r.e, 2);
+    }
+    assert!(r.e.model_mgmt_pending(&MINT).is_none(), "{:?}", r.e.model_lane_report());
+    assert_eq!(r.rep("protection:amm_hard_stop|intent"), 0);
+    // A swap at 60 % of entry (below the −35 % hard level): standing EXIT intent now.
+    r.clock += 1_000;
+    r.slot += 1;
+    amm_swap_at(&mut r.e, r.clock, r.slot, entry * 60 / 100, 9);
+    ticks(&mut r.e, 2);
+    assert_eq!(r.rep("protection:amm_hard_stop|intent"), 1);
+    assert_eq!(r.rep("mgmt:protect_exit|amm_hard_stop"), 1);
+    assert_eq!(r.rep("mgmt:prod_hold:barrier_exit"), 0, "the barrier has not passed");
+    assert!(r.e.model_mgmt_pending(&MINT).is_some());
+    assert!(r.e.model_position_open(&MINT), "no fill at the trigger print");
+    // The next landing-capable swap is lower still (gap): the exit fills THERE.
+    r.clock += 1_000;
+    r.slot += 1;
+    amm_swap_at(&mut r.e, r.clock, r.slot, entry * 50 / 100, 10);
+    ticks(&mut r.e, 2);
+    assert!(!r.e.model_position_open(&MINT), "{:?}", r.e.model_lane_report());
+    let f = r.e.model_mgmt_fills().last().unwrap().clone();
+    assert!(f.closed && f.tokens == inv0);
+    assert!(f.price_fp <= entry * 55 / 100, "priced from the landing state ({}), not the stop level", f.price_fp);
+    assert_eq!(r.rep("protection:amm_hard_stop|intent"), 1, "fires once");
+    // Further swaps change nothing.
+    r.clock += 1_000;
+    r.slot += 1;
+    amm_swap_at(&mut r.e, r.clock, r.slot, entry * 40 / 100, 11);
+    ticks(&mut r.e, 2);
+    assert_eq!(r.e.model_mgmt_fills().len(), 1);
+}
+
+/// A single swap −30 % below the previous print opens the intent (rug precursor) even when the
+/// hard level is not reached; two consecutive −20 % prints do not.
+#[test]
+fn amm_rug_precursor_single_print_drop_opens_the_intent_but_gradual_decline_does_not() {
+    use pump_quant_app::engine::ManagementPolicy;
+    let mut r = rig(|_| HOLD);
+    r.e.set_management_policy(ManagementPolicy::ProdHoldControl { barrier_ms: 1_800_000 });
+    r.advance(60_000);
+    let entry = r.e.model_held_ledger().held[0].entry_price_fp;
+    r.e.tick(AppEvent::Migration { mint: mint(), slot: r.slot });
+    // Rally to 150 %, then 120 % (−20 %), then 100 % (−17 %): no single −30 % print, above hard level.
+    for (i, f) in [120u64, 150, 120, 100].iter().enumerate() {
+        r.clock += 1_000;
+        r.slot += 1;
+        amm_swap_at(&mut r.e, r.clock, r.slot, entry * f / 100, i as u32);
+        ticks(&mut r.e, 2);
+    }
+    assert_eq!(r.rep("protection:amm_rug_precursor|intent"), 0, "{:?}", r.e.model_lane_report());
+    assert!(r.e.model_mgmt_pending(&MINT).is_none());
+    // 100 % → 69 % in one print (−31 %): precursor (hard level is 65 %, not reached).
+    r.clock += 1_000;
+    r.slot += 1;
+    amm_swap_at(&mut r.e, r.clock, r.slot, entry * 69 / 100, 7);
+    ticks(&mut r.e, 2);
+    assert_eq!(r.rep("protection:amm_rug_precursor|intent"), 1, "{:?}", r.e.model_lane_report());
+    assert_eq!(r.rep("protection:amm_hard_stop|intent"), 0);
+    assert!(r.e.model_mgmt_pending(&MINT).is_some());
+}

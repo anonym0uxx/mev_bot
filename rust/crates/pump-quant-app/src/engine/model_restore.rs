@@ -380,6 +380,8 @@ impl Engine {
                     position_order: h.position_order,
                     exit_attempts: 0,
                     exit_last_attempt_ms: 0,
+                    protect_exit: None,
+                    last_px_fp: 0,
                 },
             );
             rep.positions += 1;

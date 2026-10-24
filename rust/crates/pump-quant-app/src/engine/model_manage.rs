@@ -136,6 +136,12 @@ pub(super) struct MgmtPos {
     /// declared backoff schedule — never one fresh order per tick.
     pub exit_attempts: u32,
     pub exit_last_attempt_ms: i64,
+    /// Independent Rust protection fired on the AMM plane (hard stop / rug precursor evaluated on
+    /// PumpSwap swaps): the standing EXIT intent starts now, before any policy barrier. The reason
+    /// is kept for the journal; the fill still comes from the ordinary landing path (gap preserved).
+    pub protect_exit: Option<&'static str>,
+    /// Last executed swap price seen for the rug precursor (consecutive-print comparison).
+    pub last_px_fp: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -199,6 +205,8 @@ impl Engine {
                 position_order: order_id,
                 exit_attempts: 0,
                 exit_last_attempt_ms: 0,
+                protect_exit: None,
+                last_px_fp: 0,
             },
         );
     }
@@ -277,11 +285,18 @@ impl Engine {
             let Some(mp) = self.model_mgmt.pos.get(&mint).copied() else {
                 continue;
             };
-            if let super::ManagementPolicy::ProdHoldControl { barrier_ms } = self.management_policy {
+            // A standing EXIT intent exists when (a) an independent protection fired on the AMM
+            // plane (any policy), or (b) the PROD_HOLD control's barrier has passed.
+            let prod_hold_barrier = match self.management_policy {
+                super::ManagementPolicy::ProdHoldControl { barrier_ms } => Some(clock - mp.fill_ms >= barrier_ms),
+                _ => None,
+            };
+            if mp.protect_exit.is_some() || prod_hold_barrier.is_some() {
                 // PROD_HOLD control: never ask; HOLD until the barrier, then EXIT all remaining
                 // inventory through the ordinary order/fill path (landing state, fees, slippage,
-                // TTL failure rules). Protection already runs in the position store.
-                if clock - mp.fill_ms >= barrier_ms {
+                // TTL failure rules). Curve protection runs in the position store; AMM protection
+                // arrives here as `protect_exit`.
+                if mp.protect_exit.is_some() || prod_hold_barrier == Some(true) {
                     // ONE standing exit intent. The first attempt is immediate; after an expired
                     // attempt, retry only when NEW landing-capable state has arrived since the last
                     // attempt (a reserve observation on the position's plane) or when the backoff
@@ -307,7 +322,11 @@ impl Engine {
                         }
                     };
                     if retry {
-                        self.mrep("mgmt:prod_hold:barrier_exit");
+                        if let Some(reason) = mp.protect_exit {
+                            self.mrep(format!("mgmt:protect_exit|{reason}"));
+                        } else {
+                            self.mrep("mgmt:prod_hold:barrier_exit");
+                        }
                         self.mrep(format!("mgmt:exit_attempt|{why}"));
                         if let Some(m) = self.model_mgmt.pos.get_mut(&mint) {
                             m.exit_attempts = m.exit_attempts.saturating_add(1);
@@ -315,7 +334,7 @@ impl Engine {
                         }
                         let attempts = mp.exit_attempts + 1;
                         self.model_mgmt_place(mint, MgmtKind::Exit, 10_000, clock);
-                        self.model_io_event_with("mgmt", mp.position_order, &mint, "exit_intent", why, clock, serde_json::json!({"attempt": attempts, "barrier_ms": barrier_ms, "held_ms": clock - mp.fill_ms}));
+                        self.model_io_event_with("mgmt", mp.position_order, &mint, "exit_intent", why, clock, serde_json::json!({"attempt": attempts, "barrier_ms": match self.management_policy { super::ManagementPolicy::ProdHoldControl { barrier_ms } => barrier_ms, _ => 0 }, "protect_exit": mp.protect_exit, "held_ms": clock - mp.fill_ms}));
                         if attempts == 10 || attempts == 100 || attempts % 1000 == 0 {
                             self.mrep(format!("mgmt:exit_attempts_milestone|{attempts}"));
                         }

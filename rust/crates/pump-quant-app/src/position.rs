@@ -701,6 +701,12 @@ impl ScalpLifecycle {
     }
 
     /// Hand discretionary management of a held position to the model (idempotent).
+    /// The deployed protection parameters (hard stop / rug precursor widths), read-only.
+    #[must_use]
+    pub fn lifecycle_params(&self) -> &LifecycleParams {
+        &self.params
+    }
+
     pub fn set_model_managed(&mut self, mint: &[u8; 32]) -> bool {
         match self.open.get_mut(mint) {
             Some(p) => {
