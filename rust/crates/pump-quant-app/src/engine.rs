@@ -971,6 +971,9 @@ pub struct Engine {
     /// ARM B: declared "liquidity absorption" admission veto threshold R* in basis points
     /// (`None` = arm A, no veto). Set once at construction of a research arm; never tuned in-run.
     pub(crate) entry_absorption_veto_bps: Option<u64>,
+    /// OBSERVATION-ONLY entry authority (research-004): every valid BUY verdict is journaled, then
+    /// refused by name BEFORE any capital/portfolio veto. Zero order authority; prompts unchanged.
+    pub(crate) entry_observation_only: bool,
     /// Feed clock of the last idle-mint sweep (see `model_sweep_idle`).
     pub(crate) model_last_sweep_ms: i64,
     /// Exits excluded from every economic assessment, with the reason. Visible, never zero-filled.
@@ -1587,6 +1590,10 @@ impl Engine {
     }
 
     /// ARM B: install the declared absorption veto (R* in bps). Paper research arms only.
+    pub fn set_entry_observation_only(&mut self, on: bool) {
+        self.entry_observation_only = on;
+    }
+
     pub fn set_entry_absorption_veto_bps(&mut self, r_star_bps: Option<u64>) {
         self.entry_absorption_veto_bps = r_star_bps;
     }
@@ -1773,6 +1780,7 @@ impl Engine {
             model_loss_budget: None,
             model_stopped_mints: std::collections::BTreeMap::new(),
             entry_absorption_veto_bps: None,
+            entry_observation_only: false,
             model_last_sweep_ms: 0,
             model_excluded_exits: Vec::new(),
             model_recon_faults: BTreeMap::new(),

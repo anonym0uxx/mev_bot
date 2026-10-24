@@ -2522,6 +2522,12 @@ fn main() -> ExitCode {
         engine.set_model_loss_budget(b, start);
         eprintln!("[pq-daemon] SEGMENT LOSS BUDGET: {b} lamports worst-case, realized at segment start {start}");
     }
+    // ── Observation-only entry authority (PQ_OBSERVATION_ONLY=1, research-004): valid BUY verdicts
+    // are journaled and refused by name before any capital veto; no order can ever be created.
+    if std::env::var("PQ_OBSERVATION_ONLY").map(|v| v == "1").unwrap_or(false) {
+        engine.set_entry_observation_only(true);
+        eprintln!("[pq-daemon] OBSERVATION-ONLY entry authority: every BUY verdict → notrade:observation_only (zero order authority)");
+    }
     // ── Research arms (PQ_RESEARCH_ARMS="B:veto:<bps>;C:rule:<bps>") — paper-only isolated books.
     if let Ok(spec) = std::env::var("PQ_RESEARCH_ARMS") {
         if !spec.trim().is_empty() {

@@ -1306,6 +1306,16 @@ impl Engine {
         // R = sell_volume_lamports / quote_reserves_lamports (cumulative curve+AMM sell
         // quote volume since first captured trade ÷ raw quote vault at the snapshot).
         // Unavailable R (missing/zero denominator) is a named refusal, never zero risk.
+        if let (true, Ok(c)) = (self.entry_observation_only, &result) {
+            if c.text.starts_with("DECISION: BUY") {
+                // Observation-only authority: the BUY intention is journaled (disposition) and no
+                // order can exist. Placed BEFORE capital/portfolio vetoes so the baseline's intended
+                // BUYs are collected regardless of the (untouched) reference account.
+                self.mrep(format!("notrade:observation_only|{}", meta.dims));
+                self.model_io_event("entry", v.id.0, &v.mint, "disposition", "notrade:observation_only", clock);
+                return;
+            }
+        }
         if let (Some(r_star_bps), Ok(c)) = (self.entry_absorption_veto_bps, &result) {
             if c.text.starts_with("DECISION: BUY") {
                 match crate::absorption::veto_decision(&meta.snap.user_prompt, r_star_bps) {

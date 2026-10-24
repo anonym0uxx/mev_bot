@@ -3147,3 +3147,26 @@ fn a_forgotten_mint_that_returns_is_refused_by_name_never_rendered_with_reset_hi
     // No prompt was rendered for the returning mint: the stub saw no new prompt after the forget.
     assert_eq!(prompts.lock().unwrap().len(), n_prompts_before, "no prompt with a reset history: {r:?}");
 }
+
+/// Observation-only authority (research-004): a valid BUY is journaled as a BUY intention and refused
+/// by name BEFORE capital vetoes; no order, no reservation, prompts unchanged (same rendered bytes as
+/// the trading configuration), SKIPs unaffected.
+#[test]
+fn observation_only_journals_buy_intentions_and_never_creates_orders() {
+    let prompts = Arc::new(Mutex::new(Vec::new()));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut e = Engine::new(cfg(), RunMode::Paper);
+    e.set_entry_observation_only(true);
+    e.enable_paper_model(Script { prompts: Arc::clone(&prompts), calls, answer: |_| "DECISION: BUY\nSIZE: FULL\nINVALIDATION: none\nEVIDENCE: stub" });
+    for ev in &events(40) {
+        e.tick(ev.clone());
+    }
+    ticks(&mut e, 8);
+    let r = e.model_lane_report();
+    assert!(r.get("dispatched").copied().unwrap_or(0) >= 1, "{r:?}");
+    assert!(r.iter().any(|(k, v)| k.starts_with("notrade:observation_only") && *v >= 1), "{r:?}");
+    assert_eq!(e.model_pending_orders(), 0);
+    assert_eq!(e.bankroll_committed_lamports(), 0);
+    assert!(e.model_held_mints().is_empty());
+    assert!(!r.keys().any(|k| k.starts_with("order:") || k.starts_with("fill:")), "{r:?}");
+}
