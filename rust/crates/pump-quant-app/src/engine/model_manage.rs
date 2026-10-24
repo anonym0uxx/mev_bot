@@ -119,6 +119,9 @@ pub struct MgmtFill {
     pub is_add: bool,
 }
 
+/// Protective-exit reasons (static so the latch can be persisted and restored by name).
+pub const PROTECT_REASONS: [&str; 2] = ["amm_hard_stop", "amm_rug_precursor"];
+
 #[derive(Debug, Clone, Copy)]
 pub(super) struct MgmtPos {
     pub fill_ms: i64,

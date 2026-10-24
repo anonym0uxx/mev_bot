@@ -956,6 +956,10 @@ pub struct Engine {
     /// Mints whose open position is a paper-model routing fill that is NOT assessable. Their exits
     /// settle cash but feed no assessment consumer (see `book_exit`).
     model_quarantine: std::collections::BTreeSet<[u8; 32]>,
+    /// Declared segment loss budget: `(budget_lamports, realized_lamports_at_segment_start)`.
+    /// Admission bounds deployable capital by the WORST-CASE remaining budget
+    /// (budget + realized_since_start − all open basis); exhausted → `notrade:loss_budget`.
+    model_loss_budget: Option<(u64, i128)>,
     /// Exits excluded from every economic assessment, with the reason. Visible, never zero-filled.
     model_excluded_exits: Vec<model_admit::ExcludedExit>,
     model_recon_faults: BTreeMap<u64, model_admit::ReconFault>,
@@ -1723,6 +1727,7 @@ impl Engine {
             model_position_order: BTreeMap::new(),
             model_fills: Vec::new(),
             model_quarantine: std::collections::BTreeSet::new(),
+            model_loss_budget: None,
             model_excluded_exits: Vec::new(),
             model_recon_faults: BTreeMap::new(),
             model_amm_econ: BTreeMap::new(),

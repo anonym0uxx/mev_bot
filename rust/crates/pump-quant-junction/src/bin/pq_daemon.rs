@@ -2498,6 +2498,17 @@ fn main() -> ExitCode {
         engine.set_model_entries_blocked(true);
         eprintln!("[pq-daemon] FEED BUDGET: entries remain blocked from persisted state: {r}");
     }
+    // ── Declared segment loss budget (atomic at admission; see Engine::set_model_loss_budget).
+    // PQ_SEGMENT_LOSS_BUDGET_LAMPORTS = worst-case budget; PQ_SEGMENT_REALIZED_START_LAMPORTS =
+    // the account's realized P&L at the segment start (the restored ledger value is the default).
+    if let Some(b) = std::env::var("PQ_SEGMENT_LOSS_BUDGET_LAMPORTS").ok().and_then(|v| v.parse::<u64>().ok()) {
+        let start = std::env::var("PQ_SEGMENT_REALIZED_START_LAMPORTS")
+            .ok()
+            .and_then(|v| v.parse::<i128>().ok())
+            .unwrap_or_else(|| engine.bankroll_realized_lamports());
+        engine.set_model_loss_budget(b, start);
+        eprintln!("[pq-daemon] SEGMENT LOSS BUDGET: {b} lamports worst-case, realized at segment start {start}");
+    }
     let pool_ttl_s: i64 = std::env::var("PQ_LS_POOL_TTL_S").ok().and_then(|v| v.parse().ok()).unwrap_or(7200);
     // Idle expiry: the engine's liveness horizon is MAX_IDLE_MS = 60 s without a trade; a pool feed
     // is kept 10x that (default 600 s) after its last observed swap so a revived pool is not lost

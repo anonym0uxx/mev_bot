@@ -61,6 +61,9 @@ pub struct HeldEntry {
     /// restart, replayed/late states at or before this clock are history, not fresh state: they can
     /// neither fire nor erase protection. 0 = none (older ledgers).
     pub last_state_ms: i64,
+    /// Protective exit already triggered for this position (reason), persisted so a restart can
+    /// neither forget the latch nor re-fire it. Empty = none.
+    pub protect_exit: String,
 }
 
 /// One pending order. After a restart its acknowledgement is UNKNOWN, so it restores as uncertain.
@@ -184,6 +187,7 @@ impl HeldLedger {
                 "version": h.version,
                 "position_order": h.position_order,
                 "last_state_ms": h.last_state_ms,
+                "protect_exit": h.protect_exit,
             })).collect::<Vec<_>>(),
             "pending": self.pending.iter().map(|p| json!({
                 "kind": p.kind,
@@ -248,6 +252,7 @@ impl HeldLedger {
                 version: u(h, "version")?,
                 position_order: u(h, "position_order")?,
                 last_state_ms: h["last_state_ms"].as_i64().unwrap_or(0),
+                protect_exit: h["protect_exit"].as_str().unwrap_or("").to_string(),
             });
         }
         let mut pending = Vec::new();
@@ -403,6 +408,7 @@ mod tests {
                 version: 3,
                 position_order: 1,
                 last_state_ms: 0,
+                protect_exit: String::new(),
             }],
             pending: vec![HeldPending {
                 kind: "reduce".into(),

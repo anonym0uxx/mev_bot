@@ -260,6 +260,26 @@ impl Engine {
     /// Block or release NEW model entries (an emergency / SAFETY_OFF supervisor hook). Held-position
     /// handling, the feed and every tick are untouched; only new asks stop, and in-flight answers
     /// are discarded rather than acted on.
+    /// Realized P&L of the model account (lamports, signed).
+    #[must_use]
+    pub fn bankroll_realized_lamports(&self) -> i128 {
+        self.bankroll_realized
+    }
+
+    /// Declare the segment loss budget enforced ATOMICALLY at admission (see `model_loss_budget`).
+    pub fn set_model_loss_budget(&mut self, budget_lamports: u64, realized_at_segment_start: i128) {
+        self.model_loss_budget = Some((budget_lamports, realized_at_segment_start));
+    }
+
+    /// Worst-case remaining loss budget in lamports (`None` = no budget declared):
+    /// budget + (realized − realized_at_start) − committed open basis − pending entry clips.
+    #[must_use]
+    pub fn model_loss_budget_headroom(&self) -> Option<i128> {
+        let (budget, start) = self.model_loss_budget?;
+        let pending: i128 = self.model_orders.values().map(|o| i128::from(o.clip_lamports)).sum();
+        Some(i128::from(budget) + (self.bankroll_realized - start) - i128::try_from(self.bankroll_committed).unwrap_or(i128::MAX) - pending)
+    }
+
     pub fn set_model_entries_blocked(&mut self, blocked: bool) {
         self.model_table.set_entries_blocked(blocked);
     }
@@ -425,7 +445,10 @@ impl Engine {
         // Fresh-state rule: only a state newer than everything this position has already seen
         // (including before a restart, via the persisted `last_state_ms`) is evidence. A replayed,
         // late or reordered older state is history: it cannot fire protection or move `prev`.
-        if ts_ms <= mp.last_state_ms || ts_ms < mp.fill_ms {
+        // Strictly older states are history. EQUAL clocks are accepted: distinct swaps can share a
+        // millisecond, and the latch below (persisted) means re-seeing a state can never erase or
+        // double a trigger.
+        if ts_ms < mp.last_state_ms || ts_ms < mp.fill_ms {
             self.mrep("protection:amm_stale_state_skipped");
             return;
         }
@@ -1005,11 +1028,27 @@ impl Engine {
         let balance = self.bankroll_balance();
         let committed = u64::try_from(self.bankroll_committed).unwrap_or(u64::MAX);
         let live = self.model_live_mints();
+        // Declared loss budget: the deployable capital for THIS clip is bounded by the worst-case
+        // remaining budget (every open basis and pending clip assumed lost). Exhausted → veto by
+        // name before the authority sizes anything.
+        let budget_headroom = self.model_loss_budget_headroom();
+        if budget_headroom.is_some_and(|h| h <= 0) {
+            self.mrep("notrade:loss_budget");
+            self.model_io_event("entry", v.id.0, &v.mint, "disposition", "notrade:loss_budget", clock);
+            return;
+        }
+        let deployable = {
+            let d = deployable_capital(balance, floor);
+            match budget_headroom {
+                Some(h) => d.min(u64::try_from(h).unwrap_or(0)),
+                None => d,
+            }
+        };
         let req = EntryRequest {
             system_prompt: &meta.snap.system_prompt,
             user_prompt: &meta.snap.user_prompt,
             free_cash_lamports: balance.saturating_sub(committed),
-            portfolio_deployable_lamports: deployable_capital(balance, floor),
+            portfolio_deployable_lamports: deployable,
             bankroll_floor_lamports: floor,
             venue: if meta.snap.size_amm {
                 EntryVenue::Amm
@@ -1126,6 +1165,7 @@ impl Engine {
                     NoTradeReason::OffContract(c) => format!("off_contract:{c:?}"),
                     NoTradeReason::UnpayableClip(_) => "unpayable_clip".to_string(),
                     NoTradeReason::BreachesBankrollFloor => "breaches_floor".to_string(),
+                    NoTradeReason::LossBudget => "loss_budget".to_string(),
                     NoTradeReason::ManagementVerb => "management_verb".to_string(),
                     NoTradeReason::Portfolio(_) => "portfolio".to_string(),
                     NoTradeReason::OwnImpact(_) => "own_impact".to_string(),

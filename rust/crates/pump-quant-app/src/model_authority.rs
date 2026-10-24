@@ -176,6 +176,9 @@ pub enum NoTradeReason {
     UnpayableClip(SizeError),
     /// The clip would leave the account below its survival floor.
     BreachesBankrollFloor,
+    /// The declared segment loss budget (worst case: every open basis plus this clip lost) is
+    /// exhausted — a capital veto declared before results, not a model failure.
+    LossBudget,
     /// The entry prompt was answered with a management verb (ADD/REDUCE/EXIT) — a routing
     /// error by the caller, not an entry decision.
     ManagementVerb,

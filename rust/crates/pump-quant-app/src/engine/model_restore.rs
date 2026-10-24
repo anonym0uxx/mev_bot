@@ -11,6 +11,7 @@
 //! operator evidence settles them. Nothing is guessed: any inconsistency refuses the WHOLE restore by name
 //! and the file is left untouched. A restored position keeps its true fill time, step and extremes.
 
+use super::model_manage::PROTECT_REASONS;
 use std::path::{Path, PathBuf};
 
 use super::model_manage::{MgmtKind, MgmtOrder, MgmtPos};
@@ -78,6 +79,7 @@ impl Engine {
                 version: mp.map_or(1, |m| m.version),
                 position_order: mp.map_or(0, |m| m.position_order),
                 last_state_ms: mp.map_or(0, |m| m.last_state_ms),
+                protect_exit: mp.and_then(|m| m.protect_exit).unwrap_or("").to_string(),
             });
         }
         held.sort_by_key(|h| h.mint);
@@ -381,7 +383,7 @@ impl Engine {
                     position_order: h.position_order,
                     exit_attempts: 0,
                     exit_last_attempt_ms: 0,
-                    protect_exit: None,
+                    protect_exit: PROTECT_REASONS.iter().copied().find(|r| *r == h.protect_exit),
                     last_px_fp: 0,
                     last_state_ms: h.last_state_ms,
                 },

@@ -1911,3 +1911,103 @@ fn combined_fill_migration_restart_duplicates_protection_silence_and_snapshot_re
     assert_eq!(e2.model_mgmt_fills().len(), 1);
     let _ = fills0;
 }
+
+/// Builds the entry flow with a declared loss budget in force BEFORE admission.
+fn rig_with_loss_budget(budget_lamports: u64) -> (Engine, usize) {
+    let prompts = Arc::new(Mutex::new(Vec::new()));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut e = Engine::new(cfg(), RunMode::Paper);
+    e.set_model_loss_budget(budget_lamports, 0);
+    e.enable_paper_model(Script { prompts, calls, answer: |_| HOLD });
+    for ev in &events(40) {
+        e.tick(ev.clone());
+    }
+    ticks(&mut e, 8);
+    let t_last = T0 + 1_000 + 40 * 2_000;
+    curve(&mut e, t_last + 1_500, 2_100, 200_000_000);
+    let fills = e.model_all_fills().len();
+    (e, fills)
+}
+
+/// The declared segment loss budget is enforced ATOMICALLY at admission (not by a periodic
+/// guard): an exhausted budget vetoes by name before sizing; a small budget bounds the clip so the
+/// worst case (whole clip lost) stays inside it; the headroom accounts for open basis immediately.
+#[test]
+fn declared_loss_budget_is_enforced_at_admission_and_bounds_the_worst_case_clip() {
+    let (e0, fills0) = rig_with_loss_budget(0);
+    assert_eq!(fills0, 0, "exhausted budget admits nothing: {:?}", e0.model_lane_report());
+    assert!(e0.model_lane_report().get("notrade:loss_budget").copied().unwrap_or(0) >= 1);
+    assert!(!e0.model_position_open(&MINT));
+
+    // A budget too small for the minimum payable clip is a capital veto by name — never a forced
+    // micro-fill below the fee buffer.
+    let (e_small, fills_small) = rig_with_loss_budget(80_000_000);
+    assert_eq!(fills_small, 0);
+    assert!(e_small.model_lane_report().get("notrade:unpayable_clip").copied().unwrap_or(0) >= 1, "{:?}", e_small.model_lane_report());
+
+    let (e2, fills2) = rig_with_loss_budget(2_000_000_000);
+    assert_eq!(fills2, 1);
+    let unbounded = e2.model_accounting_view(&MINT).remaining_cost_basis.unwrap_or(0);
+
+    let (e1, fills1) = rig_with_loss_budget(1_000_000_000); // bounds deployable 1.5 → 1.0 SOL
+    assert_eq!(fills1, 1, "{:?}", e1.model_lane_report());
+    let cost1 = e1.model_accounting_view(&MINT).remaining_cost_basis.unwrap_or(0);
+    assert!(cost1 > 0 && cost1 < unbounded && cost1 <= 1_000_000_000, "clip bounded by the worst-case budget: {cost1} vs {unbounded}");
+    let head = e1.model_loss_budget_headroom().unwrap();
+    assert_eq!(head, 1_000_000_000 - i128::from(cost1), "open basis counted against the budget at once");
+}
+
+/// Two distinct AMM states can share a millisecond. Equality of clocks must not erase the later
+/// one: the first (0.70×) is above the level, the second at the same clock (0.60×) fires.
+#[test]
+fn amm_states_sharing_a_timestamp_are_both_evaluated() {
+    use pump_quant_app::engine::ManagementPolicy;
+    let mut r = rig(|_| HOLD);
+    r.e.set_management_policy(ManagementPolicy::ProdHoldControl { barrier_ms: 1_800_000 });
+    r.advance(60_000);
+    let entry = r.e.model_held_ledger().held[0].entry_price_fp;
+    r.e.tick(AppEvent::Migration { mint: mint(), slot: r.slot });
+    let (c, s) = (r.clock + 1_000, r.slot + 1);
+    amm_swap_at(&mut r.e, c, s, entry * 70 / 100, 0);
+    ticks(&mut r.e, 1);
+    assert_eq!(r.e.model_lane_report().get("protection:amm_hard_stop|intent").copied().unwrap_or(0), 0);
+    amm_swap_at(&mut r.e, c, s, entry * 60 / 100, 1);
+    ticks(&mut r.e, 1);
+    assert_eq!(r.e.model_lane_report().get("protection:amm_stale_state_skipped").copied().unwrap_or(0), 0);
+    assert_eq!(r.e.model_lane_report().get("protection:amm_hard_stop|intent").copied().unwrap_or(0), 1);
+}
+
+/// The protective latch survives a restart: the standing intent is restored, and re-seeing the
+/// triggering state (same clock) neither fires a second intent nor erases the first.
+#[test]
+fn protective_latch_and_intent_survive_restart_without_refiring() {
+    use pump_quant_app::engine::ManagementPolicy;
+    let hp = held_path("latch_restart");
+    let mut r = rig(|_| HOLD);
+    r.e.set_management_policy(ManagementPolicy::ProdHoldControl { barrier_ms: 1_800_000 });
+    r.e.model_held_attach(&hp);
+    r.advance(60_000);
+    let entry = r.e.model_held_ledger().held[0].entry_price_fp;
+    r.e.tick(AppEvent::Migration { mint: mint(), slot: r.slot });
+    let (c, s) = (r.clock + 1_000, r.slot + 1);
+    amm_swap_at(&mut r.e, c, s, entry * 60 / 100, 0);
+    ticks(&mut r.e, 1);
+    assert_eq!(r.e.model_lane_report().get("protection:amm_hard_stop|intent").copied().unwrap_or(0), 1);
+    assert!(r.e.model_held_persist_now());
+    let ledger = r.e.model_held_ledger();
+    assert_eq!(ledger.held[0].protect_exit, "amm_hard_stop");
+    assert_eq!(ledger.held[0].last_state_ms, c);
+    drop(r);
+    let mut e2 = fresh_engine(2_000_000_000, &hp);
+    e2.set_management_policy(ManagementPolicy::ProdHoldControl { barrier_ms: 1_800_000 });
+    e2.model_held_attach(&hp);
+    e2.model_held_restore().expect("restore").expect("ledger");
+    e2.tick(AppEvent::LaunchObserved { mint: mint(), creator: CREATOR, launch_unix_ms: T0 });
+    e2.tick(AppEvent::CurveQuote { mint: mint(), quote_mint: [0u8; 32] });
+    assert!(e2.model_mgmt_pending(&MINT).is_some(), "standing exit intent restored");
+    amm_swap_at(&mut e2, c, s, entry * 60 / 100, 0);
+    amm_swap_at(&mut e2, c + 100, s, entry * 55 / 100, 1);
+    ticks(&mut e2, 2);
+    assert_eq!(e2.model_lane_report().get("protection:amm_hard_stop|intent").copied().unwrap_or(0), 0, "latched: no second intent");
+    assert!(e2.model_position_open(&MINT) || e2.model_mgmt_fills().len() == 1, "either still pending or landed exactly once");
+}
