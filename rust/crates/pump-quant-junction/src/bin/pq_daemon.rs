@@ -3028,7 +3028,7 @@ fn main() -> ExitCode {
             let memo = shared_qwen.as_ref().map(|m| {
                 serde_json::json!({"physical_calls": m.misses.load(std::sync::atomic::Ordering::Relaxed), "memo_hits": m.hits.load(std::sync::atomic::Ordering::Relaxed)})
             });
-            let doc = serde_json::json!({"unix_ms": now_ms, "arms": arms.status_json(), "shared_lane": memo, "primary_dispatched": engine.model_lane_report().get("dispatched").copied().unwrap_or(0)});
+            let doc = serde_json::json!({"unix_ms": SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0), "arms": arms.status_json(), "shared_lane": memo, "primary_dispatched": engine.model_lane_report().get("dispatched").copied().unwrap_or(0)});
             let _ = std::fs::write("data/arms/ARMS_STATUS.json", doc.to_string());
             eprintln!("[pq-daemon] RESEARCH ARMS status: shared_lane={} arms={}", doc["shared_lane"], doc["arms"].as_array().map(|a| a.iter().map(|x| format!("{}:held={} pending={} balance={}", x["id"], x["held"], x["pending"], x["bankroll_balance_lamports"])).collect::<Vec<_>>().join(" ")).unwrap_or_default());
         }
