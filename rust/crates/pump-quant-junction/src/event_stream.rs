@@ -529,11 +529,18 @@ fn event_fields_json(event: &AppEvent) -> String {
             parts.push(format!(r#""slot":{}"#, slot));
         }
         AppEvent::AmmSwap {
+            pool,
+            pool_is_canonical,
+            quote_is_wsol,
             token_reserve_pre,
             quote_reserve_pre,
+            fee_bps,
+            fee_parts,
+            virtual_quote,
             is_buy,
             token_amount,
             quote_lamports,
+            trader,
             recv_unix_ms,
             slot,
             ..
@@ -547,6 +554,20 @@ fn event_fields_json(event: &AppEvent) -> String {
                 parts.push(format!(r#""recv_unix_ms":{}"#, t));
             }
             parts.push(format!(r#""slot":{}"#, slot));
+            // STATE-MATCHED pricing inputs (measurement repair 2026-10-24): the swap event's own
+            // `virtual_quote_reserves` (pump permits negative; `null` = layout unverified → the
+            // state is UNAVAILABLE for pricing, never 0), fee parts, pool identity/quote identity
+            // and the trader. A later reader must not carry a dispatch-time vq forward.
+            parts.push(format!(r#""pool_hex":"{}""#, pool.iter().map(|b| format!("{b:02x}")).collect::<String>()));
+            parts.push(format!(r#""pool_is_canonical":{}"#, pool_is_canonical));
+            parts.push(format!(r#""quote_is_wsol":{}"#, quote_is_wsol));
+            parts.push(format!(r#""virtual_quote":{}"#, virtual_quote.map(|v| v.to_string()).unwrap_or_else(|| "null".into())));
+            parts.push(format!(r#""fee_bps":{}"#, fee_bps.map(|v| v.to_string()).unwrap_or_else(|| "null".into())));
+            parts.push(format!(
+                r#""fee_parts":{}"#,
+                fee_parts.map(|(l, p, c)| format!("[{l},{p},{c}]")).unwrap_or_else(|| "null".into())
+            ));
+            parts.push(format!(r#""trader_hex":"{}""#, trader.iter().map(|b| format!("{b:02x}")).collect::<String>()));
         }
         AppEvent::LaunchObserved { launch_unix_ms, .. } => {
             parts.push(format!(r#""launch_unix_ms":{}"#, launch_unix_ms));
@@ -1102,5 +1123,36 @@ garbage line 2
             AppEvent::MarketTrade { trader_pubkey, .. } => assert_eq!(trader_pubkey, None),
             other => panic!("wrong variant: {other:?}"),
         }
+    }
+}
+
+
+#[cfg(test)]
+mod amm_swap_state_fields {
+    use super::*;
+    use pump_quant_app::event::AppEvent;
+    use pump_quant_domain::ids::Mint;
+
+    fn ev(vq: Option<i128>) -> AppEvent {
+        AppEvent::AmmSwap {
+            mint: Mint::from_bytes([7u8; 32]), pool: [9u8; 32], pool_is_canonical: true, quote_is_wsol: true,
+            token_reserve_pre: 1_000, quote_reserve_pre: 2_000, fee_bps: Some(125), fee_parts: Some((20, 5, 100)),
+            virtual_quote: vq, is_buy: true, token_amount: 10, quote_lamports: 20, trader: [3u8; 32],
+            fee_lamports: None, cu_consumed: None, recv_unix_ms: Some(1_700_000_000_000), slot: 42,
+        }
+    }
+
+    #[test]
+    fn amm_swap_journal_carries_state_matched_vq_fee_identity_and_trader() {
+        let line = event_to_json(&ev(Some(-17_500)), 0);
+        for needle in [r#""virtual_quote":-17500"#, r#""fee_parts":[20,5,100]"#, r#""fee_bps":125"#, r#""pool_is_canonical":true"#, r#""quote_is_wsol":true"#] {
+            assert!(line.contains(needle), "{needle} missing in {line}");
+        }
+        assert!(line.contains(&format!(r#""pool_hex":"{}""#, "09".repeat(32))));
+        assert!(line.contains(&format!(r#""trader_hex":"{}""#, "03".repeat(32))));
+        // Unverified layout → explicit null, never 0.
+        let line = event_to_json(&ev(None), 0);
+        assert!(line.contains(r#""virtual_quote":null"#), "{line}");
+        assert!(!line.contains(r#""virtual_quote":0"#));
     }
 }
