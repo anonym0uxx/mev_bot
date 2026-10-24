@@ -1699,3 +1699,114 @@ fn amm_rug_precursor_single_print_drop_opens_the_intent_but_gradual_decline_does
     assert_eq!(r.rep("protection:amm_hard_stop|intent"), 0);
     assert!(r.e.model_mgmt_pending(&MINT).is_some());
 }
+
+/// HARD-STOP SEMANTICS: the hard stop is an ABSOLUTE level below the fill-anchored entry price
+/// (entry × (1 − 3500 bp) = 0.65), evaluated on the pool spot at every accepted state. A gradual
+/// path 1.00 → 0.90 → 0.80 → 0.70 → 0.64 crosses it on the last state although no single state
+/// moved −30 % (the precursor never fires); the trigger is the threshold crossing itself.
+#[test]
+fn amm_hard_stop_is_an_absolute_entry_anchored_level_and_fires_on_a_gradual_crossing() {
+    use pump_quant_app::engine::ManagementPolicy;
+    let mut r = rig(|_| HOLD);
+    r.e.set_management_policy(ManagementPolicy::ProdHoldControl { barrier_ms: 1_800_000 });
+    r.advance(60_000);
+    let entry = r.e.model_held_ledger().held[0].entry_price_fp;
+    r.e.tick(AppEvent::Migration { mint: mint(), slot: r.slot });
+    for (i, f) in [100u64, 90, 80, 70].iter().enumerate() {
+        r.clock += 1_000;
+        r.slot += 1;
+        amm_swap_at(&mut r.e, r.clock, r.slot, entry * f / 100, i as u32);
+        ticks(&mut r.e, 2);
+        assert_eq!(r.rep("protection:amm_hard_stop|intent"), 0, "0.{f} is above the 0.65 level");
+    }
+    r.clock += 1_000;
+    r.slot += 1;
+    amm_swap_at(&mut r.e, r.clock, r.slot, entry * 64 / 100, 9);
+    ticks(&mut r.e, 2);
+    assert_eq!(r.rep("protection:amm_hard_stop|intent"), 1, "{:?}", r.e.model_lane_report());
+    assert_eq!(r.rep("protection:amm_rug_precursor|intent"), 0, "no single −30 % state on this path");
+    assert!(r.e.model_mgmt_pending(&MINT).is_some());
+}
+
+/// The entry reference survives a restart (restored from the durable held ledger), so the hard
+/// level after restart is the ORIGINAL fill price × 0.65 — not the first post-restart print; and a
+/// reordered OLDER state (ts before the newest accepted one) can neither fire nor erase a trigger.
+#[test]
+fn amm_hard_stop_entry_reference_survives_restart_and_ignores_reordered_older_states() {
+    use pump_quant_app::engine::ManagementPolicy;
+    let hp = held_path("amm_hard_stop_restart");
+    let mut r = rig(|_| HOLD);
+    r.e.set_management_policy(ManagementPolicy::ProdHoldControl { barrier_ms: 1_800_000 });
+    r.e.model_held_attach(&hp);
+    r.advance(60_000);
+    let entry = r.e.model_held_ledger().held[0].entry_price_fp;
+    r.e.tick(AppEvent::Migration { mint: mint(), slot: r.slot });
+    r.clock += 1_000;
+    r.slot += 1;
+    amm_swap_at(&mut r.e, r.clock, r.slot, entry, 0);
+    ticks(&mut r.e, 2);
+    assert!(r.e.model_held_persist_now());
+    let (c0, s0) = (r.clock, r.slot);
+    drop(r);
+    let mut e2 = fresh_engine(2_000_000_000, &hp);
+    e2.set_management_policy(ManagementPolicy::ProdHoldControl { barrier_ms: 1_800_000 });
+    e2.model_held_attach(&hp);
+    e2.model_held_restore().expect("restore").expect("ledger");
+    e2.tick(AppEvent::LaunchObserved { mint: mint(), creator: CREATOR, launch_unix_ms: T0 });
+    e2.tick(AppEvent::CurveQuote { mint: mint(), quote_mint: [0u8; 32] });
+    assert_eq!(e2.model_held_ledger().held[0].entry_price_fp, entry, "entry reference restored");
+    // First post-restart state is already 0.70 × entry: a restart must NOT re-anchor at 0.70.
+    let mut c = c0 + 5_000;
+    let mut s = s0 + 5;
+    amm_swap_at(&mut e2, c, s, entry * 70 / 100, 1);
+    ticks(&mut e2, 2);
+    assert_eq!(e2.model_lane_report().get("protection:amm_hard_stop|intent").copied().unwrap_or(0), 0);
+    // A reordered OLDER state (ts < newest accepted) at 0.30 × entry is dropped, never a trigger.
+    amm_swap_at(&mut e2, c - 3_000, s - 3, entry * 30 / 100, 2);
+    ticks(&mut e2, 2);
+    assert_eq!(e2.model_lane_report().get("protection:amm_hard_stop|intent").copied().unwrap_or(0), 0, "{:?}", e2.model_lane_report());
+    assert!(e2.model_lane_report().get("amm_swap_dropped_out_of_order").copied().unwrap_or(0) >= 1);
+    // 0.64 × ORIGINAL entry (0.914 × the post-restart first print): fires — anchored to the fill.
+    c += 1_000;
+    s += 1;
+    amm_swap_at(&mut e2, c, s, entry * 64 / 100, 3);
+    ticks(&mut e2, 2);
+    assert_eq!(e2.model_lane_report().get("protection:amm_hard_stop|intent").copied().unwrap_or(0), 1, "{:?}", e2.model_lane_report());
+    // A later duplicate of an older, higher state cannot erase the standing intent.
+    amm_swap_at(&mut e2, c + 500, s + 1, entry * 70 / 100, 4);
+    ticks(&mut e2, 2);
+    assert!(e2.model_mgmt_pending(&MINT).is_some() || !e2.model_position_open(&MINT));
+}
+
+/// AMM protection is independent of entry admission and of the model: it fires while new entries
+/// are blocked (operator pause / budget gate) and while the served management model returns
+/// unusable answers (inference failure → invalid verdict) under the ordinary served policy.
+#[test]
+fn amm_protection_stays_active_under_entry_pause_and_management_inference_failure() {
+    let mut r = rig(|_| "");
+    r.e.set_model_entries_blocked(true);
+    r.advance(60_000);
+    let entry = r.e.model_held_ledger().held[0].entry_price_fp;
+    r.e.tick(AppEvent::Migration { mint: mint(), slot: r.slot });
+    for (i, f) in [100u64, 95].iter().enumerate() {
+        r.clock += 1_000;
+        r.slot += 1;
+        amm_swap_at(&mut r.e, r.clock, r.slot, entry * f / 100, i as u32);
+        ticks(&mut r.e, 2);
+    }
+    assert!(r.e.model_position_open(&MINT));
+    r.clock += 1_000;
+    r.slot += 1;
+    amm_swap_at(&mut r.e, r.clock, r.slot, entry * 60 / 100, 5);
+    ticks(&mut r.e, 2);
+    assert_eq!(r.rep("protection:amm_hard_stop|intent"), 1, "{:?}", r.e.model_lane_report());
+    assert!(r.e.model_mgmt_pending(&MINT).is_some(), "standing exit intent despite pause + failing model");
+    r.clock += 1_000;
+    r.slot += 1;
+    amm_swap_at(&mut r.e, r.clock, r.slot, entry * 55 / 100, 6);
+    ticks(&mut r.e, 2);
+    assert!(!r.e.model_position_open(&MINT), "{:?}", r.e.model_lane_report());
+    // Entries stayed blocked: the only entry fill is the rig's setup fill; nothing re-entered.
+    assert_eq!(r.e.model_all_fills().len(), 1, "{:?}", r.e.model_lane_report());
+    assert!(r.rep("refuse:entries_blocked") >= 1, "{:?}", r.e.model_lane_report());
+}

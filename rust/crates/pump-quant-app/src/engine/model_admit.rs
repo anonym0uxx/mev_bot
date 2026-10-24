@@ -584,6 +584,18 @@ impl Engine {
             .insert(mint, (a.fee_parts, a.virtual_quote, ts_ms));
         if !applied {
             self.mrep("amm_swap_dropped_out_of_order");
+        } else if a.token_reserve_pre > 0 {
+            // Protection reads the pool's SPOT from the swap's pre-trade reserves (effective quote =
+            // vault + signed virtual adjustment), the same quantity the curve path derives from its
+            // reserve observation, and ONLY from a state the cache accepted as newer (a duplicate or
+            // reordered older event can neither fake a jump nor erase a trigger). Per-swap executed
+            // prices are NOT a print for protection: on real tape they scatter 0.003x-5x around spot
+            // (dust swaps, tips inside `quote_lamports`).
+            let eff_q = i128::from(a.quote_reserve_pre) + a.virtual_quote.unwrap_or(0);
+            if eff_q > 0 {
+                let spot_fp = eff_q * 1_000_000_000 / i128::from(a.token_reserve_pre);
+                self.model_amm_protection(mint, spot_fp, ts_ms);
+            }
         }
         // The swap's own execution price (quote per token incl. fees) feeds the flow/price windows
         // as a PRICED print. It is NOT the executable state: that is the pre-trade reserve above.
@@ -591,17 +603,6 @@ impl Engine {
             let price_fp =
                 (i128::from(a.quote_lamports) * 1_000_000_000) / i128::from(a.token_amount);
             self.model_mgmt_note_price(&mint, price_fp);
-            // Protection reads the pool's SPOT from the swap's pre-trade reserves (effective quote =
-            // vault + signed virtual adjustment), the same quantity the curve path derives from its
-            // reserve observation. Per-swap executed prices are NOT a print for protection: on real
-            // tape they scatter 0.003x-5x around spot (dust swaps, tips inside `quote_lamports`).
-            if a.token_reserve_pre > 0 {
-                let eff_q = i128::from(a.quote_reserve_pre) + a.virtual_quote.unwrap_or(0);
-                if eff_q > 0 {
-                    let spot_fp = eff_q * 1_000_000_000 / i128::from(a.token_reserve_pre);
-                    self.model_amm_protection(mint, spot_fp, a.recv_unix_ms.unwrap_or(self.model_clock_ms));
-                }
-            }
             let signed = i64::try_from(a.token_amount).unwrap_or(i64::MAX);
             let entity =
                 pump_quant_wallet_graph::tracked_wallet_matcher::wallet_entity_id(&a.trader);
