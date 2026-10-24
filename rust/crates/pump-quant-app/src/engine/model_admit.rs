@@ -1046,6 +1046,7 @@ impl Engine {
                     Err(reason) => {
                         self.mrep(format!("probe_sl:invalid:{reason}"));
                         self.mrep(format!("notrade:probe_sl_off_contract|{}", meta.dims));
+                        self.model_io_event("entry", v.id.0, &v.mint, "disposition", &format!("invalid:{reason}"), clock);
                         return;
                     }
                 },
@@ -1103,8 +1104,14 @@ impl Engine {
                     },
                 );
             }
-            EntryAuthority::Watch => self.mrep("verdict:watch"),
-            EntryAuthority::Skip => self.mrep("verdict:skip"),
+            EntryAuthority::Watch => {
+                self.mrep("verdict:watch");
+                self.model_io_event("entry", v.id.0, &v.mint, "disposition", "watch", clock);
+            }
+            EntryAuthority::Skip => {
+                self.mrep("verdict:skip");
+                self.model_io_event("entry", v.id.0, &v.mint, "disposition", "skip", clock);
+            }
             EntryAuthority::NoTrade(r) => {
                 let k = match r {
                     NoTradeReason::ModelUnreachable => "model_unreachable".to_string(),
@@ -1118,6 +1125,9 @@ impl Engine {
                     NoTradeReason::IncompleteAnswer => "incomplete_answer".to_string(),
                 };
                 self.mrep(format!("notrade:{k}"));
+                // Per-request disposition (a BUY vetoed by the cash floor is a capital veto, not a
+                // model/format failure): journaled by request id so the funnel reconciles by ID.
+                self.model_io_event("entry", v.id.0, &v.mint, "disposition", &format!("notrade:{k}"), clock);
             }
         }
     }
