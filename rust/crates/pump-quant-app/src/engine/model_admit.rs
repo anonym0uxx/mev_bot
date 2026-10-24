@@ -469,6 +469,7 @@ impl Engine {
         };
         let Some(reason) = reason else { return };
         mp.protect_exit = Some(reason);
+        self.model_stopped_mints.insert(mint, ts_ms);
         let position_order = mp.position_order;
         let entry = mp.entry_px_fp;
         self.mrep(format!("protection:{reason}|intent"));
@@ -853,6 +854,26 @@ impl Engine {
             "admit_us": render_started.elapsed().as_micros() as u64,
         });
         self.model_io_event_with("entry", id.0, &mint, "dispatch", "dispatched", clock, prov);
+        // SHADOW PANEL (observation only, PREREG_SHADOW_PANEL_2026-10-23): the exact prompt field VALUES
+        // the model received, parsed from the rendered bytes it was sent (not recomputed), plus the
+        // in-process AMM state provenance (vq from the newest accepted swap event) so outcomes can be
+        // priced later without RPC. Nothing here feeds the decision path.
+        if snap.venue == "pumpswap" || snap.venue == "mixed" {
+            let mut fields = serde_json::Map::new();
+            for tok in snap.user_prompt.split_whitespace() {
+                if let Some((k, val)) = tok.split_once('=') {
+                    if matches!(k, "age_s" | "last_trade_age_s" | "n_prior_trades" | "buy_count" | "sell_count" | "unique_traders" | "buy_volume_lamports" | "sell_volume_lamports" | "net_flow_lamports" | "quote_reserves_lamports" | "base_reserves_raw" | "staleness_ms" | "reserve_slot" | "pricing_eligible" | "ret_5s_bp" | "ret_30s_bp" | "vol_30s_bp" | "net_flow_sol_300s" | "entrants_60s" | "entrants_300s" | "wash_ratio" | "top1_float_share" | "holders_at_t" | "evidence_status" | "venue" | "price_lamports_per_raw_token" | "curve_present") {
+                        fields.insert(k.to_string(), serde_json::Value::String(val.to_string()));
+                    }
+                }
+            }
+            let econ = self.model_amm_econ.get(&mint).copied();
+            let stopped_before = self.model_mgmt.pos.get(&mint).and_then(|p| p.protect_exit).is_some() || self.model_stopped_mints.contains_key(&mint);
+            self.model_io_event_with(
+                "entry", id.0, &mint, "prompt_fields", "shadow", clock,
+                serde_json::json!({"fields": fields, "prompt_digest": snap.prompt_digest, "amm_vq_lamports": econ.and_then(|(_, vq, _)| vq), "amm_vq_state_ts_ms": econ.map(|(_, _, t)| t), "reentry_after_own_stop": stopped_before, "last_own_stop_ms": self.model_stopped_mints.get(&mint).copied()}),
+            );
+        }
         self.model_meta.insert(
             id,
             ModelReqMeta {

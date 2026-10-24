@@ -960,6 +960,9 @@ pub struct Engine {
     /// Admission bounds deployable capital by the WORST-CASE remaining budget
     /// (budget + realized_since_start − all open basis); exhausted → `notrade:loss_budget`.
     model_loss_budget: Option<(u64, i128)>,
+    /// Mints on which OUR protective stop has fired (mint → feed clock ms). Observation only
+    /// (shadow panel `reentry_after_own_stop`); never consulted by admission.
+    pub(crate) model_stopped_mints: std::collections::BTreeMap<[u8; 32], i64>,
     /// Exits excluded from every economic assessment, with the reason. Visible, never zero-filled.
     model_excluded_exits: Vec<model_admit::ExcludedExit>,
     model_recon_faults: BTreeMap<u64, model_admit::ReconFault>,
@@ -1728,6 +1731,7 @@ impl Engine {
             model_fills: Vec::new(),
             model_quarantine: std::collections::BTreeSet::new(),
             model_loss_budget: None,
+            model_stopped_mints: std::collections::BTreeMap::new(),
             model_excluded_exits: Vec::new(),
             model_recon_faults: BTreeMap::new(),
             model_amm_econ: BTreeMap::new(),
