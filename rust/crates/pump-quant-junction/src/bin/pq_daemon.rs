@@ -2834,10 +2834,13 @@ fn main() -> ExitCode {
             // acknowledged protective handoff; otherwise stay up, blocked, and alert.
             if model_armed {
                 use pump_quant_junction::model_lifecycle::{
-                    handle_stop_request, StopGate, HANDOFF_REQUEST_FILE, PROTECTIVE_HANDOFF_ACK_FILE,
+                    StopGate, HANDOFF_REQUEST_FILE, PROTECTIVE_HANDOFF_ACK_FILE,
                 };
-                match handle_stop_request(
+                let mut arm_refs: Vec<(&str, &mut Engine)> =
+                    arms.arms.iter_mut().map(|a| (a.id.as_str(), &mut a.engine)).collect();
+                match pump_quant_junction::model_lifecycle::handle_stop_request_with_arms(
                     &mut engine,
+                    &mut arm_refs,
                     &mut model_stop_session,
                     std::path::Path::new(HANDOFF_REQUEST_FILE),
                     std::path::Path::new(PROTECTIVE_HANDOFF_ACK_FILE),
@@ -3019,6 +3022,16 @@ fn main() -> ExitCode {
         // otherwise wait forever (cohort-003: 3iASqU2F, pool dead after a -98% drain). Once a
         // minute, fetch the pool account + both vaults by RPC and hand the engine the CURRENT
         // on-chain state as a landing observation (exit-only; entries never fill on it). Bounded:
+        // Research arms: per-arm status + shared-lane accounting (logical dispatches per arm are in
+        // each arm's lane report; physical inference calls = memo misses; memo hits = shared answers).
+        if !arms.is_empty() && tick_counter % 600 == 45 {
+            let memo = shared_qwen.as_ref().map(|m| {
+                serde_json::json!({"physical_calls": m.misses.load(std::sync::atomic::Ordering::Relaxed), "memo_hits": m.hits.load(std::sync::atomic::Ordering::Relaxed)})
+            });
+            let doc = serde_json::json!({"unix_ms": now_ms, "arms": arms.status_json(), "shared_lane": memo, "primary_dispatched": engine.model_lane_report().get("dispatched").copied().unwrap_or(0)});
+            let _ = std::fs::write("data/arms/ARMS_STATUS.json", doc.to_string());
+            eprintln!("[pq-daemon] RESEARCH ARMS status: shared_lane={} arms={}", doc["shared_lane"], doc["arms"].as_array().map(|a| a.iter().map(|x| format!("{}:held={} pending={} balance={}", x["id"], x["held"], x["pending"], x["bankroll_balance_lamports"])).collect::<Vec<_>>().join(" ")).unwrap_or_default());
+        }
         // 2 RPC calls per stuck exposure per minute; journaled per snapshot.
         let paper_rpc_url = helius_url.replacen("wss://", "https://", 1);
         if model_armed && tick_counter % 600 == 23 && paper_rpc_url.starts_with("https://") {

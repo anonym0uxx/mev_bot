@@ -1308,34 +1308,29 @@ impl Engine {
         // Unavailable R (missing/zero denominator) is a named refusal, never zero risk.
         if let (Some(r_star_bps), Ok(c)) = (self.entry_absorption_veto_bps, &result) {
             if c.text.starts_with("DECISION: BUY") {
-                match crate::absorption::ratio_bps(&meta.snap.user_prompt) {
-                    Some((r_bps, sell_vol, vault)) if r_bps > r_star_bps => {
-                        self.mrep(format!("notrade:absorption|{}", meta.dims));
-                        self.model_io_event_with(
+                match crate::absorption::veto_decision(&meta.snap.user_prompt, r_star_bps) {
+                crate::absorption::VetoDecision::Veto { r_bps, sell_volume_lamports, quote_reserves_lamports } => {
+                    self.mrep(format!("notrade:absorption|{}", meta.dims));
+                    self.model_io_event_with(
                         "entry", v.id.0, &v.mint, "disposition", "notrade:absorption", clock,
-                        serde_json::json!({"r_bps": r_bps, "r_star_bps": r_star_bps, "sell_volume_lamports": sell_vol, "quote_reserves_lamports": vault}),
+                        serde_json::json!({"r_bps": r_bps, "r_star_bps": r_star_bps, "sell_volume_lamports": sell_volume_lamports, "quote_reserves_lamports": quote_reserves_lamports}),
                     );
-                        return;
-                    }
-                    Some((r_bps, sell_vol, vault)) => {
-                        self.model_io_event_with(
-                        "entry", v.id.0, &v.mint, "absorption", "pass", clock,
-                        serde_json::json!({"r_bps": r_bps, "r_star_bps": r_star_bps, "sell_volume_lamports": sell_vol, "quote_reserves_lamports": vault}),
-                    );
-                    }
-                    None => {
-                        self.mrep(format!("notrade:absorption_unavailable|{}", meta.dims));
-                        self.model_io_event(
-                            "entry",
-                            v.id.0,
-                            &v.mint,
-                            "disposition",
-                            "notrade:absorption_unavailable",
-                            clock,
-                        );
-                        return;
-                    }
+                    return;
                 }
+                crate::absorption::VetoDecision::Pass { r_bps, sell_volume_lamports, quote_reserves_lamports } => {
+                    self.model_io_event_with(
+                        "entry", v.id.0, &v.mint, "absorption", "pass", clock,
+                        serde_json::json!({"r_bps": r_bps, "r_star_bps": r_star_bps, "sell_volume_lamports": sell_volume_lamports, "quote_reserves_lamports": quote_reserves_lamports}),
+                    );
+                }
+                crate::absorption::VetoDecision::Unavailable => {
+                    self.mrep(format!("notrade:absorption_unavailable|{}", meta.dims));
+                    self.model_io_event(
+                        "entry", v.id.0, &v.mint, "disposition", "notrade:absorption_unavailable", clock,
+                    );
+                    return;
+                }
+            }
             }
         }
         let mut ledger: DriftLedger = std::mem::take(&mut self.model_drift);

@@ -30,6 +30,24 @@ pub fn ratio_bps(user: &str) -> Option<(u64, u64, u64)> {
     Some((r, sell, vault))
 }
 
+/// The frozen veto decision for arm B. R* is an integer in basis points (serialized as
+/// `r_star_bps`, u64, floor rounding of sell×10⁴/vault — the SAME integer formula as `ratio_bps`).
+/// Equality is NOT a veto (R == R* passes); R*+1 bps is; unavailable R is a named refusal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VetoDecision {
+    Pass { r_bps: u64, sell_volume_lamports: u64, quote_reserves_lamports: u64 },
+    Veto { r_bps: u64, sell_volume_lamports: u64, quote_reserves_lamports: u64 },
+    Unavailable,
+}
+
+pub fn veto_decision(user: &str, r_star_bps: u64) -> VetoDecision {
+    match ratio_bps(user) {
+        None => VetoDecision::Unavailable,
+        Some((r, s, v)) if r > r_star_bps => VetoDecision::Veto { r_bps: r, sell_volume_lamports: s, quote_reserves_lamports: v },
+        Some((r, s, v)) => VetoDecision::Pass { r_bps: r, sell_volume_lamports: s, quote_reserves_lamports: v },
+    }
+}
+
 /// ARM C — transparent no-LLM whole-strategy benchmark as a [`ModelSource`]: emits the exact
 /// `probe_sl_v1_compact` record so the unchanged authority/sizing/management path runs it.
 /// Rule: BUY SMALL iff pricing_eligible=true AND net_flow_sol_300s > 0 AND ret_30s_bp > 0 AND
@@ -180,6 +198,22 @@ mod tests {
             None
         );
     }
+    #[test]
+    fn veto_equality_passes_just_above_vetoes_unavailable_is_named() {
+        let at = "sell_volume_lamports=15000 quote_reserves_lamports=10000"; // R = 15000 bps exactly
+        assert!(matches!(veto_decision(at, 15_000), VetoDecision::Pass { r_bps: 15_000, .. }));
+        let above = "sell_volume_lamports=15001 quote_reserves_lamports=10000"; // 15001 bps
+        assert!(matches!(veto_decision(above, 15_000), VetoDecision::Veto { r_bps: 15_001, .. }));
+        // floor rounding: 15000.9 bps → 15000 → passes at R* = 15000
+        let frac = "sell_volume_lamports=150009 quote_reserves_lamports=100000";
+        assert!(matches!(veto_decision(frac, 15_000), VetoDecision::Pass { r_bps: 15_000, .. }));
+        assert_eq!(veto_decision("sell_volume_lamports=1 quote_reserves_lamports=0", 15_000), VetoDecision::Unavailable);
+        assert_eq!(veto_decision("quote_reserves_lamports=5", 15_000), VetoDecision::Unavailable);
+        // R* = 0 vetoes any positive R and passes R == 0
+        assert!(matches!(veto_decision("sell_volume_lamports=0 quote_reserves_lamports=5", 0), VetoDecision::Pass { r_bps: 0, .. }));
+        assert!(matches!(veto_decision("sell_volume_lamports=1 quote_reserves_lamports=5", 0), VetoDecision::Veto { .. }));
+    }
+
     #[test]
     fn rule_source_is_explicit_and_skips_on_missing() {
         let r = RuleSource { r_star_bps: 10_000 };

@@ -143,6 +143,8 @@ fn build(root: &std::path::Path, src: Arc<dyn ModelSource + Send + Sync>) -> (En
     let mut a = Engine::new(cfg, RunMode::Paper);
     a.set_entry_contract(pump_quant_app::engine::EntryContract::ProbeSlV1Compact);
     a.enable_paper_model_arc(src.clone());
+    let _ = pump_quant_junction::model_lifecycle::restore_held_state(&mut a, &root.join("A_MODEL_HELD.json"));
+    let _ = a.model_safety_attach(&root.join("A_MODEL_SAFETY.json"));
     let mut tpl_cfg = Config::dev_portable();
     tpl_cfg.bankroll_initial_lamports = 2_000_000_000;
     let tpl = ArmTemplate {
@@ -294,3 +296,123 @@ fn arms_are_isolated_books_sharing_one_feed_and_one_model_lane() {
     conservation(b4, 2_000_000_000, &mint);
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// Protective handoff and restart with exposure in a research arm: the stop request covers the UNION
+/// (primary flat, B holding → not flat; request JSON names arm B's exposure; the ack binds to the
+/// combined digest), and a restart after B's protection fired restores B's latch, basis and
+/// reservation exactly once, so the standing exit continues on the next landing state.
+#[test]
+fn handoff_and_restart_cover_exposure_held_in_an_arm() {
+    use pump_quant_junction::model_lifecycle::{handle_stop_request_with_arms, StopGate, StopSession};
+    let root = std::env::temp_dir().join(format!("pq-arms-h-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let src: Arc<dyn ModelSource + Send + Sync> = Arc::new(pump_quant_app::absorption::MemoSource::new(Stub(calls), 60_000));
+    let lines: Vec<serde_json::Value> = FIXTURE.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    let mint = hex32(lines[0]["m"].as_str().unwrap());
+
+    // ── Part 1: protection latch + reservation survive a restart; the standing exit continues.
+    let (mut a, mut arms) = build(&root, src.clone());
+    let last_amm = drive(&mut a, &mut arms, &lines, &mint, 0).unwrap();
+    assert!(arms.arms[0].engine.model_position_open(&mint));
+    let basis = arms.arms[0].engine.model_accounting_view(&mint).remaining_cost_basis.unwrap_or(0);
+    let t0 = last_amm["t"].as_i64().unwrap();
+    let mut late = last_amm.clone();
+    late["t"] = serde_json::json!(t0 + 120_000);
+    late["slot"] = serde_json::json!(last_amm["slot"].as_u64().unwrap() + 300);
+    let drop = amm_swap(&late, Some(5_000));
+    arms.tick(&drop);
+    a.tick(drop);
+    arms.tick(&AppEvent::Tick);
+    a.tick(AppEvent::Tick);
+    assert!(rep(&arms.arms[0].engine, "protection:amm_hard_stop") >= 1, "{:?}", arms.arms[0].engine.model_lane_report());
+    arms.persist_held();
+    let held_doc = std::fs::read_to_string(root.join("arms/B/MODEL_HELD.json")).unwrap();
+    assert!(held_doc.contains("amm_hard_stop"), "latch persisted in B's ledger: {held_doc}");
+    drop_all(a, arms);
+    let (mut a2, mut arms2) = build(&root, src.clone());
+    {
+        let b2 = &arms2.arms[0].engine;
+        assert!(b2.model_position_open(&mint));
+        assert_eq!(b2.model_accounting_view(&mint).remaining_cost_basis.unwrap_or(0), basis);
+        assert_eq!(i128::try_from(b2.bankroll_committed_lamports()).unwrap(), i128::from(basis), "reservation restored");
+        assert!(!arms2.arms[1].engine.model_position_open(&mint));
+        // The protective exit order that was pending at persist time is restored UNCERTAIN (never
+        // assumed executed or dropped) — the same rule the daemon applies; the operator reconciles it.
+        assert_eq!(b2.model_lane_report().get("held_state:restored_pending_uncertain").copied(), Some(1));
+    }
+    let held_json: serde_json::Value = serde_json::from_str(&held_doc).unwrap();
+    assert_eq!(held_json["pending"][0]["kind"].as_str(), Some("exit"), "the pending order is B's protective exit");
+    let pending_oid = held_json["pending"][0]["id"].as_u64().expect("pending exit order persisted with its id");
+    assert!(arms2.arms[0].engine.model_mgmt_resolve_uncertain_not_executed(&mint, pending_oid), "operator reconciliation: not executed");
+    let mut late2 = late.clone();
+    late2["t"] = serde_json::json!(t0 + 125_000);
+    late2["slot"] = serde_json::json!(last_amm["slot"].as_u64().unwrap() + 310);
+    let next = amm_swap(&late2, Some(5_000));
+    arms2.tick(&next);
+    a2.tick(next);
+    for _ in 0..12 {
+        arms2.tick(&AppEvent::Tick);
+        a2.tick(AppEvent::Tick);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let b2 = &arms2.arms[0].engine;
+    assert!(rep(b2, "mgmt:protect_exit") >= 1, "standing protective exit continued after restart: {:?}", b2.model_lane_report());
+    conservation(b2, 2_000_000_000, &mint);
+
+    // ── Part 2: protective handoff covers exposure held in an arm (fresh books, B holding).
+    let root2 = std::env::temp_dir().join(format!("pq-arms-h2-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root2);
+    std::fs::create_dir_all(&root2).unwrap();
+    let (mut a3, mut arms3) = build(&root2, src.clone());
+    drive(&mut a3, &mut arms3, &lines, &mint, 0).unwrap();
+    assert!(arms3.arms[0].engine.model_position_open(&mint));
+    let req = root2.join("REQ.json");
+    let ack = root2.join("ACK.json");
+    let mut st = StopSession::new();
+    let gate = {
+        let mut refs: Vec<(&str, &mut Engine)> = arms3.arms.iter_mut().map(|x| (x.id.as_str(), &mut x.engine)).collect();
+        handle_stop_request_with_arms(&mut a3, &mut refs, &mut st, &req, &ack)
+    };
+    let (request_id, digest) = match gate {
+        StopGate::Incomplete { assessment, request_id, exposure_digest, .. } => {
+            assert_eq!(assessment.held, 1, "union assessment counts B's position");
+            (request_id, exposure_digest)
+        }
+        other => panic!("expected incomplete handoff, got {other:?}"),
+    };
+    let doc: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&req).unwrap()).unwrap();
+    assert_eq!(doc["exposure_snapshot"]["arms"]["B"]["held"].as_u64(), Some(1), "{doc}");
+    assert!(digest.contains("|B:"), "combined digest names the arm: {digest}");
+    std::fs::write(
+        &ack,
+        serde_json::json!({"session_id": st.session_id, "request_id": request_id, "exposure_digest": digest, "recipient": "test-operator", "accepted_protective_responsibility": true}).to_string(),
+    )
+    .unwrap();
+    let gate2 = {
+        let mut refs: Vec<(&str, &mut Engine)> = arms3.arms.iter_mut().map(|x| (x.id.as_str(), &mut x.engine)).collect();
+        handle_stop_request_with_arms(&mut a3, &mut refs, &mut st, &req, &ack)
+    };
+    assert!(matches!(gate2, StopGate::CompleteHandedOff { .. }), "{gate2:?}");
+    // Flat books complete flat without any ack.
+    let root3 = std::env::temp_dir().join(format!("pq-arms-h3-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root3);
+    std::fs::create_dir_all(&root3).unwrap();
+    let (mut a4, mut arms4) = build(&root3, src);
+    let mut st2 = StopSession::new();
+    let gate3 = {
+        let mut refs: Vec<(&str, &mut Engine)> = arms4.arms.iter_mut().map(|x| (x.id.as_str(), &mut x.engine)).collect();
+        handle_stop_request_with_arms(&mut a4, &mut refs, &mut st2, &root3.join("REQ.json"), &root3.join("ACK.json"))
+    };
+    assert!(matches!(gate3, StopGate::CompleteFlat), "{gate3:?}");
+    for r in [&root, &root2, &root3] {
+        let _ = std::fs::remove_dir_all(r);
+    }
+}
+
+fn drop_all(a: Engine, arms: Arms) {
+    drop(a);
+    drop(arms);
+}
+

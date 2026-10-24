@@ -245,12 +245,46 @@ pub fn handle_stop_request(
     request_file: &Path,
     ack_file: &Path,
 ) -> StopGate {
+    handle_stop_request_with_arms(engine, &mut [], st, request_file, ack_file)
+}
+
+/// [`handle_stop_request`] over the primary engine AND every research arm (EXPERIMENT_SPEC_ABSORPTION):
+/// every book is shut down/persisted, the exposure digest and the assessment cover the UNION of all
+/// books, and "flat" requires every book flat. An acknowledgement therefore binds to the combined
+/// exposure; one arm's position can never be orphaned behind another's flat ledger.
+pub fn handle_stop_request_with_arms(
+    engine: &mut Engine,
+    arms: &mut [(&str, &mut Engine)],
+    st: &mut StopSession,
+    request_file: &Path,
+    ack_file: &Path,
+) -> StopGate {
     let report = engine.model_controlled_shutdown();
-    let assessment = engine.model_stop_assessment();
-    if assessment.is_flat_and_reconciled() && report.persisted {
+    let mut assessment = engine.model_stop_assessment();
+    let mut persisted = report.persisted;
+    let (mut digest, snapshot_primary) = engine.model_exposure_digest();
+    let mut arm_snaps = serde_json::Map::new();
+    for (id, e) in arms.iter_mut() {
+        let r = e.model_controlled_shutdown();
+        persisted &= r.persisted;
+        let a = e.model_stop_assessment();
+        assessment.held += a.held;
+        assessment.pending_orders += a.pending_orders;
+        assessment.uncertain_orders += a.uncertain_orders;
+        let (d, s) = e.model_exposure_digest();
+        digest = format!("{digest}|{id}:{d}");
+        arm_snaps.insert((*id).to_string(), serde_json::json!({"digest": d, "snapshot": s, "held": a.held, "pending_orders": a.pending_orders, "uncertain_orders": a.uncertain_orders}));
+    }
+    if assessment.is_flat_and_reconciled() && persisted {
         return StopGate::CompleteFlat;
     }
-    let (digest, snapshot) = engine.model_exposure_digest();
+    let snapshot = if arm_snaps.is_empty() {
+        serde_json::Value::String(snapshot_primary)
+    } else {
+        serde_json::json!({"primary": snapshot_primary, "arms": arm_snaps})
+    };
+    let mut report = report;
+    report.persisted = persisted;
     if digest != st.last_digest || st.request_id.is_empty() {
         st.request_seq += 1;
         st.request_id = format!("{}-req{}", st.session_id, st.request_seq);
