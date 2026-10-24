@@ -75,6 +75,41 @@ pub fn arm_paper_model_identified(
     Ok((arm_with_client(engine, client, safety_path), served))
 }
 
+/// [`arm_paper_model_identified`] whose client is wrapped in a memoising source and RETURNED, so
+/// research arms with byte-identical prompts share the one verified Qwen lane (EXPERIMENT_SPEC_ABSORPTION).
+pub fn arm_paper_model_identified_shared(
+    engine: &mut Engine,
+    endpoint: &str,
+    safety_path: &Path,
+    model_id: &str,
+    expected_ids: &[&str],
+    stop: Option<&[&str]>,
+    memo_ttl_ms: u128,
+) -> Result<
+    (
+        Armed,
+        Vec<pump_quant_inference::ServedModel>,
+        std::sync::Arc<pump_quant_app::absorption::MemoSource<InferenceClient>>,
+    ),
+    pump_quant_inference::IdentityRefusal,
+> {
+    let mut client = InferenceClient::new(endpoint, CLIENT_TIMEOUT).with_model(model_id).with_max_tokens(PAPER_LANE_MAX_TOKENS);
+    if let Some(st) = stop {
+        client = client.with_stop(st.iter().map(|s| s.to_string()).collect());
+    }
+    let mut expected: Vec<&str> = expected_ids.to_vec();
+    if !expected.contains(&model_id) {
+        expected.push(model_id);
+    }
+    let served = client.verify_served_models(&expected)?;
+    let memo = std::sync::Arc::new(pump_quant_app::absorption::MemoSource::new(client, memo_ttl_ms));
+    let src: std::sync::Arc<dyn pump_quant_app::model_authority::ModelSource + Send + Sync> = memo.clone();
+    engine.enable_paper_model_arc(src);
+    let load = engine.model_safety_attach(safety_path);
+    let armed = Armed { load, blocked_at_start: engine.model_safety_blocked(), safety_path: safety_path.to_path_buf() };
+    Ok((armed, served, memo))
+}
+
 fn arm_with_client(engine: &mut Engine, client: InferenceClient, safety_path: &Path) -> Armed {
     engine.enable_paper_model(client);
     let load = engine.model_safety_attach(safety_path);

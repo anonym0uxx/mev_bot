@@ -1849,6 +1849,12 @@ fn main() -> ExitCode {
     let mut live_state_fetcher: Option<
         std::sync::Arc<pump_quant_junction::live_adapters::RpcLiveStateFetcher>,
     > = None;
+    // EXPERIMENT_SPEC_ABSORPTION: research arms (isolated simulated books sharing this feed) and the
+    // memoised Qwen source they share with the primary engine. Paper-only; built after arming.
+    let mut shared_qwen: Option<
+        std::sync::Arc<pump_quant_app::absorption::MemoSource<pump_quant_inference::InferenceClient>>,
+    > = None;
+    let mut arms = pump_quant_junction::research_arms::Arms::default();
     let mut engine = if args.live_mode {
         match construct_live_engine(cfg, &args, creator_pubkey_map.clone()) {
             Ok((e, async_sink, fetcher)) => {
@@ -1913,16 +1919,18 @@ fn main() -> ExitCode {
                         let entry_contract_env = std::env::var("PQ_ENTRY_CONTRACT").ok();
                         let compact_entry = entry_contract_env.as_deref() == Some("probe_sl_v1_compact");
                         let stop_seqs: [&str; 1] = [pump_quant_inference::probe_sl::PROBE_SL_V1_COMPACT_STOP];
-                        match pump_quant_junction::model_lifecycle::arm_paper_model_identified(
+                        match pump_quant_junction::model_lifecycle::arm_paper_model_identified_shared(
                             &mut engine,
                             &endpoint,
                             std::path::Path::new(&safety),
                             &name,
                             &expected,
                             if compact_entry { Some(&stop_seqs[..]) } else { None },
+                            5_000,
                         ) {
-                            Ok((armed, served)) => {
+                            Ok((armed, served, memo)) => {
                                 model_armed = true;
+                                shared_qwen = Some(memo);
                                 // Management policy for the lane (explicit; absent = served model management).
                                 // prod_hold_v16 = ENTRY-BASELINE cohort: artifact-bound v16 PROD_HOLD control.
                                 // Durable model I/O trace (prompts, completions, clocks; late answers kept as evidence).
@@ -2451,7 +2459,9 @@ fn main() -> ExitCode {
                 let (Some(m), Some(c), Some(t)) = (v["mint_b58"].as_str().and_then(b58_decode32), v["creator_b58"].as_str().and_then(b58_decode32), v["launch_unix_ms"].as_i64()) else { malformed += 1; continue };
                 if t < cutoff { skipped_old += 1; continue; }
                 if !launch_journaled.insert(m) { continue; }
-                engine.tick(AppEvent::LaunchObserved { mint: Mint(m), creator: c, launch_unix_ms: t });
+                let lo = AppEvent::LaunchObserved { mint: Mint(m), creator: c, launch_unix_ms: t };
+                arms.tick(&lo);
+                engine.tick(lo);
                 pda_to_mint.insert(bonding_curve_pda(&m).to_bytes(), m);
                 replayed += 1;
             }
@@ -2498,7 +2508,7 @@ fn main() -> ExitCode {
         eprintln!("[pq-daemon] feed allocation: window_alloc={feed_window_alloc:.0} credits, exposure_reserve={feed_exposure_reserve:.0}, rpc_allowance={feed_rpc_allowance:.0}, credits/MB={feed_credits_per_mb}, total_cap_day={} GB", feed_total_cap_day as f64 / 1e9);
     }
     if let Some(r) = &feed_budget_entries_blocked {
-        engine.set_model_entries_blocked(true);
+        { engine.set_model_entries_blocked(true); arms.set_entries_blocked(true); }
         eprintln!("[pq-daemon] FEED BUDGET: entries remain blocked from persisted state: {r}");
     }
     // ── Declared segment loss budget (atomic at admission; see Engine::set_model_loss_budget).
@@ -2511,6 +2521,41 @@ fn main() -> ExitCode {
             .unwrap_or_else(|| engine.bankroll_realized_lamports());
         engine.set_model_loss_budget(b, start);
         eprintln!("[pq-daemon] SEGMENT LOSS BUDGET: {b} lamports worst-case, realized at segment start {start}");
+    }
+    // ── Research arms (PQ_RESEARCH_ARMS="B:veto:<bps>;C:rule:<bps>") — paper-only isolated books.
+    if let Ok(spec) = std::env::var("PQ_RESEARCH_ARMS") {
+        if !spec.trim().is_empty() {
+            if !model_armed {
+                eprintln!("[pq-daemon] research arms refused: the primary paper model lane is not armed");
+                return ExitCode::from(2);
+            }
+            let specs = match pump_quant_junction::research_arms::parse_spec(&spec) {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("[pq-daemon] research arms refused: {e}");
+                    return ExitCode::from(2);
+                }
+            };
+            let tpl = pump_quant_junction::research_arms::ArmTemplate {
+                cfg,
+                entry_contract: Some(engine.entry_contract()),
+                management_policy: Some(engine.management_policy()),
+                loss_budget_lamports: std::env::var("PQ_SEGMENT_LOSS_BUDGET_LAMPORTS").ok().and_then(|v| v.parse::<u64>().ok()),
+                cancel_lag_ms: std::env::var("PQ_MODEL_CANCEL_LAG_MS").ok().and_then(|v| v.parse::<u64>().ok()),
+            };
+            let src: Option<std::sync::Arc<dyn pump_quant_app::model_authority::ModelSource + Send + Sync>> =
+                shared_qwen.clone().map(|m| m as std::sync::Arc<dyn pump_quant_app::model_authority::ModelSource + Send + Sync>);
+            match pump_quant_junction::research_arms::Arms::build(&specs, &tpl, src, std::path::Path::new("data"), args.live_mode) {
+                Ok(a) => {
+                    arms = a;
+                    eprintln!("[pq-daemon] RESEARCH ARMS armed (paper-only, isolated books, shared feed/inference): {}", arms.status_json());
+                }
+                Err(e) => {
+                    eprintln!("[pq-daemon] research arms refused: {e}");
+                    return ExitCode::from(2);
+                }
+            }
+        }
     }
     let pool_ttl_s: i64 = std::env::var("PQ_LS_POOL_TTL_S").ok().and_then(|v| v.parse().ok()).unwrap_or(7200);
     // Idle expiry: the engine's liveness horizon is MAX_IDLE_MS = 60 s without a trade; a pool feed
@@ -2932,6 +2977,7 @@ fn main() -> ExitCode {
             let want = entry_pause_env || std::path::Path::new("data/ENTRY_PAUSE").exists();
             if want != engine.entry_paused() {
                 engine.set_entry_paused(want);
+                arms.set_entry_paused(want);
                 eprintln!("[pq-daemon] ENTRY PAUSE {} (operator control)", if want { "ON" } else { "OFF" });
             }
         }
@@ -2979,6 +3025,7 @@ fn main() -> ExitCode {
             let stuck: Vec<[u8; 32]> = engine
                 .exposure_mints()
                 .into_iter()
+                .chain(arms.exposure_mints())
                 .filter(|m| matches!(engine.model_mgmt_pending(m), Some((_, k, _, _)) if k == pump_quant_app::engine::model_manage::MgmtKind::Exit) || engine.model_mgmt_exit_attempts(m) > 0)
                 .filter(|m| engine.model_amm_obs_age_ms(m).is_none_or(|age| age > 30_000))
                 .collect();
@@ -3033,6 +3080,7 @@ fn main() -> ExitCode {
                 };
                 let now_ms = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0);
                 let filled = engine.model_on_amm_state_snapshot(m, pool, pool_acc.quote_mint, base_raw, quote_lamports, vq, slot, now_ms);
+                let _ = arms.on_amm_state_snapshot(m, pool, pool_acc.quote_mint, base_raw, quote_lamports, vq, slot, now_ms);
                 let rec = serde_json::json!({"ev": "exit_snapshot", "unix_ms": now_ms, "mint_b58": b58_encode(&m), "pool_b58": pool_b58, "slot": slot, "base_vault_raw": base_raw, "quote_vault_lamports": quote_lamports, "virtual_quote_reserves": vq.to_string(), "filled": filled});
                 eprintln!("[pq-daemon] EXIT SNAPSHOT {rec}");
                 if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("data/model_io.jsonl") {
@@ -3136,7 +3184,10 @@ fn main() -> ExitCode {
             // its only price source (cohort-003 incident: `dropped_cap` on a held mint left a
             // barrier exit expiring unfilled 1,401 times). If the cap is full, the oldest
             // non-exposure feed is evicted to make room.
-            let exposure: Vec<[u8; 32]> = engine.exposure_mints();
+            let mut exposure: Vec<[u8; 32]> = engine.exposure_mints();
+            exposure.extend(arms.exposure_mints());
+            exposure.sort_unstable();
+            exposure.dedup();
             for m in &exposure {
                 if engine.quote_not_sol(m) {
                     // (checked BEFORE the already-subscribed test so a PDA subscribed earlier —
@@ -3530,7 +3581,7 @@ fn main() -> ExitCode {
                                     why = Some(format!("total_cap_day: {feed_bytes_today_total} bytes >= {feed_total_cap_day}"));
                                 }
                                 if let Some(w) = why {
-                                    engine.set_model_entries_blocked(true);
+                                    { engine.set_model_entries_blocked(true); arms.set_entries_blocked(true); }
                                     eprintln!("[pq-daemon] FEED BUDGET: NEW ENTRIES BLOCKED ({w}); exposure feeds/management/protection continue");
                                     pool_lane_journal(serde_json::json!({"ev": "budget_entries_blocked", "unix_ms": v["recv_unix_ms"].as_i64().unwrap_or(0), "why": w, "window_credits": window_credits, "today_total_bytes": feed_bytes_today_total}));
                                     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("data/ALERTS.jsonl") {
@@ -4078,7 +4129,7 @@ fn main() -> ExitCode {
                                 if sub_tracker.len() >= MAX_ACCOUNT_SUBS {
                                     // Held positions keep their reserve feed regardless of discovery pressure.
                                     let protected: std::collections::HashSet<[u8; 32]> = if model_armed {
-                                        engine.model_held_mints().into_iter().collect()
+                                        engine.model_held_mints().into_iter().chain(arms.held_mints()).collect()
                                     } else {
                                         std::collections::HashSet::new()
                                     };
@@ -4726,6 +4777,7 @@ fn main() -> ExitCode {
 
         // ── Drain junction queue into engine ─────────────────────────────
         while let Some((provenanced, dwell)) = queue.pop_with_dwell() {
+            arms.tick(&provenanced.event);
             engine.tick(provenanced.event);
             stats.junction_events_drained += 1;
             dwell_samples.push(dwell.as_millis() as u64);
@@ -4881,6 +4933,7 @@ fn main() -> ExitCode {
             // entry filters. Computed from wall-clock UTC (no chrono dep).
             let (dow, hour_utc) = utc_dow_hour(SystemTime::now());
             let ts_event = AppEvent::TimeSignal { dow, hour_utc };
+            arms.tick(&ts_event);
             engine.tick(ts_event);
             if let Some(ref mut writer) = event_stream_writer {
                 if let Err(e) = writer.write_event(&ts_event, last_slot_seen) {
@@ -4888,6 +4941,7 @@ fn main() -> ExitCode {
                 }
             }
 
+            arms.tick(&pump_quant_app::event::AppEvent::Tick);
             engine.tick(pump_quant_app::event::AppEvent::Tick);
             // Phase 3: write the Tick to the event stream so the replay engine
             // can reproduce the evaluate() calls. Without Ticks in the stream,
@@ -4915,7 +4969,7 @@ fn main() -> ExitCode {
                 if let Some(reason) = lc.cutoff_reason(own, now) {
                     // Atomic with respect to the engine: the block is set in the same tick before
                     // any further admission/acceptance can run.
-                    engine.set_model_entries_blocked(true);
+                    { engine.set_model_entries_blocked(true); arms.set_entries_blocked(true); }
                     if let Err(e) = lc.transition(LcState::Draining, reason, now, own, open, pending) {
                         eprintln!("[pq-daemon] lifecycle DRAINING persist failed: {e}");
                     }
@@ -4925,12 +4979,13 @@ fn main() -> ExitCode {
                     );
                 }
                 if lc.state == LcState::Draining {
-                    engine.set_model_entries_blocked(true); // re-asserted: a SAFETY re-arm releases it
+                    { engine.set_model_entries_blocked(true); arms.set_entries_blocked(true); } // re-asserted: a SAFETY re-arm releases it
                     if open == 0 && pending == 0 {
                         match lc.transition(LcState::Closed, "flat_no_pending", now, own, open, pending) {
                             Ok(()) => {
                                 eprintln!("[pq-daemon] COHORT CLOSED: flat, no pending orders; exiting");
                                 let _ = engine.model_held_persist_now();
+                                arms.persist_held();
                                 std::process::exit(0);
                             }
                             Err(e) => eprintln!("[pq-daemon] lifecycle CLOSED refused: {e}"),
@@ -5050,6 +5105,7 @@ fn main() -> ExitCode {
                             },
                             _ => continue,
                         };
+                        arms.tick(&event);
                         engine.tick(event);
                     }
                     if !results.is_empty() {
@@ -5485,6 +5541,7 @@ fn main() -> ExitCode {
 
     // Drain remaining queue
     while let Some((provenanced, dwell)) = queue.pop_with_dwell() {
+        arms.tick(&provenanced.event);
         engine.tick(provenanced.event);
         stats.junction_events_drained += 1;
         dwell_samples.push(dwell.as_millis() as u64);
