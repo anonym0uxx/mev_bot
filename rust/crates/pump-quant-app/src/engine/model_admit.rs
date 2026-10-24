@@ -1121,6 +1121,39 @@ impl Engine {
                 } {
                     Ok(d) => {
                         self.mrep(format!("probe_sl:valid:{}", d.action.as_str()));
+                        // ARM B — declared admission veto "liquidity absorption" (EXPERIMENT_SPEC_ABSORPTION):
+                        // evaluated on the COMMON opportunity (a valid BUY), BEFORE any arm-dependent
+                        // capital/portfolio veto, from the exact prompt bytes the model received.
+                        // R = sell_volume_lamports / quote_reserves_lamports (cumulative curve+AMM sell
+                        // quote volume since first captured trade ÷ raw quote vault at the snapshot).
+                        // Unavailable R (missing/zero denominator) is a named refusal, never zero risk.
+                        if let (Some(r_star_bps), pump_quant_inference::probe_sl::ProbeSlAction::Buy) =
+                            (self.entry_absorption_veto_bps, d.action)
+                        {
+                            match crate::absorption::ratio_bps(&meta.snap.user_prompt) {
+                                Some((r_bps, sell_vol, vault)) if r_bps > r_star_bps => {
+                                    self.mrep(format!("notrade:absorption|{}", meta.dims));
+                                    self.model_io_event_with(
+                                        "entry", v.id.0, &v.mint, "disposition", "notrade:absorption", clock,
+                                        serde_json::json!({"r_bps": r_bps, "r_star_bps": r_star_bps, "sell_volume_lamports": sell_vol, "quote_reserves_lamports": vault}),
+                                    );
+                                    return;
+                                }
+                                Some((r_bps, sell_vol, vault)) => {
+                                    self.model_io_event_with(
+                                        "entry", v.id.0, &v.mint, "absorption", "pass", clock,
+                                        serde_json::json!({"r_bps": r_bps, "r_star_bps": r_star_bps, "sell_volume_lamports": sell_vol, "quote_reserves_lamports": vault}),
+                                    );
+                                }
+                                None => {
+                                    self.mrep(format!("notrade:absorption_unavailable|{}", meta.dims));
+                                    self.model_io_event(
+                                        "entry", v.id.0, &v.mint, "disposition", "notrade:absorption_unavailable", clock,
+                                    );
+                                    return;
+                                }
+                            }
+                        }
                         v.result
                     }
                     Err(reason) => {

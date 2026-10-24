@@ -963,6 +963,9 @@ pub struct Engine {
     /// Mints on which OUR protective stop has fired (mint → feed clock ms). Observation only
     /// (shadow panel `reentry_after_own_stop`); never consulted by admission.
     pub(crate) model_stopped_mints: std::collections::BTreeMap<[u8; 32], i64>,
+    /// ARM B: declared "liquidity absorption" admission veto threshold R* in basis points
+    /// (`None` = arm A, no veto). Set once at construction of a research arm; never tuned in-run.
+    pub(crate) entry_absorption_veto_bps: Option<u64>,
     /// Exits excluded from every economic assessment, with the reason. Visible, never zero-filled.
     model_excluded_exits: Vec<model_admit::ExcludedExit>,
     model_recon_faults: BTreeMap<u64, model_admit::ReconFault>,
@@ -1554,6 +1557,11 @@ impl Engine {
         self.model_source = Some(src);
     }
 
+    /// ARM B: install the declared absorption veto (R* in bps). Paper research arms only.
+    pub fn set_entry_absorption_veto_bps(&mut self, r_star_bps: Option<u64>) {
+        self.entry_absorption_veto_bps = r_star_bps;
+    }
+
     /// Install the model I/O trace sink (see `model_io_sink`).
     /// Request-lifecycle v2: cancel the transport (and thereby the server request) `lag_ms` after
     /// the authority deadline. Does not change the deadline.
@@ -1732,6 +1740,7 @@ impl Engine {
             model_quarantine: std::collections::BTreeSet::new(),
             model_loss_budget: None,
             model_stopped_mints: std::collections::BTreeMap::new(),
+            entry_absorption_veto_bps: None,
             model_excluded_exits: Vec::new(),
             model_recon_faults: BTreeMap::new(),
             model_amm_econ: BTreeMap::new(),
