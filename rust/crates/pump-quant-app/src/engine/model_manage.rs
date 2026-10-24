@@ -140,7 +140,7 @@ pub(super) struct MgmtPos {
     /// PumpSwap swaps): the standing EXIT intent starts now, before any policy barrier. The reason
     /// is kept for the journal; the fill still comes from the ordinary landing path (gap preserved).
     pub protect_exit: Option<&'static str>,
-    /// Last executed swap price seen for the rug precursor (consecutive-print comparison).
+    /// Last pool SPOT (pre-trade effective reserves) seen for the rug precursor.
     pub last_px_fp: u64,
 }
 

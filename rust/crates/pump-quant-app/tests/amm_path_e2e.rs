@@ -265,12 +265,16 @@ fn an_amm_market_is_discovered_from_stream_events_and_bought_through_the_real_en
 #[test]
 fn amm_fill_is_applied_once_and_duplicates_do_not_add_inventory() {
     let r = amm_run_with_fill();
-    assert_eq!(
-        rep(&r.e, "fill:position_opened_amm"),
-        1,
-        "exactly one fill for one order"
-    );
-    assert_eq!(r.e.model_all_fills().iter().filter(|f| f.amm).count(), 1);
+    // The atoo tape collapses −93 %: with AMM-plane protection the position is stopped and the
+    // always-BUY stub re-enters, so several orders fill over the tape. The invariant is per order:
+    // one fill per filled order, distinct order ids, and duplicates never add inventory.
+    let fills: Vec<_> = r.e.model_all_fills().iter().filter(|f| f.amm).collect();
+    assert!(!fills.is_empty());
+    assert_eq!(rep(&r.e, "fill:position_opened_amm"), fills.len() as u64, "one fill per filled order");
+    let mut ids: Vec<u64> = fills.iter().map(|f| f.order_id).collect();
+    ids.sort_unstable();
+    ids.dedup();
+    assert_eq!(ids.len(), fills.len(), "no order filled twice");
     assert_eq!(
         r.e.model_pending_orders(),
         0,
@@ -521,9 +525,16 @@ fn amm_management_reduce_then_exit_runs_through_the_real_engine_with_unassessed_
     // REDUCE then EXIT each created ONE order and were each booked from a reconciled fill; the position closed
     // only on the EXIT fill. The replay is time-compressed, so some answers land late and are DISCARDED
     // (counted) - they never execute.
-    assert_eq!(rep(&e, "mgmt:order:reduce"), 1, "{r:?}");
-    assert_eq!(rep(&e, "mgmt:order:exit"), 1, "{r:?}");
-    assert_eq!(rep(&e, "mgmt:fill:closed"), 1, "{r:?}");
+    // On this −93 % tape the independent AMM-plane hard stop may pre-empt the scripted REDUCE/EXIT
+    // (protection is never gated on the model); every close still comes from a reconciled EXIT fill,
+    // each position closes exactly once, and nothing is left stranded.
+    assert!(rep(&e, "mgmt:order:exit") >= 1, "{r:?}");
+    assert!(rep(&e, "mgmt:fill:closed") >= 1, "{r:?}");
+    let opened = rep(&e, "fill:position_opened_amm");
+    let closed = rep(&e, "mgmt:fill:closed");
+    assert!(closed == opened || closed + 1 == opened, "every entry closes exactly once (or the last is still held): {r:?}");
+    assert!(rep(&e, "protection:amm_hard_stop|intent") + rep(&e, "mgmt:order:reduce") >= 1, "{r:?}");
     // The unverified AMM sell economics are FLAGGED on every AMM sell fill, so no PnL from them is citable.
-    assert_eq!(rep(&e, "mgmt:fill_amm_sell_fee_unverified"), 2, "{r:?}");
+    let sell_fills = e.model_mgmt_fills().len() as u64;
+    assert_eq!(rep(&e, "mgmt:fill_amm_sell_fee_unverified"), sell_fills, "{r:?}");
 }
