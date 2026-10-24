@@ -3102,3 +3102,48 @@ fn idle_mints_are_forgotten_so_new_markets_keep_registering_after_the_tracked_ca
     assert!(r.get("ledger:forgotten_idle").copied().unwrap_or(0) > 0, "idle mints were forgotten: {r:?}");
     assert!(r.get("gauge:ledger_mints").copied().unwrap_or(u64::MAX) < pump_quant_app::state_ledger::MAX_TRACKED_MINTS as u64);
 }
+
+/// A forgotten (idle, exposure-free) mint that trades again is NOT a fresh launch and gets no
+/// reconstructed history: its launch provenance and cumulative tape were dropped together, so the
+/// existing join rule refuses it by name (`join_launch_unknown`) and no prompt is rendered — sell
+/// volume / first-trade clock can never silently restart at zero for a returning mint.
+#[test]
+fn a_forgotten_mint_that_returns_is_refused_by_name_never_rendered_with_reset_history() {
+    let prompts = Arc::new(Mutex::new(Vec::new()));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut e = Engine::new(cfg(), RunMode::Paper);
+    e.enable_paper_model(Script { prompts: Arc::clone(&prompts), calls, answer: |_| "DECISION: SKIP\nSIZE: NONE\nINVALIDATION: none\nEVIDENCE: stub" });
+    for ev in &events(40) {
+        e.tick(ev.clone());
+    }
+    ticks(&mut e, 6);
+    let before = e.model_lane_report().get("dispatched").copied().unwrap_or(0);
+    assert!(before >= 1, "the mint was dispatched while tracked: {:?}", e.model_lane_report());
+    let n_prompts_before = prompts.lock().unwrap().len();
+    // 31 minutes of silence on this mint; another mint's print advances the feed clock and the sweep runs.
+    let t_idle = T0 + 1_000 + 40 * 2_000 + 31 * 60_000;
+    let other = pump_quant_domain::ids::Mint::from_bytes([0x5A; 32]);
+    for k in 0..3 {
+        e.tick(AppEvent::MarketTrade {
+            mint: other, price_fp: 22_000, quote_lamports: 500_000_000, liquidity_lamports: VSOL, signed_base: 30_000_000_000,
+            buyer_entity: 900 + k, age_slots: 30, recv_unix_ms: Some(t_idle + k as i64 * 70_000), trader_pubkey: Some(wallet(900 + k as u32)),
+            slot: Some(5_000 + k), fee_lamports: Some(60_000), cu_consumed: Some(90_000), venue: Some(TradeVenue::PumpFun),
+        });
+        e.tick(AppEvent::Tick);
+    }
+    assert!(e.model_lane_report().get("ledger:forgotten_idle").copied().unwrap_or(0) >= 1, "{:?}", e.model_lane_report());
+    // The mint returns with a priced print.
+    curve(&mut e, t_idle + 300_000, 9_000, 200_000_000);
+    ticks(&mut e, 6);
+    let r = e.model_lane_report();
+    // Named refusal (which name depends on which record arrives first after the forget — no cache
+    // entry → join_no_mint; cache without launch → join_launch_unknown; quote statement dropped →
+    // quote_unverified). Never a rendered prompt.
+    assert!(
+        r.iter().any(|(k, v)| (k.starts_with("refuse:join_no_mint") || k.starts_with("refuse:join_launch_unknown") || k == "refuse:quote_unverified") && *v >= 1),
+        "returning mint refused by name: {r:?}"
+    );
+    assert_eq!(r.get("dispatched").copied().unwrap_or(0), before, "no dispatch for the returning mint");
+    // No prompt was rendered for the returning mint: the stub saw no new prompt after the forget.
+    assert_eq!(prompts.lock().unwrap().len(), n_prompts_before, "no prompt with a reset history: {r:?}");
+}
