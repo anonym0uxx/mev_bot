@@ -262,6 +262,12 @@ impl Engine {
     /// are discarded rather than acted on.
     /// Realized P&L of the model account (lamports, signed).
     #[must_use]
+    /// Cash reserved for open positions and pending orders (paper ledger identity:
+    /// `free = balance − committed`). Read-only.
+    pub fn bankroll_committed_lamports(&self) -> u128 {
+        self.bankroll_committed
+    }
+
     pub fn bankroll_realized_lamports(&self) -> i128 {
         self.bankroll_realized
     }
