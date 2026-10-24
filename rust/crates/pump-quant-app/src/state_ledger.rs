@@ -426,6 +426,17 @@ impl StateLedger {
         self.mints.len()
     }
 
+    /// Tracked mints.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.mints.len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.mints.is_empty()
+    }
+
     /// New mints refused at [`MAX_TRACKED_MINTS`]. Non-zero means the caller is not calling
     /// [`Self::forget`] when mints leave the watchlist.
     #[must_use]

@@ -537,6 +537,24 @@ impl DecisionCache {
                 .is_some_and(|m| matches!(m.venue, VenueLabel::Pumpswap))
     }
 
+    /// Mints whose newest accepted print is older than `idle_ms` at `now_ms` (candidates for
+    /// [`Self::forget`]). The state ledger refuses NEW mints at `MAX_TRACKED_MINTS` instead of
+    /// evicting, so a long-running process MUST forget idle mints or admission starves
+    /// (research-001 v3, 2026-10-24: dispatch 6.3k/h → 14/h after ~4 h uptime).
+    pub fn idle_mints(&self, now_ms: i64, idle_ms: i64) -> Vec<[u8; 32]> {
+        self.mints
+            .iter()
+            .filter(|(_, mc)| mc.n_accepted == 0 || now_ms.saturating_sub(mc.last_recv_ms) > idle_ms)
+            .map(|(m, _)| *m)
+            .collect()
+    }
+
+    /// Mints currently tracked by the decision cache / state ledger, and the ledger's refusal
+    /// counters (new mints refused at the cap; prints refused for untracked mints).
+    pub fn tracking_gauges(&self) -> (usize, usize, u64, u64) {
+        (self.mints.len(), self.ledger.len(), self.ledger.refused_mints(), self.ledger.refused_prints())
+    }
+
     /// Forget a mint that left the watchlist (bounded state, §99).
     pub fn forget(&mut self, mint: &[u8; 32]) {
         self.ledger.forget(mint);

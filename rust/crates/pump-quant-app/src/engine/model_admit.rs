@@ -52,6 +52,10 @@ pub(super) const MODEL_ORDER_TTL_MS: i64 = 5_000;
 const FIRST_CAND_CAP: usize = 100_000;
 /// Bound on stream-registered markets.
 const REGISTRY_CAP: usize = 100_000;
+/// Idle-mint sweep cadence and threshold (feed clock). 30 min idle ≫ any decision window the
+/// renderer uses (≤ 300 s) and ≫ the management barrier's state needs for mints we do not hold.
+const MODEL_SWEEP_EVERY_MS: i64 = 60_000;
+const MODEL_IDLE_FORGET_MS: i64 = 30 * 60_000;
 /// Maximum asks started per tick: a coalescing bound, not a strategy filter.
 const SCHEDULE_PER_TICK: usize = 8;
 /// Bound on the in-memory order log (oldest terminal records are the only candidates to evict).
@@ -304,6 +308,43 @@ impl Engine {
     /// cache saw, split by what became of it. Scheduling coalesces ASK requests only; this proves
     /// whether any trade was dropped from the flow/feature history before that.
     #[must_use]
+    /// Bounded-state sweep (every `MODEL_SWEEP_EVERY_MS` of feed clock): forget mints idle for
+    /// `MODEL_IDLE_FORGET_MS` that carry no exposure, no pending order and no queued dispatch, so
+    /// the state ledger (`MAX_TRACKED_MINTS`, refuse-not-evict) keeps admitting NEW markets. A
+    /// forgotten mint that trades again re-registers with a fresh ledger; the existing
+    /// `join_history_starts_after_launch` rule then refuses it (its history no longer starts at
+    /// launch) — correct, and counted. Gauges are published to the lane report.
+    pub(super) fn model_sweep_idle(&mut self) {
+        let now = self.model_clock_ms;
+        if now.saturating_sub(self.model_last_sweep_ms) < MODEL_SWEEP_EVERY_MS {
+            return;
+        }
+        self.model_last_sweep_ms = now;
+        let idle = self.model_cache.idle_mints(now, MODEL_IDLE_FORGET_MS);
+        let mut forgotten = 0u64;
+        for m in idle {
+            if self.positions.has(&m)
+                || self.model_orders.contains_key(&m)
+                || self.model_dirty.contains(&m)
+                || self.model_mgmt.pos.contains_key(&m)
+            {
+                continue;
+            }
+            self.model_cache.forget(&m);
+            self.model_registry.remove(&m);
+            self.model_dirty_since.remove(&m);
+            forgotten += 1;
+        }
+        if forgotten > 0 {
+            *self.model_report.entry("ledger:forgotten_idle".into()).or_insert(0) += forgotten;
+        }
+        let (cache_mints, ledger_mints, refused_mints, refused_prints) = self.model_cache.tracking_gauges();
+        self.model_report.insert("gauge:cache_mints".into(), cache_mints as u64);
+        self.model_report.insert("gauge:ledger_mints".into(), ledger_mints as u64);
+        self.model_report.insert("gauge:ledger_refused_mints".into(), refused_mints);
+        self.model_report.insert("gauge:ledger_refused_prints".into(), refused_prints);
+    }
+
     pub fn model_ingest_counters(&self) -> crate::decision_join::IngestCounters {
         self.model_cache.counters()
     }

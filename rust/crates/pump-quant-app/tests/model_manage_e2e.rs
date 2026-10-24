@@ -3058,3 +3058,47 @@ fn unknown_virtual_quote_is_unavailable_state_and_negative_vq_is_honoured() {
         r.e.model_lane_report()
     );
 }
+
+/// Long-uptime regression (research-001 v3, 2026-10-24): the state ledger refuses NEW mints at
+/// `MAX_TRACKED_MINTS` instead of evicting, and nothing forgot idle mints, so after ~4 h every new
+/// market was refused and dispatch collapsed 6.3k/h → 14/h. The sweep forgets idle, exposure-free
+/// mints; the refusal counter is published as a gauge so starvation is visible, never silent.
+#[test]
+fn idle_mints_are_forgotten_so_new_markets_keep_registering_after_the_tracked_cap() {
+    let prompts = Arc::new(Mutex::new(Vec::new()));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut e = Engine::new(cfg(), RunMode::Paper);
+    e.enable_paper_model(Script { prompts, calls, answer: |_| "DECISION: SKIP\nSIZE: NONE\nINVALIDATION: none\nEVIDENCE: stub" });
+    let n_mints: u32 = (pump_quant_app::state_ledger::MAX_TRACKED_MINTS as u32) + 300;
+    // One priced print per distinct mint, 1 s apart: the first mints are > 30 min idle long
+    // before the cap is reached, so the sweep (every 60 s of feed clock) frees capacity.
+    for i in 0..n_mints {
+        let mut m = [0u8; 32];
+        m[..4].copy_from_slice(&i.to_be_bytes());
+        m[4] = 0x77;
+        let t = T0 + i64::from(i) * 1_000;
+        e.tick(AppEvent::MarketTrade {
+            mint: pump_quant_domain::ids::Mint::from_bytes(m),
+            price_fp: 22_000,
+            quote_lamports: 500_000_000,
+            liquidity_lamports: VSOL,
+            signed_base: 30_000_000_000,
+            buyer_entity: 1 + u64::from(i),
+            age_slots: 30,
+            recv_unix_ms: Some(t),
+            trader_pubkey: Some(wallet(i)),
+            slot: Some(1_000 + u64::from(i)),
+            fee_lamports: Some(60_000),
+            cu_consumed: Some(90_000),
+            venue: Some(TradeVenue::PumpFun),
+        });
+        if i % 50 == 0 {
+            e.tick(AppEvent::Tick);
+        }
+    }
+    e.tick(AppEvent::Tick);
+    let r = e.model_lane_report();
+    assert_eq!(r.get("gauge:ledger_refused_mints").copied().unwrap_or(u64::MAX), 0, "no new mint refused at the cap: {r:?}");
+    assert!(r.get("ledger:forgotten_idle").copied().unwrap_or(0) > 0, "idle mints were forgotten: {r:?}");
+    assert!(r.get("gauge:ledger_mints").copied().unwrap_or(u64::MAX) < pump_quant_app::state_ledger::MAX_TRACKED_MINTS as u64);
+}

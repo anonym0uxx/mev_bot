@@ -971,6 +971,8 @@ pub struct Engine {
     /// ARM B: declared "liquidity absorption" admission veto threshold R* in basis points
     /// (`None` = arm A, no veto). Set once at construction of a research arm; never tuned in-run.
     pub(crate) entry_absorption_veto_bps: Option<u64>,
+    /// Feed clock of the last idle-mint sweep (see `model_sweep_idle`).
+    pub(crate) model_last_sweep_ms: i64,
     /// Exits excluded from every economic assessment, with the reason. Visible, never zero-filled.
     model_excluded_exits: Vec<model_admit::ExcludedExit>,
     model_recon_faults: BTreeMap<u64, model_admit::ReconFault>,
@@ -1771,6 +1773,7 @@ impl Engine {
             model_loss_budget: None,
             model_stopped_mints: std::collections::BTreeMap::new(),
             entry_absorption_veto_bps: None,
+            model_last_sweep_ms: 0,
             model_excluded_exits: Vec::new(),
             model_recon_faults: BTreeMap::new(),
             model_amm_econ: BTreeMap::new(),
@@ -3366,6 +3369,7 @@ impl Engine {
             self.model_stream_schedule();
             self.model_mgmt_schedule();
             self.model_held_persist_if_changed();
+            self.model_sweep_idle();
         }
 
         // §Quant-Rev-7: prune expired re-entry cooldown entries. The set is bounded
