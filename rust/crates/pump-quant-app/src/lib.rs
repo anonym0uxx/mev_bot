@@ -42,6 +42,7 @@
 #![forbid(unsafe_code)]
 
 pub mod ablation_replay;
+pub mod absorption;
 pub mod analytics;
 pub mod attention;
 pub mod authority;
@@ -66,6 +67,7 @@ pub mod flow_feed;
 pub mod freshness;
 pub mod gate;
 pub mod hazard_scaffold;
+pub mod held_state;
 pub mod holder_concentration;
 pub mod holder_flow;
 pub mod impact_cap;
@@ -74,17 +76,15 @@ pub mod lane;
 pub mod live_status;
 pub mod market_context;
 pub mod measured_state;
-pub mod absorption;
 pub mod model_authority;
 pub mod model_lane;
 pub mod model_worker;
 pub mod parse;
 pub mod portfolio;
 pub mod position;
-pub mod held_state;
-pub mod safety_off;
 pub mod priced_move;
 pub mod reflect;
+pub mod safety_off;
 pub mod scalp;
 pub mod screen;
 pub mod shadow;

@@ -115,7 +115,12 @@ impl InferencePool {
                             // recorded as cancelled rather than silently skipped.
                             let rem = b.saturating_sub(job.dispatched_at.elapsed());
                             let rid = format!("pq-{}-{}", job.proc_gen, job.id.0);
-                            source.complete_meta_within(&job.system, &job.user, rem.max(std::time::Duration::from_millis(1)), &rid)
+                            source.complete_meta_within(
+                                &job.system,
+                                &job.user,
+                                rem.max(std::time::Duration::from_millis(1)),
+                                &rid,
+                            )
                         }
                         None => source.complete_meta(&job.system, &job.user),
                     };
@@ -216,7 +221,9 @@ mod tests {
         ) -> Result<pump_quant_inference::Completion, InferenceError> {
             self.0.lock().unwrap().push((budget, rid.to_string()));
             std::thread::sleep(budget);
-            Err(InferenceError::Transport(format!("timeout after {budget:?}")))
+            Err(InferenceError::Transport(format!(
+                "timeout after {budget:?}"
+            )))
         }
     }
 
@@ -240,7 +247,10 @@ mod tests {
         assert!(*budget <= Duration::from_millis(450), "budget handed to transport = {budget:?}; must be remaining-from-dispatch, not the full 3.5 s");
         assert!(*budget >= Duration::from_millis(1));
         assert_eq!(rid, "pq-42-7");
-        assert!(matches!(&v[0].result, Err(e) if e.is_timeout()), "timeout must surface as a transport timeout, not a silent skip");
+        assert!(
+            matches!(&v[0].result, Err(e) if e.is_timeout()),
+            "timeout must surface as a transport timeout, not a silent skip"
+        );
         assert_eq!(v[0].id, RequestId(7));
         pool.shutdown();
     }

@@ -3,17 +3,16 @@
 //! answer (v16-shaped / truncated / BUY-without-SIZE answers are named no-trades, never executed), and
 //! a valid `DECISION: BUY / SIZE: SMALL / REASON / RISK` answer reaches the unchanged authority and
 //! creates an order intent (no price limit). Synthetic events: execution integration only.
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
 use pump_quant_app::config::Config;
 use pump_quant_app::engine::{Engine, EntryContract, RunMode};
 use pump_quant_app::event::{AppEvent, TradeVenue};
 use pump_quant_app::model_authority::ModelSource;
 use pump_quant_domain::ids::Mint as DomainMint;
-use pump_quant_inference::{Completion, InferenceError};
 use pump_quant_inference::probe_sl::PROBE_SL_V1_SYSTEM_PROMPT;
-
+use pump_quant_inference::{Completion, InferenceError};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 const T0: i64 = 1_800_000_000_000;
 const MINT: [u8; 32] = [0xAB; 32];
@@ -55,7 +54,12 @@ impl ModelSource for Fixed {
     fn complete_meta(&self, s: &str, _u: &str) -> Result<Completion, InferenceError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         self.systems.lock().unwrap().push(s.to_string());
-        Ok(Completion { text: self.text.to_string(), finish_reason: self.finish.map(str::to_string), completion_tokens: self.tokens, stop_reason: self.stop_reason.map(str::to_string) })
+        Ok(Completion {
+            text: self.text.to_string(),
+            finish_reason: self.finish.map(str::to_string),
+            completion_tokens: self.tokens,
+            stop_reason: self.stop_reason.map(str::to_string),
+        })
     }
 }
 
@@ -67,7 +71,10 @@ fn events(n: u32) -> Vec<AppEvent> {
             launch_unix_ms: T0,
         },
         // The fixture market is SOL-quoted; the lane requires the positive statement.
-        AppEvent::CurveQuote { mint: mint(), quote_mint: [0u8; 32] },
+        AppEvent::CurveQuote {
+            mint: mint(),
+            quote_mint: [0u8; 32],
+        },
     ];
     for i in 0..n {
         let buy = i % 3 != 0;
@@ -125,7 +132,6 @@ fn curve(e: &mut Engine, ts: i64, slot: u64, dsol: u64) {
     ticks(e, 6);
 }
 
-
 /// A curve observation at the feed clock, without extra ticks: the account subscription keeps the
 /// reserves fresh in production, and management now refuses reserves older than PRICING_BUDGET_MS.
 fn curve_quiet(e: &mut Engine, ts: i64, slot: u64) {
@@ -170,15 +176,32 @@ struct Rig {
     n: u32,
 }
 
-fn run(text: &'static str, finish: Option<&'static str>, tokens: Option<u32>) -> (Engine, Arc<Mutex<Vec<String>>>, Arc<AtomicUsize>) {
+fn run(
+    text: &'static str,
+    finish: Option<&'static str>,
+    tokens: Option<u32>,
+) -> (Engine, Arc<Mutex<Vec<String>>>, Arc<AtomicUsize>) {
     run_with(EntryContract::ProbeSlV1, text, finish, None, tokens)
 }
 
-fn run_with(contract: EntryContract, text: &'static str, finish: Option<&'static str>, stop_reason: Option<&'static str>, tokens: Option<u32>) -> (Engine, Arc<Mutex<Vec<String>>>, Arc<AtomicUsize>) {
+fn run_with(
+    contract: EntryContract,
+    text: &'static str,
+    finish: Option<&'static str>,
+    stop_reason: Option<&'static str>,
+    tokens: Option<u32>,
+) -> (Engine, Arc<Mutex<Vec<String>>>, Arc<AtomicUsize>) {
     let systems = Arc::new(Mutex::new(Vec::new()));
     let calls = Arc::new(AtomicUsize::new(0));
     let mut e = Engine::new(cfg(), RunMode::Paper);
-    e.enable_paper_model(Fixed { text, finish, tokens, stop_reason, systems: Arc::clone(&systems), calls: Arc::clone(&calls) });
+    e.enable_paper_model(Fixed {
+        text,
+        finish,
+        tokens,
+        stop_reason,
+        systems: Arc::clone(&systems),
+        calls: Arc::clone(&calls),
+    });
     e.set_entry_contract(contract);
     let evs = events(40);
     for ev in &evs {
@@ -191,18 +214,37 @@ fn run_with(contract: EntryContract, text: &'static str, finish: Option<&'static
 }
 
 fn rep(e: &Engine, k: &str) -> u64 {
-    e.model_lane_report().iter().filter(|(key, _)| key.starts_with(k)).map(|(_, v)| *v).sum()
+    e.model_lane_report()
+        .iter()
+        .filter(|(key, _)| key.starts_with(k))
+        .map(|(_, v)| *v)
+        .sum()
 }
 
 #[test]
 fn probe_sl_system_prompt_is_sent_verbatim_and_a_valid_buy_creates_an_order_intent() {
     let (e, systems, calls) = run("DECISION: BUY\nSIZE: SMALL\nREASON: net flow positive with fresh entrants\nRISK: thin book", Some("stop"), Some(40));
-    assert!(calls.load(Ordering::SeqCst) >= 1, "{:?}", e.model_lane_report());
+    assert!(
+        calls.load(Ordering::SeqCst) >= 1,
+        "{:?}",
+        e.model_lane_report()
+    );
     for s in systems.lock().unwrap().iter() {
-        assert_eq!(s, PROBE_SL_V1_SYSTEM_PROMPT, "system instruction must be the artifact, byte for byte");
+        assert_eq!(
+            s, PROBE_SL_V1_SYSTEM_PROMPT,
+            "system instruction must be the artifact, byte for byte"
+        );
     }
-    assert!(rep(&e, "probe_sl:valid:BUY") >= 1, "{:?}", e.model_lane_report());
-    assert!(rep(&e, "verdict:buy") >= 1, "a valid probe BUY reaches the authority: {:?}", e.model_lane_report());
+    assert!(
+        rep(&e, "probe_sl:valid:BUY") >= 1,
+        "{:?}",
+        e.model_lane_report()
+    );
+    assert!(
+        rep(&e, "verdict:buy") >= 1,
+        "a valid probe BUY reaches the authority: {:?}",
+        e.model_lane_report()
+    );
     assert_eq!(rep(&e, "probe_sl:invalid"), 0);
 }
 
@@ -218,15 +260,28 @@ fn v16_shaped_truncated_and_sizeless_answers_are_named_no_trades() {
         let (e, _, calls) = run(text, finish, tokens);
         assert!(calls.load(Ordering::SeqCst) >= 1);
         assert!(rep(&e, key) >= 1, "{key}: {:?}", e.model_lane_report());
-        assert_eq!(rep(&e, "verdict:buy"), 0, "never executed: {:?}", e.model_lane_report());
+        assert_eq!(
+            rep(&e, "verdict:buy"),
+            0,
+            "never executed: {:?}",
+            e.model_lane_report()
+        );
         assert!(rep(&e, "notrade:probe_sl_off_contract") >= 1);
     }
 }
 
 #[test]
 fn a_valid_skip_is_a_skip() {
-    let (e, _, _) = run("DECISION: SKIP\nREASON: sells dominate\nRISK: none material", Some("stop"), Some(20));
-    assert!(rep(&e, "probe_sl:valid:SKIP") >= 1, "{:?}", e.model_lane_report());
+    let (e, _, _) = run(
+        "DECISION: SKIP\nREASON: sells dominate\nRISK: none material",
+        Some("stop"),
+        Some(20),
+    );
+    assert!(
+        rep(&e, "probe_sl:valid:SKIP") >= 1,
+        "{:?}",
+        e.model_lane_report()
+    );
     assert_eq!(rep(&e, "verdict:buy"), 0);
 }
 
@@ -235,33 +290,97 @@ fn a_valid_skip_is_a_skip() {
 /// boundary (EOS / no stop_reason) or cut at the cap is a named no-trade; a SKIP record is a skip.
 #[test]
 fn compact_record_executes_only_when_the_server_reports_the_boundary() {
-    let (e, systems, calls) = run_with(EntryContract::ProbeSlV1Compact, "DECISION: BUY\nSIZE: SMALL", Some("stop"), Some("\nREASON"), Some(7));
-    assert!(calls.load(Ordering::SeqCst) >= 1, "{:?}", e.model_lane_report());
+    let (e, systems, calls) = run_with(
+        EntryContract::ProbeSlV1Compact,
+        "DECISION: BUY\nSIZE: SMALL",
+        Some("stop"),
+        Some("\nREASON"),
+        Some(7),
+    );
+    assert!(
+        calls.load(Ordering::SeqCst) >= 1,
+        "{:?}",
+        e.model_lane_report()
+    );
     for s in systems.lock().unwrap().iter() {
         assert_eq!(s, PROBE_SL_V1_SYSTEM_PROMPT);
     }
-    assert!(rep(&e, "probe_sl:valid:BUY") >= 1, "{:?}", e.model_lane_report());
+    assert!(
+        rep(&e, "probe_sl:valid:BUY") >= 1,
+        "{:?}",
+        e.model_lane_report()
+    );
     assert!(rep(&e, "verdict:buy") >= 1, "{:?}", e.model_lane_report());
     assert_eq!(rep(&e, "probe_sl:invalid"), 0);
 
-    let cases: [(&'static str, Option<&'static str>, Option<&'static str>, &str); 4] = [
-        ("DECISION: BUY\nSIZE: SMALL", Some("stop"), None, "probe_sl:invalid:not_at_record_boundary"),
-        ("DECISION: BUY\nSIZE: SMALL", Some("length"), None, "probe_sl:invalid:not_natural_stop"),
-        ("DECISION: BUY\nSIZE: SMALL\nREASON: r\nRISK: k", Some("stop"), None, "probe_sl:invalid:not_at_record_boundary"),
-        ("DECISION: BUY", Some("stop"), Some("\nREASON"), "probe_sl:invalid:buy_without_size"),
+    let cases: [(
+        &'static str,
+        Option<&'static str>,
+        Option<&'static str>,
+        &str,
+    ); 4] = [
+        (
+            "DECISION: BUY\nSIZE: SMALL",
+            Some("stop"),
+            None,
+            "probe_sl:invalid:not_at_record_boundary",
+        ),
+        (
+            "DECISION: BUY\nSIZE: SMALL",
+            Some("length"),
+            None,
+            "probe_sl:invalid:not_natural_stop",
+        ),
+        (
+            "DECISION: BUY\nSIZE: SMALL\nREASON: r\nRISK: k",
+            Some("stop"),
+            None,
+            "probe_sl:invalid:not_at_record_boundary",
+        ),
+        (
+            "DECISION: BUY",
+            Some("stop"),
+            Some("\nREASON"),
+            "probe_sl:invalid:buy_without_size",
+        ),
     ];
     for (text, finish, sr, key) in cases {
         let (e, _, calls) = run_with(EntryContract::ProbeSlV1Compact, text, finish, sr, Some(7));
         assert!(calls.load(Ordering::SeqCst) >= 1);
         assert!(rep(&e, key) >= 1, "{key}: {:?}", e.model_lane_report());
-        assert_eq!(rep(&e, "verdict:buy"), 0, "never executed: {:?}", e.model_lane_report());
+        assert_eq!(
+            rep(&e, "verdict:buy"),
+            0,
+            "never executed: {:?}",
+            e.model_lane_report()
+        );
         assert!(rep(&e, "notrade:probe_sl_off_contract") >= 1);
     }
-    let (e, _, _) = run_with(EntryContract::ProbeSlV1Compact, "DECISION: SKIP", Some("stop"), Some("\nREASON"), Some(5));
-    assert!(rep(&e, "probe_sl:valid:SKIP") >= 1, "{:?}", e.model_lane_report());
+    let (e, _, _) = run_with(
+        EntryContract::ProbeSlV1Compact,
+        "DECISION: SKIP",
+        Some("stop"),
+        Some("\nREASON"),
+        Some(5),
+    );
+    assert!(
+        rep(&e, "probe_sl:valid:SKIP") >= 1,
+        "{:?}",
+        e.model_lane_report()
+    );
     assert_eq!(rep(&e, "verdict:buy"), 0);
     // the long contract must NOT accept a compact record (boundary semantics are per contract)
-    let (e, _, _) = run_with(EntryContract::ProbeSlV1, "DECISION: BUY\nSIZE: SMALL", Some("stop"), Some("\nREASON"), Some(7));
-    assert!(rep(&e, "probe_sl:invalid:field_order_or_missing") >= 1, "{:?}", e.model_lane_report());
+    let (e, _, _) = run_with(
+        EntryContract::ProbeSlV1,
+        "DECISION: BUY\nSIZE: SMALL",
+        Some("stop"),
+        Some("\nREASON"),
+        Some(7),
+    );
+    assert!(
+        rep(&e, "probe_sl:invalid:field_order_or_missing") >= 1,
+        "{:?}",
+        e.model_lane_report()
+    );
     assert_eq!(rep(&e, "verdict:buy"), 0);
 }

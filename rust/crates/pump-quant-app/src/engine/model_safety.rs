@@ -231,7 +231,8 @@ impl Engine {
                 "H {} entry_px_fp={} inv={} managed={}\n",
                 hex(&h.mint),
                 h.entry_price_fp,
-                h.inventory_tokens.map_or("unknown".to_string(), |v| v.to_string()),
+                h.inventory_tokens
+                    .map_or("unknown".to_string(), |v| v.to_string()),
                 h.model_managed
             ));
         }
@@ -245,7 +246,8 @@ impl Engine {
                 p.uncertain
             ));
         }
-        let d = pump_quant_protocol::sha256::to_hex(&pump_quant_protocol::sha256::sha256(t.as_bytes()));
+        let d =
+            pump_quant_protocol::sha256::to_hex(&pump_quant_protocol::sha256::sha256(t.as_bytes()));
         (d, t)
     }
 
@@ -260,8 +262,10 @@ impl Engine {
             self.model_safety.consecutive_abandoned = 0;
         }
         if failed > 0 {
-            self.model_safety.consecutive_abandoned =
-                self.model_safety.consecutive_abandoned.saturating_add(failed);
+            self.model_safety.consecutive_abandoned = self
+                .model_safety
+                .consecutive_abandoned
+                .saturating_add(failed);
             if self.model_safety.consecutive_abandoned >= CONSECUTIVE_ABANDONED_TRIP
                 && !self.model_safety.blocked
             {

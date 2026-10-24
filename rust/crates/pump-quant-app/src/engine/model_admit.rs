@@ -276,8 +276,16 @@ impl Engine {
     #[must_use]
     pub fn model_loss_budget_headroom(&self) -> Option<i128> {
         let (budget, start) = self.model_loss_budget?;
-        let pending: i128 = self.model_orders.values().map(|o| i128::from(o.clip_lamports)).sum();
-        Some(i128::from(budget) + (self.bankroll_realized - start) - i128::try_from(self.bankroll_committed).unwrap_or(i128::MAX) - pending)
+        let pending: i128 = self
+            .model_orders
+            .values()
+            .map(|o| i128::from(o.clip_lamports))
+            .sum();
+        Some(
+            i128::from(budget) + (self.bankroll_realized - start)
+                - i128::try_from(self.bankroll_committed).unwrap_or(i128::MAX)
+                - pending,
+        )
     }
 
     pub fn set_model_entries_blocked(&mut self, blocked: bool) {
@@ -441,7 +449,9 @@ impl Engine {
             let p = self.positions.lifecycle_params();
             (u128::from(p.hard_sl_bps), u128::from(p.precursor_drop_bps))
         };
-        let Some(mp) = self.model_mgmt.pos.get_mut(&mint) else { return };
+        let Some(mp) = self.model_mgmt.pos.get_mut(&mint) else {
+            return;
+        };
         // Fresh-state rule: only a state newer than everything this position has already seen
         // (including before a restart, via the persisted `last_state_ms`) is evidence. A replayed,
         // late or reordered older state is history: it cannot fire protection or move `prev`.
@@ -462,7 +472,10 @@ impl Engine {
         let hard_level = u128::from(mp.entry_px_fp) * (10_000 - hard_sl_bps) / 10_000;
         let reason = if u128::from(px) <= hard_level {
             Some("amm_hard_stop")
-        } else if prev > 0 && px < prev && u128::from(prev - px) * 10_000 / u128::from(prev) >= precursor_bps {
+        } else if prev > 0
+            && px < prev
+            && u128::from(prev - px) * 10_000 / u128::from(prev) >= precursor_bps
+        {
             Some("amm_rug_precursor")
         } else {
             None
@@ -522,7 +535,11 @@ impl Engine {
                 ts_ms,
                 slot,
             },
-            crate::curve_annotation::AmmAttribution { wsol_pools: vec![crate::curve_annotation::b58_encode(&pool)], pools_total: 1, graduated: true },
+            crate::curve_annotation::AmmAttribution {
+                wsol_pools: vec![crate::curve_annotation::b58_encode(&pool)],
+                pools_total: 1,
+                graduated: true,
+            },
         );
         // A standing EXIT intent (attempts > 0) whose last order expired is re-placed here as the
         // intent's next attempt, dated just before the snapshot so the snapshot is its landing
@@ -546,13 +563,17 @@ impl Engine {
         // the landing rule (`obs.slot > created_slot`) judges the snapshot by time, not by the
         // feed's lead. Never applied to entry orders.
         if let Some(o) = self.model_mgmt.orders.get_mut(&mint) {
-            if o.kind == super::model_manage::MgmtKind::Exit && ts_ms - o.created_ms >= super::model_admit::MODEL_FILL_LANDING_MS && o.created_slot >= slot {
+            if o.kind == super::model_manage::MgmtKind::Exit
+                && ts_ms - o.created_ms >= super::model_admit::MODEL_FILL_LANDING_MS
+                && o.created_slot >= slot
+            {
                 o.created_slot = slot.saturating_sub(1);
                 self.mrep("mgmt:amm_state_snapshot|slot_realigned");
             }
         }
         let fee_parts = self.model_amm_econ.get(&mint).and_then(|(f, _, _)| *f);
-        self.model_amm_econ.insert(mint, (fee_parts, Some(virtual_quote), ts_ms));
+        self.model_amm_econ
+            .insert(mint, (fee_parts, Some(virtual_quote), ts_ms));
         self.mrep("mgmt:amm_state_snapshot");
         let fills_before = self.model_mgmt_fills().len();
         let c = self.model_clock_ms;
@@ -758,7 +779,8 @@ impl Engine {
                 if self.entry_contract.is_probe_sl() {
                     // probe_sl_v1(/compact): the policy's own system instruction, verbatim. The user prompt
                     // is the renderer's (byte-parity with the contract's training inputs).
-                    s.system_prompt = pump_quant_inference::probe_sl::PROBE_SL_V1_SYSTEM_PROMPT.to_string();
+                    s.system_prompt =
+                        pump_quant_inference::probe_sl::PROBE_SL_V1_SYSTEM_PROMPT.to_string();
                 }
                 s
             }
@@ -812,9 +834,9 @@ impl Engine {
             proc_gen: self.model_proc_gen,
             // request-lifecycle v2 (opt-in): authority deadline + bounded cancellation lag; the
             // 3,000 ms authority clock itself is unchanged.
-            transport_budget: self
-                .model_cancel_lag_ms
-                .map(|lag| std::time::Duration::from_millis((MODEL_DEADLINE_MS as u64).saturating_add(lag))),
+            transport_budget: self.model_cancel_lag_ms.map(|lag| {
+                std::time::Duration::from_millis((MODEL_DEADLINE_MS as u64).saturating_add(lag))
+            }),
         };
         let dispatched = self
             .model_pool
@@ -862,13 +884,48 @@ impl Engine {
             let mut fields = serde_json::Map::new();
             for tok in snap.user_prompt.split_whitespace() {
                 if let Some((k, val)) = tok.split_once('=') {
-                    if matches!(k, "age_s" | "last_trade_age_s" | "n_prior_trades" | "buy_count" | "sell_count" | "unique_traders" | "buy_volume_lamports" | "sell_volume_lamports" | "net_flow_lamports" | "quote_reserves_lamports" | "base_reserves_raw" | "staleness_ms" | "reserve_slot" | "pricing_eligible" | "ret_5s_bp" | "ret_30s_bp" | "vol_30s_bp" | "net_flow_sol_300s" | "entrants_60s" | "entrants_300s" | "wash_ratio" | "top1_float_share" | "holders_at_t" | "evidence_status" | "venue" | "price_lamports_per_raw_token" | "curve_present") {
+                    if matches!(
+                        k,
+                        "age_s"
+                            | "last_trade_age_s"
+                            | "n_prior_trades"
+                            | "buy_count"
+                            | "sell_count"
+                            | "unique_traders"
+                            | "buy_volume_lamports"
+                            | "sell_volume_lamports"
+                            | "net_flow_lamports"
+                            | "quote_reserves_lamports"
+                            | "base_reserves_raw"
+                            | "staleness_ms"
+                            | "reserve_slot"
+                            | "pricing_eligible"
+                            | "ret_5s_bp"
+                            | "ret_30s_bp"
+                            | "vol_30s_bp"
+                            | "net_flow_sol_300s"
+                            | "entrants_60s"
+                            | "entrants_300s"
+                            | "wash_ratio"
+                            | "top1_float_share"
+                            | "holders_at_t"
+                            | "evidence_status"
+                            | "venue"
+                            | "price_lamports_per_raw_token"
+                            | "curve_present"
+                    ) {
                         fields.insert(k.to_string(), serde_json::Value::String(val.to_string()));
                     }
                 }
             }
             let econ = self.model_amm_econ.get(&mint).copied();
-            let stopped_before = self.model_mgmt.pos.get(&mint).and_then(|p| p.protect_exit).is_some() || self.model_stopped_mints.contains_key(&mint);
+            let stopped_before = self
+                .model_mgmt
+                .pos
+                .get(&mint)
+                .and_then(|p| p.protect_exit)
+                .is_some()
+                || self.model_stopped_mints.contains_key(&mint);
             self.model_io_event_with(
                 "entry", id.0, &mint, "prompt_fields", "shadow", clock,
                 serde_json::json!({"fields": fields, "prompt_digest": snap.prompt_digest, "amm_vq_lamports": econ.and_then(|(_, vq, _)| vq), "amm_vq_state_ts_ms": econ.map(|(_, _, t)| t), "reentry_after_own_stop": stopped_before, "last_own_stop_ms": self.model_stopped_mints.get(&mint).copied()}),
@@ -965,9 +1022,28 @@ impl Engine {
         }
         let is_mgmt = v.id.0 >= super::model_manage::MGMT_ID_BASE;
         let (system, user, t_dec_ms) = if is_mgmt {
-            self.model_mgmt.meta.get(&v.id).map(|m| (m.snap.system_prompt.clone(), m.snap.user_prompt.clone(), Some(m.snap.t_dec_ms))).unwrap_or_default()
+            self.model_mgmt
+                .meta
+                .get(&v.id)
+                .map(|m| {
+                    (
+                        m.snap.system_prompt.clone(),
+                        m.snap.user_prompt.clone(),
+                        Some(m.snap.t_dec_ms),
+                    )
+                })
+                .unwrap_or_default()
         } else {
-            self.model_meta.get(&v.id).map(|m| (m.snap.system_prompt.clone(), m.snap.user_prompt.clone(), Some(m.snap.t_dec_ms))).unwrap_or_default()
+            self.model_meta
+                .get(&v.id)
+                .map(|m| {
+                    (
+                        m.snap.system_prompt.clone(),
+                        m.snap.user_prompt.clone(),
+                        Some(m.snap.t_dec_ms),
+                    )
+                })
+                .unwrap_or_default()
         };
         let dispatched = self.model_dispatch_clock.remove(&v.id);
         let rec = serde_json::json!({
@@ -996,12 +1072,29 @@ impl Engine {
 
     /// One lifecycle line for request `id` (`ev` = dispatch | status), keyed by (gen, kind, id) so a
     /// late return updates the same request and never reads as a second dispatch.
-    pub(super) fn model_io_event(&mut self, kind: &str, id: u64, mint: &[u8; 32], ev: &str, status: &str, clock: i64) {
+    pub(super) fn model_io_event(
+        &mut self,
+        kind: &str,
+        id: u64,
+        mint: &[u8; 32],
+        ev: &str,
+        status: &str,
+        clock: i64,
+    ) {
         self.model_io_event_with(kind, id, mint, ev, status, clock, serde_json::Value::Null);
     }
 
     /// Lifecycle line with extra fields merged in (provenance on dispatch; elapsed/why on status).
-    pub(super) fn model_io_event_with(&mut self, kind: &str, id: u64, mint: &[u8; 32], ev: &str, status: &str, clock: i64, extra: serde_json::Value) {
+    pub(super) fn model_io_event_with(
+        &mut self,
+        kind: &str,
+        id: u64,
+        mint: &[u8; 32],
+        ev: &str,
+        status: &str,
+        clock: i64,
+        extra: serde_json::Value,
+    ) {
         if self.model_io_sink.is_none() {
             return;
         }
@@ -1032,7 +1125,11 @@ impl Engine {
                     // request-lifecycle v2: the transport budget expired (socket closed → server
                     // cancellation) — the request lost authority at the deadline AND its server
                     // work was released; no answer was ever observed.
-                    AcceptRefusal::DeadlineExceeded { .. } | AcceptRefusal::Abandoned if timed_out => "discard:cancelled_at_deadline",
+                    AcceptRefusal::DeadlineExceeded { .. } | AcceptRefusal::Abandoned
+                        if timed_out =>
+                    {
+                        "discard:cancelled_at_deadline"
+                    }
                     AcceptRefusal::DeadlineExceeded { .. } => "discard:late",
                     AcceptRefusal::Abandoned => "discard:abandoned",
                     AcceptRefusal::EntriesBlocked => "discard:entries_blocked",
@@ -1042,7 +1139,14 @@ impl Engine {
                 return;
             }
         };
-        self.model_io_event("entry", v.id.0, &v.mint, "status", "accepted_for_authority", clock);
+        self.model_io_event(
+            "entry",
+            v.id.0,
+            &v.mint,
+            "status",
+            "accepted_for_authority",
+            clock,
+        );
         let Some(meta) = meta else {
             self.mrep("discard:no_binding");
             return;
@@ -1069,7 +1173,14 @@ impl Engine {
         let budget_headroom = self.model_loss_budget_headroom();
         if budget_headroom.is_some_and(|h| h <= 0) {
             self.mrep("notrade:loss_budget");
-            self.model_io_event("entry", v.id.0, &v.mint, "disposition", "notrade:loss_budget", clock);
+            self.model_io_event(
+                "entry",
+                v.id.0,
+                &v.mint,
+                "disposition",
+                "notrade:loss_budget",
+                clock,
+            );
             return;
         }
         let deployable_unbounded = deployable_capital(balance, floor);
@@ -1121,45 +1232,19 @@ impl Engine {
                 } {
                     Ok(d) => {
                         self.mrep(format!("probe_sl:valid:{}", d.action.as_str()));
-                        // ARM B — declared admission veto "liquidity absorption" (EXPERIMENT_SPEC_ABSORPTION):
-                        // evaluated on the COMMON opportunity (a valid BUY), BEFORE any arm-dependent
-                        // capital/portfolio veto, from the exact prompt bytes the model received.
-                        // R = sell_volume_lamports / quote_reserves_lamports (cumulative curve+AMM sell
-                        // quote volume since first captured trade ÷ raw quote vault at the snapshot).
-                        // Unavailable R (missing/zero denominator) is a named refusal, never zero risk.
-                        if let (Some(r_star_bps), pump_quant_inference::probe_sl::ProbeSlAction::Buy) =
-                            (self.entry_absorption_veto_bps, d.action)
-                        {
-                            match crate::absorption::ratio_bps(&meta.snap.user_prompt) {
-                                Some((r_bps, sell_vol, vault)) if r_bps > r_star_bps => {
-                                    self.mrep(format!("notrade:absorption|{}", meta.dims));
-                                    self.model_io_event_with(
-                                        "entry", v.id.0, &v.mint, "disposition", "notrade:absorption", clock,
-                                        serde_json::json!({"r_bps": r_bps, "r_star_bps": r_star_bps, "sell_volume_lamports": sell_vol, "quote_reserves_lamports": vault}),
-                                    );
-                                    return;
-                                }
-                                Some((r_bps, sell_vol, vault)) => {
-                                    self.model_io_event_with(
-                                        "entry", v.id.0, &v.mint, "absorption", "pass", clock,
-                                        serde_json::json!({"r_bps": r_bps, "r_star_bps": r_star_bps, "sell_volume_lamports": sell_vol, "quote_reserves_lamports": vault}),
-                                    );
-                                }
-                                None => {
-                                    self.mrep(format!("notrade:absorption_unavailable|{}", meta.dims));
-                                    self.model_io_event(
-                                        "entry", v.id.0, &v.mint, "disposition", "notrade:absorption_unavailable", clock,
-                                    );
-                                    return;
-                                }
-                            }
-                        }
                         v.result
                     }
                     Err(reason) => {
                         self.mrep(format!("probe_sl:invalid:{reason}"));
                         self.mrep(format!("notrade:probe_sl_off_contract|{}", meta.dims));
-                        self.model_io_event("entry", v.id.0, &v.mint, "disposition", &format!("invalid:{reason}"), clock);
+                        self.model_io_event(
+                            "entry",
+                            v.id.0,
+                            &v.mint,
+                            "disposition",
+                            &format!("invalid:{reason}"),
+                            clock,
+                        );
                         return;
                     }
                 },
@@ -1168,6 +1253,44 @@ impl Engine {
         } else {
             v.result
         };
+        // ARM B — declared admission veto "liquidity absorption" (EXPERIMENT_SPEC_ABSORPTION):
+        // evaluated on the COMMON opportunity (a valid BUY), BEFORE any arm-dependent
+        // capital/portfolio veto, from the exact prompt bytes the model received.
+        // R = sell_volume_lamports / quote_reserves_lamports (cumulative curve+AMM sell
+        // quote volume since first captured trade ÷ raw quote vault at the snapshot).
+        // Unavailable R (missing/zero denominator) is a named refusal, never zero risk.
+        if let (Some(r_star_bps), Ok(c)) = (self.entry_absorption_veto_bps, &result) {
+            if c.text.starts_with("DECISION: BUY") {
+                match crate::absorption::ratio_bps(&meta.snap.user_prompt) {
+                    Some((r_bps, sell_vol, vault)) if r_bps > r_star_bps => {
+                        self.mrep(format!("notrade:absorption|{}", meta.dims));
+                        self.model_io_event_with(
+                        "entry", v.id.0, &v.mint, "disposition", "notrade:absorption", clock,
+                        serde_json::json!({"r_bps": r_bps, "r_star_bps": r_star_bps, "sell_volume_lamports": sell_vol, "quote_reserves_lamports": vault}),
+                    );
+                        return;
+                    }
+                    Some((r_bps, sell_vol, vault)) => {
+                        self.model_io_event_with(
+                        "entry", v.id.0, &v.mint, "absorption", "pass", clock,
+                        serde_json::json!({"r_bps": r_bps, "r_star_bps": r_star_bps, "sell_volume_lamports": sell_vol, "quote_reserves_lamports": vault}),
+                    );
+                    }
+                    None => {
+                        self.mrep(format!("notrade:absorption_unavailable|{}", meta.dims));
+                        self.model_io_event(
+                            "entry",
+                            v.id.0,
+                            &v.mint,
+                            "disposition",
+                            "notrade:absorption_unavailable",
+                            clock,
+                        );
+                        return;
+                    }
+                }
+            }
+        }
         let mut ledger: DriftLedger = std::mem::take(&mut self.model_drift);
         let verdict = resolve_entry(result, &req, &mut ledger);
         self.model_drift = ledger;
@@ -1183,13 +1306,14 @@ impl Engine {
                 // was actually sized, and the budget headroom. Executed quantity/cost follow in the
                 // fill record; vetoes carry their own disposition. Comparisons across books must
                 // read these fields rather than attribute every difference to protection.
-                let proposed_clip_unbounded = pump_quant_inference::seam::resolve_clip_at_fraction_bps(
-                    req.portfolio.fraction_bps_for(tier),
-                    req.free_cash_lamports,
-                    req.portfolio.per_position_notional(deployable_unbounded),
-                    pump_quant_inference::seam::FEE_BUFFER_LAMPORTS,
-                )
-                .ok();
+                let proposed_clip_unbounded =
+                    pump_quant_inference::seam::resolve_clip_at_fraction_bps(
+                        req.portfolio.fraction_bps_for(tier),
+                        req.free_cash_lamports,
+                        req.portfolio.per_position_notional(deployable_unbounded),
+                        pump_quant_inference::seam::FEE_BUFFER_LAMPORTS,
+                    )
+                    .ok();
                 self.model_io_event_with(
                     "entry", v.id.0, &entry.mint, "sizing", "buy", clock,
                     serde_json::json!({"tier": format!("{tier:?}"), "deployable_unbounded_lamports": deployable_unbounded, "deployable_bounded_lamports": deployable, "loss_budget_headroom_lamports": budget_headroom, "proposed_clip_unbounded_lamports": proposed_clip_unbounded, "sized_clip_lamports": clip_lamports, "budget_bound_active": deployable < deployable_unbounded}),
@@ -1257,7 +1381,14 @@ impl Engine {
                 self.mrep(format!("notrade:{k}"));
                 // Per-request disposition (a BUY vetoed by the cash floor is a capital veto, not a
                 // model/format failure): journaled by request id so the funnel reconciles by ID.
-                self.model_io_event("entry", v.id.0, &v.mint, "disposition", &format!("notrade:{k}"), clock);
+                self.model_io_event(
+                    "entry",
+                    v.id.0,
+                    &v.mint,
+                    "disposition",
+                    &format!("notrade:{k}"),
+                    clock,
+                );
             }
         }
     }
@@ -1275,11 +1406,24 @@ impl Engine {
                 self.mrep("pending_uncertain_held");
                 continue;
             }
-            if self.model_cache.quote_not_sol(&mint) || !self.model_cache.quote_sol_verified(&mint) {
+            if self.model_cache.quote_not_sol(&mint) || !self.model_cache.quote_sol_verified(&mint)
+            {
                 self.model_retire_order(&mint);
-                let why = if self.model_cache.quote_not_sol(&mint) { "quote_not_sol" } else { "quote_unverified" };
+                let why = if self.model_cache.quote_not_sol(&mint) {
+                    "quote_not_sol"
+                } else {
+                    "quote_unverified"
+                };
                 self.mrep(format!("fill_none:{why}"));
-                self.model_io_event_with("order", order.id, &mint, "fill", &format!("none:{why}"), clock, serde_json::json!({"amm": order.amm}));
+                self.model_io_event_with(
+                    "order",
+                    order.id,
+                    &mint,
+                    "fill",
+                    &format!("none:{why}"),
+                    clock,
+                    serde_json::json!({"amm": order.amm}),
+                );
                 continue;
             }
             if let Some(fr) = order.confirmed {
@@ -1306,7 +1450,15 @@ impl Engine {
                     if clock - order.created_ms > MODEL_ORDER_TTL_MS {
                         self.model_retire_order(&mint);
                         self.mrep("fill_none:no_landing_state");
-                        self.model_io_event_with("order", order.id, &mint, "fill", "none:no_landing_state", clock, serde_json::json!({"amm": true, "created_ms": order.created_ms}));
+                        self.model_io_event_with(
+                            "order",
+                            order.id,
+                            &mint,
+                            "fill",
+                            "none:no_landing_state",
+                            clock,
+                            serde_json::json!({"amm": true, "created_ms": order.created_ms}),
+                        );
                     }
                     continue;
                 };
@@ -1362,7 +1514,15 @@ impl Engine {
                     if clock - order.created_ms > MODEL_ORDER_TTL_MS {
                         self.model_retire_order(&mint);
                         self.mrep("fill_none:no_landing_state");
-                        self.model_io_event_with("order", order.id, &mint, "fill", "none:no_landing_state", clock, serde_json::json!({"amm": false, "created_ms": order.created_ms}));
+                        self.model_io_event_with(
+                            "order",
+                            order.id,
+                            &mint,
+                            "fill",
+                            "none:no_landing_state",
+                            clock,
+                            serde_json::json!({"amm": false, "created_ms": order.created_ms}),
+                        );
                     }
                     continue;
                 };
@@ -1478,11 +1638,10 @@ impl Engine {
             }
             self.model_position_order.insert(mint, order.id);
             // The fill is the ONLY source of inventory: tokens delivered at the fill price.
-            let tokens = u64::try_from(
-                u128::from(size) * 1_000_000_000 / u128::from(entry_price.max(1)),
-            )
-            .ok()
-            .filter(|t| *t > 0);
+            let tokens =
+                u64::try_from(u128::from(size) * 1_000_000_000 / u128::from(entry_price.max(1)))
+                    .ok()
+                    .filter(|t| *t > 0);
             self.model_mgmt_on_fill(mint, tokens, entry_price, order.id);
             self.model_fills.push(ModelFillRecord {
                 order_id: order.id,

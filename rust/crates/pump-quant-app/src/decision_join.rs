@@ -18,13 +18,13 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
+use crate::bundle_assemble::py_round;
 use pump_quant_market_state::flow_reducer::{FlowOutcome, FlowReducer};
 use pump_quant_proposal::bundle_gate::BundlePolicy;
 use pump_quant_proposal::decision::{AmmState, CurveState};
 use pump_quant_proposal::render_decision;
-use pump_quant_proposal::PyNum;
-use crate::bundle_assemble::py_round;
 use pump_quant_proposal::system::{system_prompt, PromptFamily};
+use pump_quant_proposal::PyNum;
 
 use crate::bundle_assemble::{assemble, AssemblyRefusal, BundleInputs};
 use crate::creator_history::CreatorHistory;
@@ -106,7 +106,9 @@ pub enum JoinRefusal {
     CurveAbsent(String),
     /// A PumpSwap market whose curve never reached the corpus graduation threshold (85 SOL real
     /// reserves): low-k / non-standard launches. Every corpus AMM row is `curve_regime=graduated`.
-    CurveNotGraduated { real_sol_lamports: i64 },
+    CurveNotGraduated {
+        real_sol_lamports: i64,
+    },
     AmmAbsent(String),
     /// More than one pool was bound to the mint and the observation's pool is not the bound one.
     AmmPoolAmbiguous,
@@ -142,7 +144,9 @@ impl JoinRefusal {
             JoinRefusal::AmmPoolAmbiguous => "join_amm_pool_ambiguous",
             JoinRefusal::Assembly(a) => a.as_str(),
             JoinRefusal::DepthUnknown => "join_depth_unknown",
-            JoinRefusal::ReserveStale { component: "curve", .. } => "join_curve_reserve_stale",
+            JoinRefusal::ReserveStale {
+                component: "curve", ..
+            } => "join_curve_reserve_stale",
             JoinRefusal::ReserveStale { .. } => "join_amm_reserve_stale",
         }
     }
@@ -172,7 +176,6 @@ pub struct StateMarker {
     pub last_recv_ms: i64,
     pub n_accepted: u64,
 }
-
 
 /// Everything `prepare` read from the producers, shared by the entry and management snapshots.
 struct Prepared {
@@ -340,8 +343,9 @@ impl DecisionCache {
     /// Record the curve's quote mint; non-SOL quotes mark the market unpriceable in SOL.
     pub fn observe_quote_mint(&mut self, mint: [u8; 32], quote_mint: [u8; 32]) {
         const WSOL: [u8; 32] = [
-            0x06, 0x9b, 0x88, 0x57, 0xfe, 0xab, 0x81, 0x84, 0xfb, 0x68, 0x7f, 0x63, 0x46, 0x18, 0xc0, 0x35,
-            0xda, 0xc4, 0x39, 0xdc, 0x1a, 0xeb, 0x3b, 0x55, 0x98, 0xa0, 0xf0, 0x00, 0x00, 0x00, 0x00, 0x01,
+            0x06, 0x9b, 0x88, 0x57, 0xfe, 0xab, 0x81, 0x84, 0xfb, 0x68, 0x7f, 0x63, 0x46, 0x18,
+            0xc0, 0x35, 0xda, 0xc4, 0x39, 0xdc, 0x1a, 0xeb, 0x3b, 0x55, 0x98, 0xa0, 0xf0, 0x00,
+            0x00, 0x00, 0x00, 0x01,
         ];
         if quote_mint != [0u8; 32] && quote_mint != WSOL {
             self.quote_not_sol.insert(mint);
@@ -356,7 +360,9 @@ impl DecisionCache {
     /// Venue label alone (no observation requirement): true once the mint was labelled PumpSwap.
     #[must_use]
     pub fn venue_is_pumpswap(&self, mint: &[u8; 32]) -> bool {
-        self.mints.get(mint).is_some_and(|m| matches!(m.venue, VenueLabel::Pumpswap))
+        self.mints
+            .get(mint)
+            .is_some_and(|m| matches!(m.venue, VenueLabel::Pumpswap))
     }
 
     pub fn mark_venue_pumpswap(&mut self, mint: [u8; 32]) {
@@ -614,9 +620,16 @@ impl DecisionCache {
             }
         }
         if needs_amm {
-            if let CurveState::Present { curve_regime, real_sol_reserves_lamports, .. } = &view.curve {
+            if let CurveState::Present {
+                curve_regime,
+                real_sol_reserves_lamports,
+                ..
+            } = &view.curve
+            {
                 if curve_regime != "graduated" {
-                    return Err(JoinRefusal::CurveNotGraduated { real_sol_lamports: *real_sol_reserves_lamports });
+                    return Err(JoinRefusal::CurveNotGraduated {
+                        real_sol_lamports: *real_sol_reserves_lamports,
+                    });
                 }
             }
             if self.pools.get(mint).is_some_and(|b| b.conflicting) {
@@ -640,8 +653,16 @@ impl DecisionCache {
     }
 
     pub fn snapshot(&self, mint: &[u8; 32], t_dec_ms: i64) -> Result<PromptSnapshot, JoinRefusal> {
-        let Prepared { state, enriched, flow, view, dev, venue, last_recv_ms, n_accepted } =
-            self.prepare(mint, t_dec_ms)?;
+        let Prepared {
+            state,
+            enriched,
+            flow,
+            view,
+            dev,
+            venue,
+            last_recv_ms,
+            n_accepted,
+        } = self.prepare(mint, t_dec_ms)?;
         let mc_last_recv_ms = last_recv_ms;
         let mc_n_accepted = n_accepted;
         let inputs = BundleInputs {
@@ -694,20 +715,44 @@ impl DecisionCache {
         t_dec_ms: i64,
         pos: &MgmtPositionInputs,
     ) -> Result<MgmtSnapshot, JoinRefusal> {
-        let Prepared { state, enriched, flow, view, dev, venue, last_recv_ms, n_accepted } =
-            self.prepare(mint, t_dec_ms)?;
+        let Prepared {
+            state,
+            enriched,
+            flow,
+            view,
+            dev,
+            venue,
+            last_recv_ms,
+            n_accepted,
+        } = self.prepare(mint, t_dec_ms)?;
         // FRESHNESS PER COMPONENT (management only). The entry corpus renders a stale reserve with
         // pricing_eligible=false and lets the model weigh it; a HELD position is marked and sized
         // from these reserves, so a stale one is refused here. Bound = the existing
         // `PRICING_BUDGET_MS` (the annotation's own "may be priced against" contract), not a new number.
         if venue == "pumpfun" || venue == "mixed" {
-            if let CurveState::Present { staleness_ms, pricing_eligible: false, .. } = &view.curve {
-                return Err(JoinRefusal::ReserveStale { component: "curve", staleness_ms: *staleness_ms });
+            if let CurveState::Present {
+                staleness_ms,
+                pricing_eligible: false,
+                ..
+            } = &view.curve
+            {
+                return Err(JoinRefusal::ReserveStale {
+                    component: "curve",
+                    staleness_ms: *staleness_ms,
+                });
             }
         }
         if venue == "pumpswap" || venue == "mixed" {
-            if let AmmState::Present { staleness_ms, pricing_eligible: false, .. } = &view.amm {
-                return Err(JoinRefusal::ReserveStale { component: "amm", staleness_ms: *staleness_ms });
+            if let AmmState::Present {
+                staleness_ms,
+                pricing_eligible: false,
+                ..
+            } = &view.amm
+            {
+                return Err(JoinRefusal::ReserveStale {
+                    component: "amm",
+                    staleness_ms: *staleness_ms,
+                });
             }
         }
         let depth_sol = view
@@ -718,7 +763,11 @@ impl DecisionCache {
         if !(mark.is_finite() && mark > 0.0) {
             return Err(JoinRefusal::DepthUnknown);
         }
-        let market = if venue == "pumpswap" { "graduated_amm" } else { "bonding_curve" };
+        let market = if venue == "pumpswap" {
+            "graduated_amm"
+        } else {
+            "bonding_curve"
+        };
         let known = dev.creator_known == 1;
         let r6 = |v: f64| PyNum::Float(py_round(v, 6));
         let bundle = pump_quant_proposal::ManagementBundle {
@@ -766,10 +815,12 @@ impl DecisionCache {
             venue,
             size_amm: view.size_amm,
             mark_price_lamports_per_raw_token: mark,
-            marker: StateMarker { last_recv_ms, n_accepted },
+            marker: StateMarker {
+                last_recv_ms,
+                n_accepted,
+            },
         })
     }
-
 }
 
 #[cfg(test)]
@@ -1008,8 +1059,14 @@ mod tests {
         let c = ready(80);
         let t = t_dec(80);
         match c.management_snapshot(&MINT, t, &mgmt_inputs()) {
-            Err(JoinRefusal::ReserveStale { component: "curve", staleness_ms }) => {
-                assert!(staleness_ms > crate::curve_annotation::PRICING_BUDGET_MS, "{staleness_ms}")
+            Err(JoinRefusal::ReserveStale {
+                component: "curve",
+                staleness_ms,
+            }) => {
+                assert!(
+                    staleness_ms > crate::curve_annotation::PRICING_BUDGET_MS,
+                    "{staleness_ms}"
+                )
             }
             other => panic!("a fresh trade must not launder a stale reserve: {other:?}"),
         }
@@ -1070,14 +1127,19 @@ mod tests {
         let mut c = DecisionCache::new();
         // wXMR mint (WXMRyRZhsa19ety5erZhHg4N3xj3EVN92u94422teJp) as seen on the BONERO curve tail.
         let xmr: [u8; 32] = [
-            0x07, 0x90, 0x29, 0xb1, 0x62, 0xd6, 0xd0, 0x26, 0x02, 0x8d, 0x36, 0xbd, 0xbd, 0x0a, 0x00, 0xce,
-            0x61, 0x5b, 0xa1, 0x9d, 0x2d, 0x49, 0x24, 0xd1, 0x4a, 0x93, 0x55, 0xc9, 0x09, 0x94, 0xd9, 0x25,
+            0x07, 0x90, 0x29, 0xb1, 0x62, 0xd6, 0xd0, 0x26, 0x02, 0x8d, 0x36, 0xbd, 0xbd, 0x0a,
+            0x00, 0xce, 0x61, 0x5b, 0xa1, 0x9d, 0x2d, 0x49, 0x24, 0xd1, 0x4a, 0x93, 0x55, 0xc9,
+            0x09, 0x94, 0xd9, 0x25,
         ];
         let wsol: [u8; 32] = [
-            0x06, 0x9b, 0x88, 0x57, 0xfe, 0xab, 0x81, 0x84, 0xfb, 0x68, 0x7f, 0x63, 0x46, 0x18, 0xc0, 0x35,
-            0xda, 0xc4, 0x39, 0xdc, 0x1a, 0xeb, 0x3b, 0x55, 0x98, 0xa0, 0xf0, 0x00, 0x00, 0x00, 0x00, 0x01,
+            0x06, 0x9b, 0x88, 0x57, 0xfe, 0xab, 0x81, 0x84, 0xfb, 0x68, 0x7f, 0x63, 0x46, 0x18,
+            0xc0, 0x35, 0xda, 0xc4, 0x39, 0xdc, 0x1a, 0xeb, 0x3b, 0x55, 0x98, 0xa0, 0xf0, 0x00,
+            0x00, 0x00, 0x00, 0x01,
         ];
-        assert!(!c.quote_sol_verified(&MINT), "fail closed: nothing is SOL until stated");
+        assert!(
+            !c.quote_sol_verified(&MINT),
+            "fail closed: nothing is SOL until stated"
+        );
         c.observe_quote_mint(MINT, xmr);
         assert!(c.quote_not_sol(&MINT));
         assert!(!c.quote_sol_verified(&MINT));
@@ -1110,7 +1172,9 @@ mod tests {
         c.observe_curve(MINT, cv);
         assert!(matches!(
             c.snapshot(&MINT, t_dec(40)).unwrap_err(),
-            JoinRefusal::CurveNotGraduated { real_sol_lamports: 248_000_000 }
+            JoinRefusal::CurveNotGraduated {
+                real_sol_lamports: 248_000_000
+            }
         ));
         // CONTROL: the same market with a graduated curve is NOT refused for the curve.
         let mut c2 = DecisionCache::new();
@@ -1161,7 +1225,9 @@ mod tests {
             JoinRefusal::FlowMetaMissing { prints: 1 },
             JoinRefusal::FlowAggregatesIncomplete,
             JoinRefusal::CurveAbsent(String::new()),
-            JoinRefusal::CurveNotGraduated { real_sol_lamports: 0 },
+            JoinRefusal::CurveNotGraduated {
+                real_sol_lamports: 0,
+            },
             JoinRefusal::AmmAbsent(String::new()),
             JoinRefusal::AmmPoolAmbiguous,
         ];

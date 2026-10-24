@@ -52,7 +52,10 @@ fn feed(n: u32) -> Vec<AppEvent> {
             launch_unix_ms: T0,
         },
         // The fixture market is SOL-quoted; the lane requires the positive statement.
-        AppEvent::CurveQuote { mint: mint(), quote_mint: [0u8; 32] },
+        AppEvent::CurveQuote {
+            mint: mint(),
+            quote_mint: [0u8; 32],
+        },
     ];
     for i in 0..n {
         let buy = i % 3 != 0;
@@ -573,7 +576,10 @@ fn lifecycle_f_funnel_counts_unique_markets_including_never_ready() {
     let calls = Arc::new(AtomicUsize::new(0));
     let mut e2 = Engine::new(Config::dev_portable(), RunMode::Paper);
     e2.enable_paper_model(Stub(calls));
-    e2.tick(AppEvent::CurveQuote { mint: mint(), quote_mint: [0u8; 32] });
+    e2.tick(AppEvent::CurveQuote {
+        mint: mint(),
+        quote_mint: [0u8; 32],
+    });
     e2.tick(AppEvent::LaunchObserved {
         mint: DomainMint::from_bytes([0x77; 32]),
         creator: [1; 32],

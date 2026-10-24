@@ -78,7 +78,10 @@ fn events(n: u32) -> Vec<AppEvent> {
             launch_unix_ms: T0,
         },
         // The fixture market is SOL-quoted; the lane requires the positive statement.
-        AppEvent::CurveQuote { mint: mint(), quote_mint: [0u8; 32] },
+        AppEvent::CurveQuote {
+            mint: mint(),
+            quote_mint: [0u8; 32],
+        },
     ];
     for i in 0..n {
         let buy = i % 3 != 0;
@@ -135,7 +138,6 @@ fn curve(e: &mut Engine, ts: i64, slot: u64, dsol: u64) {
     });
     ticks(e, 6);
 }
-
 
 /// A curve observation at the feed clock, without extra ticks: the account subscription keeps the
 /// reserves fresh in production, and management now refuses reserves older than PRICING_BUDGET_MS.
@@ -278,7 +280,11 @@ fn nothing_is_asked_before_the_60s_hold_and_the_first_prompt_is_the_trained_rend
         r.e.model_lane_report()
     );
     r.advance(40_000);
-    assert!(r.rep("mgmt:dispatched") >= 1, "{:?}", r.e.model_lane_report());
+    assert!(
+        r.rep("mgmt:dispatched") >= 1,
+        "{:?}",
+        r.e.model_lane_report()
+    );
     let p = r.prompts.lock().unwrap().clone();
     let first = p.first().expect("a management prompt was rendered");
     assert!(first.starts_with("Decide the next action for a position you already hold."));
@@ -287,25 +293,43 @@ fn nothing_is_asked_before_the_60s_hold_and_the_first_prompt_is_the_trained_rend
     assert!(first.contains("  inventory: "));
     // The mint is the base58 address, as in the corpus, never hex.
     assert!(!first.contains(&"ab".repeat(32)));
-    assert!(first.contains("holding time: 6"), "held seconds are real: {first}");
+    assert!(
+        first.contains("holding time: 6"),
+        "held seconds are real: {first}"
+    );
 }
 
 #[test]
 fn reduce_sells_half_the_inventory_through_a_fill_and_only_the_fill_changes_inventory() {
     let mut r = rig(|step| if step == 0 { REDUCE } else { HOLD });
-    let inv0 = r.e.model_inventory_tokens(&MINT).expect("fill established inventory");
+    let inv0 =
+        r.e.model_inventory_tokens(&MINT)
+            .expect("fill established inventory");
     assert!(inv0 > 0);
     r.advance_to_order(120_000);
     // The verdict created an ORDER INTENT; inventory is untouched until a landing state fills it.
     if let Some((_, _, intended, filled)) = r.e.model_mgmt_pending(&MINT) {
         assert_eq!(filled, 0);
-        assert_eq!(intended, inv0 / 2, "half of the inventory held at order time, floored");
-        assert_eq!(r.e.model_inventory_tokens(&MINT), Some(inv0), "intent is not a fill");
+        assert_eq!(
+            intended,
+            inv0 / 2,
+            "half of the inventory held at order time, floored"
+        );
+        assert_eq!(
+            r.e.model_inventory_tokens(&MINT),
+            Some(inv0),
+            "intent is not a fill"
+        );
     }
     r.landing(250_000_000);
     r.landing(260_000_000);
     let fills = r.e.model_mgmt_fills().to_vec();
-    assert_eq!(fills.len(), 1, "exactly one fill: {:?}", r.e.model_lane_report());
+    assert_eq!(
+        fills.len(),
+        1,
+        "exactly one fill: {:?}",
+        r.e.model_lane_report()
+    );
     assert_eq!(fills[0].tokens, inv0 / 2);
     assert!(!fills[0].closed);
     assert_eq!(
@@ -313,7 +337,10 @@ fn reduce_sells_half_the_inventory_through_a_fill_and_only_the_fill_changes_inve
         Some(inv0 - inv0 / 2),
         "inventory reduced by exactly the filled quantity"
     );
-    assert!(r.e.model_position_open(&MINT), "a REDUCE keeps the position open");
+    assert!(
+        r.e.model_position_open(&MINT),
+        "a REDUCE keeps the position open"
+    );
     assert!(r.e.model_mgmt_pending(&MINT).is_none());
 }
 
@@ -324,12 +351,19 @@ fn exit_closes_through_the_fill_and_a_late_duplicate_cannot_repeat_it() {
     // One landing state fills the EXIT. (A second would let the always-BUY entry stub legitimately
     // re-enter the mint, which is the entry lane's business, not management's.)
     r.landing(250_000_000);
-    assert!(!r.e.model_position_open(&MINT), "{:?}", r.e.model_lane_report());
+    assert!(
+        !r.e.model_position_open(&MINT),
+        "{:?}",
+        r.e.model_lane_report()
+    );
     assert_eq!(r.e.model_mgmt_fills().len(), 1);
     assert!(r.e.model_mgmt_fills()[0].closed);
     // Duplicate / late reconciled report for the same order: refused, nothing booked twice.
     let id = r.e.model_mgmt_fills()[0].order_id;
-    assert!(r.e.model_mgmt_apply_reconciled_fill(MINT, id, 1, 22_000).is_err());
+    assert!(r
+        .e
+        .model_mgmt_apply_reconciled_fill(MINT, id, 1, 22_000)
+        .is_err());
     assert_eq!(r.e.model_mgmt_fills().len(), 1);
 }
 
@@ -341,22 +375,50 @@ fn add_targets_half_the_reconciled_inventory_and_only_the_fill_changes_state() {
     r.advance_to_order(120_000);
     let (id, kind, intended, filled) = r.e.model_mgmt_pending(&MINT).expect("ADD order pending");
     assert_eq!(format!("{kind:?}"), "Add");
-    assert_eq!(intended, inv0 / 2, "target = floor(50% of reconciled inventory), NOT account capital");
+    assert_eq!(
+        intended,
+        inv0 / 2,
+        "target = floor(50% of reconciled inventory), NOT account capital"
+    );
     assert_eq!(filled, 0);
-    assert_eq!(r.e.model_inventory_tokens(&MINT), Some(inv0), "an intent is not a fill");
-    assert!(r.e.model_free_cash_lamports() <= cash0, "the reservation can only reduce free cash");
+    assert_eq!(
+        r.e.model_inventory_tokens(&MINT),
+        Some(inv0),
+        "an intent is not a fill"
+    );
+    assert!(
+        r.e.model_free_cash_lamports() <= cash0,
+        "the reservation can only reduce free cash"
+    );
     r.landing(250_000_000);
     r.landing(260_000_000);
     let fills = r.e.model_mgmt_fills().to_vec();
     assert_eq!(fills.len(), 1, "{:?}", r.e.model_lane_report());
     assert!(fills[0].is_add);
-    assert!(fills[0].tokens >= intended, "minimal notional that delivers at least the target");
-    assert_eq!(r.e.model_inventory_tokens(&MINT), Some(inv0 + fills[0].tokens));
-    assert_eq!(fills[0].cost_lamports, fills[0].spent_lamports
-        + fills[0].spent_lamports * u64::from(pump_quant_app::cost_model::venue_fee_bps_per_leg(VSOL + 260_000_000)) / 10_000
-        + pump_quant_app::cost_model::FIXED_LAMPORTS_PER_LEG, "all-in cost = notional + landing-venue fee + fixed leg");
-    assert_eq!(r.e.model_free_cash_lamports(), cash0.saturating_sub(fills[0].cost_lamports),
-        "cash fell by exactly the all-in cost of the fill");
+    assert!(
+        fills[0].tokens >= intended,
+        "minimal notional that delivers at least the target"
+    );
+    assert_eq!(
+        r.e.model_inventory_tokens(&MINT),
+        Some(inv0 + fills[0].tokens)
+    );
+    assert_eq!(
+        fills[0].cost_lamports,
+        fills[0].spent_lamports
+            + fills[0].spent_lamports
+                * u64::from(pump_quant_app::cost_model::venue_fee_bps_per_leg(
+                    VSOL + 260_000_000
+                ))
+                / 10_000
+            + pump_quant_app::cost_model::FIXED_LAMPORTS_PER_LEG,
+        "all-in cost = notional + landing-venue fee + fixed leg"
+    );
+    assert_eq!(
+        r.e.model_free_cash_lamports(),
+        cash0.saturating_sub(fills[0].cost_lamports),
+        "cash fell by exactly the all-in cost of the fill"
+    );
     assert!(r.e.model_mgmt_pending(&MINT).is_none());
     assert!(r.e.model_management_complete());
 }
@@ -371,7 +433,9 @@ fn add_amount_is_deterministic_given_the_executable_state() {
         r.advance_to_order(120_000);
         r.landing(250_000_000);
         r.landing(260_000_000);
-        r.e.model_mgmt_fills().first().map(|f| (f.tokens, f.spent_lamports))
+        r.e.model_mgmt_fills()
+            .first()
+            .map(|f| (f.tokens, f.spent_lamports))
     };
     assert_eq!(run(), run());
     assert!(run().is_some());
@@ -383,14 +447,20 @@ fn a_safety_off_trip_cancels_a_pending_add_but_never_a_reduce_or_exit() {
     r.advance_to_order(120_000);
     assert!(r.e.model_mgmt_pending(&MINT).is_some());
     r.e.model_safety_trip_operator();
-    assert!(r.e.model_mgmt_pending(&MINT).is_none(), "risk-increasing ADD is invalidated");
+    assert!(
+        r.e.model_mgmt_pending(&MINT).is_none(),
+        "risk-increasing ADD is invalidated"
+    );
     assert!(r.rep("safety:add_order_invalidated") >= 1);
     assert!(r.e.model_mgmt_fills().is_empty(), "nothing was booked");
     // REDUCE under a trip is still permitted and still fills.
     let mut r2 = rig(|step| if step == 0 { REDUCE } else { HOLD });
     r2.advance_to_order(120_000);
     r2.e.model_safety_trip_operator();
-    assert!(r2.e.model_mgmt_pending(&MINT).is_some(), "REDUCE survives the trip");
+    assert!(
+        r2.e.model_mgmt_pending(&MINT).is_some(),
+        "REDUCE survives the trip"
+    );
     r2.landing(250_000_000);
     r2.landing(260_000_000);
     assert_eq!(r2.e.model_mgmt_fills().len(), 1);
@@ -402,7 +472,11 @@ fn a_new_add_is_refused_by_name_while_safety_off_holds() {
     r.e.model_safety_trip_operator();
     let inv0 = r.e.model_inventory_tokens(&MINT).unwrap();
     r.advance(100_000);
-    assert!(r.rep("mgmt:refuse:add_blocked_safety_off") >= 1, "{:?}", r.e.model_lane_report());
+    assert!(
+        r.rep("mgmt:refuse:add_blocked_safety_off") >= 1,
+        "{:?}",
+        r.e.model_lane_report()
+    );
     assert!(r.e.model_mgmt_pending(&MINT).is_none());
     assert_eq!(r.e.model_inventory_tokens(&MINT), Some(inv0));
 }
@@ -418,15 +492,22 @@ fn an_uncertain_management_order_stays_pending_survives_a_trip_and_blocks_rearm_
     r.landing(250_000_000);
     r.landing(260_000_000);
     r.advance(60_000);
-    assert!(r.e.model_mgmt_pending(&MINT).is_some(), "unresolved stays pending");
+    assert!(
+        r.e.model_mgmt_pending(&MINT).is_some(),
+        "unresolved stays pending"
+    );
     assert!(r.e.model_mgmt_fills().is_empty());
     assert!(r.e.model_position_open(&MINT));
-    assert!(r.e.model_safety_rearm("alon").is_err(), "re-arm refused with an uncertain order");
+    assert!(
+        r.e.model_safety_rearm("alon").is_err(),
+        "re-arm refused with an uncertain order"
+    );
     let a = r.e.model_stop_assessment();
     assert!(a.uncertain_orders >= 1 && !a.is_flat_and_reconciled());
     // Only a reconciled report resolves it: exactly the filled quantity, nothing more.
     let (_, _, intended, _) = r.e.model_mgmt_pending(&MINT).unwrap();
-    r.e.model_mgmt_apply_reconciled_fill(MINT, id, intended, 22_000).unwrap();
+    r.e.model_mgmt_apply_reconciled_fill(MINT, id, intended, 22_000)
+        .unwrap();
     assert!(!r.e.model_position_open(&MINT));
 }
 #[test]
@@ -437,16 +518,30 @@ fn a_late_or_duplicate_add_report_cannot_repeat_the_add() {
     let (id, _, intended, _) = r.e.model_mgmt_pending(&MINT).expect("ADD pending");
     let part = intended / 3;
     // a partial reconciled fill changes ONLY the filled quantity and the spend
-    r.e.model_mgmt_apply_reconciled_add_fill(MINT, id, part, 1_000_000).unwrap();
+    r.e.model_mgmt_apply_reconciled_add_fill(MINT, id, part, 1_000_000)
+        .unwrap();
     assert_eq!(r.e.model_inventory_tokens(&MINT), Some(inv0 + part));
-    let (_, _, i2, f2) = r.e.model_mgmt_pending(&MINT).expect("remainder still pending");
+    let (_, _, i2, f2) =
+        r.e.model_mgmt_pending(&MINT)
+            .expect("remainder still pending");
     assert_eq!((i2, f2), (intended, part));
     // an over-sized report and a SELL-shaped report for an ADD order are refused
-    assert!(r.e.model_mgmt_apply_reconciled_add_fill(MINT, id, intended, 1_000_000).is_err());
-    assert!(r.e.model_mgmt_apply_reconciled_fill(MINT, id, 1, 22_000).is_err(), "wrong kind");
+    assert!(r
+        .e
+        .model_mgmt_apply_reconciled_add_fill(MINT, id, intended, 1_000_000)
+        .is_err());
+    assert!(
+        r.e.model_mgmt_apply_reconciled_fill(MINT, id, 1, 22_000)
+            .is_err(),
+        "wrong kind"
+    );
     // the remainder completes it; a further report finds nothing pending
-    r.e.model_mgmt_apply_reconciled_add_fill(MINT, id, intended - part, 1_000_000).unwrap();
-    assert!(r.e.model_mgmt_apply_reconciled_add_fill(MINT, id, 1, 1_000_000).is_err());
+    r.e.model_mgmt_apply_reconciled_add_fill(MINT, id, intended - part, 1_000_000)
+        .unwrap();
+    assert!(r
+        .e
+        .model_mgmt_apply_reconciled_add_fill(MINT, id, 1, 1_000_000)
+        .is_err());
     assert_eq!(r.e.model_inventory_tokens(&MINT), Some(inv0 + intended));
 }
 
@@ -457,10 +552,16 @@ fn partial_fill_keeps_the_remainder_pending_and_monitored() {
     let (id, _, intended, filled) = r.e.model_mgmt_pending(&MINT).expect("EXIT order pending");
     assert_eq!(filled, 0);
     let part = intended / 3;
-    r.e.model_mgmt_apply_reconciled_fill(MINT, id, part, 22_000).unwrap();
-    let (_, _, intended2, filled2) = r.e.model_mgmt_pending(&MINT).expect("remainder still pending");
+    r.e.model_mgmt_apply_reconciled_fill(MINT, id, part, 22_000)
+        .unwrap();
+    let (_, _, intended2, filled2) =
+        r.e.model_mgmt_pending(&MINT)
+            .expect("remainder still pending");
     assert_eq!((intended2, filled2), (intended, part));
-    assert!(r.e.model_position_open(&MINT), "a partial fill leaves the position open and monitored");
+    assert!(
+        r.e.model_position_open(&MINT),
+        "a partial fill leaves the position open and monitored"
+    );
     // An over-sized report is refused and changes nothing.
     assert!(r
         .e
@@ -479,9 +580,14 @@ fn a_verdict_bound_to_an_older_position_version_is_discarded() {
     r.advance_to_order(120_000);
     // The REDUCE order is pending. Fill part of it: the version bumps.
     let (id, _, intended, _) = r.e.model_mgmt_pending(&MINT).expect("pending");
-    r.e.model_mgmt_apply_reconciled_fill(MINT, id, intended / 2, 22_000).unwrap();
+    r.e.model_mgmt_apply_reconciled_fill(MINT, id, intended / 2, 22_000)
+        .unwrap();
     assert!(r.e.model_inventory_tokens(&MINT).is_some());
-    assert_eq!(r.rep("mgmt:order:reduce"), 1, "one instruction produced one order");
+    assert_eq!(
+        r.rep("mgmt:order:reduce"),
+        1,
+        "one instruction produced one order"
+    );
 }
 
 #[test]
@@ -551,20 +657,35 @@ fn sent_state_age_measures_the_observation_inside_the_prompt_not_the_cut_instant
 fn assert_wallet_ties(r: &Rig, tag: &str) {
     let v = r.e.model_accounting_view(&MINT);
     let seed = i128::from(v.seed);
-    assert_eq!(i128::from(v.balance), (seed + v.realized).clamp(0, i128::from(u64::MAX)), "{tag}: balance == seed + realized: {v:?}");
+    assert_eq!(
+        i128::from(v.balance),
+        (seed + v.realized).clamp(0, i128::from(u64::MAX)),
+        "{tag}: balance == seed + realized: {v:?}"
+    );
     if let Some(att) = v.attribution_entry_spend {
-        assert_eq!(v.committed, att, "{tag}: committed == the position's attributed cost: {v:?}");
+        assert_eq!(
+            v.committed, att,
+            "{tag}: committed == the position's attributed cost: {v:?}"
+        );
     } else {
         assert_eq!(v.committed, 0, "{tag}: flat => nothing committed: {v:?}");
     }
-    assert!(v.free <= v.balance.saturating_sub(v.committed), "{tag}: free never exceeds balance - committed: {v:?}");
+    assert!(
+        v.free <= v.balance.saturating_sub(v.committed),
+        "{tag}: free never exceeds balance - committed: {v:?}"
+    );
 }
 
 #[test]
 fn wallet_cash_inventory_basis_and_realized_tie_out_through_add_reduce_and_exit() {
     // ADD, then REDUCE, then EXIT, each filled through landing state. After each step the wallet identity
     // holds and the numbers equal hand-derived values.
-    let mut r = rig(|step| match step { 0 => ADD, 1 => REDUCE, 2 => EXIT, _ => HOLD });
+    let mut r = rig(|step| match step {
+        0 => ADD,
+        1 => REDUCE,
+        2 => EXIT,
+        _ => HOLD,
+    });
     assert_wallet_ties(&r, "after entry");
     let v0 = r.e.model_accounting_view(&MINT);
     let inv0 = v0.inventory_tokens.unwrap();
@@ -574,14 +695,35 @@ fn wallet_cash_inventory_basis_and_realized_tie_out_through_add_reduce_and_exit(
     r.advance_to_order(120_000);
     r.landing(250_000_000);
     r.landing(260_000_000);
-    let add = r.e.model_mgmt_fills().iter().find(|f| f.is_add).copied().expect("ADD filled");
+    let add =
+        r.e.model_mgmt_fills()
+            .iter()
+            .find(|f| f.is_add)
+            .copied()
+            .expect("ADD filled");
     let v1 = r.e.model_accounting_view(&MINT);
     assert_wallet_ties(&r, "after ADD");
-    assert_eq!(v1.inventory_tokens, Some(inv0 + add.tokens), "inventory grew by exactly the filled tokens");
+    assert_eq!(
+        v1.inventory_tokens,
+        Some(inv0 + add.tokens),
+        "inventory grew by exactly the filled tokens"
+    );
     assert_eq!(v1.realized, v0.realized, "a buy realizes nothing");
-    assert_eq!(v1.committed, v0.committed + add.cost_lamports, "committed grew by exactly the all-in ADD cost");
-    assert_eq!(v1.free, v0.free - add.cost_lamports, "free cash fell by exactly the all-in cost");
-    assert_eq!(v1.remaining_cost_basis, Some(basis0 + add.cost_lamports), "cost basis += all-in ADD cost");
+    assert_eq!(
+        v1.committed,
+        v0.committed + add.cost_lamports,
+        "committed grew by exactly the all-in ADD cost"
+    );
+    assert_eq!(
+        v1.free,
+        v0.free - add.cost_lamports,
+        "free cash fell by exactly the all-in cost"
+    );
+    assert_eq!(
+        v1.remaining_cost_basis,
+        Some(basis0 + add.cost_lamports),
+        "cost basis += all-in ADD cost"
+    );
 
     // ---- REDUCE ---- (the next management ask after the ADD)
     let n_fills = r.e.model_mgmt_fills().len();
@@ -589,18 +731,43 @@ fn wallet_cash_inventory_basis_and_realized_tie_out_through_add_reduce_and_exit(
         r.advance(10_000);
         r.landing(270_000_000 + (r.clock as u64 % 1_000));
     }
-    let red = r.e.model_mgmt_fills().iter().filter(|f| !f.is_add).next().copied();
-    assert!(red.is_some(), "the REDUCE leg must actually run, not be skipped: {:?}", r.e.model_lane_report());
+    let red =
+        r.e.model_mgmt_fills()
+            .iter()
+            .filter(|f| !f.is_add)
+            .next()
+            .copied();
+    assert!(
+        red.is_some(),
+        "the REDUCE leg must actually run, not be skipped: {:?}",
+        r.e.model_lane_report()
+    );
     if let Some(red) = red {
         let v2 = r.e.model_accounting_view(&MINT);
         assert_wallet_ties(&r, "after REDUCE");
-        assert_eq!(v2.inventory_tokens, Some(v1.inventory_tokens.unwrap() - red.tokens), "inventory fell by exactly the filled tokens");
-        assert_eq!(v2.realized, v1.realized + red.net_lamports, "realized changed by exactly the fill's net");
+        assert_eq!(
+            v2.inventory_tokens,
+            Some(v1.inventory_tokens.unwrap() - red.tokens),
+            "inventory fell by exactly the filled tokens"
+        );
+        assert_eq!(
+            v2.realized,
+            v1.realized + red.net_lamports,
+            "realized changed by exactly the fill's net"
+        );
         // Released cost = the sold share of committed cost (floor): committed + released == before.
         let released = v1.committed - v2.committed;
-        assert_eq!(released, (u128::from(v1.committed) * u128::from(red.tokens) / u128::from(v1.inventory_tokens.unwrap())) as u64);
+        assert_eq!(
+            released,
+            (u128::from(v1.committed) * u128::from(red.tokens)
+                / u128::from(v1.inventory_tokens.unwrap())) as u64
+        );
         // Proceeds are cash: free rose by released cost + net realized (net already nets cost and fees).
-        assert_eq!(i128::from(v2.free), i128::from(v1.free) + i128::from(released) + red.net_lamports, "cash == released basis + realized net");
+        assert_eq!(
+            i128::from(v2.free),
+            i128::from(v1.free) + i128::from(released) + red.net_lamports,
+            "cash == released basis + realized net"
+        );
     }
 }
 
@@ -611,20 +778,29 @@ fn a_partial_reduce_fill_changes_only_filled_quantity_cash_and_basis() {
     let (id, _, intended, _) = r.e.model_mgmt_pending(&MINT).expect("REDUCE pending");
     let v0 = r.e.model_accounting_view(&MINT);
     let part = intended / 3;
-    r.e.model_mgmt_apply_reconciled_fill(MINT, id, part, 22_000).unwrap();
+    r.e.model_mgmt_apply_reconciled_fill(MINT, id, part, 22_000)
+        .unwrap();
     let v1 = r.e.model_accounting_view(&MINT);
     let f = *r.e.model_mgmt_fills().last().unwrap();
     assert_eq!(f.tokens, part);
     assert_wallet_ties(&r, "after partial");
-    assert_eq!(v1.inventory_tokens, Some(v0.inventory_tokens.unwrap() - part));
+    assert_eq!(
+        v1.inventory_tokens,
+        Some(v0.inventory_tokens.unwrap() - part)
+    );
     assert_eq!(v1.realized, v0.realized + f.net_lamports);
     // The unfilled remainder changed NOTHING: still pending for exactly intended - part.
     let (_, _, i2, f2) = r.e.model_mgmt_pending(&MINT).unwrap();
     assert_eq!((i2, f2), (intended, part));
     // Cost basis: the position store keeps cost * remaining_bps; the released share matches the fraction.
     let frac = u128::from(part) * 10_000 / u128::from(v0.inventory_tokens.unwrap());
-    let expect_basis = (u128::from(v0.remaining_cost_basis.unwrap()) * (10_000 - frac) / 10_000) as u64;
-    assert!(v1.remaining_cost_basis.unwrap().abs_diff(expect_basis) <= 1, "{:?} vs {expect_basis}", v1.remaining_cost_basis);
+    let expect_basis =
+        (u128::from(v0.remaining_cost_basis.unwrap()) * (10_000 - frac) / 10_000) as u64;
+    assert!(
+        v1.remaining_cost_basis.unwrap().abs_diff(expect_basis) <= 1,
+        "{:?} vs {expect_basis}",
+        v1.remaining_cost_basis
+    );
 }
 
 #[test]
@@ -639,21 +815,33 @@ fn an_uncertain_add_changes_nothing_in_the_wallet_until_it_is_reconciled() {
     r.landing(260_000_000);
     r.advance(60_000);
     let v1 = r.e.model_accounting_view(&MINT);
-    assert_eq!((v1.inventory_tokens, v1.committed, v1.realized), (v0.inventory_tokens, v0.committed, v0.realized),
-        "an unacknowledged order moves neither inventory, committed capital nor realized cash");
+    assert_eq!(
+        (v1.inventory_tokens, v1.committed, v1.realized),
+        (v0.inventory_tokens, v0.committed, v0.realized),
+        "an unacknowledged order moves neither inventory, committed capital nor realized cash"
+    );
     assert!(r.e.model_mgmt_fills().is_empty());
-    assert_eq!(r.e.model_free_cash_lamports(), reserved_free, "its cash stays RESERVED, not spent and not released");
+    assert_eq!(
+        r.e.model_free_cash_lamports(),
+        reserved_free,
+        "its cash stays RESERVED, not spent and not released"
+    );
     assert!(r.e.model_stop_assessment().uncertain_orders >= 1);
     // A reconciled report resolves it for exactly what the chain says (here: a partial of the intended size).
     let part = intended / 2;
-    r.e.model_mgmt_apply_reconciled_add_fill(MINT, id, part, 1_000_000).unwrap();
+    r.e.model_mgmt_apply_reconciled_add_fill(MINT, id, part, 1_000_000)
+        .unwrap();
     let v2 = r.e.model_accounting_view(&MINT);
-    assert_eq!(v2.inventory_tokens, Some(v0.inventory_tokens.unwrap() + part));
+    assert_eq!(
+        v2.inventory_tokens,
+        Some(v0.inventory_tokens.unwrap() + part)
+    );
     assert_wallet_ties(&r, "after reconciled uncertain ADD");
 }
 
 #[test]
-fn held_data_readiness_is_measured_and_a_stale_reserve_degrades_while_protection_and_the_bound_stay() {
+fn held_data_readiness_is_measured_and_a_stale_reserve_degrades_while_protection_and_the_bound_stay(
+) {
     let mut r = rig(|_| HOLD);
     // Fresh: the rig's curve observation is current, a prompt can be cut.
     r.advance(10_000);
@@ -663,7 +851,11 @@ fn held_data_readiness_is_measured_and_a_stale_reserve_degrades_while_protection
     assert_eq!(st[0].management_ready, Ok(()), "{st:?}");
     assert!(st[0].reserve_age_ms.unwrap() <= 60_000);
     assert!(r.e.model_held_degraded().is_empty());
-    assert_eq!(r.e.model_held_mints(), vec![MINT], "held mints are exactly what the daemon must keep fed");
+    assert_eq!(
+        r.e.model_held_mints(),
+        vec![MINT],
+        "held mints are exactly what the daemon must keep fed"
+    );
 
     // Fresh TRADES keep arriving but the reserve stops updating (the account feed died): after the 60 s
     // pricing bound the position is DEGRADED, named, and a fresh print does not hide it.
@@ -678,9 +870,15 @@ fn held_data_readiness_is_measured_and_a_stale_reserve_degrades_while_protection
     let st = r.e.model_held_data_status();
     assert!(!st[0].reserve_fresh, "{st:?}");
     assert!(st[0].reserve_age_ms.unwrap() > 60_000, "{st:?}");
-    assert!(st[0].last_print_age_ms.unwrap() < 10_000, "the newest PRINT is fresh - that proves nothing about the reserve: {st:?}");
+    assert!(
+        st[0].last_print_age_ms.unwrap() < 10_000,
+        "the newest PRINT is fresh - that proves nothing about the reserve: {st:?}"
+    );
     let why = st[0].management_ready.clone().unwrap_err();
-    assert!(why.contains("curve"), "the refusal names the stale component: {why}");
+    assert!(
+        why.contains("curve"),
+        "the refusal names the stale component: {why}"
+    );
     assert_eq!(r.e.model_held_degraded().len(), 1);
     // The bound was NOT loosened to make it pass, the position was not closed or abandoned, and the
     // print-driven safeguards are still armed (the rug precursor closes it on a collapse print).
@@ -688,12 +886,24 @@ fn held_data_readiness_is_measured_and_a_stale_reserve_degrades_while_protection
     r.clock += 1_000;
     r.slot += 1;
     r.e.tick(AppEvent::MarketTrade {
-        mint: mint(), price_fp: 20_000, quote_lamports: 900_000_000, liquidity_lamports: VSOL,
-        signed_base: -90_000_000_000, buyer_entity: 777, age_slots: 30, recv_unix_ms: Some(r.clock),
-        trader_pubkey: Some(wallet(999)), slot: Some(r.slot), fee_lamports: Some(70_000),
-        cu_consumed: Some(95_000), venue: Some(TradeVenue::PumpFun),
+        mint: mint(),
+        price_fp: 20_000,
+        quote_lamports: 900_000_000,
+        liquidity_lamports: VSOL,
+        signed_base: -90_000_000_000,
+        buyer_entity: 777,
+        age_slots: 30,
+        recv_unix_ms: Some(r.clock),
+        trader_pubkey: Some(wallet(999)),
+        slot: Some(r.slot),
+        fee_lamports: Some(70_000),
+        cu_consumed: Some(95_000),
+        venue: Some(TradeVenue::PumpFun),
     });
-    assert!(!r.e.model_position_open(&MINT), "independent protection still works while degraded");
+    assert!(
+        !r.e.model_position_open(&MINT),
+        "independent protection still works while degraded"
+    );
     // Recovery: a fresh reserve observation restores readiness without any threshold change.
 }
 
@@ -733,21 +943,41 @@ fn a_restart_rebuilds_the_position_the_wallet_and_the_management_history_from_th
     let basis = before.remaining_cost_basis;
     let led = r.e.model_held_ledger();
     assert_eq!(led.held.len(), 1);
-    assert!(led.held[0].step >= 1, "management history exists to be preserved: {:?}", led.held[0]);
+    assert!(
+        led.held[0].step >= 1,
+        "management history exists to be preserved: {:?}",
+        led.held[0]
+    );
     drop(r);
 
     let mut e2 = fresh_engine(2_000_000_000, &hp);
-    let rep = e2.model_held_restore().expect("restore").expect("a ledger existed");
+    let rep = e2
+        .model_held_restore()
+        .expect("restore")
+        .expect("a ledger existed");
     assert_eq!(rep.positions, 1);
     assert_eq!(rep.inventory_unknown, 0);
     assert!(e2.model_position_open(&MINT));
-    assert_eq!(e2.model_inventory_tokens(&MINT), Some(inv), "inventory restored exactly");
+    assert_eq!(
+        e2.model_inventory_tokens(&MINT),
+        Some(inv),
+        "inventory restored exactly"
+    );
     let after = e2.model_accounting_view(&MINT);
     assert_eq!(after.seed, before.seed);
     assert_eq!(after.realized, before.realized);
-    assert_eq!(after.committed, before.committed, "committed capital restored");
-    assert_eq!(after.remaining_cost_basis, basis, "remaining cost basis restored");
-    assert_eq!(after.attribution_entry_spend, before.attribution_entry_spend);
+    assert_eq!(
+        after.committed, before.committed,
+        "committed capital restored"
+    );
+    assert_eq!(
+        after.remaining_cost_basis, basis,
+        "remaining cost basis restored"
+    );
+    assert_eq!(
+        after.attribution_entry_spend,
+        before.attribution_entry_spend
+    );
     assert_eq!(after.balance, before.balance);
     // The restored ledger is identical to the one written: nothing was invented or dropped.
     let mut a = e2.model_held_ledger();
@@ -785,7 +1015,11 @@ fn a_restored_position_is_still_managed_by_the_model_and_still_closes_only_throu
     // recovery supplies it, management REFUSES by name instead of inventing it.
     e2.tick(AppEvent::Tick);
     let deg = e2.model_held_degraded();
-    assert_eq!(deg.len(), 1, "a restored position with no recovered history is DEGRADED, by name");
+    assert_eq!(
+        deg.len(),
+        1,
+        "a restored position with no recovered history is DEGRADED, by name"
+    );
     assert!(deg[0].management_ready.is_err());
     // History recovery: replay the captured launch + flow for the held mint (the same feed a restart
     // re-reads), then the live curve resumes.
@@ -795,18 +1029,41 @@ fn a_restored_position_is_still_managed_by_the_model_and_still_closes_only_throu
     for _ in 0..8 {
         e2.tick(AppEvent::Tick);
     }
-    let mut rr = Rig { e: e2, prompts: Arc::new(Mutex::new(Vec::new())), calls, clock, slot: 2_600, n: 500 };
+    let mut rr = Rig {
+        e: e2,
+        prompts: Arc::new(Mutex::new(Vec::new())),
+        calls,
+        clock,
+        slot: 2_600,
+        n: 500,
+    };
     // The curve plane must be fresh again before management can ask (the stale-reserve gate stays).
     curve(&mut rr.e, rr.clock + 1_000, 2_600, 200_000_000);
     rr.clock += 1_000;
     rr.advance_to_order(180_000);
-    let (id, kind, _, _) = rr.e.model_mgmt_pending(&MINT).unwrap_or_else(|| panic!("{:?}", rr.e.model_lane_report()));
+    let (id, kind, _, _) =
+        rr.e.model_mgmt_pending(&MINT)
+            .unwrap_or_else(|| panic!("{:?}", rr.e.model_lane_report()));
     assert_eq!(format!("{kind:?}"), "Exit");
-    assert!(rr.e.model_position_open(&MINT), "an instruction is not a fill");
-    assert!(rr.clock - fill_ms > 60_000, "the position kept its TRUE age through the restart");
+    assert!(
+        rr.e.model_position_open(&MINT),
+        "an instruction is not a fill"
+    );
+    assert!(
+        rr.clock - fill_ms > 60_000,
+        "the position kept its TRUE age through the restart"
+    );
     rr.landing(250_000_000);
-    assert!(!rr.e.model_position_open(&MINT), "{:?}", rr.e.model_lane_report());
-    assert!(rr.e.model_mgmt_fills().iter().any(|f| f.order_id == id && f.closed));
+    assert!(
+        !rr.e.model_position_open(&MINT),
+        "{:?}",
+        rr.e.model_lane_report()
+    );
+    assert!(rr
+        .e
+        .model_mgmt_fills()
+        .iter()
+        .any(|f| f.order_id == id && f.closed));
 }
 
 #[test]
@@ -826,15 +1083,25 @@ fn pending_orders_restore_as_uncertain_and_only_a_reconciled_report_resolves_the
     assert_eq!((id2, int2, filled), (id, intended, 0));
     assert_eq!(format!("{kind:?}"), "Reduce");
     let a = e2.model_stop_assessment();
-    assert!(a.uncertain_orders >= 1 && !a.is_flat_and_reconciled(), "unresolved stays unresolved: {a:?}");
+    assert!(
+        a.uncertain_orders >= 1 && !a.is_flat_and_reconciled(),
+        "unresolved stays unresolved: {a:?}"
+    );
     assert!(e2.model_safety_rearm("alon").is_err() || !e2.model_safety_blocked());
     // The simulator must not settle an order whose acknowledgement died with the old process.
     let inv0 = e2.model_inventory_tokens(&MINT).unwrap();
-    e2.model_mgmt_apply_reconciled_fill(MINT, id, intended, 22_000).unwrap();
-    assert_eq!(e2.model_inventory_tokens(&MINT), Some(inv0 - intended), "exactly the filled quantity");
+    e2.model_mgmt_apply_reconciled_fill(MINT, id, intended, 22_000)
+        .unwrap();
+    assert_eq!(
+        e2.model_inventory_tokens(&MINT),
+        Some(inv0 - intended),
+        "exactly the filled quantity"
+    );
     assert!(e2.model_mgmt_pending(&MINT).is_none());
     // A duplicate report cannot repeat it.
-    assert!(e2.model_mgmt_apply_reconciled_fill(MINT, id, intended, 22_000).is_err());
+    assert!(e2
+        .model_mgmt_apply_reconciled_fill(MINT, id, intended, 22_000)
+        .is_err());
     assert_eq!(e2.model_inventory_tokens(&MINT), Some(inv0 - intended));
 }
 
@@ -872,7 +1139,12 @@ fn restore_refuses_the_whole_file_by_name_and_applies_nothing() {
     e.model_held_restore().unwrap().unwrap();
     let again = e.model_held_restore().unwrap_err();
     assert!(format!("{again:?}").contains("EngineNotFresh"), "{again:?}");
-    assert_eq!(e.model_accounting_view(&MINT).committed, e.model_accounting_view(&MINT).attribution_entry_spend.unwrap());
+    assert_eq!(
+        e.model_accounting_view(&MINT).committed,
+        e.model_accounting_view(&MINT)
+            .attribution_entry_spend
+            .unwrap()
+    );
 
     // (4) No file at all is a clean start, not an error.
     let mut e = fresh_engine(2_000_000_000, &held_path("nofile"));
@@ -886,16 +1158,33 @@ fn an_unpersistable_held_state_trips_safety_off_and_a_flat_engine_writes_nothing
     r.e.model_held_attach(std::path::Path::new("/nonexistent_dir_pq/held.json"));
     r.advance(20_000);
     assert!(r.e.model_held_persist_failures() >= 1);
-    assert!(r.e.model_safety_blocked(), "unrecoverable exposure => entries blocked");
-    assert_eq!(r.rep("safety:tripped:held_state_unpersistable"), 1, "{:?}", r.e.model_lane_report());
+    assert!(
+        r.e.model_safety_blocked(),
+        "unrecoverable exposure => entries blocked"
+    );
+    assert_eq!(
+        r.rep("safety:tripped:held_state_unpersistable"),
+        1,
+        "{:?}",
+        r.e.model_lane_report()
+    );
     // Held positions are still monitored and managed (REDUCE/EXIT unaffected).
     assert!(r.e.model_position_open(&MINT));
 }
 
 #[test]
-fn the_ledger_follows_the_exposure_through_reduce_and_exit_and_a_restart_after_the_exit_restores_flat() {
+fn the_ledger_follows_the_exposure_through_reduce_and_exit_and_a_restart_after_the_exit_restores_flat(
+) {
     let hp = held_path("e");
-    let mut r = rig(|step| if step == 0 { REDUCE } else if step == 1 { EXIT } else { HOLD });
+    let mut r = rig(|step| {
+        if step == 0 {
+            REDUCE
+        } else if step == 1 {
+            EXIT
+        } else {
+            HOLD
+        }
+    });
     r.e.model_held_attach(&hp);
     r.advance_to_order(120_000);
     r.landing(250_000_000);
@@ -909,9 +1198,16 @@ fn the_ledger_follows_the_exposure_through_reduce_and_exit_and_a_restart_after_t
     let mut e2 = fresh_engine(2_000_000_000, &hp);
     let rep = e2.model_held_restore().unwrap().unwrap();
     assert_eq!(rep.positions, l.held.len());
-    assert_eq!(e2.model_accounting_view(&MINT).realized, realized, "realized survives the restart");
+    assert_eq!(
+        e2.model_accounting_view(&MINT).realized,
+        realized,
+        "realized survives the restart"
+    );
     if closed {
-        assert!(!e2.model_position_open(&MINT), "an exited position is not resurrected");
+        assert!(
+            !e2.model_position_open(&MINT),
+            "an exited position is not resurrected"
+        );
         assert!(e2.model_stop_assessment().is_flat_and_reconciled());
     } else {
         assert!(e2.model_position_open(&MINT));
@@ -926,22 +1222,48 @@ fn the_ledger_follows_the_exposure_through_reduce_and_exit_and_a_restart_after_t
 fn prod_hold_control_never_asks_the_model_and_exits_all_inventory_at_the_barrier() {
     use pump_quant_app::engine::ManagementPolicy;
     let mut r = rig(|_| REDUCE); // a REDUCE script that must never be consulted
-    r.e.set_management_policy(ManagementPolicy::ProdHoldControl { barrier_ms: 300_000 });
-    assert_eq!(r.e.management_policy(), ManagementPolicy::ProdHoldControl { barrier_ms: 300_000 });
+    r.e.set_management_policy(ManagementPolicy::ProdHoldControl {
+        barrier_ms: 300_000,
+    });
+    assert_eq!(
+        r.e.management_policy(),
+        ManagementPolicy::ProdHoldControl {
+            barrier_ms: 300_000
+        }
+    );
     let entry_prompts = r.prompts.lock().unwrap().len();
-    let inv0 = r.e.model_inventory_tokens(&MINT).expect("fill established inventory");
+    let inv0 =
+        r.e.model_inventory_tokens(&MINT)
+            .expect("fill established inventory");
     r.advance(200_000);
     assert_eq!(r.rep("mgmt:dispatched"), 0, "{:?}", r.e.model_lane_report());
-    assert!(r.rep("mgmt:prod_hold:hold") >= 1, "{:?}", r.e.model_lane_report());
-    assert_eq!(r.prompts.lock().unwrap().len(), entry_prompts, "no management prompt rendered");
-    assert!(r.e.model_mgmt_pending(&MINT).is_none(), "no order before the barrier");
+    assert!(
+        r.rep("mgmt:prod_hold:hold") >= 1,
+        "{:?}",
+        r.e.model_lane_report()
+    );
+    assert_eq!(
+        r.prompts.lock().unwrap().len(),
+        entry_prompts,
+        "no management prompt rendered"
+    );
+    assert!(
+        r.e.model_mgmt_pending(&MINT).is_none(),
+        "no order before the barrier"
+    );
     assert_eq!(r.e.model_inventory_tokens(&MINT), Some(inv0));
     r.advance_to_order(200_000);
-    let (_, _, intended, filled) = r.e.model_mgmt_pending(&MINT).expect("barrier EXIT order placed");
+    let (_, _, intended, filled) =
+        r.e.model_mgmt_pending(&MINT)
+            .expect("barrier EXIT order placed");
     assert_eq!(filled, 0, "an intent, not a fill");
     assert_eq!(intended, inv0, "EXIT = all remaining inventory");
     assert_eq!(r.rep("mgmt:prod_hold:barrier_exit"), 1);
-    assert_eq!(r.rep("mgmt:dispatched"), 0, "the model was never asked for management");
+    assert_eq!(
+        r.rep("mgmt:dispatched"),
+        0,
+        "the model was never asked for management"
+    );
     assert_eq!(r.rep("mgmt:order:exit"), 1);
 }
 
@@ -977,23 +1299,42 @@ fn amm_print(e: &mut Engine, ts: i64, slot: u64, i: u32) {
 fn curve_position_that_migrates_mid_hold_exits_through_the_pool_at_the_barrier() {
     use pump_quant_app::engine::ManagementPolicy;
     let mut r = rig(|_| REDUCE);
-    r.e.set_management_policy(ManagementPolicy::ProdHoldControl { barrier_ms: 300_000 });
-    let inv0 = r.e.model_inventory_tokens(&MINT).expect("fill established inventory");
+    r.e.set_management_policy(ManagementPolicy::ProdHoldControl {
+        barrier_ms: 300_000,
+    });
+    let inv0 =
+        r.e.model_inventory_tokens(&MINT)
+            .expect("fill established inventory");
     let fills_before = r.e.model_all_fills().len();
     r.advance(100_000);
     // Graduation: curve complete, then pool prints only.
     r.clock += 1_000;
     r.slot += 1;
-    r.e.tick(AppEvent::Migration { mint: mint(), slot: r.slot });
+    r.e.tick(AppEvent::Migration {
+        mint: mint(),
+        slot: r.slot,
+    });
     for i in 0..40u32 {
         r.clock += 5_000;
         r.slot += 1;
         amm_print(&mut r.e, r.clock, r.slot, i);
         ticks(&mut r.e, 2);
     }
-    assert!(r.e.model_position_open(&MINT), "migration must not vanish the position");
-    assert_eq!(r.e.model_inventory_tokens(&MINT), Some(inv0), "quantity preserved across migration");
-    assert_eq!(r.rep("mgmt:dispatched"), 0, "PROD_HOLD never asks the model: {:?}", r.e.model_lane_report());
+    assert!(
+        r.e.model_position_open(&MINT),
+        "migration must not vanish the position"
+    );
+    assert_eq!(
+        r.e.model_inventory_tokens(&MINT),
+        Some(inv0),
+        "quantity preserved across migration"
+    );
+    assert_eq!(
+        r.rep("mgmt:dispatched"),
+        0,
+        "PROD_HOLD never asks the model: {:?}",
+        r.e.model_lane_report()
+    );
     // Barrier: EXIT ALL intent, now an AMM order.
     let end = r.clock + 300_000;
     while r.clock < end && r.e.model_mgmt_pending(&MINT).is_none() {
@@ -1002,7 +1343,9 @@ fn curve_position_that_migrates_mid_hold_exits_through_the_pool_at_the_barrier()
         amm_print(&mut r.e, r.clock, r.slot, 100 + (r.slot % 7) as u32);
         ticks(&mut r.e, 2);
     }
-    let (_, _, intended, filled) = r.e.model_mgmt_pending(&MINT).expect("barrier EXIT placed after migration");
+    let (_, _, intended, filled) =
+        r.e.model_mgmt_pending(&MINT)
+            .expect("barrier EXIT placed after migration");
     assert_eq!((intended, filled), (inv0, 0));
     assert_eq!(r.rep("mgmt:prod_hold:barrier_exit"), 1);
     // Landing state from the pool (≥ 400 ms after the order, later slot) prices the exit.
@@ -1011,14 +1354,26 @@ fn curve_position_that_migrates_mid_hold_exits_through_the_pool_at_the_barrier()
     amm_print(&mut r.e, r.clock, r.slot, 7);
     ticks(&mut r.e, 2);
     let rep = r.e.model_lane_report();
-    assert_eq!(r.rep("mgmt:fill_amm_sell_fee_unverified"), 1, "exit priced via the pool quote path: {rep:?}");
-    assert_eq!(r.rep("mgmt:fill_curve"), 0, "a completed curve is never used to price the exit: {rep:?}");
+    assert_eq!(
+        r.rep("mgmt:fill_amm_sell_fee_unverified"),
+        1,
+        "exit priced via the pool quote path: {rep:?}"
+    );
+    assert_eq!(
+        r.rep("mgmt:fill_curve"),
+        0,
+        "a completed curve is never used to price the exit: {rep:?}"
+    );
     assert_eq!(r.rep("mgmt:fill:closed"), 1, "{rep:?}");
     assert!(!r.e.model_position_open(&MINT), "closed exactly once");
     let fills = r.e.model_mgmt_fills();
     assert_eq!(fills.len(), 1);
     assert!(fills[0].closed && fills[0].tokens == inv0);
-    assert_eq!(r.e.model_all_fills().len(), fills_before, "no duplicate entry fill");
+    assert_eq!(
+        r.e.model_all_fills().len(),
+        fills_before,
+        "no duplicate entry fill"
+    );
 }
 
 /// Same lifecycle, but the pool feed is STALE at the barrier (no landing-state print): the EXIT
@@ -1028,12 +1383,17 @@ fn curve_position_that_migrates_mid_hold_exits_through_the_pool_at_the_barrier()
 fn migrated_position_without_fresh_pool_state_stays_explicit_exposure() {
     use pump_quant_app::engine::ManagementPolicy;
     let mut r = rig(|_| REDUCE);
-    r.e.set_management_policy(ManagementPolicy::ProdHoldControl { barrier_ms: 300_000 });
+    r.e.set_management_policy(ManagementPolicy::ProdHoldControl {
+        barrier_ms: 300_000,
+    });
     let inv0 = r.e.model_inventory_tokens(&MINT).unwrap();
     r.advance(100_000);
     r.clock += 1_000;
     r.slot += 1;
-    r.e.tick(AppEvent::Migration { mint: mint(), slot: r.slot });
+    r.e.tick(AppEvent::Migration {
+        mint: mint(),
+        slot: r.slot,
+    });
     for i in 0..3u32 {
         r.clock += 5_000;
         r.slot += 1;
@@ -1048,7 +1408,11 @@ fn migrated_position_without_fresh_pool_state_stays_explicit_exposure() {
         curve_quiet(&mut r.e, r.clock, r.slot);
         ticks(&mut r.e, 2);
     }
-    assert!(r.e.model_mgmt_pending(&MINT).is_some(), "barrier EXIT intent placed: {:?}", r.e.model_lane_report());
+    assert!(
+        r.e.model_mgmt_pending(&MINT).is_some(),
+        "barrier EXIT intent placed: {:?}",
+        r.e.model_lane_report()
+    );
     // An AMM exit intent waits up to MODEL_AMM_EXIT_TTL_MS (60 s) for a landing-capable swap; with
     // none it expires and the standing intent retries on the declared schedule.
     for _ in 0..70 {
@@ -1058,7 +1422,11 @@ fn migrated_position_without_fresh_pool_state_stays_explicit_exposure() {
         ticks(&mut r.e, 2);
     }
     let rep = r.e.model_lane_report();
-    assert_eq!(r.rep("mgmt:fill_curve"), 0, "completed curve never prices the exit: {rep:?}");
+    assert_eq!(
+        r.rep("mgmt:fill_curve"),
+        0,
+        "completed curve never prices the exit: {rep:?}"
+    );
     assert_eq!(r.rep("mgmt:fill_amm_sell_fee_unverified"), 0, "{rep:?}");
     assert!(r.rep("mgmt:order_expired_unfilled") >= 1, "{rep:?}");
     assert!(r.e.model_position_open(&MINT), "exposure stays explicit");
@@ -1075,13 +1443,19 @@ fn prod_hold_restart_keeps_the_original_fill_clock_and_exits_exactly_once() {
     use pump_quant_app::engine::ManagementPolicy;
     let hp = held_path("prod_hold_restart");
     let mut r = rig(|_| REDUCE);
-    r.e.set_management_policy(ManagementPolicy::ProdHoldControl { barrier_ms: 300_000 });
+    r.e.set_management_policy(ManagementPolicy::ProdHoldControl {
+        barrier_ms: 300_000,
+    });
     r.e.model_held_attach(&hp);
     r.advance(100_000);
     assert!(r.e.model_held_persist_now());
     let led = r.e.model_held_ledger().clone();
     let h = &led.held[0];
-    let (fill_ms, clock, inv0) = (h.fill_ms, r.clock, h.inventory_tokens.expect("inventory known"));
+    let (fill_ms, clock, inv0) = (
+        h.fill_ms,
+        r.clock,
+        h.inventory_tokens.expect("inventory known"),
+    );
     let (peak, trough, cost) = (h.peak_fp, h.trough_fp, h.cost_lamports);
     assert!(fill_ms > 0 && clock - fill_ms >= 100_000);
     drop(r);
@@ -1090,14 +1464,31 @@ fn prod_hold_restart_keeps_the_original_fill_clock_and_exits_exactly_once() {
     let mut c = cfg();
     c.floor_fraction_bps = 2_500;
     let mut e2 = Engine::new(c, RunMode::Paper);
-    e2.enable_paper_model(Script { prompts: Arc::new(Mutex::new(Vec::new())), calls: Arc::clone(&calls), answer: |_| EXIT });
-    e2.set_management_policy(ManagementPolicy::ProdHoldControl { barrier_ms: 300_000 });
+    e2.enable_paper_model(Script {
+        prompts: Arc::new(Mutex::new(Vec::new())),
+        calls: Arc::clone(&calls),
+        answer: |_| EXIT,
+    });
+    e2.set_management_policy(ManagementPolicy::ProdHoldControl {
+        barrier_ms: 300_000,
+    });
     e2.model_held_attach(&hp);
     e2.model_held_restore().unwrap().unwrap();
     let l2 = e2.model_held_ledger();
-    assert_eq!((l2.held[0].fill_ms, l2.held[0].peak_fp, l2.held[0].trough_fp, l2.held[0].cost_lamports), (fill_ms, peak, trough, cost));
+    assert_eq!(
+        (
+            l2.held[0].fill_ms,
+            l2.held[0].peak_fp,
+            l2.held[0].trough_fp,
+            l2.held[0].cost_lamports
+        ),
+        (fill_ms, peak, trough, cost)
+    );
     assert_eq!(e2.model_inventory_tokens(&MINT), Some(inv0));
-    assert!(e2.model_all_fills().is_empty(), "restore rebuilds books, it does not replay the entry fill");
+    assert!(
+        e2.model_all_fills().is_empty(),
+        "restore rebuilds books, it does not replay the entry fill"
+    );
     // History recovery replays prints from BEFORE our fill: they must not fire protection or
     // close the restored position (the defect this test was written against).
     for ev in &events(40) {
@@ -1106,27 +1497,78 @@ fn prod_hold_restart_keeps_the_original_fill_clock_and_exits_exactly_once() {
     for _ in 0..8 {
         e2.tick(AppEvent::Tick);
     }
-    assert!(e2.model_position_open(&MINT), "replayed pre-fill history must not close the position: {:?}", e2.model_lane_report());
+    assert!(
+        e2.model_position_open(&MINT),
+        "replayed pre-fill history must not close the position: {:?}",
+        e2.model_lane_report()
+    );
     assert_eq!(e2.model_inventory_tokens(&MINT), Some(inv0));
-    assert!(e2.model_lane_report().get("protection:skip_pre_fill_print").copied().unwrap_or(0) >= 1);
-    assert_eq!(e2.model_lane_report().get("dispatched").copied().unwrap_or(0), 0, "no duplicate entry on the held mint");
-    let mut rr = Rig { e: e2, prompts: Arc::new(Mutex::new(Vec::new())), calls, clock, slot: 2_600, n: 500 };
+    assert!(
+        e2.model_lane_report()
+            .get("protection:skip_pre_fill_print")
+            .copied()
+            .unwrap_or(0)
+            >= 1
+    );
+    assert_eq!(
+        e2.model_lane_report()
+            .get("dispatched")
+            .copied()
+            .unwrap_or(0),
+        0,
+        "no duplicate entry on the held mint"
+    );
+    let mut rr = Rig {
+        e: e2,
+        prompts: Arc::new(Mutex::new(Vec::new())),
+        calls,
+        clock,
+        slot: 2_600,
+        n: 500,
+    };
     curve(&mut rr.e, rr.clock + 1_000, 2_600, 200_000_000);
     rr.clock += 1_000;
     rr.advance_to_order(400_000);
-    let (id, kind, intended, _) = rr.e.model_mgmt_pending(&MINT).unwrap_or_else(|| panic!("{:?}", rr.e.model_lane_report()));
+    let (id, kind, intended, _) =
+        rr.e.model_mgmt_pending(&MINT)
+            .unwrap_or_else(|| panic!("{:?}", rr.e.model_lane_report()));
     assert_eq!(format!("{kind:?}"), "Exit");
-    assert_eq!(intended, inv0, "inventory now {:?}; report {:?}", rr.e.model_inventory_tokens(&MINT), rr.e.model_lane_report());
+    assert_eq!(
+        intended,
+        inv0,
+        "inventory now {:?}; report {:?}",
+        rr.e.model_inventory_tokens(&MINT),
+        rr.e.model_lane_report()
+    );
     let age_at_barrier = rr.clock - fill_ms;
-    assert!((300_000..=312_000).contains(&age_at_barrier), "barrier at ORIGINAL fill+300 s (age {age_at_barrier} ms), not restart+300 s");
-    assert_eq!(rr.rep("mgmt:dispatched"), 0, "the model was never asked: {:?}", rr.e.model_lane_report());
+    assert!(
+        (300_000..=312_000).contains(&age_at_barrier),
+        "barrier at ORIGINAL fill+300 s (age {age_at_barrier} ms), not restart+300 s"
+    );
+    assert_eq!(
+        rr.rep("mgmt:dispatched"),
+        0,
+        "the model was never asked: {:?}",
+        rr.e.model_lane_report()
+    );
     rr.landing(250_000_000);
-    assert!(!rr.e.model_position_open(&MINT), "{:?}", rr.e.model_lane_report());
-    let closes: Vec<_> = rr.e.model_mgmt_fills().iter().filter(|f| f.closed).collect();
+    assert!(
+        !rr.e.model_position_open(&MINT),
+        "{:?}",
+        rr.e.model_lane_report()
+    );
+    let closes: Vec<_> =
+        rr.e.model_mgmt_fills()
+            .iter()
+            .filter(|f| f.closed)
+            .collect();
     assert_eq!(closes.len(), 1);
     assert_eq!(closes[0].order_id, id);
     assert_eq!(rr.rep("mgmt:order:exit"), 1);
-    assert!(rr.e.model_all_fills().is_empty(), "no entry fill was re-booked across the restart");
+    assert!(
+        rr.e.model_all_fills().is_empty(),
+        "no entry fill was re-booked across the restart"
+    );
 }
 
 /// Missing-data contract on the protection path: a price-less print (instruction/identity print,
@@ -1137,7 +1579,9 @@ fn prod_hold_restart_keeps_the_original_fill_clock_and_exits_exactly_once() {
 fn a_priceless_print_never_fires_protection() {
     use pump_quant_app::engine::ManagementPolicy;
     let mut r = rig(|_| REDUCE);
-    r.e.set_management_policy(ManagementPolicy::ProdHoldControl { barrier_ms: 300_000 });
+    r.e.set_management_policy(ManagementPolicy::ProdHoldControl {
+        barrier_ms: 300_000,
+    });
     let inv0 = r.e.model_inventory_tokens(&MINT).unwrap();
     r.advance(10_000);
     r.clock += 1_000;
@@ -1158,9 +1602,17 @@ fn a_priceless_print_never_fires_protection() {
         venue: Some(TradeVenue::PumpFun),
     });
     ticks(&mut r.e, 2);
-    assert!(r.e.model_position_open(&MINT), "a price-less print is unknown, not a crash: {:?}", r.e.model_lane_report());
+    assert!(
+        r.e.model_position_open(&MINT),
+        "a price-less print is unknown, not a crash: {:?}",
+        r.e.model_lane_report()
+    );
     assert_eq!(r.e.model_inventory_tokens(&MINT), Some(inv0));
-    assert!(r.rep("protection:skip_no_price_print") >= 1, "{:?}", r.e.model_lane_report());
+    assert!(
+        r.rep("protection:skip_no_price_print") >= 1,
+        "{:?}",
+        r.e.model_lane_report()
+    );
     assert!(r.e.model_mgmt_fills().is_empty());
     // A REAL single-print collapse still protects.
     r.clock += 1_000;
@@ -1180,7 +1632,10 @@ fn a_priceless_print_never_fires_protection() {
         cu_consumed: Some(95_000),
         venue: Some(TradeVenue::PumpFun),
     });
-    assert!(!r.e.model_position_open(&MINT), "the rug precursor still protects on a priced collapse");
+    assert!(
+        !r.e.model_position_open(&MINT),
+        "the rug precursor still protects on a priced collapse"
+    );
 }
 
 /// The exact failing tape of cohort-001 segment A (request 507), in authenticated order: after the fill
@@ -1193,7 +1648,9 @@ fn a_priceless_print_never_fires_protection() {
 fn segment_a_failing_tape_replayed_does_not_fire_protection() {
     use pump_quant_app::engine::ManagementPolicy;
     let mut r = rig(|_| REDUCE);
-    r.e.set_management_policy(ManagementPolicy::ProdHoldControl { barrier_ms: 1_800_000 });
+    r.e.set_management_policy(ManagementPolicy::ProdHoldControl {
+        barrier_ms: 1_800_000,
+    });
     let inv0 = r.e.model_inventory_tokens(&MINT).unwrap();
     let hp = held_path("seg_a_tape");
     r.e.model_held_attach(&hp);
@@ -1226,14 +1683,24 @@ fn segment_a_failing_tape_replayed_does_not_fire_protection() {
         ticks(&mut r.e, 1);
     }
     let rep = r.e.model_lane_report();
-    assert!(r.e.model_position_open(&MINT), "no exit on the failing tape: {rep:?}");
+    assert!(
+        r.e.model_position_open(&MINT),
+        "no exit on the failing tape: {rep:?}"
+    );
     assert_eq!(r.e.model_inventory_tokens(&MINT), Some(inv0));
     assert_eq!(r.rep("protection:skip_no_price_print"), 3, "{rep:?}");
     assert!(r.e.model_mgmt_fills().is_empty());
     assert!(r.e.model_held_persist_now());
     let h = &r.e.model_held_ledger().held[0];
-    assert_eq!(h.peak_fp, peak0, "a zero print never becomes a peak/trough; small priced dips do not raise the peak");
-    assert!(h.trough_fp >= (entry as f64 * 0.992) as u64, "trough from PRICED prints only: {}", h.trough_fp);
+    assert_eq!(
+        h.peak_fp, peak0,
+        "a zero print never becomes a peak/trough; small priced dips do not raise the peak"
+    );
+    assert!(
+        h.trough_fp >= (entry as f64 * 0.992) as u64,
+        "trough from PRICED prints only: {}",
+        h.trough_fp
+    );
     assert_eq!(h.inventory_tokens, Some(inv0));
 }
 
@@ -1243,7 +1710,9 @@ fn segment_a_failing_tape_replayed_does_not_fire_protection() {
 fn model_mode_hard_stop_is_35_percent_below_entry_not_any_dip() {
     use pump_quant_app::engine::ManagementPolicy;
     let mut r = rig(|_| REDUCE);
-    r.e.set_management_policy(ManagementPolicy::ProdHoldControl { barrier_ms: 1_800_000 });
+    r.e.set_management_policy(ManagementPolicy::ProdHoldControl {
+        barrier_ms: 1_800_000,
+    });
     let hp = held_path("hard_stop_level");
     r.e.model_held_attach(&hp);
     assert!(r.e.model_held_persist_now());
@@ -1271,7 +1740,11 @@ fn model_mode_hard_stop_is_35_percent_below_entry_not_any_dip() {
     // gradual decline, no single step ≥ 30 %: −1 %, −10 %, −20 %, −30 %, −34 % → still held
     for ratio in [0.99, 0.90, 0.80, 0.70, 0.66] {
         dip(&mut r, ratio);
-        assert!(r.e.model_position_open(&MINT), "held at {ratio}: {:?}", r.e.model_lane_report());
+        assert!(
+            r.e.model_position_open(&MINT),
+            "held at {ratio}: {:?}",
+            r.e.model_lane_report()
+        );
     }
     dip(&mut r, 0.649);
     assert!(!r.e.model_position_open(&MINT), "hard stop at entry·0.65");
@@ -1285,7 +1758,11 @@ fn cutoff_blocks_a_buy_answer_to_a_request_dispatched_before_the_cutoff() {
     let prompts = Arc::new(Mutex::new(Vec::new()));
     let calls = Arc::new(AtomicUsize::new(0));
     let mut e = Engine::new(cfg(), RunMode::Paper);
-    e.enable_paper_model(Script { prompts: Arc::clone(&prompts), calls: Arc::clone(&calls), answer: |_| REDUCE });
+    e.enable_paper_model(Script {
+        prompts: Arc::clone(&prompts),
+        calls: Arc::clone(&calls),
+        answer: |_| REDUCE,
+    });
     for ev in &events(40) {
         e.tick(ev.clone());
     }
@@ -1295,16 +1772,32 @@ fn cutoff_blocks_a_buy_answer_to_a_request_dispatched_before_the_cutoff() {
     let t_last = T0 + 1_000 + 40 * 2_000;
     curve(&mut e, t_last + 1_500, 2_100, 200_000_000);
     let rep = e.model_lane_report().clone();
-    assert!(!e.model_position_open(&MINT), "no position may open after the cutoff: {rep:?}");
+    assert!(
+        !e.model_position_open(&MINT),
+        "no position may open after the cutoff: {rep:?}"
+    );
     assert_eq!(e.model_pending_orders(), 0);
-    assert!(rep.get("discard:entries_blocked").copied().unwrap_or(0) >= 1 || rep.get("refuse:entries_blocked").copied().unwrap_or(0) >= 1, "{rep:?}");
+    assert!(
+        rep.get("discard:entries_blocked").copied().unwrap_or(0) >= 1
+            || rep.get("refuse:entries_blocked").copied().unwrap_or(0) >= 1,
+        "{rep:?}"
+    );
     // further candidate ticks never dispatch while blocked
     let before = calls.load(Ordering::SeqCst);
     for i in 41..60 {
-        print(&mut e, i, t_last + 1_500 + i64::from(i) * 2_000, 2_100 + u64::from(i));
+        print(
+            &mut e,
+            i,
+            t_last + 1_500 + i64::from(i) * 2_000,
+            2_100 + u64::from(i),
+        );
         ticks(&mut e, 1);
     }
-    assert_eq!(calls.load(Ordering::SeqCst), before, "no new dispatch while draining");
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        before,
+        "no new dispatch while draining"
+    );
 }
 
 /// Cutoff with a pending fill and then an open position: the accepted BUY's fill still lands
@@ -1316,8 +1809,14 @@ fn cutoff_lets_a_pending_fill_land_and_supervises_the_position_to_its_barrier_ex
     let prompts = Arc::new(Mutex::new(Vec::new()));
     let calls = Arc::new(AtomicUsize::new(0));
     let mut e = Engine::new(cfg(), RunMode::Paper);
-    e.set_management_policy(ManagementPolicy::ProdHoldControl { barrier_ms: 300_000 });
-    e.enable_paper_model(Script { prompts: Arc::clone(&prompts), calls: Arc::clone(&calls), answer: |_| REDUCE });
+    e.set_management_policy(ManagementPolicy::ProdHoldControl {
+        barrier_ms: 300_000,
+    });
+    e.enable_paper_model(Script {
+        prompts: Arc::clone(&prompts),
+        calls: Arc::clone(&calls),
+        answer: |_| REDUCE,
+    });
     for ev in &events(40) {
         e.tick(ev.clone());
     }
@@ -1326,16 +1825,37 @@ fn cutoff_lets_a_pending_fill_land_and_supervises_the_position_to_its_barrier_ex
     e.set_model_entries_blocked(true); // cutoff lands with the fill pending
     let t_last = T0 + 1_000 + 40 * 2_000;
     curve(&mut e, t_last + 1_500, 2_100, 200_000_000);
-    assert!(e.model_position_open(&MINT), "the already-accepted fill lands: {:?}", e.model_lane_report());
+    assert!(
+        e.model_position_open(&MINT),
+        "the already-accepted fill lands: {:?}",
+        e.model_lane_report()
+    );
     assert_eq!(e.model_pending_orders(), 0);
     let asks_at_cutoff = calls.load(Ordering::SeqCst);
-    let mut r = Rig { e, prompts, calls, clock: t_last + 1_500, slot: 2_100, n: 41 };
+    let mut r = Rig {
+        e,
+        prompts,
+        calls,
+        clock: t_last + 1_500,
+        slot: 2_100,
+        n: 41,
+    };
     r.advance_to_order(400_000);
-    assert!(r.e.model_mgmt_pending(&MINT).is_some(), "barrier EXIT submitted while draining");
+    assert!(
+        r.e.model_mgmt_pending(&MINT).is_some(),
+        "barrier EXIT submitted while draining"
+    );
     r.landing(0);
-    assert!(!r.e.model_position_open(&MINT), "flat after the barrier exit");
+    assert!(
+        !r.e.model_position_open(&MINT),
+        "flat after the barrier exit"
+    );
     assert_eq!(r.e.model_pending_orders(), 0);
-    assert_eq!(r.calls.load(Ordering::SeqCst), asks_at_cutoff, "no entry ask while draining (the PROD_HOLD control asks no model)");
+    assert_eq!(
+        r.calls.load(Ordering::SeqCst),
+        asks_at_cutoff,
+        "no entry ask while draining (the PROD_HOLD control asks no model)"
+    );
 }
 
 #[test]
@@ -1350,17 +1870,33 @@ fn a_system_error_reversal_voids_the_position_without_a_sale_and_keeps_the_equit
     // Equity identity before: seed + realized == balance; committed is carried in positions.
     let realized_before = before.realized;
     // Reverse a (hypothetical) earlier booked loss of 0.157 SOL on this mint and void the open fill.
-    let rec = r.e.model_system_error_reversal(&MINT, 157_263_531, "quote_mismatch_test");
+    let rec =
+        r.e.model_system_error_reversal(&MINT, 157_263_531, "quote_mismatch_test");
     assert_eq!(rec["applied"], true);
-    assert_eq!(rec["voided_basis_lamports"].as_u64(), before.remaining_cost_basis);
+    assert_eq!(
+        rec["voided_basis_lamports"].as_u64(),
+        before.remaining_cost_basis
+    );
     assert!(!r.e.model_position_open(&MINT), "position voided");
     let after = r.e.model_accounting_view(&MINT);
-    assert_eq!(after.realized, realized_before + 157_263_531, "realized reversed by exactly the evidenced amount");
+    assert_eq!(
+        after.realized,
+        realized_before + 157_263_531,
+        "realized reversed by exactly the evidenced amount"
+    );
     assert_eq!(after.committed, 0, "no committed capital remains");
-    assert_eq!(after.balance as i128, seed + after.realized, "seed + realized == balance");
+    assert_eq!(
+        after.balance as i128,
+        seed + after.realized,
+        "seed + realized == balance"
+    );
     // No exit was booked: nothing in the fills/exits counters of the lane changed for a sale.
     assert_eq!(r.rep("mgmt:exit_filled"), 0);
-    assert_eq!(r.rep("mgmt:cancelled_by_reversal") + r.rep("fill:"), r.rep("fill:"), "no sale counters moved");
+    assert_eq!(
+        r.rep("mgmt:cancelled_by_reversal") + r.rep("fill:"),
+        r.rep("fill:"),
+        "no sale counters moved"
+    );
     // Idempotent on a flat mint: a second application voids nothing and reverses only what is asked.
     let rec2 = r.e.model_system_error_reversal(&MINT, 0, "noop");
     assert_eq!(rec2["voided_basis_lamports"], serde_json::Value::Null);
@@ -1406,7 +1942,9 @@ fn clock_only(e: &mut Engine, ts: i64, slot: u64) {
 fn prod_hold_barrier_exit_is_an_idempotent_intent_with_backoff_not_a_fresh_order_per_tick() {
     use pump_quant_app::engine::ManagementPolicy;
     let mut r = rig(|_| REDUCE);
-    r.e.set_management_policy(ManagementPolicy::ProdHoldControl { barrier_ms: 300_000 });
+    r.e.set_management_policy(ManagementPolicy::ProdHoldControl {
+        barrier_ms: 300_000,
+    });
     r.advance(200_000);
     assert!(r.e.model_mgmt_pending(&MINT).is_none());
     // Reach the barrier with clock-only steps (no state on the held mint).
@@ -1418,7 +1956,11 @@ fn prod_hold_barrier_exit_is_an_idempotent_intent_with_backoff_not_a_fresh_order
         ticks(&mut r.e, 1);
         guard += 1;
     }
-    assert_eq!(r.rep("mgmt:order:exit"), 1, "first attempt placed at the barrier");
+    assert_eq!(
+        r.rep("mgmt:order:exit"),
+        1,
+        "first attempt placed at the barrier"
+    );
     assert_eq!(r.rep("mgmt:exit_attempt|first"), 1);
     let t_first = r.clock;
     // 20 s of clock with no state: the order expires (TTL 5 s) and is NOT re-placed (backoff 30 s).
@@ -1429,7 +1971,12 @@ fn prod_hold_barrier_exit_is_an_idempotent_intent_with_backoff_not_a_fresh_order
         ticks(&mut r.e, 1);
     }
     assert_eq!(r.rep("mgmt:order_expired_unfilled"), 1);
-    assert_eq!(r.rep("mgmt:order:exit"), 1, "no fresh order per tick: {:?}", r.e.model_lane_report());
+    assert_eq!(
+        r.rep("mgmt:order:exit"),
+        1,
+        "no fresh order per tick: {:?}",
+        r.e.model_lane_report()
+    );
     assert!(r.rep("mgmt:exit_waiting") >= 1);
     // Past the 30 s schedule: exactly one more attempt.
     while r.clock - t_first < 32_000 {
@@ -1445,9 +1992,16 @@ fn prod_hold_barrier_exit_is_an_idempotent_intent_with_backoff_not_a_fresh_order
     r.slot += 5;
     curve_quiet(&mut r.e, r.clock, r.slot);
     ticks(&mut r.e, 2);
-    assert!(!r.e.model_position_open(&MINT), "closed through a real landing fill");
+    assert!(
+        !r.e.model_position_open(&MINT),
+        "closed through a real landing fill"
+    );
     assert_eq!(r.rep("mgmt:fill_curve"), 1);
-    assert!(r.rep("mgmt:order:exit") <= 3, "no order storm: {:?}", r.e.model_lane_report());
+    assert!(
+        r.rep("mgmt:order:exit") <= 3,
+        "no order storm: {:?}",
+        r.e.model_lane_report()
+    );
 }
 
 /// End-of-run `report()` values the open book (force-close at last mark) — in paper-model mode
@@ -1464,8 +2018,15 @@ fn a_report_only_valuation_does_not_touch_realized_or_the_durable_held_ledger() 
     let led_before = r.e.model_held_ledger();
     assert_eq!(led_before.held.len(), 1);
     let _ = r.e.report();
-    assert_eq!(r.e.model_accounting_view(&MINT).realized, before.realized, "valuation is not a sale");
-    assert!(!r.e.model_held_persist_now(), "no durable write after a report-only valuation");
+    assert_eq!(
+        r.e.model_accounting_view(&MINT).realized,
+        before.realized,
+        "valuation is not a sale"
+    );
+    assert!(
+        !r.e.model_held_persist_now(),
+        "no durable write after a report-only valuation"
+    );
     drop(r);
     let mut e2 = fresh_engine(2_000_000_000, &hp);
     let rep = e2.model_held_restore().expect("restore").expect("ledger");
@@ -1482,11 +2043,16 @@ fn a_report_only_valuation_does_not_touch_realized_or_the_durable_held_ledger() 
 fn a_pending_exit_on_a_quiet_pool_lands_on_the_rpc_pool_state_snapshot_exactly_once() {
     use pump_quant_app::engine::ManagementPolicy;
     let mut r = rig(|_| HOLD);
-    r.e.set_management_policy(ManagementPolicy::ProdHoldControl { barrier_ms: 300_000 });
+    r.e.set_management_policy(ManagementPolicy::ProdHoldControl {
+        barrier_ms: 300_000,
+    });
     r.advance(60_000);
     let inv0 = r.e.model_inventory_tokens(&MINT).unwrap();
     // Graduate and print from the pool so the market is AMM-regime.
-    r.e.tick(AppEvent::Migration { mint: mint(), slot: r.slot });
+    r.e.tick(AppEvent::Migration {
+        mint: mint(),
+        slot: r.slot,
+    });
     for i in 0..5 {
         r.clock += 1_000;
         r.slot += 1;
@@ -1513,27 +2079,71 @@ fn a_pending_exit_on_a_quiet_pool_lands_on_the_rpc_pool_state_snapshot_exactly_o
     assert!(r.rep("mgmt:order_expired_unfilled") >= 1);
     let fills_before = r.e.model_all_fills().len();
     // A snapshot for a mint that is not held does nothing.
-    assert!(!r.e.model_on_amm_state_snapshot([0x99; 32], [0x50; 32], [0u8; 32], 1, 1, 0, r.slot + 5, r.clock + 1_000));
+    assert!(!r.e.model_on_amm_state_snapshot(
+        [0x99; 32],
+        [0x50; 32],
+        [0u8; 32],
+        1,
+        1,
+        0,
+        r.slot + 5,
+        r.clock + 1_000
+    ));
     assert!(r.e.model_position_open(&MINT));
     // The real pool state (drained pool: 1.05 SOL vault, 969.5M tokens, vq +17.58 SOL) prices the exit.
     r.clock += 1_000;
     r.slot += 5;
-    let filled = r.e.model_on_amm_state_snapshot(MINT, [0x50; 32], [0u8; 32], 969_511_247_820_886, 1_055_445_943, 17_584_504_840, r.slot, r.clock);
+    let filled = r.e.model_on_amm_state_snapshot(
+        MINT,
+        [0x50; 32],
+        [0u8; 32],
+        969_511_247_820_886,
+        1_055_445_943,
+        17_584_504_840,
+        r.slot,
+        r.clock,
+    );
     assert!(filled, "{:?}", r.e.model_lane_report());
     assert!(!r.e.model_position_open(&MINT), "closed exactly once");
     assert_eq!(r.rep("mgmt:fill_source|rpc_state_snapshot"), 1);
     assert_eq!(r.rep("mgmt:fill_amm_sell_fee_unverified"), 1);
-    assert!(r.rep("mgmt:exit_attempt|rpc_snapshot") <= 1, "{:?}", r.e.model_lane_report());
+    assert!(
+        r.rep("mgmt:exit_attempt|rpc_snapshot") <= 1,
+        "{:?}",
+        r.e.model_lane_report()
+    );
     let f = r.e.model_mgmt_fills().last().unwrap().clone();
     assert!(f.closed && f.tokens == inv0);
-    assert_eq!(r.e.model_all_fills().len(), fills_before, "no entry fill was created by a snapshot");
+    assert_eq!(
+        r.e.model_all_fills().len(),
+        fills_before,
+        "no entry fill was created by a snapshot"
+    );
     // Proceeds follow the program arithmetic on the EFFECTIVE quote (vault + vq), not the raw vault.
-    let gross = pump_quant_protocol::pumpswap_event::sell_gross_quote_out(969_511_247_820_886, 1_055_445_943, 17_584_504_840, u128::from(inv0)).unwrap();
+    let gross = pump_quant_protocol::pumpswap_event::sell_gross_quote_out(
+        969_511_247_820_886,
+        1_055_445_943,
+        17_584_504_840,
+        u128::from(inv0),
+    )
+    .unwrap();
     let px = f.price_fp as u128;
     let expect_px = gross * 1_000_000_000 / u128::from(inv0);
-    assert_eq!(px, expect_px, "priced at the effective-quote sell arithmetic");
+    assert_eq!(
+        px, expect_px,
+        "priced at the effective-quote sell arithmetic"
+    );
     // A second snapshot after the close books nothing.
-    assert!(!r.e.model_on_amm_state_snapshot(MINT, [0x50; 32], [0u8; 32], 969_511_247_820_886, 1_055_445_943, 17_584_504_840, r.slot + 1, r.clock + 1_000));
+    assert!(!r.e.model_on_amm_state_snapshot(
+        MINT,
+        [0x50; 32],
+        [0u8; 32],
+        969_511_247_820_886,
+        1_055_445_943,
+        17_584_504_840,
+        r.slot + 1,
+        r.clock + 1_000
+    ));
 }
 
 /// A restored AMM position keeps its AMM identity across restarts even when no pool observation
@@ -1544,10 +2154,15 @@ fn a_restored_amm_position_keeps_its_amm_identity_without_a_fresh_pool_observati
     use pump_quant_app::engine::ManagementPolicy;
     let hp = held_path("amm_identity");
     let mut r = rig(|_| HOLD);
-    r.e.set_management_policy(ManagementPolicy::ProdHoldControl { barrier_ms: 300_000 });
+    r.e.set_management_policy(ManagementPolicy::ProdHoldControl {
+        barrier_ms: 300_000,
+    });
     r.e.model_held_attach(&hp);
     r.advance(60_000);
-    r.e.tick(AppEvent::Migration { mint: mint(), slot: r.slot });
+    r.e.tick(AppEvent::Migration {
+        mint: mint(),
+        slot: r.slot,
+    });
     for i in 0..3 {
         r.clock += 1_000;
         r.slot += 1;
@@ -1561,20 +2176,40 @@ fn a_restored_amm_position_keeps_its_amm_identity_without_a_fresh_pool_observati
     drop(r);
     // Restart with NO pool observation; persist again immediately.
     let mut e2 = fresh_engine(2_000_000_000, &hp);
-    e2.set_management_policy(ManagementPolicy::ProdHoldControl { barrier_ms: 300_000 });
+    e2.set_management_policy(ManagementPolicy::ProdHoldControl {
+        barrier_ms: 300_000,
+    });
     e2.model_held_attach(&hp);
     e2.model_held_restore().expect("restore").expect("ledger");
     assert!(e2.model_held_persist_now());
     let led2 = e2.model_held_ledger();
-    assert!(led2.held[0].amm, "AMM identity survives a restart without a pool observation");
+    assert!(
+        led2.held[0].amm,
+        "AMM identity survives a restart without a pool observation"
+    );
     // The daemon replays the durable launch journal before the feed starts.
-    e2.tick(AppEvent::LaunchObserved { mint: mint(), creator: CREATOR, launch_unix_ms: T0 });
-    e2.tick(AppEvent::CurveQuote { mint: mint(), quote_mint: [0u8; 32] });
+    e2.tick(AppEvent::LaunchObserved {
+        mint: mint(),
+        creator: CREATOR,
+        launch_unix_ms: T0,
+    });
+    e2.tick(AppEvent::CurveQuote {
+        mint: mint(),
+        quote_mint: [0u8; 32],
+    });
     // Reach the barrier on clock-only steps: the exit intent must be an AMM order. One unrelated
     // curve observation moves the PROCESSED feed slot forward so the order carries a real slot stamp.
     let mut c = clock;
     let mut s = slot;
-    e2.tick(AppEvent::CurveObserved { mint: DomainMint::from_bytes([0x77; 32]), v_sol_lamports: VSOL, v_tokens: VTOK, real_sol_lamports: 1, real_tokens: 1, recv_unix_ms: Some(c), slot: s + 1_000 });
+    e2.tick(AppEvent::CurveObserved {
+        mint: DomainMint::from_bytes([0x77; 32]),
+        v_sol_lamports: VSOL,
+        v_tokens: VTOK,
+        real_sol_lamports: 1,
+        real_tokens: 1,
+        recv_unix_ms: Some(c),
+        slot: s + 1_000,
+    });
     for _ in 0..400 {
         if e2.model_mgmt_pending(&MINT).is_some() {
             break;
@@ -1584,15 +2219,45 @@ fn a_restored_amm_position_keeps_its_amm_identity_without_a_fresh_pool_observati
         clock_only(&mut e2, c, s);
         ticks(&mut e2, 2);
     }
-    assert!(e2.model_mgmt_pending(&MINT).is_some(), "{:?}", e2.model_lane_report());
+    assert!(
+        e2.model_mgmt_pending(&MINT).is_some(),
+        "{:?}",
+        e2.model_lane_report()
+    );
     let (cm, cs) = e2.model_mgmt_pending_created(&MINT).unwrap();
-    assert!(cs >= s && cm <= c, "order stamped with the processed slot: {cm} {cs} vs {c} {s}");
+    assert!(
+        cs >= s && cm <= c,
+        "order stamped with the processed slot: {cm} {cs} vs {c} {s}"
+    );
     // An RPC snapshot (AMM plane) lands it; a curve observation never could. The feed slot `s`
     // (processed) is AHEAD of the RPC confirmed slot (by 3 slots): the snapshot is judged by time.
-    assert!(e2.model_on_amm_state_snapshot(MINT, [0x50; 32], [0u8; 32], 206_000_000_000_000, 85_000_000_000, 0, cs - 3, c + 1_000));
-    assert_eq!(e2.model_lane_report().get("mgmt:amm_state_snapshot|slot_realigned").copied().unwrap_or(0), 1, "{:?}", e2.model_lane_report());
+    assert!(e2.model_on_amm_state_snapshot(
+        MINT,
+        [0x50; 32],
+        [0u8; 32],
+        206_000_000_000_000,
+        85_000_000_000,
+        0,
+        cs - 3,
+        c + 1_000
+    ));
+    assert_eq!(
+        e2.model_lane_report()
+            .get("mgmt:amm_state_snapshot|slot_realigned")
+            .copied()
+            .unwrap_or(0),
+        1,
+        "{:?}",
+        e2.model_lane_report()
+    );
     assert!(!e2.model_position_open(&MINT));
-    assert_eq!(e2.model_lane_report().get("mgmt:fill_curve").copied().unwrap_or(0), 0);
+    assert_eq!(
+        e2.model_lane_report()
+            .get("mgmt:fill_curve")
+            .copied()
+            .unwrap_or(0),
+        0
+    );
 }
 
 /// AMM swap at `price` (lamports per 1e9 raw tokens) with reserves consistent with that price.
@@ -1600,9 +2265,17 @@ fn amm_swap_at(e: &mut Engine, ts: i64, slot: u64, price_fp: u64, i: u32) {
     amm_swap_at_vq(e, ts, slot, price_fp, i, Some(0));
 }
 
-fn amm_swap_at_vq(e: &mut Engine, ts: i64, slot: u64, price_fp: u64, i: u32, virtual_quote: Option<i128>) {
+fn amm_swap_at_vq(
+    e: &mut Engine,
+    ts: i64,
+    slot: u64,
+    price_fp: u64,
+    i: u32,
+    virtual_quote: Option<i128>,
+) {
     let quote_reserve_pre: u64 = 85_000_000_000;
-    let token_reserve_pre = (u128::from(quote_reserve_pre) * 1_000_000_000 / u128::from(price_fp)) as u64;
+    let token_reserve_pre =
+        (u128::from(quote_reserve_pre) * 1_000_000_000 / u128::from(price_fp)) as u64;
     e.tick(AppEvent::AmmSwap {
         mint: mint(),
         pool: [0x50; 32],
@@ -1630,14 +2303,20 @@ fn amm_swap_at_vq(e: &mut Engine, ts: i64, slot: u64, price_fp: u64, i: u32, vir
 /// barrier); the fill comes from the NEXT landing-capable swap at ITS price (gap preserved, never
 /// the stop price); a −20 % dip opens nothing; nothing fires twice.
 #[test]
-fn amm_hard_stop_opens_a_standing_exit_intent_before_the_barrier_and_fills_at_the_next_landing_state() {
+fn amm_hard_stop_opens_a_standing_exit_intent_before_the_barrier_and_fills_at_the_next_landing_state(
+) {
     use pump_quant_app::engine::ManagementPolicy;
     let mut r = rig(|_| HOLD);
-    r.e.set_management_policy(ManagementPolicy::ProdHoldControl { barrier_ms: 1_800_000 });
+    r.e.set_management_policy(ManagementPolicy::ProdHoldControl {
+        barrier_ms: 1_800_000,
+    });
     r.advance(60_000);
     let inv0 = r.e.model_inventory_tokens(&MINT).unwrap();
     let entry = r.e.model_held_ledger().held[0].entry_price_fp;
-    r.e.tick(AppEvent::Migration { mint: mint(), slot: r.slot });
+    r.e.tick(AppEvent::Migration {
+        mint: mint(),
+        slot: r.slot,
+    });
     // Pool trades near entry, then a −20 % dip: no protection, position stays.
     for (i, f) in [100u64, 99, 101, 80, 82].iter().enumerate() {
         r.clock += 1_000;
@@ -1645,7 +2324,11 @@ fn amm_hard_stop_opens_a_standing_exit_intent_before_the_barrier_and_fills_at_th
         amm_swap_at(&mut r.e, r.clock, r.slot, entry * f / 100, i as u32);
         ticks(&mut r.e, 2);
     }
-    assert!(r.e.model_mgmt_pending(&MINT).is_none(), "{:?}", r.e.model_lane_report());
+    assert!(
+        r.e.model_mgmt_pending(&MINT).is_none(),
+        "{:?}",
+        r.e.model_lane_report()
+    );
     assert_eq!(r.rep("protection:amm_hard_stop|intent"), 0);
     // A swap at 60 % of entry (below the −35 % hard level): standing EXIT intent now.
     r.clock += 1_000;
@@ -1654,18 +2337,33 @@ fn amm_hard_stop_opens_a_standing_exit_intent_before_the_barrier_and_fills_at_th
     ticks(&mut r.e, 2);
     assert_eq!(r.rep("protection:amm_hard_stop|intent"), 1);
     assert_eq!(r.rep("mgmt:protect_exit|amm_hard_stop"), 1);
-    assert_eq!(r.rep("mgmt:prod_hold:barrier_exit"), 0, "the barrier has not passed");
+    assert_eq!(
+        r.rep("mgmt:prod_hold:barrier_exit"),
+        0,
+        "the barrier has not passed"
+    );
     assert!(r.e.model_mgmt_pending(&MINT).is_some());
-    assert!(r.e.model_position_open(&MINT), "no fill at the trigger print");
+    assert!(
+        r.e.model_position_open(&MINT),
+        "no fill at the trigger print"
+    );
     // The next landing-capable swap is lower still (gap): the exit fills THERE.
     r.clock += 1_000;
     r.slot += 1;
     amm_swap_at(&mut r.e, r.clock, r.slot, entry * 50 / 100, 10);
     ticks(&mut r.e, 2);
-    assert!(!r.e.model_position_open(&MINT), "{:?}", r.e.model_lane_report());
+    assert!(
+        !r.e.model_position_open(&MINT),
+        "{:?}",
+        r.e.model_lane_report()
+    );
     let f = r.e.model_mgmt_fills().last().unwrap().clone();
     assert!(f.closed && f.tokens == inv0);
-    assert!(f.price_fp <= entry * 55 / 100, "priced from the landing state ({}), not the stop level", f.price_fp);
+    assert!(
+        f.price_fp <= entry * 55 / 100,
+        "priced from the landing state ({}), not the stop level",
+        f.price_fp
+    );
     assert_eq!(r.rep("protection:amm_hard_stop|intent"), 1, "fires once");
     // Further swaps change nothing.
     r.clock += 1_000;
@@ -1681,10 +2379,15 @@ fn amm_hard_stop_opens_a_standing_exit_intent_before_the_barrier_and_fills_at_th
 fn amm_rug_precursor_single_print_drop_opens_the_intent_but_gradual_decline_does_not() {
     use pump_quant_app::engine::ManagementPolicy;
     let mut r = rig(|_| HOLD);
-    r.e.set_management_policy(ManagementPolicy::ProdHoldControl { barrier_ms: 1_800_000 });
+    r.e.set_management_policy(ManagementPolicy::ProdHoldControl {
+        barrier_ms: 1_800_000,
+    });
     r.advance(60_000);
     let entry = r.e.model_held_ledger().held[0].entry_price_fp;
-    r.e.tick(AppEvent::Migration { mint: mint(), slot: r.slot });
+    r.e.tick(AppEvent::Migration {
+        mint: mint(),
+        slot: r.slot,
+    });
     // Rally to 150 %, then 120 % (−20 %), then 100 % (−17 %): no single −30 % print, above hard level.
     for (i, f) in [120u64, 150, 120, 100].iter().enumerate() {
         r.clock += 1_000;
@@ -1692,14 +2395,24 @@ fn amm_rug_precursor_single_print_drop_opens_the_intent_but_gradual_decline_does
         amm_swap_at(&mut r.e, r.clock, r.slot, entry * f / 100, i as u32);
         ticks(&mut r.e, 2);
     }
-    assert_eq!(r.rep("protection:amm_rug_precursor|intent"), 0, "{:?}", r.e.model_lane_report());
+    assert_eq!(
+        r.rep("protection:amm_rug_precursor|intent"),
+        0,
+        "{:?}",
+        r.e.model_lane_report()
+    );
     assert!(r.e.model_mgmt_pending(&MINT).is_none());
     // 100 % → 69 % in one print (−31 %): precursor (hard level is 65 %, not reached).
     r.clock += 1_000;
     r.slot += 1;
     amm_swap_at(&mut r.e, r.clock, r.slot, entry * 69 / 100, 7);
     ticks(&mut r.e, 2);
-    assert_eq!(r.rep("protection:amm_rug_precursor|intent"), 1, "{:?}", r.e.model_lane_report());
+    assert_eq!(
+        r.rep("protection:amm_rug_precursor|intent"),
+        1,
+        "{:?}",
+        r.e.model_lane_report()
+    );
     assert_eq!(r.rep("protection:amm_hard_stop|intent"), 0);
     assert!(r.e.model_mgmt_pending(&MINT).is_some());
 }
@@ -1712,23 +2425,41 @@ fn amm_rug_precursor_single_print_drop_opens_the_intent_but_gradual_decline_does
 fn amm_hard_stop_is_an_absolute_entry_anchored_level_and_fires_on_a_gradual_crossing() {
     use pump_quant_app::engine::ManagementPolicy;
     let mut r = rig(|_| HOLD);
-    r.e.set_management_policy(ManagementPolicy::ProdHoldControl { barrier_ms: 1_800_000 });
+    r.e.set_management_policy(ManagementPolicy::ProdHoldControl {
+        barrier_ms: 1_800_000,
+    });
     r.advance(60_000);
     let entry = r.e.model_held_ledger().held[0].entry_price_fp;
-    r.e.tick(AppEvent::Migration { mint: mint(), slot: r.slot });
+    r.e.tick(AppEvent::Migration {
+        mint: mint(),
+        slot: r.slot,
+    });
     for (i, f) in [100u64, 90, 80, 70].iter().enumerate() {
         r.clock += 1_000;
         r.slot += 1;
         amm_swap_at(&mut r.e, r.clock, r.slot, entry * f / 100, i as u32);
         ticks(&mut r.e, 2);
-        assert_eq!(r.rep("protection:amm_hard_stop|intent"), 0, "0.{f} is above the 0.65 level");
+        assert_eq!(
+            r.rep("protection:amm_hard_stop|intent"),
+            0,
+            "0.{f} is above the 0.65 level"
+        );
     }
     r.clock += 1_000;
     r.slot += 1;
     amm_swap_at(&mut r.e, r.clock, r.slot, entry * 64 / 100, 9);
     ticks(&mut r.e, 2);
-    assert_eq!(r.rep("protection:amm_hard_stop|intent"), 1, "{:?}", r.e.model_lane_report());
-    assert_eq!(r.rep("protection:amm_rug_precursor|intent"), 0, "no single −30 % state on this path");
+    assert_eq!(
+        r.rep("protection:amm_hard_stop|intent"),
+        1,
+        "{:?}",
+        r.e.model_lane_report()
+    );
+    assert_eq!(
+        r.rep("protection:amm_rug_precursor|intent"),
+        0,
+        "no single −30 % state on this path"
+    );
     assert!(r.e.model_mgmt_pending(&MINT).is_some());
 }
 
@@ -1740,11 +2471,16 @@ fn amm_hard_stop_entry_reference_survives_restart_and_ignores_reordered_older_st
     use pump_quant_app::engine::ManagementPolicy;
     let hp = held_path("amm_hard_stop_restart");
     let mut r = rig(|_| HOLD);
-    r.e.set_management_policy(ManagementPolicy::ProdHoldControl { barrier_ms: 1_800_000 });
+    r.e.set_management_policy(ManagementPolicy::ProdHoldControl {
+        barrier_ms: 1_800_000,
+    });
     r.e.model_held_attach(&hp);
     r.advance(60_000);
     let entry = r.e.model_held_ledger().held[0].entry_price_fp;
-    r.e.tick(AppEvent::Migration { mint: mint(), slot: r.slot });
+    r.e.tick(AppEvent::Migration {
+        mint: mint(),
+        slot: r.slot,
+    });
     r.clock += 1_000;
     r.slot += 1;
     amm_swap_at(&mut r.e, r.clock, r.slot, entry, 0);
@@ -1753,29 +2489,70 @@ fn amm_hard_stop_entry_reference_survives_restart_and_ignores_reordered_older_st
     let (c0, s0) = (r.clock, r.slot);
     drop(r);
     let mut e2 = fresh_engine(2_000_000_000, &hp);
-    e2.set_management_policy(ManagementPolicy::ProdHoldControl { barrier_ms: 1_800_000 });
+    e2.set_management_policy(ManagementPolicy::ProdHoldControl {
+        barrier_ms: 1_800_000,
+    });
     e2.model_held_attach(&hp);
     e2.model_held_restore().expect("restore").expect("ledger");
-    e2.tick(AppEvent::LaunchObserved { mint: mint(), creator: CREATOR, launch_unix_ms: T0 });
-    e2.tick(AppEvent::CurveQuote { mint: mint(), quote_mint: [0u8; 32] });
-    assert_eq!(e2.model_held_ledger().held[0].entry_price_fp, entry, "entry reference restored");
+    e2.tick(AppEvent::LaunchObserved {
+        mint: mint(),
+        creator: CREATOR,
+        launch_unix_ms: T0,
+    });
+    e2.tick(AppEvent::CurveQuote {
+        mint: mint(),
+        quote_mint: [0u8; 32],
+    });
+    assert_eq!(
+        e2.model_held_ledger().held[0].entry_price_fp,
+        entry,
+        "entry reference restored"
+    );
     // First post-restart state is already 0.70 × entry: a restart must NOT re-anchor at 0.70.
     let mut c = c0 + 5_000;
     let mut s = s0 + 5;
     amm_swap_at(&mut e2, c, s, entry * 70 / 100, 1);
     ticks(&mut e2, 2);
-    assert_eq!(e2.model_lane_report().get("protection:amm_hard_stop|intent").copied().unwrap_or(0), 0);
+    assert_eq!(
+        e2.model_lane_report()
+            .get("protection:amm_hard_stop|intent")
+            .copied()
+            .unwrap_or(0),
+        0
+    );
     // A reordered OLDER state (ts < newest accepted) at 0.30 × entry is dropped, never a trigger.
     amm_swap_at(&mut e2, c - 3_000, s - 3, entry * 30 / 100, 2);
     ticks(&mut e2, 2);
-    assert_eq!(e2.model_lane_report().get("protection:amm_hard_stop|intent").copied().unwrap_or(0), 0, "{:?}", e2.model_lane_report());
-    assert!(e2.model_lane_report().get("amm_swap_dropped_out_of_order").copied().unwrap_or(0) >= 1);
+    assert_eq!(
+        e2.model_lane_report()
+            .get("protection:amm_hard_stop|intent")
+            .copied()
+            .unwrap_or(0),
+        0,
+        "{:?}",
+        e2.model_lane_report()
+    );
+    assert!(
+        e2.model_lane_report()
+            .get("amm_swap_dropped_out_of_order")
+            .copied()
+            .unwrap_or(0)
+            >= 1
+    );
     // 0.64 × ORIGINAL entry (0.914 × the post-restart first print): fires — anchored to the fill.
     c += 1_000;
     s += 1;
     amm_swap_at(&mut e2, c, s, entry * 64 / 100, 3);
     ticks(&mut e2, 2);
-    assert_eq!(e2.model_lane_report().get("protection:amm_hard_stop|intent").copied().unwrap_or(0), 1, "{:?}", e2.model_lane_report());
+    assert_eq!(
+        e2.model_lane_report()
+            .get("protection:amm_hard_stop|intent")
+            .copied()
+            .unwrap_or(0),
+        1,
+        "{:?}",
+        e2.model_lane_report()
+    );
     // A later duplicate of an older, higher state cannot erase the standing intent.
     amm_swap_at(&mut e2, c + 500, s + 1, entry * 70 / 100, 4);
     ticks(&mut e2, 2);
@@ -1791,7 +2568,10 @@ fn amm_protection_stays_active_under_entry_pause_and_management_inference_failur
     r.e.set_model_entries_blocked(true);
     r.advance(60_000);
     let entry = r.e.model_held_ledger().held[0].entry_price_fp;
-    r.e.tick(AppEvent::Migration { mint: mint(), slot: r.slot });
+    r.e.tick(AppEvent::Migration {
+        mint: mint(),
+        slot: r.slot,
+    });
     for (i, f) in [100u64, 95].iter().enumerate() {
         r.clock += 1_000;
         r.slot += 1;
@@ -1803,16 +2583,37 @@ fn amm_protection_stays_active_under_entry_pause_and_management_inference_failur
     r.slot += 1;
     amm_swap_at(&mut r.e, r.clock, r.slot, entry * 60 / 100, 5);
     ticks(&mut r.e, 2);
-    assert_eq!(r.rep("protection:amm_hard_stop|intent"), 1, "{:?}", r.e.model_lane_report());
-    assert!(r.e.model_mgmt_pending(&MINT).is_some(), "standing exit intent despite pause + failing model");
+    assert_eq!(
+        r.rep("protection:amm_hard_stop|intent"),
+        1,
+        "{:?}",
+        r.e.model_lane_report()
+    );
+    assert!(
+        r.e.model_mgmt_pending(&MINT).is_some(),
+        "standing exit intent despite pause + failing model"
+    );
     r.clock += 1_000;
     r.slot += 1;
     amm_swap_at(&mut r.e, r.clock, r.slot, entry * 55 / 100, 6);
     ticks(&mut r.e, 2);
-    assert!(!r.e.model_position_open(&MINT), "{:?}", r.e.model_lane_report());
+    assert!(
+        !r.e.model_position_open(&MINT),
+        "{:?}",
+        r.e.model_lane_report()
+    );
     // Entries stayed blocked: the only entry fill is the rig's setup fill; nothing re-entered.
-    assert_eq!(r.e.model_all_fills().len(), 1, "{:?}", r.e.model_lane_report());
-    assert!(r.rep("refuse:entries_blocked") >= 1, "{:?}", r.e.model_lane_report());
+    assert_eq!(
+        r.e.model_all_fills().len(),
+        1,
+        "{:?}",
+        r.e.model_lane_report()
+    );
+    assert!(
+        r.rep("refuse:entries_blocked") >= 1,
+        "{:?}",
+        r.e.model_lane_report()
+    );
 }
 
 /// COMBINED SCENARIO (engine side of the daemon's chain): curve fill → held → migration → AMM
@@ -1826,21 +2627,38 @@ fn combined_fill_migration_restart_duplicates_protection_silence_and_snapshot_re
     use pump_quant_app::engine::ManagementPolicy;
     let hp = held_path("combined_chain");
     let mut r = rig(|_| HOLD);
-    r.e.set_management_policy(ManagementPolicy::ProdHoldControl { barrier_ms: 1_800_000 });
+    r.e.set_management_policy(ManagementPolicy::ProdHoldControl {
+        barrier_ms: 1_800_000,
+    });
     r.e.model_held_attach(&hp);
     r.advance(60_000);
     let inv0 = r.e.model_inventory_tokens(&MINT).unwrap();
     let entry = r.e.model_held_ledger().held[0].entry_price_fp;
     let identity = |e: &Engine| {
         let a = e.model_accounting_view(&MINT);
-        assert_eq!(i128::from(a.balance), i128::from(a.seed) + a.realized, "{a:?}");
-        assert_eq!(a.committed, a.remaining_cost_basis.unwrap_or(0), "no stranded reservation: committed == remaining basis ({a:?})");
+        assert_eq!(
+            i128::from(a.balance),
+            i128::from(a.seed) + a.realized,
+            "{a:?}"
+        );
+        assert_eq!(
+            a.committed,
+            a.remaining_cost_basis.unwrap_or(0),
+            "no stranded reservation: committed == remaining basis ({a:?})"
+        );
         if e.model_pending_orders() == 0 && e.model_mgmt_pending(&MINT).is_none() {
-            assert_eq!(a.free, a.balance - a.committed, "free cash = balance − committed with nothing pending ({a:?})");
+            assert_eq!(
+                a.free,
+                a.balance - a.committed,
+                "free cash = balance − committed with nothing pending ({a:?})"
+            );
         }
     };
     identity(&r.e);
-    r.e.tick(AppEvent::Migration { mint: mint(), slot: r.slot });
+    r.e.tick(AppEvent::Migration {
+        mint: mint(),
+        slot: r.slot,
+    });
     for (i, f) in [100u64, 98, 101].iter().enumerate() {
         r.clock += 1_000;
         r.slot += 1;
@@ -1853,13 +2671,25 @@ fn combined_fill_migration_restart_duplicates_protection_silence_and_snapshot_re
     drop(r);
     // ── crash/restart ──
     let mut e2 = fresh_engine(2_000_000_000, &hp);
-    e2.set_management_policy(ManagementPolicy::ProdHoldControl { barrier_ms: 1_800_000 });
+    e2.set_management_policy(ManagementPolicy::ProdHoldControl {
+        barrier_ms: 1_800_000,
+    });
     e2.model_held_attach(&hp);
     e2.model_held_restore().expect("restore").expect("ledger");
-    e2.tick(AppEvent::LaunchObserved { mint: mint(), creator: CREATOR, launch_unix_ms: T0 });
-    e2.tick(AppEvent::CurveQuote { mint: mint(), quote_mint: [0u8; 32] });
+    e2.tick(AppEvent::LaunchObserved {
+        mint: mint(),
+        creator: CREATOR,
+        launch_unix_ms: T0,
+    });
+    e2.tick(AppEvent::CurveQuote {
+        mint: mint(),
+        quote_mint: [0u8; 32],
+    });
     assert_eq!(e2.model_inventory_tokens(&MINT), Some(inv0));
-    assert!(e2.model_all_fills().is_empty(), "restore rebuilds books; it never replays the entry fill");
+    assert!(
+        e2.model_all_fills().is_empty(),
+        "restore rebuilds books; it never replays the entry fill"
+    );
     identity(&e2);
     // Replayed pre-fill history, twice (duplicates), plus a reordered older AMM state and a print
     // without a price: none of it closes, re-enters or moves the books.
@@ -1868,21 +2698,48 @@ fn combined_fill_migration_restart_duplicates_protection_silence_and_snapshot_re
     }
     amm_swap_at(&mut e2, c0 - 2_000, s0 - 2, entry * 20 / 100, 50);
     e2.tick(AppEvent::MarketTrade {
-        mint: mint(), price_fp: 0, quote_lamports: 1_000, liquidity_lamports: 0, signed_base: 1, buyer_entity: 1,
-        age_slots: 1, recv_unix_ms: Some(c0 + 500), trader_pubkey: Some(wallet(1)), slot: Some(s0), fee_lamports: None,
-        cu_consumed: None, venue: None,
+        mint: mint(),
+        price_fp: 0,
+        quote_lamports: 1_000,
+        liquidity_lamports: 0,
+        signed_base: 1,
+        buyer_entity: 1,
+        age_slots: 1,
+        recv_unix_ms: Some(c0 + 500),
+        trader_pubkey: Some(wallet(1)),
+        slot: Some(s0),
+        fee_lamports: None,
+        cu_consumed: None,
+        venue: None,
     });
     ticks(&mut e2, 4);
     assert!(e2.model_position_open(&MINT));
     assert_eq!(e2.model_inventory_tokens(&MINT), Some(inv0));
-    assert_eq!(e2.model_all_fills().len(), 0, "no duplicate entry on the held mint after restart");
-    assert_eq!(e2.model_lane_report().get("protection:amm_hard_stop|intent").copied().unwrap_or(0), 0, "a reordered older state is not a trigger");
+    assert_eq!(
+        e2.model_all_fills().len(),
+        0,
+        "no duplicate entry on the held mint after restart"
+    );
+    assert_eq!(
+        e2.model_lane_report()
+            .get("protection:amm_hard_stop|intent")
+            .copied()
+            .unwrap_or(0),
+        0,
+        "a reordered older state is not a trigger"
+    );
     identity(&e2);
     // Fresh AMM state −40 %: protection opens the standing intent; the pool then goes silent.
     let (mut c, mut s) = (c0 + 2_000, s0 + 2);
     amm_swap_at(&mut e2, c, s, entry * 60 / 100, 51);
     ticks(&mut e2, 2);
-    assert_eq!(e2.model_lane_report().get("protection:amm_hard_stop|intent").copied().unwrap_or(0), 1);
+    assert_eq!(
+        e2.model_lane_report()
+            .get("protection:amm_hard_stop|intent")
+            .copied()
+            .unwrap_or(0),
+        1
+    );
     assert!(e2.model_mgmt_pending(&MINT).is_some());
     // 10 minutes of clock with no pool state: the order expires (60 s TTL), the intent stands with
     // backoff retries, the position is EXPLICITLY unresolved (held, inventory intact) — no synthetic sale.
@@ -1892,24 +2749,54 @@ fn combined_fill_migration_restart_duplicates_protection_silence_and_snapshot_re
         clock_only(&mut e2, c, s);
         ticks(&mut e2, 1);
     }
-    assert!(e2.model_position_open(&MINT), "unresolved exposure stays open");
+    assert!(
+        e2.model_position_open(&MINT),
+        "unresolved exposure stays open"
+    );
     assert_eq!(e2.model_inventory_tokens(&MINT), Some(inv0));
-    assert!(e2.model_lane_report().get("mgmt:order_expired_unfilled").copied().unwrap_or(0) >= 1);
+    assert!(
+        e2.model_lane_report()
+            .get("mgmt:order_expired_unfilled")
+            .copied()
+            .unwrap_or(0)
+            >= 1
+    );
     let attempts = e2.model_mgmt_exit_attempts(&MINT);
-    assert!((2..=12).contains(&attempts), "bounded retries under backoff, not one per tick: {attempts}");
+    assert!(
+        (2..=12).contains(&attempts),
+        "bounded retries under backoff, not one per tick: {attempts}"
+    );
     assert_eq!(e2.model_mgmt_fills().len(), 0);
     identity(&e2);
     // RPC snapshot of the current pool state (the daemon's exit liquidation source): lands ONCE.
     c += 1_000;
     s += 1;
-    assert!(e2.model_on_amm_state_snapshot(MINT, [0x50; 32], [0u8; 32], 300_000_000_000_000, 85_000_000_000, 0, s, c));
+    assert!(e2.model_on_amm_state_snapshot(
+        MINT,
+        [0x50; 32],
+        [0u8; 32],
+        300_000_000_000_000,
+        85_000_000_000,
+        0,
+        s,
+        c
+    ));
     assert!(!e2.model_position_open(&MINT));
     assert_eq!(e2.model_mgmt_fills().len(), 1);
     assert_eq!(e2.model_mgmt_fills()[0].tokens, inv0);
     assert_eq!(e2.model_pending_orders(), 0);
     identity(&e2);
     // A later duplicate snapshot and a late swap change nothing.
-    assert!(!e2.model_on_amm_state_snapshot(MINT, [0x50; 32], [0u8; 32], 300_000_000_000_000, 85_000_000_000, 0, s + 1, c + 1_000));
+    assert!(!e2.model_on_amm_state_snapshot(
+        MINT,
+        [0x50; 32],
+        [0u8; 32],
+        300_000_000_000_000,
+        85_000_000_000,
+        0,
+        s + 1,
+        c + 1_000
+    ));
     amm_swap_at(&mut e2, c + 2_000, s + 2, entry * 50 / 100, 52);
     ticks(&mut e2, 2);
     assert_eq!(e2.model_mgmt_fills().len(), 1);
@@ -1922,7 +2809,11 @@ fn rig_with_loss_budget(budget_lamports: u64) -> (Engine, usize) {
     let calls = Arc::new(AtomicUsize::new(0));
     let mut e = Engine::new(cfg(), RunMode::Paper);
     e.set_model_loss_budget(budget_lamports, 0);
-    e.enable_paper_model(Script { prompts, calls, answer: |_| HOLD });
+    e.enable_paper_model(Script {
+        prompts,
+        calls,
+        answer: |_| HOLD,
+    });
     for ev in &events(40) {
         e.tick(ev.clone());
     }
@@ -1939,26 +2830,59 @@ fn rig_with_loss_budget(budget_lamports: u64) -> (Engine, usize) {
 #[test]
 fn declared_loss_budget_is_enforced_at_admission_and_bounds_the_worst_case_clip() {
     let (e0, fills0) = rig_with_loss_budget(0);
-    assert_eq!(fills0, 0, "exhausted budget admits nothing: {:?}", e0.model_lane_report());
-    assert!(e0.model_lane_report().get("notrade:loss_budget").copied().unwrap_or(0) >= 1);
+    assert_eq!(
+        fills0,
+        0,
+        "exhausted budget admits nothing: {:?}",
+        e0.model_lane_report()
+    );
+    assert!(
+        e0.model_lane_report()
+            .get("notrade:loss_budget")
+            .copied()
+            .unwrap_or(0)
+            >= 1
+    );
     assert!(!e0.model_position_open(&MINT));
 
     // A budget too small for the minimum payable clip is a capital veto by name — never a forced
     // micro-fill below the fee buffer.
     let (e_small, fills_small) = rig_with_loss_budget(80_000_000);
     assert_eq!(fills_small, 0);
-    assert!(e_small.model_lane_report().get("notrade:unpayable_clip").copied().unwrap_or(0) >= 1, "{:?}", e_small.model_lane_report());
+    assert!(
+        e_small
+            .model_lane_report()
+            .get("notrade:unpayable_clip")
+            .copied()
+            .unwrap_or(0)
+            >= 1,
+        "{:?}",
+        e_small.model_lane_report()
+    );
 
     let (e2, fills2) = rig_with_loss_budget(2_000_000_000);
     assert_eq!(fills2, 1);
-    let unbounded = e2.model_accounting_view(&MINT).remaining_cost_basis.unwrap_or(0);
+    let unbounded = e2
+        .model_accounting_view(&MINT)
+        .remaining_cost_basis
+        .unwrap_or(0);
 
     let (e1, fills1) = rig_with_loss_budget(1_000_000_000); // bounds deployable 1.5 → 1.0 SOL
     assert_eq!(fills1, 1, "{:?}", e1.model_lane_report());
-    let cost1 = e1.model_accounting_view(&MINT).remaining_cost_basis.unwrap_or(0);
-    assert!(cost1 > 0 && cost1 < unbounded && cost1 <= 1_000_000_000, "clip bounded by the worst-case budget: {cost1} vs {unbounded}");
+    let cost1 = e1
+        .model_accounting_view(&MINT)
+        .remaining_cost_basis
+        .unwrap_or(0);
+    assert!(
+        cost1 > 0 && cost1 < unbounded && cost1 <= 1_000_000_000,
+        "clip bounded by the worst-case budget: {cost1} vs {unbounded}"
+    );
     let head = e1.model_loss_budget_headroom().unwrap();
-    assert_eq!(head, 1_000_000_000 - i128::from(cost1), "open basis counted against the budget at once");
+    assert_eq!(
+        head,
+        1_000_000_000 - i128::from(cost1),
+        "open basis counted against the budget at once"
+    );
 }
 
 /// Two distinct AMM states can share a millisecond. Equality of clocks must not erase the later
@@ -1967,18 +2891,41 @@ fn declared_loss_budget_is_enforced_at_admission_and_bounds_the_worst_case_clip(
 fn amm_states_sharing_a_timestamp_are_both_evaluated() {
     use pump_quant_app::engine::ManagementPolicy;
     let mut r = rig(|_| HOLD);
-    r.e.set_management_policy(ManagementPolicy::ProdHoldControl { barrier_ms: 1_800_000 });
+    r.e.set_management_policy(ManagementPolicy::ProdHoldControl {
+        barrier_ms: 1_800_000,
+    });
     r.advance(60_000);
     let entry = r.e.model_held_ledger().held[0].entry_price_fp;
-    r.e.tick(AppEvent::Migration { mint: mint(), slot: r.slot });
+    r.e.tick(AppEvent::Migration {
+        mint: mint(),
+        slot: r.slot,
+    });
     let (c, s) = (r.clock + 1_000, r.slot + 1);
     amm_swap_at(&mut r.e, c, s, entry * 70 / 100, 0);
     ticks(&mut r.e, 1);
-    assert_eq!(r.e.model_lane_report().get("protection:amm_hard_stop|intent").copied().unwrap_or(0), 0);
+    assert_eq!(
+        r.e.model_lane_report()
+            .get("protection:amm_hard_stop|intent")
+            .copied()
+            .unwrap_or(0),
+        0
+    );
     amm_swap_at(&mut r.e, c, s, entry * 60 / 100, 1);
     ticks(&mut r.e, 1);
-    assert_eq!(r.e.model_lane_report().get("protection:amm_stale_state_skipped").copied().unwrap_or(0), 0);
-    assert_eq!(r.e.model_lane_report().get("protection:amm_hard_stop|intent").copied().unwrap_or(0), 1);
+    assert_eq!(
+        r.e.model_lane_report()
+            .get("protection:amm_stale_state_skipped")
+            .copied()
+            .unwrap_or(0),
+        0
+    );
+    assert_eq!(
+        r.e.model_lane_report()
+            .get("protection:amm_hard_stop|intent")
+            .copied()
+            .unwrap_or(0),
+        1
+    );
 }
 
 /// The protective latch survives a restart: the standing intent is restored, and re-seeing the
@@ -1988,32 +2935,65 @@ fn protective_latch_and_intent_survive_restart_without_refiring() {
     use pump_quant_app::engine::ManagementPolicy;
     let hp = held_path("latch_restart");
     let mut r = rig(|_| HOLD);
-    r.e.set_management_policy(ManagementPolicy::ProdHoldControl { barrier_ms: 1_800_000 });
+    r.e.set_management_policy(ManagementPolicy::ProdHoldControl {
+        barrier_ms: 1_800_000,
+    });
     r.e.model_held_attach(&hp);
     r.advance(60_000);
     let entry = r.e.model_held_ledger().held[0].entry_price_fp;
-    r.e.tick(AppEvent::Migration { mint: mint(), slot: r.slot });
+    r.e.tick(AppEvent::Migration {
+        mint: mint(),
+        slot: r.slot,
+    });
     let (c, s) = (r.clock + 1_000, r.slot + 1);
     amm_swap_at(&mut r.e, c, s, entry * 60 / 100, 0);
     ticks(&mut r.e, 1);
-    assert_eq!(r.e.model_lane_report().get("protection:amm_hard_stop|intent").copied().unwrap_or(0), 1);
+    assert_eq!(
+        r.e.model_lane_report()
+            .get("protection:amm_hard_stop|intent")
+            .copied()
+            .unwrap_or(0),
+        1
+    );
     assert!(r.e.model_held_persist_now());
     let ledger = r.e.model_held_ledger();
     assert_eq!(ledger.held[0].protect_exit, "amm_hard_stop");
     assert_eq!(ledger.held[0].last_state_ms, c);
     drop(r);
     let mut e2 = fresh_engine(2_000_000_000, &hp);
-    e2.set_management_policy(ManagementPolicy::ProdHoldControl { barrier_ms: 1_800_000 });
+    e2.set_management_policy(ManagementPolicy::ProdHoldControl {
+        barrier_ms: 1_800_000,
+    });
     e2.model_held_attach(&hp);
     e2.model_held_restore().expect("restore").expect("ledger");
-    e2.tick(AppEvent::LaunchObserved { mint: mint(), creator: CREATOR, launch_unix_ms: T0 });
-    e2.tick(AppEvent::CurveQuote { mint: mint(), quote_mint: [0u8; 32] });
-    assert!(e2.model_mgmt_pending(&MINT).is_some(), "standing exit intent restored");
+    e2.tick(AppEvent::LaunchObserved {
+        mint: mint(),
+        creator: CREATOR,
+        launch_unix_ms: T0,
+    });
+    e2.tick(AppEvent::CurveQuote {
+        mint: mint(),
+        quote_mint: [0u8; 32],
+    });
+    assert!(
+        e2.model_mgmt_pending(&MINT).is_some(),
+        "standing exit intent restored"
+    );
     amm_swap_at(&mut e2, c, s, entry * 60 / 100, 0);
     amm_swap_at(&mut e2, c + 100, s, entry * 55 / 100, 1);
     ticks(&mut e2, 2);
-    assert_eq!(e2.model_lane_report().get("protection:amm_hard_stop|intent").copied().unwrap_or(0), 0, "latched: no second intent");
-    assert!(e2.model_position_open(&MINT) || e2.model_mgmt_fills().len() == 1, "either still pending or landed exactly once");
+    assert_eq!(
+        e2.model_lane_report()
+            .get("protection:amm_hard_stop|intent")
+            .copied()
+            .unwrap_or(0),
+        0,
+        "latched: no second intent"
+    );
+    assert!(
+        e2.model_position_open(&MINT) || e2.model_mgmt_fills().len() == 1,
+        "either still pending or landed exactly once"
+    );
 }
 
 /// Unknown virtual quote is unavailable state, not zero: a state without a schema-proven vq
@@ -2024,27 +3004,57 @@ fn protective_latch_and_intent_survive_restart_without_refiring() {
 fn unknown_virtual_quote_is_unavailable_state_and_negative_vq_is_honoured() {
     use pump_quant_app::engine::ManagementPolicy;
     let mut r = rig(|_| HOLD);
-    r.e.set_management_policy(ManagementPolicy::ProdHoldControl { barrier_ms: 1_800_000 });
+    r.e.set_management_policy(ManagementPolicy::ProdHoldControl {
+        barrier_ms: 1_800_000,
+    });
     r.advance(60_000);
     let entry = r.e.model_held_ledger().held[0].entry_price_fp;
-    r.e.tick(AppEvent::Migration { mint: mint(), slot: r.slot });
+    r.e.tick(AppEvent::Migration {
+        mint: mint(),
+        slot: r.slot,
+    });
     let (mut c, mut s) = (r.clock + 1_000, r.slot + 1);
     // vq unknown at 0.50× raw spot: unavailable → no trigger, counted.
     amm_swap_at_vq(&mut r.e, c, s, entry * 50 / 100, 0, None);
     ticks(&mut r.e, 1);
     let rep = r.e.model_lane_report();
-    assert_eq!(rep.get("protection:amm_hard_stop|intent").copied().unwrap_or(0), 0, "{rep:?}");
-    assert!(rep.get("protection:amm_state_unavailable|vq_unknown_layout").copied().unwrap_or(0) >= 1);
+    assert_eq!(
+        rep.get("protection:amm_hard_stop|intent")
+            .copied()
+            .unwrap_or(0),
+        0,
+        "{rep:?}"
+    );
+    assert!(
+        rep.get("protection:amm_state_unavailable|vq_unknown_layout")
+            .copied()
+            .unwrap_or(0)
+            >= 1
+    );
     // Known vq = 0 at 0.80× raw spot: above the level → no trigger.
     c += 1_000;
     s += 1;
     amm_swap_at_vq(&mut r.e, c, s, entry * 80 / 100, 1, Some(0));
     ticks(&mut r.e, 1);
-    assert_eq!(r.e.model_lane_report().get("protection:amm_hard_stop|intent").copied().unwrap_or(0), 0);
+    assert_eq!(
+        r.e.model_lane_report()
+            .get("protection:amm_hard_stop|intent")
+            .copied()
+            .unwrap_or(0),
+        0
+    );
     // Same raw reserves (0.80×) but a NEGATIVE vq of −25 % of the vault: effective spot 0.60× → fires.
     c += 1_000;
     s += 1;
     amm_swap_at_vq(&mut r.e, c, s, entry * 80 / 100, 2, Some(-21_250_000_000));
     ticks(&mut r.e, 1);
-    assert_eq!(r.e.model_lane_report().get("protection:amm_hard_stop|intent").copied().unwrap_or(0), 1, "{:?}", r.e.model_lane_report());
+    assert_eq!(
+        r.e.model_lane_report()
+            .get("protection:amm_hard_stop|intent")
+            .copied()
+            .unwrap_or(0),
+        1,
+        "{:?}",
+        r.e.model_lane_report()
+    );
 }

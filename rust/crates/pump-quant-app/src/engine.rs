@@ -877,13 +877,18 @@ pub enum EntryContract {
 impl EntryContract {
     /// Either probe_sl_v1 variant (same system instruction, same policy).
     pub fn is_probe_sl(self) -> bool {
-        matches!(self, EntryContract::ProbeSlV1 | EntryContract::ProbeSlV1Compact)
+        matches!(
+            self,
+            EntryContract::ProbeSlV1 | EntryContract::ProbeSlV1Compact
+        )
     }
 }
 
 impl ManagementPolicy {
     /// The v16 PROD_HOLD control with its pinned 1,800 s barrier.
-    pub const PROD_HOLD_V16: ManagementPolicy = ManagementPolicy::ProdHoldControl { barrier_ms: 1_800_000 };
+    pub const PROD_HOLD_V16: ManagementPolicy = ManagementPolicy::ProdHoldControl {
+        barrier_ms: 1_800_000,
+    };
 }
 
 /// The running engine.
@@ -1478,13 +1483,17 @@ impl Engine {
             // Release the committed entry spend exactly as an exit would (the attribution's
             // `entry_spend` is the amount that was committed at fill).
             if let Some(att) = self.open_lane.remove(mint) {
-                self.bankroll_committed = self.bankroll_committed.saturating_sub(u128::from(att.entry_spend));
+                self.bankroll_committed = self
+                    .bankroll_committed
+                    .saturating_sub(u128::from(att.entry_spend));
             }
             self.model_mgmt_forget(mint);
             self.model_on_position_closed(mint);
         }
         self.model_mgmt_cancel_all_for(mint);
-        self.bankroll_realized = self.bankroll_realized.saturating_add(reverse_realized_lamports);
+        self.bankroll_realized = self
+            .bankroll_realized
+            .saturating_add(reverse_realized_lamports);
         let after = serde_json::json!({
             "realized_lamports": self.bankroll_realized,
             "balance_lamports": self.bankroll_balance(),
@@ -1496,7 +1505,15 @@ impl Engine {
             "applied": true, "reason": reason, "voided_basis_lamports": voided_basis,
             "reverse_realized_lamports": reverse_realized_lamports, "before": before, "after": after,
         });
-        self.model_io_event_with("correction", 0, mint, "correction", "system_error_reversal", clock_now, rec.clone());
+        self.model_io_event_with(
+            "correction",
+            0,
+            mint,
+            "correction",
+            "system_error_reversal",
+            clock_now,
+            rec.clone(),
+        );
         rec
     }
 
@@ -1509,7 +1526,12 @@ impl Engine {
     /// Every mint the account is exposed to right now: open positions plus pending buys.
     #[must_use]
     pub fn exposure_mints(&self) -> Vec<[u8; 32]> {
-        let mut v: Vec<[u8; 32]> = self.positions.export_held().iter().map(|h| h.mint).collect();
+        let mut v: Vec<[u8; 32]> = self
+            .positions
+            .export_held()
+            .iter()
+            .map(|h| h.mint)
+            .collect();
         for p in self.pending_buys.values() {
             if !v.contains(&p.mint) {
                 v.push(p.mint);
@@ -1522,8 +1544,7 @@ impl Engine {
     /// RETAIN a pool feed past its opportunity horizon (never to admit a candidate).
     #[must_use]
     pub fn mint_has_exposure(&self, mint: &[u8; 32]) -> bool {
-        self.positions.is_open(mint)
-            || self.pending_buys.values().any(|p| &p.mint == mint)
+        self.positions.is_open(mint) || self.pending_buys.values().any(|p| &p.mint == mint)
     }
 
     /// Construct an engine under a validated config and a run mode.
@@ -1548,6 +1569,12 @@ impl Engine {
         S: ModelSource + Send + Sync + 'static,
     {
         let src: std::sync::Arc<dyn ModelSource + Send + Sync> = std::sync::Arc::new(source);
+        self.enable_paper_model_arc(src)
+    }
+
+    /// [`enable_paper_model`](Self::enable_paper_model) with an already-shared source, so several
+    /// research arms in one process can share ONE memoised inference client.
+    pub fn enable_paper_model_arc(&mut self, src: std::sync::Arc<dyn ModelSource + Send + Sync>) {
         self.model_pool = Some(crate::model_worker::InferencePool::new(
             std::sync::Arc::clone(&src),
             model_admit::MODEL_WORKERS,
@@ -1719,7 +1746,10 @@ impl Engine {
             model_meta: BTreeMap::new(),
             model_dispatch_clock: BTreeMap::new(),
             model_io_sink: None,
-            model_proc_gen: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0),
+            model_proc_gen: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0),
             model_cancel_lag_ms: None,
             model_pending_queue_age_ms: None,
             model_orders: BTreeMap::new(),
@@ -2517,7 +2547,10 @@ impl Engine {
                     // the rug precursor / hard stop — treating it as a 100 % drop fabricates an
                     // exit. Counted by name, never acted on.
                     let no_price_print = price_fp <= 0;
-                    if no_price_print && !self.positions.is_empty() && self.positions.has(mint.as_bytes()) {
+                    if no_price_print
+                        && !self.positions.is_empty()
+                        && self.positions.has(mint.as_bytes())
+                    {
                         self.mrep("protection:skip_no_price_print");
                     }
                     if !skip_exit && !pre_fill_print && !no_price_print {
@@ -2864,7 +2897,8 @@ impl Engine {
             }
             AppEvent::CurveQuote { mint, quote_mint } => {
                 if self.paper_model_mode {
-                    self.model_cache.observe_quote_mint(*mint.as_bytes(), quote_mint);
+                    self.model_cache
+                        .observe_quote_mint(*mint.as_bytes(), quote_mint);
                 }
             }
             AppEvent::AmmSwap {

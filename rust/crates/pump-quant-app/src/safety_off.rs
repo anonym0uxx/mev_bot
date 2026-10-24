@@ -240,7 +240,10 @@ impl SafetyOff {
                 "uncertain": p.uncertain,
             })).collect::<Vec<_>>(),
         });
-        match write_atomic(&path, &serde_json::to_string_pretty(&body).unwrap_or_default()) {
+        match write_atomic(
+            &path,
+            &serde_json::to_string_pretty(&body).unwrap_or_default(),
+        ) {
             Ok(()) => true,
             Err(_) => {
                 self.persist_failures += 1;
@@ -298,7 +301,10 @@ mod tests {
         fs::write(&p, r#"{"schema":2,"blocked":false,"epoch":1}"#).unwrap();
         assert!(SafetyOff::load(&p).1.blocked, "unknown schema is untrusted");
         fs::write(&p, r#"{"schema":1,"epoch":1}"#).unwrap();
-        assert!(SafetyOff::load(&p).1.blocked, "missing blocked flag is untrusted");
+        assert!(
+            SafetyOff::load(&p).1.blocked,
+            "missing blocked flag is untrusted"
+        );
     }
 
     #[test]

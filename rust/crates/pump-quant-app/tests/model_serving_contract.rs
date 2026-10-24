@@ -25,7 +25,12 @@ fn the_execution_path_never_calls_the_streaming_headline_or_retry_helpers() {
     let mut files = Vec::new();
     rs_files(&root.join("pump-quant-app/src"), &mut files);
     rs_files(&root.join("pump-quant-junction/src"), &mut files);
-    let banned = ["complete_streaming", "complete_retrying", "streaming_request_body", ".headline("];
+    let banned = [
+        "complete_streaming",
+        "complete_retrying",
+        "streaming_request_body",
+        ".headline(",
+    ];
     let mut hits = Vec::new();
     for f in files {
         let text = std::fs::read_to_string(&f).unwrap();
@@ -41,13 +46,22 @@ fn the_execution_path_never_calls_the_streaming_headline_or_retry_helpers() {
             }
         }
     }
-    assert!(hits.is_empty(), "early-headline/retry helpers reached the execution path:\n{}", hits.join("\n"));
+    assert!(
+        hits.is_empty(),
+        "early-headline/retry helpers reached the execution path:\n{}",
+        hits.join("\n")
+    );
 }
 
 #[test]
 fn the_worker_acts_only_on_a_complete_completion() {
-    let src = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/model_worker.rs")).unwrap();
-    assert!(src.contains("source.complete_meta("), "the worker must use the full-completion call");
+    let src =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/model_worker.rs"))
+            .unwrap();
+    assert!(
+        src.contains("source.complete_meta("),
+        "the worker must use the full-completion call"
+    );
 }
 
 #[test]
@@ -56,7 +70,10 @@ fn the_engine_deadline_is_bounded_and_below_the_socket_timeout() {
     // that measurement is a Windows step (see the handoff), so these are provisional, not frozen.
     let deadline_ms = pump_quant_app::freshness::CHAMPION_MAX_DECISION_AGE_MS;
     let socket_ms = pump_quant_junction_client_timeout_ms();
-    assert!(deadline_ms > 0 && socket_ms > deadline_ms, "{deadline_ms} vs {socket_ms}");
+    assert!(
+        deadline_ms > 0 && socket_ms > deadline_ms,
+        "{deadline_ms} vs {socket_ms}"
+    );
 }
 
 fn pump_quant_junction_client_timeout_ms() -> u64 {
@@ -65,7 +82,18 @@ fn pump_quant_junction_client_timeout_ms() -> u64 {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../pump-quant-junction/src/model_lifecycle.rs"),
     )
     .unwrap();
-    let line = src.lines().find(|l| l.contains("pub const CLIENT_TIMEOUT")).expect("constant");
-    let secs: u64 = line.split("from_secs(").nth(1).unwrap().split(')').next().unwrap().parse().unwrap();
+    let line = src
+        .lines()
+        .find(|l| l.contains("pub const CLIENT_TIMEOUT"))
+        .expect("constant");
+    let secs: u64 = line
+        .split("from_secs(")
+        .nth(1)
+        .unwrap()
+        .split(')')
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
     secs * 1_000
 }

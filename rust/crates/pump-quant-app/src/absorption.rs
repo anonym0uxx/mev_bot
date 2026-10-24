@@ -43,8 +43,12 @@ pub struct RuleSource {
 impl RuleSource {
     pub fn decide(&self, user: &str) -> &'static str {
         let eligible = field(user, "pricing_eligible") == Some("true");
-        let flow_pos = field(user, "net_flow_sol_300s").and_then(|v| v.parse::<f64>().ok()).is_some_and(|x| x > 0.0);
-        let ret_pos = field(user, "ret_30s_bp").and_then(|v| v.parse::<i64>().ok()).is_some_and(|x| x > 0);
+        let flow_pos = field(user, "net_flow_sol_300s")
+            .and_then(|v| v.parse::<f64>().ok())
+            .is_some_and(|x| x > 0.0);
+        let ret_pos = field(user, "ret_30s_bp")
+            .and_then(|v| v.parse::<i64>().ok())
+            .is_some_and(|x| x > 0);
         let r_ok = ratio_bps(user).is_some_and(|(r, _, _)| r <= self.r_star_bps);
         if eligible && flow_pos && ret_pos && r_ok {
             "DECISION: BUY\nSIZE: SMALL"
@@ -83,7 +87,13 @@ pub struct MemoSource<S: crate::model_authority::ModelSource + Send + Sync> {
 
 impl<S: crate::model_authority::ModelSource + Send + Sync> MemoSource<S> {
     pub fn new(inner: S, ttl_ms: u128) -> Self {
-        Self { inner, ttl_ms, memo: std::sync::Mutex::new(Default::default()), hits: Default::default(), misses: Default::default() }
+        Self {
+            inner,
+            ttl_ms,
+            memo: std::sync::Mutex::new(Default::default()),
+            hits: Default::default(),
+            misses: Default::default(),
+        }
     }
     fn key(system: &str, user: &str) -> u64 {
         use std::hash::{Hash, Hasher};
@@ -93,7 +103,10 @@ impl<S: crate::model_authority::ModelSource + Send + Sync> MemoSource<S> {
         h.finish()
     }
     fn now_ms() -> u128 {
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0)
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0)
     }
     fn lookup(&self, k: u64) -> Option<Completion> {
         let mut m = self.memo.lock().ok()?;
@@ -108,7 +121,9 @@ impl<S: crate::model_authority::ModelSource + Send + Sync> MemoSource<S> {
     }
 }
 
-impl<S: crate::model_authority::ModelSource + Send + Sync> crate::model_authority::ModelSource for MemoSource<S> {
+impl<S: crate::model_authority::ModelSource + Send + Sync> crate::model_authority::ModelSource
+    for MemoSource<S>
+{
     fn complete(&self, system: &str, user: &str) -> Result<String, InferenceError> {
         self.complete_meta(system, user).map(|c| c.text)
     }
@@ -118,19 +133,29 @@ impl<S: crate::model_authority::ModelSource + Send + Sync> crate::model_authorit
             self.hits.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             return Ok(c);
         }
-        self.misses.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.misses
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let c = self.inner.complete_meta(system, user)?;
         self.store(k, &c);
         Ok(c)
     }
-    fn complete_meta_within(&self, system: &str, user: &str, budget: std::time::Duration, request_id: &str) -> Result<Completion, InferenceError> {
+    fn complete_meta_within(
+        &self,
+        system: &str,
+        user: &str,
+        budget: std::time::Duration,
+        request_id: &str,
+    ) -> Result<Completion, InferenceError> {
         let k = Self::key(system, user);
         if let Some(c) = self.lookup(k) {
             self.hits.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             return Ok(c);
         }
-        self.misses.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let c = self.inner.complete_meta_within(system, user, budget, request_id)?;
+        self.misses
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let c = self
+            .inner
+            .complete_meta_within(system, user, budget, request_id)?;
         self.store(k, &c);
         Ok(c)
     }
@@ -141,22 +166,51 @@ mod tests {
     use super::*;
     #[test]
     fn ratio_reads_exact_prompt_fields_and_names_unavailable() {
-        assert_eq!(ratio_bps("x=1 sell_volume_lamports=1500000000 quote_reserves_lamports=1000000000"), Some((15_000, 1_500_000_000, 1_000_000_000)));
-        assert_eq!(ratio_bps("sell_volume_lamports=5 quote_reserves_lamports=0"), None);
+        assert_eq!(
+            ratio_bps("x=1 sell_volume_lamports=1500000000 quote_reserves_lamports=1000000000"),
+            Some((15_000, 1_500_000_000, 1_000_000_000))
+        );
+        assert_eq!(
+            ratio_bps("sell_volume_lamports=5 quote_reserves_lamports=0"),
+            None
+        );
         assert_eq!(ratio_bps("sell_volume_lamports=5"), None);
-        assert_eq!(ratio_bps("sell_volume_lamports=n/a quote_reserves_lamports=7"), None);
+        assert_eq!(
+            ratio_bps("sell_volume_lamports=n/a quote_reserves_lamports=7"),
+            None
+        );
     }
     #[test]
     fn rule_source_is_explicit_and_skips_on_missing() {
         let r = RuleSource { r_star_bps: 10_000 };
         let ok = "pricing_eligible=true net_flow_sol_300s=3.5 ret_30s_bp=120 sell_volume_lamports=4 quote_reserves_lamports=10";
         assert_eq!(r.decide(ok), "DECISION: BUY\nSIZE: SMALL");
-        assert_eq!(r.decide(&ok.replace("ret_30s_bp=120", "ret_30s_bp=0")), "DECISION: SKIP");
-        assert_eq!(r.decide(&ok.replace("quote_reserves_lamports=10", "quote_reserves_lamports=0")), "DECISION: SKIP");
-        assert_eq!(r.decide(&ok.replace("sell_volume_lamports=4", "sell_volume_lamports=20")), "DECISION: SKIP");
-        assert_eq!(r.decide(&ok.replace(" net_flow_sol_300s=3.5", "")), "DECISION: SKIP");
+        assert_eq!(
+            r.decide(&ok.replace("ret_30s_bp=120", "ret_30s_bp=0")),
+            "DECISION: SKIP"
+        );
+        assert_eq!(
+            r.decide(&ok.replace("quote_reserves_lamports=10", "quote_reserves_lamports=0")),
+            "DECISION: SKIP"
+        );
+        assert_eq!(
+            r.decide(&ok.replace("sell_volume_lamports=4", "sell_volume_lamports=20")),
+            "DECISION: SKIP"
+        );
+        assert_eq!(
+            r.decide(&ok.replace(" net_flow_sol_300s=3.5", "")),
+            "DECISION: SKIP"
+        );
         let c = crate::model_authority::ModelSource::complete_meta(&r, "", ok).unwrap();
-        assert!(pump_quant_inference::probe_sl::validate_probe_sl_entry_compact(c.finish_reason.as_deref(), c.stop_reason.as_deref(), &c.text, c.completion_tokens).is_ok());
+        assert!(
+            pump_quant_inference::probe_sl::validate_probe_sl_entry_compact(
+                c.finish_reason.as_deref(),
+                c.stop_reason.as_deref(),
+                &c.text,
+                c.completion_tokens
+            )
+            .is_ok()
+        );
     }
     struct Counting(std::sync::atomic::AtomicU64);
     impl crate::model_authority::ModelSource for Counting {

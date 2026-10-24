@@ -91,7 +91,10 @@ fn events(f: Feed) -> Vec<AppEvent> {
         });
     }
     // The fixture market is SOL-quoted; the lane requires the positive statement.
-    ev.push(AppEvent::CurveQuote { mint: mint(), quote_mint: [0u8; 32] });
+    ev.push(AppEvent::CurveQuote {
+        mint: mint(),
+        quote_mint: [0u8; 32],
+    });
     for i in 0..f.n {
         let buy = i % 3 != 0;
         ev.push(AppEvent::MarketTrade {
@@ -540,7 +543,9 @@ impl ModelSource for BudgetBound {
         self.calls.fetch_add(1, Ordering::SeqCst);
         self.budgets.lock().unwrap().push(budget);
         std::thread::sleep(budget);
-        Err(InferenceError::Transport(format!("timeout after {budget:?}")))
+        Err(InferenceError::Transport(format!(
+            "timeout after {budget:?}"
+        )))
     }
 }
 
@@ -588,7 +593,11 @@ fn transport_timeout_after_the_deadline_is_recorded_as_cancelled_not_late_and_cr
     }
     // The later curve event legitimately re-asks the mint once its first request is gone
     // ("a normal request after cancellation"), so calls may be 2.
-    assert!(calls.load(Ordering::SeqCst) >= 1, "{:?}", e.model_lane_report());
+    assert!(
+        calls.load(Ordering::SeqCst) >= 1,
+        "{:?}",
+        e.model_lane_report()
+    );
     let b = budgets.lock().unwrap().clone();
     assert!(!b.is_empty());
     assert!(
@@ -598,9 +607,18 @@ fn transport_timeout_after_the_deadline_is_recorded_as_cancelled_not_late_and_cr
     );
     assert_eq!(e.model_pending_orders(), 0, "{:?}", e.model_lane_report());
     assert!(!e.model_position_open(&MINT));
-    assert!(rep(&e, "discard:cancelled_at_deadline") >= 1, "{:?}", e.model_lane_report());
+    assert!(
+        rep(&e, "discard:cancelled_at_deadline") >= 1,
+        "{:?}",
+        e.model_lane_report()
+    );
     assert_eq!(rep(&e, "discard:late"), 0, "{:?}", e.model_lane_report());
-    assert_eq!(rep(&e, "discard:abandoned"), 0, "{:?}", e.model_lane_report());
+    assert_eq!(
+        rep(&e, "discard:abandoned"),
+        0,
+        "{:?}",
+        e.model_lane_report()
+    );
 }
 
 /// Without the opt-in the legacy behaviour is untouched: the source gets no budget and a late answer
@@ -628,5 +646,8 @@ fn without_cancel_lag_the_transport_is_not_handed_a_budget() {
     }
     std::thread::sleep(Duration::from_millis(200));
     assert_eq!(calls.load(Ordering::SeqCst), 1);
-    assert!(budgets.lock().unwrap().is_empty(), "legacy path must use complete_meta, not the budgeted variant");
+    assert!(
+        budgets.lock().unwrap().is_empty(),
+        "legacy path must use complete_meta, not the budgeted variant"
+    );
 }

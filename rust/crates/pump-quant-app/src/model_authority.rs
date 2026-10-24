@@ -532,7 +532,7 @@ mod tests {
                 text: self.text.to_string(),
                 finish_reason: self.reason.map(str::to_string),
                 completion_tokens: None,
-            stop_reason: None,
+                stop_reason: None,
             })
         }
     }
@@ -567,7 +567,11 @@ price_lamports_per_raw_token=0.02445740498411998  ret_5s_bp=120  ret_30s_bp=0  v
             "a cut completion is recorded AND refused (revised F5b): never execute a partial answer"
         );
         assert_eq!(l.truncated(), 1, "the max_tokens cut must be visible");
-        assert_eq!(l.ungrounded_price(), 0, "the refused partial answer is not parsed downstream");
+        assert_eq!(
+            l.ungrounded_price(),
+            0,
+            "the refused partial answer is not parsed downstream"
+        );
 
         // (2) A completed stop, echoing the supplied price digit for digit.
         let mut l2 = DriftLedger::new();

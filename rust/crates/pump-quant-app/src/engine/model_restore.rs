@@ -16,10 +16,10 @@ use std::path::{Path, PathBuf};
 
 use super::model_manage::{MgmtKind, MgmtOrder, MgmtPos};
 use super::{Engine, OpenAttribution};
+use crate::expected_move::SignalObs;
 use crate::held_state::{
     HeldEntry, HeldLedger, HeldPending, LedgerReadError, RestoreRefusal, RestoreReport,
 };
-use crate::expected_move::SignalObs;
 use pump_quant_watchlist::candidate::{DiscoveryLane, Lane as WlLane};
 
 /// Minimum interval between unchanged-state rewrites (wire-clock ms); a change writes immediately.
@@ -58,7 +58,8 @@ impl Engine {
             let mp = self.model_mgmt.pos.get(&x.mint);
             // A held AMM position stays AMM in the durable ledger even before the restarted
             // process has seen a pool observation (the label is restored from the ledger itself).
-            let amm = self.model_cache.snapshot_venue_is_amm(&x.mint) || self.model_cache.venue_is_pumpswap(&x.mint);
+            let amm = self.model_cache.snapshot_venue_is_amm(&x.mint)
+                || self.model_cache.venue_is_pumpswap(&x.mint);
             held.push(HeldEntry {
                 mint: x.mint,
                 entry_price_fp: x.entry_price_fp,
@@ -304,7 +305,9 @@ impl Engine {
         for p in &l.pending {
             match p.kind.as_str() {
                 "entry" => {
-                    if wl_lane(p.lane_index).is_none() || disc_lane(p.discovery_lane_index).is_none() {
+                    if wl_lane(p.lane_index).is_none()
+                        || disc_lane(p.discovery_lane_index).is_none()
+                    {
                         return Err(RestoreRefusal::UnknownLane);
                     }
                 }
@@ -383,7 +386,10 @@ impl Engine {
                     position_order: h.position_order,
                     exit_attempts: 0,
                     exit_last_attempt_ms: 0,
-                    protect_exit: PROTECT_REASONS.iter().copied().find(|r| *r == h.protect_exit),
+                    protect_exit: PROTECT_REASONS
+                        .iter()
+                        .copied()
+                        .find(|r| *r == h.protect_exit),
                     last_px_fp: 0,
                     last_state_ms: h.last_state_ms,
                 },
@@ -469,7 +475,10 @@ impl Engine {
         }
         self.model_held.last_digest = Self::model_held_digest(l);
         self.mrep_add("held_state:restored_positions", rep.positions as u64);
-        self.mrep_add("held_state:restored_pending_uncertain", rep.pending_uncertain as u64);
+        self.mrep_add(
+            "held_state:restored_pending_uncertain",
+            rep.pending_uncertain as u64,
+        );
         rep
     }
 }

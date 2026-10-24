@@ -372,7 +372,9 @@ impl AnnotationState {
     /// (real reserves >= 85 SOL). Used to decide whether a migration is worth a pool feed.
     #[must_use]
     pub fn curve_graduated(&self, mint: &[u8; 32]) -> bool {
-        self.curves.get(mint).is_some_and(|o| o.real_sol_lamports >= V_GRAD_LAMPORTS)
+        self.curves
+            .get(mint)
+            .is_some_and(|o| o.real_sol_lamports >= V_GRAD_LAMPORTS)
     }
 
     #[must_use]
@@ -856,26 +858,55 @@ mod amm_regime_input_parity_tests {
     use super::*;
 
     fn obs(ts: i64, slot: u64, v_sol: u64, v_tok: u64, r_sol: u64) -> CurveObservation {
-        CurveObservation { ts_ms: ts, slot, v_sol_lamports: v_sol, v_tokens: v_tok, real_sol_lamports: r_sol, real_tokens: 0 }
+        CurveObservation {
+            ts_ms: ts,
+            slot,
+            v_sol_lamports: v_sol,
+            v_tokens: v_tok,
+            real_sol_lamports: r_sol,
+            real_tokens: 0,
+        }
     }
 
     #[test]
     fn zeroed_withdraw_snapshot_does_not_displace_graduated_curve() {
         let mut st = AnnotationState::new();
         let m = [7u8; 32];
-        assert!(st.observe_curve(m, obs(1_000, 10, 115_005_359_057, 279_900_000_000_000, 85_005_359_057)));
+        assert!(st.observe_curve(
+            m,
+            obs(
+                1_000,
+                10,
+                115_005_359_057,
+                279_900_000_000_000,
+                85_005_359_057
+            )
+        ));
         // post-migration withdraw: account shows zero virtual reserves
         assert!(!st.observe_curve(m, obs(2_000, 11, 0, 0, 0)));
         assert_eq!(st.dropped_curve_zeroed, 1);
         match st.curve_state(&m, 3_600_000) {
-            CurveState::Present { curve_regime, curve_progress, .. } => {
+            CurveState::Present {
+                curve_regime,
+                curve_progress,
+                ..
+            } => {
                 assert_eq!(curve_regime, "graduated");
                 assert!((curve_progress - 1.0).abs() < 1e-9);
             }
             other => panic!("expected graduated curve, got {other:?}"),
         }
         // a later POSITIVE observation still applies normally
-        assert!(st.observe_curve(m, obs(2_500, 12, 115_005_359_057, 279_900_000_000_000, 85_005_359_057)));
+        assert!(st.observe_curve(
+            m,
+            obs(
+                2_500,
+                12,
+                115_005_359_057,
+                279_900_000_000_000,
+                85_005_359_057
+            )
+        ));
     }
 
     #[test]
@@ -883,14 +914,22 @@ mod amm_regime_input_parity_tests {
         let mut st = AnnotationState::new();
         let m = [8u8; 32];
         assert!(st.observe_curve(m, obs(1_000, 10, 0, 0, 0)));
-        assert!(matches!(st.curve_state(&m, 2_000), CurveState::Absent { reason } if reason == "nonpositive_reserve"));
+        assert!(
+            matches!(st.curve_state(&m, 2_000), CurveState::Absent { reason } if reason == "nonpositive_reserve")
+        );
     }
 
     #[test]
     fn b58_matches_known_keys() {
         assert_eq!(b58_encode(&[0u8; 32]), "11111111111111111111111111111111");
         // WSOL mint So11111111111111111111111111111111111111112
-        let wsol: [u8; 32] = [6, 155, 136, 87, 254, 171, 129, 132, 251, 104, 127, 99, 70, 24, 192, 53, 218, 196, 57, 220, 26, 235, 59, 85, 152, 160, 240, 0, 0, 0, 0, 1];
-        assert_eq!(b58_encode(&wsol), "So11111111111111111111111111111111111111112");
+        let wsol: [u8; 32] = [
+            6, 155, 136, 87, 254, 171, 129, 132, 251, 104, 127, 99, 70, 24, 192, 53, 218, 196, 57,
+            220, 26, 235, 59, 85, 152, 160, 240, 0, 0, 0, 0, 1,
+        ];
+        assert_eq!(
+            b58_encode(&wsol),
+            "So11111111111111111111111111111111111111112"
+        );
     }
 }

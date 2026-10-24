@@ -75,7 +75,10 @@ fn feed_line(e: &mut Engine, v: &serde_json::Value, m: DomainMint, t: i64) {
                 launch_unix_ms: t,
             });
             // Captured fixture markets are SOL-quoted (verified: DEV506_QUOTE_PROVENANCE).
-            e.tick(AppEvent::CurveQuote { mint: m, quote_mint: [0u8; 32] });
+            e.tick(AppEvent::CurveQuote {
+                mint: m,
+                quote_mint: [0u8; 32],
+            });
         }
         "T" => {
             let w = hex32(v["w"].as_str().unwrap());
@@ -152,11 +155,25 @@ fn feed_line(e: &mut Engine, v: &serde_json::Value, m: DomainMint, t: i64) {
 }
 
 fn replay(stop_before_first_amm: bool) -> Run {
+    replay_arm(stop_before_first_amm, None, None)
+}
+
+/// Same replay with a research-arm configuration: an absorption veto (arm B) and/or a
+/// replacement model source (arm C). `None, None` is arm A — byte-identical to `replay`.
+fn replay_arm(
+    stop_before_first_amm: bool,
+    absorption_r_star_bps: Option<u64>,
+    source: Option<Arc<dyn ModelSource + Send + Sync>>,
+) -> Run {
     let mut cfg = Config::dev_portable();
     cfg.bankroll_initial_lamports = 2_000_000_000;
     let calls = Arc::new(AtomicUsize::new(0));
     let mut e = Engine::new(cfg, RunMode::Paper);
-    e.enable_paper_model(Stub(Arc::clone(&calls)));
+    e.set_entry_absorption_veto_bps(absorption_r_star_bps);
+    match source {
+        Some(src) => e.enable_paper_model_arc(src),
+        None => e.enable_paper_model(Stub(Arc::clone(&calls))),
+    }
     let mut last_tick = 0i64;
     let mut first_amm_ms = 0i64;
     let mut first_position_ms = None;
@@ -270,7 +287,11 @@ fn amm_fill_is_applied_once_and_duplicates_do_not_add_inventory() {
     // one fill per filled order, distinct order ids, and duplicates never add inventory.
     let fills: Vec<_> = r.e.model_all_fills().iter().filter(|f| f.amm).collect();
     assert!(!fills.is_empty());
-    assert_eq!(rep(&r.e, "fill:position_opened_amm"), fills.len() as u64, "one fill per filled order");
+    assert_eq!(
+        rep(&r.e, "fill:position_opened_amm"),
+        fills.len() as u64,
+        "one fill per filled order"
+    );
     let mut ids: Vec<u64> = fills.iter().map(|f| f.order_id).collect();
     ids.sort_unstable();
     ids.dedup();
@@ -463,7 +484,6 @@ fn amm_fixture_funnel_pools_discovered_ready_dispatched() {
     // uses the registry funnel.
 }
 
-
 // ---- AMM MANAGEMENT plumbing (labelled: ROUTING/ACCOUNTING only, never profitability evidence).
 // AMM sell-side fee economics are UNVERIFIED, so every fill here stays `assessable == false` and no PnL
 // from it may be cited. What is exercised: identity/state from the captured pool plane, order intent,
@@ -498,7 +518,9 @@ fn amm_management_reduce_then_exit_runs_through_the_real_engine_with_unassessed_
     cfg.bankroll_initial_lamports = 2_000_000_000;
     let asks = Arc::new(AtomicUsize::new(0));
     let mut e = Engine::new(cfg, RunMode::Paper);
-    e.enable_paper_model(MgmtStub { asks: Arc::clone(&asks) });
+    e.enable_paper_model(MgmtStub {
+        asks: Arc::clone(&asks),
+    });
     let mut last_tick = 0i64;
     for line in FIXTURE.lines() {
         let v: serde_json::Value = serde_json::from_str(line).unwrap();
@@ -521,7 +543,10 @@ fn amm_management_reduce_then_exit_runs_through_the_real_engine_with_unassessed_
     assert!(e.model_assessable_fills().is_empty());
     assert!(e.model_all_fills().iter().all(|f| f.amm));
     // Management asked at least once on the AMM position and the answers came back as valid verdicts.
-    assert!(rep(&e, "mgmt:dispatched") >= 1, "management was never asked on the AMM position: {r:?}");
+    assert!(
+        rep(&e, "mgmt:dispatched") >= 1,
+        "management was never asked on the AMM position: {r:?}"
+    );
     // REDUCE then EXIT each created ONE order and were each booked from a reconciled fill; the position closed
     // only on the EXIT fill. The replay is time-compressed, so some answers land late and are DISCARDED
     // (counted) - they never execute.
@@ -532,9 +557,60 @@ fn amm_management_reduce_then_exit_runs_through_the_real_engine_with_unassessed_
     assert!(rep(&e, "mgmt:fill:closed") >= 1, "{r:?}");
     let opened = rep(&e, "fill:position_opened_amm");
     let closed = rep(&e, "mgmt:fill:closed");
-    assert!(closed == opened || closed + 1 == opened, "every entry closes exactly once (or the last is still held): {r:?}");
-    assert!(rep(&e, "protection:amm_hard_stop|intent") + rep(&e, "mgmt:order:reduce") >= 1, "{r:?}");
+    assert!(
+        closed == opened || closed + 1 == opened,
+        "every entry closes exactly once (or the last is still held): {r:?}"
+    );
+    assert!(
+        rep(&e, "protection:amm_hard_stop|intent") + rep(&e, "mgmt:order:reduce") >= 1,
+        "{r:?}"
+    );
     // The unverified AMM sell economics are FLAGGED on every AMM sell fill, so no PnL from them is citable.
     let sell_fills = e.model_mgmt_fills().len() as u64;
-    assert_eq!(rep(&e, "mgmt:fill_amm_sell_fee_unverified"), sell_fills, "{r:?}");
+    assert_eq!(
+        rep(&e, "mgmt:fill_amm_sell_fee_unverified"),
+        sell_fills,
+        "{r:?}"
+    );
+}
+
+
+/// ARM B — the declared absorption veto is evaluated on the common opportunity (a valid BUY) from
+/// the exact prompt bytes, before any capital veto: R* = 0 refuses by name with the components
+/// journaled in the lane report; R* = MAX passes and the unchanged path fills. Arm A (no veto) is
+/// byte-identical to the plain replay.
+#[test]
+fn arm_b_absorption_veto_refuses_by_name_before_capital_and_passes_when_below_r_star() {
+    let a = replay(false);
+    assert!(rep(&a.e, "fill:position_opened_amm") >= 1);
+    assert_eq!(rep(&a.e, "notrade:absorption"), 0, "arm A never evaluates the veto");
+
+    let b_veto = replay_arm(false, Some(0), None);
+    assert_eq!(rep(&b_veto.e, "fill:position_opened_amm"), 0, "{:?}", b_veto.e.model_lane_report());
+    assert!(rep(&b_veto.e, "notrade:absorption|") >= 1, "{:?}", b_veto.e.model_lane_report());
+    assert_eq!(rep(&b_veto.e, "notrade:absorption_unavailable"), 0, "R was available on the AMM prompt");
+    // the veto sits BEFORE sizing: no sizing/order records, no capital veto counted for these asks
+    assert_eq!(rep(&b_veto.e, "order"), 0);
+
+    let b_pass = replay_arm(false, Some(u64::MAX), None);
+    assert!(rep(&b_pass.e, "fill:position_opened_amm") >= 1, "{:?}", b_pass.e.model_lane_report());
+    assert_eq!(rep(&b_pass.e, "notrade:absorption"), 0);
+}
+
+/// ARM C — the transparent rule runs through the real engine as a model source: every answer is a
+/// valid compact record (no invalid/off-contract), BUYs are SMALL only, and the rule's SKIP on an
+/// unavailable R is a decision, not a veto record.
+#[test]
+fn arm_c_rule_source_runs_through_the_unchanged_authority_with_only_valid_compact_records() {
+    let src: Arc<dyn ModelSource + Send + Sync> =
+        Arc::new(pump_quant_app::absorption::RuleSource { r_star_bps: u64::MAX });
+    let c = replay_arm(false, None, Some(src));
+    let r = c.e.model_lane_report();
+    let valid: u64 = r.iter().filter(|(k, _)| k.starts_with("probe_sl:valid:")).map(|(_, v)| *v).sum();
+    let invalid: u64 = r.iter().filter(|(k, _)| k.starts_with("probe_sl:invalid")).map(|(_, v)| *v).sum();
+    assert!(valid >= 1 || r.iter().any(|(k, _)| k.starts_with("verdict:")), "rule answered: {r:?}");
+    assert_eq!(invalid, 0, "{r:?}");
+    assert_eq!(rep(&c.e, "notrade:absorption"), 0, "arm C has no veto layer; R is inside its rule");
+    // SMALL-only sizing: no FULL tier sizing record can exist for arm C
+    assert_eq!(r.get("verdict:buy_full").copied().unwrap_or(0), 0);
 }
