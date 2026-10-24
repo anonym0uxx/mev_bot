@@ -57,6 +57,10 @@ pub struct HeldEntry {
     pub version: u64,
     /// The order that opened the position.
     pub position_order: u64,
+    /// Newest AMM pool state (feed clock, ms) the protection evaluated before persistence. After a
+    /// restart, replayed/late states at or before this clock are history, not fresh state: they can
+    /// neither fire nor erase protection. 0 = none (older ledgers).
+    pub last_state_ms: i64,
 }
 
 /// One pending order. After a restart its acknowledgement is UNKNOWN, so it restores as uncertain.
@@ -179,6 +183,7 @@ impl HeldLedger {
                 "step": h.step,
                 "version": h.version,
                 "position_order": h.position_order,
+                "last_state_ms": h.last_state_ms,
             })).collect::<Vec<_>>(),
             "pending": self.pending.iter().map(|p| json!({
                 "kind": p.kind,
@@ -242,6 +247,7 @@ impl HeldLedger {
                 step: i(h, "step")?,
                 version: u(h, "version")?,
                 position_order: u(h, "position_order")?,
+                last_state_ms: h["last_state_ms"].as_i64().unwrap_or(0),
             });
         }
         let mut pending = Vec::new();
@@ -396,6 +402,7 @@ mod tests {
                 step: 5,
                 version: 3,
                 position_order: 1,
+                last_state_ms: 0,
             }],
             pending: vec![HeldPending {
                 kind: "reduce".into(),

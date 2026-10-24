@@ -422,10 +422,18 @@ impl Engine {
             (u128::from(p.hard_sl_bps), u128::from(p.precursor_drop_bps))
         };
         let Some(mp) = self.model_mgmt.pos.get_mut(&mint) else { return };
+        // Fresh-state rule: only a state newer than everything this position has already seen
+        // (including before a restart, via the persisted `last_state_ms`) is evidence. A replayed,
+        // late or reordered older state is history: it cannot fire protection or move `prev`.
+        if ts_ms <= mp.last_state_ms || ts_ms < mp.fill_ms {
+            self.mrep("protection:amm_stale_state_skipped");
+            return;
+        }
+        mp.last_state_ms = ts_ms;
         let px = u64::try_from(price_fp).unwrap_or(u64::MAX);
         let prev = mp.last_px_fp;
         mp.last_px_fp = px;
-        if mp.protect_exit.is_some() || ts_ms < mp.fill_ms {
+        if mp.protect_exit.is_some() {
             return;
         }
         let hard_level = u128::from(mp.entry_px_fp) * (10_000 - hard_sl_bps) / 10_000;

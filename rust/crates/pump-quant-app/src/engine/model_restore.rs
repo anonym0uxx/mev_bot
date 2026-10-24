@@ -77,6 +77,7 @@ impl Engine {
                 step: mp.map_or(0, |m| m.step),
                 version: mp.map_or(1, |m| m.version),
                 position_order: mp.map_or(0, |m| m.position_order),
+                last_state_ms: mp.map_or(0, |m| m.last_state_ms),
             });
         }
         held.sort_by_key(|h| h.mint);
@@ -382,6 +383,7 @@ impl Engine {
                     exit_last_attempt_ms: 0,
                     protect_exit: None,
                     last_px_fp: 0,
+                    last_state_ms: h.last_state_ms,
                 },
             );
             rep.positions += 1;

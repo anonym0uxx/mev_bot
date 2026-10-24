@@ -142,6 +142,8 @@ pub(super) struct MgmtPos {
     pub protect_exit: Option<&'static str>,
     /// Last pool SPOT (pre-trade effective reserves) seen for the rug precursor.
     pub last_px_fp: u64,
+    /// Feed clock of the newest AMM state protection evaluated (persisted; see `HeldEntry`).
+    pub last_state_ms: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -207,6 +209,7 @@ impl Engine {
                 exit_last_attempt_ms: 0,
                 protect_exit: None,
                 last_px_fp: 0,
+                last_state_ms: 0,
             },
         );
     }

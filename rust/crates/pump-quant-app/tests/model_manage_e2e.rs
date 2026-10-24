@@ -1810,3 +1810,104 @@ fn amm_protection_stays_active_under_entry_pause_and_management_inference_failur
     assert_eq!(r.e.model_all_fills().len(), 1, "{:?}", r.e.model_lane_report());
     assert!(r.rep("refuse:entries_blocked") >= 1, "{:?}", r.e.model_lane_report());
 }
+
+/// COMBINED SCENARIO (engine side of the daemon's chain): curve fill → held → migration → AMM
+/// states → crash/restart from the durable ledger → replayed/duplicated/reordered history and a
+/// no-price print → AMM protection fires → the pool goes silent (no landing state) → explicit
+/// unresolved exposure, nothing fabricated → RPC pool snapshot lands the standing intent exactly once.
+/// Invariants at every step: one fill per order, no stranded reservation, seed + realized =
+/// balance + remaining basis, inventory changes only through reconciled fills.
+#[test]
+fn combined_fill_migration_restart_duplicates_protection_silence_and_snapshot_resolution() {
+    use pump_quant_app::engine::ManagementPolicy;
+    let hp = held_path("combined_chain");
+    let mut r = rig(|_| HOLD);
+    r.e.set_management_policy(ManagementPolicy::ProdHoldControl { barrier_ms: 1_800_000 });
+    r.e.model_held_attach(&hp);
+    r.advance(60_000);
+    let inv0 = r.e.model_inventory_tokens(&MINT).unwrap();
+    let entry = r.e.model_held_ledger().held[0].entry_price_fp;
+    let identity = |e: &Engine| {
+        let a = e.model_accounting_view(&MINT);
+        assert_eq!(i128::from(a.balance), i128::from(a.seed) + a.realized, "{a:?}");
+        assert_eq!(a.committed, a.remaining_cost_basis.unwrap_or(0), "no stranded reservation: committed == remaining basis ({a:?})");
+        if e.model_pending_orders() == 0 && e.model_mgmt_pending(&MINT).is_none() {
+            assert_eq!(a.free, a.balance - a.committed, "free cash = balance − committed with nothing pending ({a:?})");
+        }
+    };
+    identity(&r.e);
+    r.e.tick(AppEvent::Migration { mint: mint(), slot: r.slot });
+    for (i, f) in [100u64, 98, 101].iter().enumerate() {
+        r.clock += 1_000;
+        r.slot += 1;
+        amm_swap_at(&mut r.e, r.clock, r.slot, entry * f / 100, i as u32);
+        ticks(&mut r.e, 2);
+    }
+    assert!(r.e.model_held_persist_now());
+    let (c0, s0, fills0) = (r.clock, r.slot, r.e.model_all_fills().len());
+    let pre_events = events(40);
+    drop(r);
+    // ── crash/restart ──
+    let mut e2 = fresh_engine(2_000_000_000, &hp);
+    e2.set_management_policy(ManagementPolicy::ProdHoldControl { barrier_ms: 1_800_000 });
+    e2.model_held_attach(&hp);
+    e2.model_held_restore().expect("restore").expect("ledger");
+    e2.tick(AppEvent::LaunchObserved { mint: mint(), creator: CREATOR, launch_unix_ms: T0 });
+    e2.tick(AppEvent::CurveQuote { mint: mint(), quote_mint: [0u8; 32] });
+    assert_eq!(e2.model_inventory_tokens(&MINT), Some(inv0));
+    assert!(e2.model_all_fills().is_empty(), "restore rebuilds books; it never replays the entry fill");
+    identity(&e2);
+    // Replayed pre-fill history, twice (duplicates), plus a reordered older AMM state and a print
+    // without a price: none of it closes, re-enters or moves the books.
+    for ev in pre_events.iter().chain(pre_events.iter()) {
+        e2.tick(ev.clone());
+    }
+    amm_swap_at(&mut e2, c0 - 2_000, s0 - 2, entry * 20 / 100, 50);
+    e2.tick(AppEvent::MarketTrade {
+        mint: mint(), price_fp: 0, quote_lamports: 1_000, liquidity_lamports: 0, signed_base: 1, buyer_entity: 1,
+        age_slots: 1, recv_unix_ms: Some(c0 + 500), trader_pubkey: Some(wallet(1)), slot: Some(s0), fee_lamports: None,
+        cu_consumed: None, venue: None,
+    });
+    ticks(&mut e2, 4);
+    assert!(e2.model_position_open(&MINT));
+    assert_eq!(e2.model_inventory_tokens(&MINT), Some(inv0));
+    assert_eq!(e2.model_all_fills().len(), 0, "no duplicate entry on the held mint after restart");
+    assert_eq!(e2.model_lane_report().get("protection:amm_hard_stop|intent").copied().unwrap_or(0), 0, "a reordered older state is not a trigger");
+    identity(&e2);
+    // Fresh AMM state −40 %: protection opens the standing intent; the pool then goes silent.
+    let (mut c, mut s) = (c0 + 2_000, s0 + 2);
+    amm_swap_at(&mut e2, c, s, entry * 60 / 100, 51);
+    ticks(&mut e2, 2);
+    assert_eq!(e2.model_lane_report().get("protection:amm_hard_stop|intent").copied().unwrap_or(0), 1);
+    assert!(e2.model_mgmt_pending(&MINT).is_some());
+    // 10 minutes of clock with no pool state: the order expires (60 s TTL), the intent stands with
+    // backoff retries, the position is EXPLICITLY unresolved (held, inventory intact) — no synthetic sale.
+    for _ in 0..600 {
+        c += 1_000;
+        s += 1;
+        clock_only(&mut e2, c, s);
+        ticks(&mut e2, 1);
+    }
+    assert!(e2.model_position_open(&MINT), "unresolved exposure stays open");
+    assert_eq!(e2.model_inventory_tokens(&MINT), Some(inv0));
+    assert!(e2.model_lane_report().get("mgmt:order_expired_unfilled").copied().unwrap_or(0) >= 1);
+    let attempts = e2.model_mgmt_exit_attempts(&MINT);
+    assert!((2..=12).contains(&attempts), "bounded retries under backoff, not one per tick: {attempts}");
+    assert_eq!(e2.model_mgmt_fills().len(), 0);
+    identity(&e2);
+    // RPC snapshot of the current pool state (the daemon's exit liquidation source): lands ONCE.
+    c += 1_000;
+    s += 1;
+    assert!(e2.model_on_amm_state_snapshot(MINT, [0x50; 32], [0u8; 32], 300_000_000_000_000, 85_000_000_000, 0, s, c));
+    assert!(!e2.model_position_open(&MINT));
+    assert_eq!(e2.model_mgmt_fills().len(), 1);
+    assert_eq!(e2.model_mgmt_fills()[0].tokens, inv0);
+    assert_eq!(e2.model_pending_orders(), 0);
+    identity(&e2);
+    // A later duplicate snapshot and a late swap change nothing.
+    assert!(!e2.model_on_amm_state_snapshot(MINT, [0x50; 32], [0u8; 32], 300_000_000_000_000, 85_000_000_000, 0, s + 1, c + 1_000));
+    amm_swap_at(&mut e2, c + 2_000, s + 2, entry * 50 / 100, 52);
+    ticks(&mut e2, 2);
+    assert_eq!(e2.model_mgmt_fills().len(), 1);
+    let _ = fills0;
+}
