@@ -622,10 +622,24 @@ impl Engine {
             // reordered older event can neither fake a jump nor erase a trigger). Per-swap executed
             // prices are NOT a print for protection: on real tape they scatter 0.003x-5x around spot
             // (dust swaps, tips inside `quote_lamports`).
-            let eff_q = i128::from(a.quote_reserve_pre) + a.virtual_quote.unwrap_or(0);
-            if eff_q > 0 {
-                let spot_fp = eff_q * 1_000_000_000 / i128::from(a.token_reserve_pre);
-                self.model_amm_protection(mint, spot_fp, ts_ms);
+            // Unknown virtual quote is NOT zero: pump permits NEGATIVE vq, so a zero stand-in could
+            // overstate spot and MISS a stop (or understate it and false-trigger). A state without a
+            // schema-proven vq is unavailable for protection — counted, never priced.
+            match a.virtual_quote {
+                Some(vq) => {
+                    let eff_q = i128::from(a.quote_reserve_pre) + vq;
+                    if eff_q > 0 {
+                        let spot_fp = eff_q * 1_000_000_000 / i128::from(a.token_reserve_pre);
+                        self.model_amm_protection(mint, spot_fp, ts_ms);
+                    } else {
+                        self.mrep("protection:amm_state_unavailable|effective_quote_nonpositive");
+                    }
+                }
+                None => {
+                    if self.model_mgmt.pos.contains_key(&mint) {
+                        self.mrep("protection:amm_state_unavailable|vq_unknown_layout");
+                    }
+                }
             }
         }
         // The swap's own execution price (quote per token incl. fees) feeds the flow/price windows
@@ -1037,12 +1051,10 @@ impl Engine {
             self.model_io_event("entry", v.id.0, &v.mint, "disposition", "notrade:loss_budget", clock);
             return;
         }
-        let deployable = {
-            let d = deployable_capital(balance, floor);
-            match budget_headroom {
-                Some(h) => d.min(u64::try_from(h).unwrap_or(0)),
-                None => d,
-            }
+        let deployable_unbounded = deployable_capital(balance, floor);
+        let deployable = match budget_headroom {
+            Some(h) => deployable_unbounded.min(u64::try_from(h).unwrap_or(0)),
+            None => deployable_unbounded,
         };
         let req = EntryRequest {
             system_prompt: &meta.snap.system_prompt,
@@ -1109,9 +1121,25 @@ impl Engine {
             EntryAuthority::Buy {
                 clip_lamports,
                 price_limit,
-                ..
+                tier,
             } => {
                 self.mrep(format!("verdict:buy|{}", meta.dims));
+                // Sizing provenance: the clip the frozen sizing policy would PROPOSE from the
+                // floor-carved deployable (pre own-impact cap), the loss-budget-bounded clip that
+                // was actually sized, and the budget headroom. Executed quantity/cost follow in the
+                // fill record; vetoes carry their own disposition. Comparisons across books must
+                // read these fields rather than attribute every difference to protection.
+                let proposed_clip_unbounded = pump_quant_inference::seam::resolve_clip_at_fraction_bps(
+                    req.portfolio.fraction_bps_for(tier),
+                    req.free_cash_lamports,
+                    req.portfolio.per_position_notional(deployable_unbounded),
+                    pump_quant_inference::seam::FEE_BUFFER_LAMPORTS,
+                )
+                .ok();
+                self.model_io_event_with(
+                    "entry", v.id.0, &entry.mint, "sizing", "buy", clock,
+                    serde_json::json!({"tier": format!("{tier:?}"), "deployable_unbounded_lamports": deployable_unbounded, "deployable_bounded_lamports": deployable, "loss_budget_headroom_lamports": budget_headroom, "proposed_clip_unbounded_lamports": proposed_clip_unbounded, "sized_clip_lamports": clip_lamports, "budget_bound_active": deployable < deployable_unbounded}),
+                );
                 self.model_order_seq += 1;
                 let oid = self.model_order_seq;
                 if self.model_order_log.len() < ORDER_LOG_CAP {

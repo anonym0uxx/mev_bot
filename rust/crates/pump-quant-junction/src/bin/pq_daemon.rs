@@ -2460,6 +2460,8 @@ fn main() -> ExitCode {
     }
     let pool_bytes_cap_day: u64 = (std::env::var("PQ_LS_POOL_BYTES_CAP_GB_DAY").ok().and_then(|v| v.parse::<f64>().ok()).unwrap_or(1.5) * 1e9) as u64;
     let mut feed_budget_day: i64 = 0;
+    // Measured paper-RPC calls (exit snapshots); credits per call are NOT asserted here — reported as a count beside the reserved allowance.
+    let mut feed_rpc_calls: u64 = 0;
     let mut feed_bytes_today_total: u64 = 0;
     let mut feed_bytes_today_pools: u64 = 0;
     let mut feed_budget_tripped = false;
@@ -2482,6 +2484,7 @@ fn main() -> ExitCode {
     let feed_state_path = "data/feed_budget_state.json";
     if let Some(v) = std::fs::read_to_string(feed_state_path).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) {
         feed_budget_day = v["day"].as_i64().unwrap_or(0);
+        feed_rpc_calls = v["rpc_calls_measured"].as_u64().unwrap_or(0);
         feed_bytes_today_total = v["today_total_bytes"].as_u64().unwrap_or(0);
         feed_bytes_today_pools = v["today_pools_bytes"].as_u64().unwrap_or(0);
         feed_window_bytes_total = v["window_total_bytes"].as_u64().unwrap_or(0);
@@ -2988,6 +2991,7 @@ fn main() -> ExitCode {
                     serde_json::from_str(&r.body).ok()
                 };
                 let pool_b58 = b58_encode(&pool);
+                feed_rpc_calls += 1;
                 let v = call(format!(r#"{{"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":["{pool_b58}",{{"encoding":"base64"}}]}}"#));
                 let Some(pd) = v.as_ref().and_then(|v| v["result"]["value"]["data"][0].as_str()).and_then(|s| B64.decode(s).ok()) else {
                     eprintln!("[pq-daemon] EXIT SNAPSHOT {}: pool account unavailable", &pool_b58[..8]);
@@ -3001,9 +3005,22 @@ fn main() -> ExitCode {
                     eprintln!("[pq-daemon] EXIT SNAPSHOT {}: pool identity mismatch (base/quote)", &pool_b58[..8]);
                     continue;
                 }
-                let vq = pump_quant_protocol::pumpswap::pool_virtual_quote_reserves(&pd).unwrap_or(0);
+                // Unknown vq (pool account shorter than the pinned layout) is NOT zero — pump permits
+                // negative vq, so a stand-in could fabricate a price. Unavailable state → no landing.
+                let Some(vq) = pump_quant_protocol::pumpswap::pool_virtual_quote_reserves(&pd) else {
+                    eprintln!("[pq-daemon] EXIT SNAPSHOT {}: virtual_quote_reserves unavailable (pool layout {} bytes) — state unavailable, no landing", &pool_b58[..8], pd.len());
+                    let now_ms = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0);
+                    let rec = serde_json::json!({"ev": "exit_snapshot_unavailable", "unix_ms": now_ms, "mint_b58": b58_encode(&m), "pool_b58": pool_b58, "why": "vq_unknown_layout", "pool_len": pd.len()});
+                    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("data/model_io.jsonl") {
+                        use std::io::Write;
+                        let _ = writeln!(f, "{rec}");
+                    }
+                    feed_rpc_calls += 1;
+                    continue;
+                };
                 let bv = b58_encode(&pool_acc.pool_base_token_account);
                 let qv = b58_encode(&pool_acc.pool_quote_token_account);
+                feed_rpc_calls += 1;
                 let v2 = call(format!(r#"{{"jsonrpc":"2.0","id":2,"method":"getMultipleAccounts","params":[["{bv}","{qv}"],{{"encoding":"base64"}}]}}"#));
                 let slot = v2.as_ref().and_then(|v| v["result"]["context"]["slot"].as_u64()).unwrap_or(0);
                 let amount = |i: usize| -> Option<u64> {
@@ -3501,7 +3518,10 @@ fn main() -> ExitCode {
                                 }
                             }
                             // Allocation gates (evaluated on every meter line, ~1/min).
-                            let window_credits = feed_window_bytes_total as f64 / 1e6 * feed_credits_per_mb + feed_rpc_allowance;
+                            // Streaming credits are METERED (bytes × credits/MB); the RPC allowance is a
+                            // RESERVATION and is reported separately — never counted as consumed.
+                            let window_credits_streaming = feed_window_bytes_total as f64 / 1e6 * feed_credits_per_mb;
+                            let window_credits = window_credits_streaming + feed_rpc_allowance;
                             if feed_budget_entries_blocked.is_none() {
                                 let mut why: Option<String> = None;
                                 if feed_window_alloc > 0.0 && window_credits + feed_exposure_reserve >= feed_window_alloc {
@@ -3519,7 +3539,7 @@ fn main() -> ExitCode {
                                     feed_budget_entries_blocked = Some(w);
                                 }
                             }
-                            let st = serde_json::json!({"day": feed_budget_day, "today_total_bytes": feed_bytes_today_total, "today_pools_bytes": feed_bytes_today_pools, "window_total_bytes": feed_window_bytes_total, "window_credits_upper": window_credits, "pool_cap_tripped": feed_budget_tripped, "entries_blocked_reason": feed_budget_entries_blocked, "alloc": feed_window_alloc, "reserve": feed_exposure_reserve, "written_unix_ms": v["recv_unix_ms"].as_i64().unwrap_or(0)});
+                            let st = serde_json::json!({"day": feed_budget_day, "today_total_bytes": feed_bytes_today_total, "today_pools_bytes": feed_bytes_today_pools, "window_total_bytes": feed_window_bytes_total, "window_credits_upper": window_credits, "window_credits_streaming_metered": window_credits_streaming, "rpc_allowance_reserved_credits": feed_rpc_allowance, "rpc_calls_measured": feed_rpc_calls, "pool_cap_tripped": feed_budget_tripped, "entries_blocked_reason": feed_budget_entries_blocked, "alloc": feed_window_alloc, "reserve": feed_exposure_reserve, "written_unix_ms": v["recv_unix_ms"].as_i64().unwrap_or(0)});
                             let tmp = format!("{feed_state_path}.tmp");
                             if std::fs::write(&tmp, st.to_string()).is_ok() {
                                 let _ = std::fs::rename(&tmp, feed_state_path);

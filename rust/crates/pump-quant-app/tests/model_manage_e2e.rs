@@ -1597,6 +1597,10 @@ fn a_restored_amm_position_keeps_its_amm_identity_without_a_fresh_pool_observati
 
 /// AMM swap at `price` (lamports per 1e9 raw tokens) with reserves consistent with that price.
 fn amm_swap_at(e: &mut Engine, ts: i64, slot: u64, price_fp: u64, i: u32) {
+    amm_swap_at_vq(e, ts, slot, price_fp, i, Some(0));
+}
+
+fn amm_swap_at_vq(e: &mut Engine, ts: i64, slot: u64, price_fp: u64, i: u32, virtual_quote: Option<i128>) {
     let quote_reserve_pre: u64 = 85_000_000_000;
     let token_reserve_pre = (u128::from(quote_reserve_pre) * 1_000_000_000 / u128::from(price_fp)) as u64;
     e.tick(AppEvent::AmmSwap {
@@ -1608,7 +1612,7 @@ fn amm_swap_at(e: &mut Engine, ts: i64, slot: u64, price_fp: u64, i: u32) {
         quote_reserve_pre,
         fee_bps: Some(30),
         fee_parts: Some((20, 5, 5)),
-        virtual_quote: Some(0),
+        virtual_quote,
         is_buy: i % 2 == 0,
         token_amount: 1_000_000_000,
         quote_lamports: price_fp,
@@ -2010,4 +2014,37 @@ fn protective_latch_and_intent_survive_restart_without_refiring() {
     ticks(&mut e2, 2);
     assert_eq!(e2.model_lane_report().get("protection:amm_hard_stop|intent").copied().unwrap_or(0), 0, "latched: no second intent");
     assert!(e2.model_position_open(&MINT) || e2.model_mgmt_fills().len() == 1, "either still pending or landed exactly once");
+}
+
+/// Unknown virtual quote is unavailable state, not zero: a state without a schema-proven vq
+/// neither fires nor advances protection (pump permits negative vq — zero could overstate spot and
+/// MISS a stop). A later state with a known vq is evaluated normally. A known NEGATIVE vq lowers
+/// the effective spot and fires where the raw vault alone would not.
+#[test]
+fn unknown_virtual_quote_is_unavailable_state_and_negative_vq_is_honoured() {
+    use pump_quant_app::engine::ManagementPolicy;
+    let mut r = rig(|_| HOLD);
+    r.e.set_management_policy(ManagementPolicy::ProdHoldControl { barrier_ms: 1_800_000 });
+    r.advance(60_000);
+    let entry = r.e.model_held_ledger().held[0].entry_price_fp;
+    r.e.tick(AppEvent::Migration { mint: mint(), slot: r.slot });
+    let (mut c, mut s) = (r.clock + 1_000, r.slot + 1);
+    // vq unknown at 0.50× raw spot: unavailable → no trigger, counted.
+    amm_swap_at_vq(&mut r.e, c, s, entry * 50 / 100, 0, None);
+    ticks(&mut r.e, 1);
+    let rep = r.e.model_lane_report();
+    assert_eq!(rep.get("protection:amm_hard_stop|intent").copied().unwrap_or(0), 0, "{rep:?}");
+    assert!(rep.get("protection:amm_state_unavailable|vq_unknown_layout").copied().unwrap_or(0) >= 1);
+    // Known vq = 0 at 0.80× raw spot: above the level → no trigger.
+    c += 1_000;
+    s += 1;
+    amm_swap_at_vq(&mut r.e, c, s, entry * 80 / 100, 1, Some(0));
+    ticks(&mut r.e, 1);
+    assert_eq!(r.e.model_lane_report().get("protection:amm_hard_stop|intent").copied().unwrap_or(0), 0);
+    // Same raw reserves (0.80×) but a NEGATIVE vq of −25 % of the vault: effective spot 0.60× → fires.
+    c += 1_000;
+    s += 1;
+    amm_swap_at_vq(&mut r.e, c, s, entry * 80 / 100, 2, Some(-21_250_000_000));
+    ticks(&mut r.e, 1);
+    assert_eq!(r.e.model_lane_report().get("protection:amm_hard_stop|intent").copied().unwrap_or(0), 1, "{:?}", r.e.model_lane_report());
 }
