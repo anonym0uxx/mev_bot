@@ -1,0 +1,58 @@
+{
+ "name": "research-004 policy-target observation",
+ "version": 1,
+ "frozen_at_pt": "2026-10-24 16:28:34 PT",
+ "start_unix_s": 1792884514,
+ "binary": {
+  "path": "research-004/bin/v5/pq-daemon",
+  "sha256": "31fa14bdacb7200ea7702af169a01f31f0bb658adeb8c0914ace42e98fbea7c5",
+  "commit": "65d685c7"
+ },
+ "tests": "tests-poollane30: 979 clean",
+ "caps": {
+  "credits_enrollment": 1200000,
+  "credits_hard": 1500000,
+  "hours_enrollment": 14,
+  "hours_hard": 24,
+  "followup_after_enrollment_min": 40,
+  "dispatch_cap": 60000,
+  "rpc": 0,
+  "capital": 0
+ },
+ "env": {
+  "PQ_OBSERVATION_ONLY": "1",
+  "PQ_LS_POOL_CAP": "16",
+  "PQ_LS_POOL_IDLE_S": "2100",
+  "PQ_LS_POOL_TTL_S": "3600",
+  "PQ_FEED_WINDOW_ALLOC_CREDITS": "1500000",
+  "PQ_FEED_EXPOSURE_RESERVE_CREDITS": "0",
+  "PQ_ENTRY_CONTRACT": "probe_sl_v1_compact",
+  "PQ_MODEL_NAME": "probe-mg3-base"
+ },
+ "reference_account": "paper seed 2.0 SOL for engine bookkeeping only; zero order authority; not a book",
+ "manifest_md": "RESEARCH004_MANIFEST_v1.md",
+ "amendment_v1_1": {
+  "recorded_at_pt": "2026-10-24 16:56:10 PT",
+  "before_any_outcome_inspection": true,
+  "authority": "Alon 2026-10-24 ~16:55 PT: end enrollment at 18:28:34 PT (2 h after launch), \u226440 min follow-up within the credit cap, no extension to reach 40 episodes; policy/clips/outcome definitions unchanged",
+  "enrollment_end_unix_s": 1792889321,
+  "enrollment_end_pt": "17:48:41 PT",
+  "followup_end_unix_s": 1792891721,
+  "followup_end_pt": "18:28:41 PT",
+  "credits_caps_unchanged": {
+   "enrollment": 1200000,
+   "hard": 1500000
+  },
+  "label": "SHORTENED OBSERVATION (2 h enrollment)"
+ },
+ "amendment_v1_2": {
+  "recorded_at_pt": "2026-10-24 17:48:41 PT",
+  "before_any_outcome_inspection": true,
+  "authority": "Alon 2026-10-24: close observation window now; run remaining analysis",
+  "enrollment_end_unix_s": 1792889321,
+  "enrollment_end_pt": "17:48:41 PT",
+  "followup_end_unix_s": 1792891721,
+  "followup_end_pt": "18:28:41 PT",
+  "supersedes": "v1.1 enrollment/follow-up times; policy, clips, outcome definitions, credit caps unchanged; follow-up kept at the declared 40 min so enrollees can reach the 30-min barrier"
+ }
+}
